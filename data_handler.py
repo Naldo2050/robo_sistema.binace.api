@@ -1,4 +1,3 @@
-# data_handler.py
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
@@ -31,7 +30,6 @@ def calcular_delta_normalizado(df: pd.DataFrame) -> pd.DataFrame:
 
 def detectar_absorcao(df: pd.DataFrame, delta_threshold: float) -> pd.DataFrame:
     df = df.copy()
-    # Condições usam o limiar dinâmico recebido
     cond_absorcao_compra = (df["Delta"] < -delta_threshold) & (df["Close"] >= df["Open"])
     cond_absorcao_venda = (df["Delta"] > delta_threshold) & (df["Close"] <= df["Open"])
     df["AbsorcaoCompra"] = cond_absorcao_compra.astype(int)
@@ -59,9 +57,6 @@ def detectar_exaustao_volume(df: pd.DataFrame) -> pd.DataFrame:
 # MÉTRICAS INTRA-CANDLE
 # ===============================
 def calcular_metricas_intra_candle(df: pd.DataFrame) -> dict:
-    """
-    Calcula a evolução do delta dentro da janela de dados (candle).
-    """
     df_copy = df.copy()
     df_copy['trade_delta'] = np.where(df_copy['m'] == False, df_copy['q'], -df_copy['q'])
     df_copy['delta_cumulativo'] = df_copy['trade_delta'].cumsum()
@@ -81,98 +76,76 @@ def calcular_metricas_intra_candle(df: pd.DataFrame) -> dict:
     }
 
 # ===============================
-# VOLUME PROFILE
+# VOLUME PROFILE INTRA-CANDLE
 # ===============================
 def calcular_volume_profile(df: pd.DataFrame, num_bins=20) -> dict:
-    """
-    Calcula o Ponto de Controle (POC) do volume profile para a janela.
-    """
     if df.empty or df['q'].sum() == 0:
         return {"poc_price": 0, "poc_volume": 0, "poc_percentage": 0}
-
     df_copy = df.copy()
     min_price = df_copy['p'].min()
     max_price = df_copy['p'].max()
-    
     if min_price == max_price:
         return {"poc_price": float(min_price), "poc_volume": float(df_copy['q'].sum()), "poc_percentage": 100.0}
-
     price_bins = pd.cut(df_copy['p'], bins=num_bins)
     volume_por_bin = df_copy.groupby(price_bins, observed=False)['q'].sum()
-    
     poc_bin = volume_por_bin.idxmax()
     poc_price = float(poc_bin.mid)
     poc_volume = float(volume_por_bin.max())
     total_volume = float(df_copy['q'].sum())
     poc_percentage = (poc_volume / total_volume) * 100 if total_volume > 0 else 0
-
     return { "poc_price": poc_price, "poc_volume": poc_volume, "poc_percentage": poc_percentage }
 
 # ===============================
 # DWELL TIME
 # ===============================
 def calcular_dwell_time(df: pd.DataFrame, num_bins=20) -> dict:
-    """
-    Calcula o tempo de permanência (Dwell Time) em níveis de preço.
-    """
     if df.empty or len(df) < 2:
         return {"dwell_price": 0, "dwell_seconds": 0, "dwell_location": "N/A"}
-
     df_copy = df.copy()
     min_price = df_copy['p'].min()
     max_price = df_copy['p'].max()
-
     if min_price == max_price:
         dwell_seconds = (df_copy['T'].max() - df_copy['T'].min()) / 1000
         return {"dwell_price": float(min_price), "dwell_seconds": dwell_seconds, "dwell_location": "Mid"}
-
     price_bins = pd.cut(df_copy['p'], bins=num_bins)
     dwell_times = df_copy.groupby(price_bins, observed=False)['T'].apply(lambda x: x.max() - x.min())
-    
     dwell_bin = dwell_times.idxmax()
     dwell_price = float(dwell_bin.mid)
     dwell_seconds = float(dwell_times.max()) / 1000
-
     candle_range = max_price - min_price
     top_20_percent = max_price - (candle_range * 0.2)
     bottom_20_percent = min_price + (candle_range * 0.2)
-    
     location = "Mid"
     if dwell_price >= top_20_percent:
         location = "High"
     elif dwell_price <= bottom_20_percent:
         location = "Low"
-
     return {"dwell_price": dwell_price, "dwell_seconds": dwell_seconds, "dwell_location": location}
 
 # ===============================
 # TRADE SPEED
 # ===============================
 def calcular_trade_speed(df: pd.DataFrame) -> dict:
-    """
-    Calcula a velocidade dos trades (negócios por segundo).
-    """
     num_trades = len(df)
     if num_trades < 2:
         return {"trades_per_second": 0, "avg_trade_size": 0}
-
     duration_ms = df['T'].max() - df['T'].min()
     duration_s = duration_ms / 1000.0
-    
     trades_per_second = (num_trades / duration_s) if duration_s > 0 else 0
-    
     total_volume = df['q'].sum()
     avg_trade_size = (total_volume / num_trades) if num_trades > 0 else 0
-    
-    return {
-        "trades_per_second": trades_per_second,
-        "avg_trade_size": avg_trade_size
-    }
+    return {"trades_per_second": trades_per_second, "avg_trade_size": avg_trade_size}
 
 # ===============================
-# EVENTOS (sinaliza com is_signal)
+# EVENTOS (Absorção e Exaustão)
 # ===============================
-def create_absorption_event(window_data: list, symbol: str, delta_threshold: float, tz_output=NY_TZ) -> dict:
+def create_absorption_event(window_data: list, symbol: str, delta_threshold: float,
+                            tz_output=NY_TZ, 
+                            flow_metrics: dict=None,
+                            historical_profile: dict=None) -> dict:
+    """
+    Agora inclui dados adicionais de fluxo contínuo (CVD, whales) e volume profile diário.
+    """
     try:
         df = pd.DataFrame(window_data)
         df["p"] = pd.to_numeric(df.get("p"), errors="coerce")
@@ -188,7 +161,7 @@ def create_absorption_event(window_data: list, symbol: str, delta_threshold: flo
         trade_speed_metrics = calcular_trade_speed(df)
 
         # OHLC
-        ohlc = { "Open": float(df["p"].iloc[0]), "High": float(df["p"].max()), "Low": float(df["p"].min()), "Close": float(df["p"].iloc[-1]), }
+        ohlc = { "Open": float(df["p"].iloc[0]), "High": float(df["p"].max()), "Low": float(df["p"].min()), "Close": float(df["p"].iloc[-1]) }
         df["VolumeBuyMarket"] = np.where(df["m"] == False, df["q"], 0.0)
         df["VolumeSellMarket"] = np.where(df["m"] == True, df["q"], 0.0)
         agg_df = pd.DataFrame({
@@ -211,6 +184,7 @@ def create_absorption_event(window_data: list, symbol: str, delta_threshold: flo
             is_signal = True
             resultado = "Absorção de Venda"
             descricao = f"Compradores agressivos absorvidos. Delta {delta:.4f}, Índice {indice_absorcao:.2f}"
+
         event = {
             "is_signal": is_signal, "tipo_evento": "Absorção", "resultado_da_batalha": resultado, "descricao": descricao, "ativo": symbol,
             "preco_abertura": ohlc["Open"], "preco_fechamento": ohlc["Close"], "preco_maxima": ohlc["High"], "preco_minima": ohlc["Low"],
@@ -222,12 +196,28 @@ def create_absorption_event(window_data: list, symbol: str, delta_threshold: flo
         event.update(volume_profile_metrics)
         event.update(dwell_time_metrics)
         event.update(trade_speed_metrics)
+
+        # Integração com fluxo contínuo
+        if flow_metrics:
+            event["fluxo_continuo"] = flow_metrics
+
+        # Integração com perfil histórico (POC diário/VAH/VAL)
+        if historical_profile:
+            event["historical_vp"] = historical_profile
+
         return event
     except Exception as e:
         logging.error(f"Erro ao criar evento de absorção: {e}")
         return {"is_signal": False, "tipo_evento": "Erro", "resultado_da_batalha": "Erro", "descricao": str(e), "ativo": symbol}
 
-def create_exhaustion_event(window_data: list, symbol: str, history_volumes=None, volume_factor: float = 2.0, tz_output=NY_TZ) -> dict:
+def create_exhaustion_event(window_data: list, symbol: str, history_volumes=None,
+                            volume_factor: float = 2.0,
+                            tz_output=NY_TZ,
+                            flow_metrics: dict=None,
+                            historical_profile: dict=None) -> dict:
+    """
+    Agora inclui dados adicionais de fluxo contínuo (CVD, whales) e volume profile diário.
+    """
     try:
         history_volumes = history_volumes or []
         df = pd.DataFrame(window_data)
@@ -244,7 +234,7 @@ def create_exhaustion_event(window_data: list, symbol: str, history_volumes=None
         trade_speed_metrics = calcular_trade_speed(df)
 
         # OHLC
-        ohlc = { "Open": float(df["p"].iloc[0]), "High": float(df["p"].max()), "Low": float(df["p"].min()), "Close": float(df["p"].iloc[-1]),}
+        ohlc = { "Open": float(df["p"].iloc[0]), "High": float(df["p"].max()), "Low": float(df["p"].min()), "Close": float(df["p"].iloc[-1]) }
         df["VolumeBuyMarket"] = np.where(df["m"] == False, df["q"], 0.0)
         df["VolumeSellMarket"] = np.where(df["m"] == True, df["q"], 0.0)
         agg_df = pd.DataFrame({
@@ -269,15 +259,25 @@ def create_exhaustion_event(window_data: list, symbol: str, history_volumes=None
                 is_signal = True
                 resultado = "Exaustão de Venda"
                 descricao = f"Pico de volume de venda ({current_volume:.2f} vs média {avg_volume:.2f}) pode indicar fim do movimento."
+
         event = {
             "is_signal": is_signal, "tipo_evento": "Exaustão", "resultado_da_batalha": resultado, "descricao": descricao, "ativo": symbol,
-            "preco_abertura": open_price, "preco_fechamento": close_price, "preco_maxima": float(ohlc["High"]), "preco_minima": float(ohlc["Low"]),
+            "preco_abertura": open_price, "preco_fechamento": close_price, "preco_maxima": ohlc["High"], "preco_minima": ohlc["Low"],
             "volume_total": current_volume, "volume_compra": float(agg_df["VolumeBuyMarket"].iloc[0]), "volume_venda": float(agg_df["VolumeSellMarket"].iloc[0]),
         }
         event.update(metricas_intra_candle)
         event.update(volume_profile_metrics)
         event.update(dwell_time_metrics)
         event.update(trade_speed_metrics)
+
+        # Integração com fluxo contínuo
+        if flow_metrics:
+            event["fluxo_continuo"] = flow_metrics
+
+        # Integração com perfil histórico (POC diário/VAH/VAL)
+        if historical_profile:
+            event["historical_vp"] = historical_profile
+
         return event
     except Exception as e:
         logging.error(f"Erro ao criar evento de exaustão: {e}")

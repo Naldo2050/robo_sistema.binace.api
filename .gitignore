@@ -1,0 +1,19 @@
+# Ignorar ambiente virtual
+venv/
+.venv/
+
+# Ignorar cache do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignorar dados locais
+*.log
+*.sqlite3
+
+# Ignorar dados de Playwright, Firefox, etc.
+playwright_user_data/
+firefox_data/
+gemini_data/
+dados/
