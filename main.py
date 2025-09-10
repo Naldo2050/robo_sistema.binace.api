@@ -341,6 +341,44 @@ class EnhancedMarketBot:
         
         threading.Thread(target=ai_worker, daemon=True).start()
 
+    def _process_vp_features(self, historical_profile, preco_atual: float):
+        """Cria resumo de volume profile em features de alta utilidade para IA."""
+        try:
+            vp_daily = historical_profile.get("daily", {})
+            hvns = vp_daily.get("hvns", [])
+            lvns = vp_daily.get("lvns", [])
+            sp = vp_daily.get("single_prints", [])
+            poc = vp_daily.get("poc", 0)
+
+            # Distâncias
+            dist_to_poc = preco_atual - poc if poc else 0
+            nearest_hvn = min(hvns, key=lambda x: abs(x - preco_atual)) if hvns else None
+            nearest_lvn = min(lvns, key=lambda x: abs(x - preco_atual)) if lvns else None
+            dist_hvn = (preco_atual - nearest_hvn) if nearest_hvn else None
+            dist_lvn = (preco_atual - nearest_lvn) if nearest_lvn else None
+
+            # Contagem em faixa ±0.5%
+            faixa_lim = preco_atual * 0.005
+            hvn_near = sum(1 for h in hvns if abs(h - preco_atual) <= faixa_lim)
+            lvn_near = sum(1 for l in lvns if abs(l - preco_atual) <= faixa_lim)
+
+            # Single print zone
+            in_single = any(abs(p - preco_atual) <= faixa_lim for p in sp)
+
+            return {
+                "distance_to_poc": dist_to_poc,
+                "nearest_hvn": nearest_hvn,
+                "dist_to_nearest_hvn": dist_hvn,
+                "nearest_lvn": nearest_lvn,
+                "dist_to_nearest_lvn": dist_lvn,
+                "hvns_within_0_5pct": hvn_near,
+                "lvns_within_0_5pct": lvn_near,
+                "in_single_print_zone": in_single
+            }
+        except Exception as e:
+            logging.error(f"Erro ao gerar vp_features: {e}")
+            return {}
+
     def _process_window(self):
         if not self.window_data or self.should_stop or sum(float(trade.get('q', 0)) for trade in self.window_data) == 0:
             self.window_data = []
@@ -366,7 +404,7 @@ class EnhancedMarketBot:
             )
             orderbook_event = self.orderbook_analyzer.analyze_order_book()
             
-            # --- 3. CONSTRUÇÃO DO EVENTO FINAL PARA LOG E IA ---
+            # --- 3. CONSTRUÇÃO DO EVENTO FINAL ---
             base_candle_metrics = absorption_event.copy()
             flow_metrics = self.flow_analyzer.get_flow_metrics()
             if flow_metrics:
@@ -385,16 +423,20 @@ class EnhancedMarketBot:
                     "alertas_liquidez": orderbook_event.get("alertas_liquidez")
                 })
             
+            preco_atual = base_candle_metrics.get("preco_fechamento", 0)
+            vp_features = self._process_vp_features(historical_profile, preco_atual)
+            
             final_event_data.update({
                 "candle_id_ms": close_ms,
                 "candle_open_time_ms": open_ms,
                 "candle_close_time_ms": close_ms,
                 "candle_open_time": format_timestamp(open_ms, tz=self.ny_tz),
                 "candle_close_time": format_timestamp(close_ms, tz=self.ny_tz),
-                "contexto_macro": {k: v for k, v in macro_context.items() if k != 'historical_vp'}
+                "contexto_macro": {k: v for k, v in macro_context.items() if k != 'historical_vp'},
+                "vp_features": vp_features
             })
 
-            # --- 4. AÇÕES (SALVAR, ANALISAR, ATUALIZAR HISTÓRICO) ---
+            # --- 4. SALVAR E EXECUTAR IA ---
             self.event_saver.save_event(final_event_data)
             self._run_ai_analysis_threaded(final_event_data.copy())
             
@@ -402,8 +444,8 @@ class EnhancedMarketBot:
             self.delta_history.append(base_candle_metrics.get("delta", 0))
             self.close_price_history.append(base_candle_metrics.get("preco_fechamento", 0))
             
-            # --- 5. LOG NO CONSOLE ---
-            print(f"[{datetime.now(self.ny_tz).strftime('%H:%M:%S')} NY] 🟡 Janela #{self.window_count} | Delta: {base_candle_metrics.get('delta', 0.0):,.2f} | Vol: {base_candle_metrics.get('volume_total', 0.0):,.2f}")
+            # --- 5. LOG ---
+            print(f"[{datetime.now(self.ny_tz).strftime('%H:%M:%S')} NY] 🟡 Janela #{self.window_count} | Delta: {base_candle_metrics.get('delta', 0):,.2f} | Vol: {base_candle_metrics.get('volume_total', 0):,.2f}")
             if macro_context:
                 trends_str = ", ".join([f"{tf.upper()}: {data['tendencia']}" for tf, data in macro_context.get('mtf_trends', {}).items()])
                 print(f"   Macro Context: {trends_str}")

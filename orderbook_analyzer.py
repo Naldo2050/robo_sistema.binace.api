@@ -14,15 +14,22 @@ class OrderBookAnalyzer:
         self.api_url = "https://api.binance.com/api/v3/depth"
         self.liquidity_flow_alert_percentage = liquidity_flow_alert_percentage
         self.wall_std_dev_factor = wall_std_dev_factor
-        
+
         # Estado para fluxo de liquidez
         self.prev_top_bids_volume = None
         self.prev_top_asks_volume = None
 
-        # <<< ALTERAÇÃO ETAPA 5: Estado para detecção de Icebergs
-        self.iceberg_tracker = {} # Formato: {'price_side': {'hits': int, 'last_qty': float, 'timestamp': float}}
-        self.ICEBERG_HIT_THRESHOLD = 3 # Alerta após 3 recargas/consumos parciais
-        self.ICEBERG_TTL_SECONDS = 60 * 10 # Um candidato a iceberg expira após 10 minutos sem atividade
+        # Estado para detecção de Icebergs
+        self.iceberg_tracker = {}
+        self.ICEBERG_HIT_THRESHOLD = 3
+        self.ICEBERG_TTL_SECONDS = 60 * 10
+
+        # Estado para detecção de spoofing e TTL
+        self.current_orders = {}   # { "price_side": {"qty":..., "timestamp":...} }
+        self.order_lifetimes = []  # lista de lifetimes em ms
+        self.spoofing_threshold_ms = 2000  # se ordem dura menos de 2s e é grande, suspeita spoof
+        self.short_ttl_orders = 0
+        self.layering_events = 0
 
     def fetch_order_book(self):
         params = {"symbol": self.symbol, "limit": self.limit}
@@ -79,54 +86,70 @@ class OrderBookAnalyzer:
                 alerts.append(f"PAREDE DE VENDA: {qty:,.2f} @ ${price:,.2f} (limite: {wall_threshold:,.2f})")
         return alerts, wall_threshold
 
-    # <<< ALTERAÇÃO ETAPA 5: Nova função para detectar icebergs
     def _detect_iceberg_orders(self, bids, asks, wall_threshold):
         alerts = []
         now = time.time()
-        
-        # Transforma o livro de ofertas atual em um dicionário para busca rápida
         current_book_map = {f"{price}_{side}": qty for side, book in [("bid", bids), ("ask", asks)] for price, qty in book}
-
-        # 1. Atualiza e verifica os icebergs rastreados
         for key, tracker in list(self.iceberg_tracker.items()):
             price, side = key.split("_")
-            
-            # Se a ordem não existe mais ou expirou, remove do rastreador
             if key not in current_book_map or (now - tracker['timestamp']) > self.ICEBERG_TTL_SECONDS:
                 del self.iceberg_tracker[key]
                 continue
-
-            current_qty = current_book_map[key]
-            last_qty = tracker['last_qty']
-
-            # Lógica de detecção: o volume foi consumido (diminuiu), mas depois recarregado (voltou a ser grande)
+            current_qty = current_book_map[key]; last_qty = tracker['last_qty']
             if current_qty < last_qty:
-                # O volume foi consumido. Apenas atualizamos o valor.
-                tracker['last_qty'] = current_qty
-                tracker['timestamp'] = now
+                tracker['last_qty'] = current_qty; tracker['timestamp'] = now
             elif current_qty > last_qty and last_qty < tracker['initial_qty']:
-                # O volume foi recarregado após um consumo! Isso é um "hit".
                 tracker['hits'] += 1
                 tracker['last_qty'] = current_qty
-                tracker['initial_qty'] = max(tracker['initial_qty'], current_qty) # Atualiza o tamanho inicial
+                tracker['initial_qty'] = max(tracker['initial_qty'], current_qty)
                 tracker['timestamp'] = now
-                
                 if tracker['hits'] >= self.ICEBERG_HIT_THRESHOLD:
                     side_str = "COMPRA" if side == "bid" else "VENDA"
                     alerts.append(f"ICEBERG DE {side_str}?: Atividade de recarga em ${float(price):,.2f} (detectada {tracker['hits']}x)")
-                    # Reseta os hits para não poluir o log com o mesmo alerta
                     tracker['hits'] = 0
-
-        # 2. Adiciona novas paredes como candidatas a icebergs
         all_walls = [(p, q, "bid") for p, q in bids[:20] if q > wall_threshold] + \
                     [(p, q, "ask") for p, q in asks[:20] if q > wall_threshold]
-        
         for price, qty, side in all_walls:
             key = f"{price}_{side}"
             if key not in self.iceberg_tracker:
                 self.iceberg_tracker[key] = {'hits': 0, 'last_qty': qty, 'initial_qty': qty, 'timestamp': now}
-                
         return alerts
+
+    def _track_order_lifecycle(self, bids, asks, wall_threshold):
+        """Detecta spoofing/layering com base na vida média das ordens."""
+        now = time.time()*1000
+        current_snapshot = {f"{price}_{side}": qty for side, book in [("bid", bids), ("ask", asks)] for price, qty in book}
+
+        # Verifica ordens que sumiram/reduziram
+        for key, meta in list(self.current_orders.items()):
+            if key not in current_snapshot:
+                lifetime = now - meta['timestamp']
+                self.order_lifetimes.append(lifetime)
+                if lifetime < self.spoofing_threshold_ms and meta['qty'] > wall_threshold:
+                    self.short_ttl_orders += 1
+                del self.current_orders[key]
+            else:
+                self.current_orders[key]['qty'] = current_snapshot[key]
+
+        # Adiciona ordens novas
+        for key, qty in current_snapshot.items():
+            if key not in self.current_orders:
+                self.current_orders[key] = {"qty": qty, "timestamp": now}
+
+        # Layering detection: várias ordens grandes surgindo ao mesmo tempo em diferentes níveis
+        bids_large = [p for p, q in bids if q > wall_threshold]
+        asks_large = [p for p, q in asks if q > wall_threshold]
+        layering_detected = (len(bids_large) >= 3) or (len(asks_large) >= 3)
+
+        avg_ttl_ms = np.mean(self.order_lifetimes) if self.order_lifetimes else 0
+        spoofing_detected = self.short_ttl_orders > 0
+
+        return {
+            "avg_order_lifetime_ms": float(avg_ttl_ms),
+            "short_ttl_orders": self.short_ttl_orders,
+            "spoofing_detected": spoofing_detected,
+            "layering_detected": layering_detected
+        }
 
     def analyze_order_book(self):
         try:
@@ -137,12 +160,11 @@ class OrderBookAnalyzer:
             imbalance, volume_ratio, pressure, top_buy_vol, top_sell_vol = self.calculate_metrics(bids, asks)
             flow_alerts = self.analyze_liquidity_flow(top_buy_vol, top_sell_vol)
             wall_alerts, wall_threshold = self.analyze_liquidity_walls(bids, asks)
-            
-            # <<< ALTERAÇÃO ETAPA 5: Chamada da nova função
             iceberg_alerts = self._detect_iceberg_orders(bids, asks, wall_threshold)
+            lifecycle_metrics = self._track_order_lifecycle(bids, asks, wall_threshold)
 
             all_alerts = flow_alerts + wall_alerts + iceberg_alerts
-            is_signal = bool(all_alerts) # Qualquer alerta de liquidez agora é um sinal
+            is_signal = bool(all_alerts)
 
             if imbalance > 0.3 and volume_ratio > 1.2:
                 result, description = "Demanda Forte", f"Pressão de compra. Imbalance: {imbalance:.2%}, Ratio: {volume_ratio:.2f}"
@@ -157,15 +179,29 @@ class OrderBookAnalyzer:
                 result = "Alerta de Liquidez"
                 description = " | ".join(all_alerts)
 
-            event = {"is_signal": is_signal, "timestamp": datetime.now(timezone.utc).astimezone(NY_TZ).isoformat(timespec="seconds"), 
-                     "tipo_evento": "OrderBook", "resultado_da_batalha": result, "descricao": description, "ativo": self.symbol,
-                     "imbalance": round(imbalance, 4), "volume_ratio": round(volume_ratio, 4) if volume_ratio != float('inf') else 'inf',
-                     "pressure": round(pressure, 4)}
+            event = {
+                "is_signal": is_signal,
+                "timestamp": datetime.now(timezone.utc).astimezone(NY_TZ).isoformat(timespec="seconds"),
+                "tipo_evento": "OrderBook",
+                "resultado_da_batalha": result,
+                "descricao": description,
+                "ativo": self.symbol,
+                "imbalance": round(imbalance, 4),
+                "volume_ratio": round(volume_ratio, 4) if volume_ratio != float('inf') else 'inf',
+                "pressure": round(pressure, 4),
+                "order_lifecycle": lifecycle_metrics
+            }
             if all_alerts:
                 event["alertas_liquidez"] = all_alerts
-            
+
             return event
         except Exception as e:
             logging.error(f"Erro ao analisar o livro de ofertas: {e}")
-            return {"is_signal": False, "timestamp": datetime.now(timezone.utc).astimezone(NY_TZ).isoformat(timespec="seconds"), 
-                    "tipo_evento": "OrderBook", "resultado_da_batalha": "Erro", "descricao": f"Falha na análise: {e}", "ativo": self.symbol}
+            return {
+                "is_signal": False,
+                "timestamp": datetime.now(timezone.utc).astimezone(NY_TZ).isoformat(timespec="seconds"),
+                "tipo_evento": "OrderBook",
+                "resultado_da_batalha": "Erro",
+                "descricao": f"Falha na análise: {e}",
+                "ativo": self.symbol
+            }

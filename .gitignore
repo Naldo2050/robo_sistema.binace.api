@@ -1,19 +1,34 @@
-# Ignorar ambiente virtual
-venv/
-.venv/
-
-# Ignorar cache do Python
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.pdb
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.manifest
+*.spec
 
-# Ignorar dados locais
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Playwright
+playwright-report/
 *.log
-*.sqlite3
+*.tmp
 
-# Ignorar dados de Playwright, Firefox, etc.
-playwright_user_data/
-firefox_data/
-gemini_data/
+# Local data folders
 dados/
+firefox_data/
+playwright_user_data/
+gemini_data/
+
+# OS files
+.DS_Store
+Thumbs.db

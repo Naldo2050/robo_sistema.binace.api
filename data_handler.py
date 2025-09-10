@@ -3,14 +3,11 @@ import numpy as np
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import logging
+import config
 
 NY_TZ = ZoneInfo("America/New_York")
 
 def format_timestamp(ts_ms: int, tz=NY_TZ) -> str:
-    """
-    Converte timestamp em ms para string ISO 8601 no fuso escolhido (NY por padrão).
-    Ex.: 2025-09-06T18:25:00-04:00
-    """
     dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).astimezone(tz)
     return dt.isoformat(timespec="seconds")
 
@@ -30,8 +27,8 @@ def calcular_delta_normalizado(df: pd.DataFrame) -> pd.DataFrame:
 
 def detectar_absorcao(df: pd.DataFrame, delta_threshold: float) -> pd.DataFrame:
     df = df.copy()
-    cond_absorcao_compra = (df["Delta"] < -delta_threshold) & (df["Close"] >= df["Open"])
-    cond_absorcao_venda = (df["Delta"] > delta_threshold) & (df["Close"] <= df["Open"])
+    cond_absorcao_compra = (df["Delta"] < -abs(delta_threshold)) & (df["Close"] >= df["Open"])
+    cond_absorcao_venda = (df["Delta"] > abs(delta_threshold)) & (df["Close"] <= df["Open"])
     df["AbsorcaoCompra"] = cond_absorcao_compra.astype(int)
     df["AbsorcaoVenda"] = cond_absorcao_venda.astype(int)
     price_range = df["High"] - df["Low"]
@@ -143,9 +140,6 @@ def create_absorption_event(window_data: list, symbol: str, delta_threshold: flo
                             tz_output=NY_TZ, 
                             flow_metrics: dict=None,
                             historical_profile: dict=None) -> dict:
-    """
-    Agora inclui dados adicionais de fluxo contínuo (CVD, whales) e volume profile diário.
-    """
     try:
         df = pd.DataFrame(window_data)
         df["p"] = pd.to_numeric(df.get("p"), errors="coerce")
@@ -161,18 +155,32 @@ def create_absorption_event(window_data: list, symbol: str, delta_threshold: flo
         trade_speed_metrics = calcular_trade_speed(df)
 
         # OHLC
-        ohlc = { "Open": float(df["p"].iloc[0]), "High": float(df["p"].max()), "Low": float(df["p"].min()), "Close": float(df["p"].iloc[-1]) }
+        ohlc = { 
+            "Open": float(df["p"].iloc[0]), 
+            "High": float(df["p"].max()), 
+            "Low": float(df["p"].min()), 
+            "Close": float(df["p"].iloc[-1]) 
+        }
         df["VolumeBuyMarket"] = np.where(df["m"] == False, df["q"], 0.0)
         df["VolumeSellMarket"] = np.where(df["m"] == True, df["q"], 0.0)
         agg_df = pd.DataFrame({
             "Open": [ohlc["Open"]], "High": [ohlc["High"]], "Low": [ohlc["Low"]], "Close": [ohlc["Close"]],
-            "VolumeBuyMarket": [float(df["VolumeBuyMarket"].sum())], "VolumeSellMarket": [float(df["VolumeSellMarket"].sum())],
+            "VolumeBuyMarket": [float(df["VolumeBuyMarket"].sum())], 
+            "VolumeSellMarket": [float(df["VolumeSellMarket"].sum())],
         })
+        # Métrica padrão (marca absorção bruta)
         agg_df = aplicar_metricas_absorcao(agg_df, delta_threshold=delta_threshold)
         delta = float(agg_df["Delta"].iloc[0])
         absorcao_compra = int(agg_df["AbsorcaoCompra"].iloc[0])
         absorcao_venda = int(agg_df["AbsorcaoVenda"].iloc[0])
-        indice_absorcao = float(agg_df["IndiceAbsorcao"].iloc[0])
+        indice_absorcao_raw = float(agg_df["IndiceAbsorcao"].iloc[0])
+
+        # Índice de absorção robusto (piso de ATR p/ evitar explosões em range mínimo)
+        price_range = ohlc["High"] - ohlc["Low"]
+        atr_floor = ohlc["Close"] * float(getattr(config, "INDEX_ATR_FLOOR_PCT", 0.001))
+        atr_ref = max(price_range, atr_floor)
+        indice_absorcao = abs(delta) / (atr_ref if atr_ref > 0 else 1e-9)
+
         is_signal = False
         resultado = "Sem Absorção"
         descricao = f"Delta {delta:.4f}"
@@ -190,12 +198,51 @@ def create_absorption_event(window_data: list, symbol: str, delta_threshold: flo
             "preco_abertura": ohlc["Open"], "preco_fechamento": ohlc["Close"], "preco_maxima": ohlc["High"], "preco_minima": ohlc["Low"],
             "volume_total": float(agg_df["VolumeBuyMarket"].iloc[0] + agg_df["VolumeSellMarket"].iloc[0]),
             "volume_compra": float(agg_df["VolumeBuyMarket"].iloc[0]), "volume_venda": float(agg_df["VolumeSellMarket"].iloc[0]),
-            "delta": delta, "indice_absorcao": indice_absorcao,
+            "delta": delta, "indice_absorcao": float(indice_absorcao),
         }
         event.update(metricas_intra_candle)
         event.update(volume_profile_metrics)
         event.update(dwell_time_metrics)
         event.update(trade_speed_metrics)
+
+        # Filtros de qualidade do sinal (gating)
+        reasons = []
+        # thresholds do config
+        min_vol = float(getattr(config, "MIN_SIGNAL_VOLUME_BTC", 1.0))
+        min_tps = float(getattr(config, "MIN_SIGNAL_TPS", 2.0))
+        min_abs_delta = float(getattr(config, "MIN_ABS_DELTA_BTC", 0.5))
+        min_rev_ratio = float(getattr(config, "MIN_REVERSAL_RATIO", 0.2))
+        effective_delta_threshold = max(abs(delta_threshold or 0.0), min_abs_delta)
+
+        tps = float(event.get("trades_per_second", 0))
+        vol_total = float(event.get("volume_total", 0.0))
+
+        # reversões
+        rev_buy = float(event.get("reversao_desde_minimo", 0.0))
+        rev_sell = float(event.get("reversao_desde_maximo", 0.0))
+
+        if vol_total < min_vol:
+            reasons.append(f"volume_baixo(<{min_vol})")
+        if tps < min_tps:
+            reasons.append(f"tps_baixo(<{min_tps})")
+        if abs(delta) < effective_delta_threshold:
+            reasons.append(f"delta_insuficiente(<{effective_delta_threshold})")
+
+        # reversão mínima relativa ao |delta| quando marcado como absorção
+        if absorcao_compra and (rev_buy < (min_rev_ratio * abs(delta))):
+            reasons.append(f"reversao_insuficiente_buy(<{min_rev_ratio*abs(delta):.4f})")
+        if absorcao_venda and (rev_sell < (min_rev_ratio * abs(delta))):
+            reasons.append(f"reversao_insuficiente_sell(<{min_rev_ratio*abs(delta):.4f})")
+
+        passed = (len(reasons) == 0)
+        # Só mantém sinal se passou nos filtros
+        event["is_signal"] = bool(is_signal and passed)
+        event["signal_quality"] = {
+            "passed": bool(passed),
+            "reasons": reasons,
+            "effective_delta_threshold": float(effective_delta_threshold),
+            "indice_absorcao_raw": float(indice_absorcao_raw)
+        }
 
         # Integração com fluxo contínuo
         if flow_metrics:
@@ -215,9 +262,6 @@ def create_exhaustion_event(window_data: list, symbol: str, history_volumes=None
                             tz_output=NY_TZ,
                             flow_metrics: dict=None,
                             historical_profile: dict=None) -> dict:
-    """
-    Agora inclui dados adicionais de fluxo contínuo (CVD, whales) e volume profile diário.
-    """
     try:
         history_volumes = history_volumes or []
         df = pd.DataFrame(window_data)
