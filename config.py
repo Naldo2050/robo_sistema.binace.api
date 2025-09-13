@@ -4,7 +4,7 @@
 
 # -- Ativo e Conexão --
 SYMBOL = "BTCUSDT"
-STREAM_URL = f"wss://stream.binance.com:9443/ws/{SYMBOL.lower()}@aggTrade"
+STREAM_URL = f"wss://fstream.binance.com/ws/{SYMBOL.lower()}@aggTrade"
 
 # -- Janela de Análise (Candle) --
 WINDOW_SIZE_MINUTES = 1  # Tamanho da janela de tempo para agrupar trades (em minutos)
@@ -84,7 +84,7 @@ EXTERNAL_MARKETS = {
 }
 
 # -- Análise de Derivativos --
-DERIVATIVES_SYMBOLS = ["BTCUSDT"]
+DERIVATIVES_SYMBOLS = [SYMBOL]  # Usa o mesmo SYMBOL definido acima
 
 # -- Heatmap de Liquidações --
 LIQUIDATION_MAP_DEPTH = 100  # Agrupamento em US$ (100 = buckets de $100)

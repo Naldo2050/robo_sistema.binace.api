@@ -3,6 +3,7 @@ import time
 import logging
 import threading
 import numpy as np
+import requests  # ⬅️ ADICIONADO PARA O FALLBACK DE PREÇO
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import urlparse
@@ -22,7 +23,7 @@ from orderbook_analyzer import OrderBookAnalyzer
 from event_saver import EventSaver
 from context_collector import ContextCollector
 from flow_analyzer import FlowAnalyzer
-from ai_analyzer_hybrid import AIAnalyzer
+from ai_analyzer_qwen import AIAnalyzer  # ✅ ALTERADO: Agora usa Qwen em vez de Gemini
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -63,7 +64,12 @@ class RobustConnectionManager:
             parsed = urlparse(self.stream_url)
             host = parsed.hostname
             port = parsed.port or (443 if parsed.scheme == "wss" else 80)
-            with socket.create_connection((host, port), timeout=5):
+            with socket.create_connection((host, port), timeout=5) as sock:
+                if parsed.scheme == "wss":
+                    import ssl
+                    context = ssl.create_default_context()
+                    with context.wrap_socket(sock, server_hostname=host) as ssock:
+                        return True
                 return True
         except Exception as e:
             logging.error(f"Erro ao testar conexão: {e}")
@@ -190,6 +196,21 @@ class TradeFlowAnalyzer:
         return absorption_event, exhaustion_event
 
 # ===============================
+# FUNÇÃO AUXILIAR: GET CURRENT PRICE VIA REST
+# ===============================
+def get_current_price(symbol: str) -> float:
+    try:
+        url = "https://fapi.binance.com/fapi/v1/ticker/price"  # ✅ CORRIGIDO: REMOVIDOS OS ESPAÇOS FINAIS
+        params = {"symbol": symbol}
+        res = requests.get(url, params=params, timeout=5)
+        res.raise_for_status()
+        data = res.json()
+        return float(data["price"])
+    except Exception as e:
+        logging.error(f"Erro ao buscar preço via REST: {e}")
+        raise
+
+# ===============================
 # BOT PRINCIPAL
 # ===============================
 class EnhancedMarketBot:
@@ -216,6 +237,7 @@ class EnhancedMarketBot:
         self.ai_test_passed = False
         self.ai_thread_pool = []
         self.max_ai_threads = 3
+        self.ai_semaphore = threading.Semaphore(3)  # ⬅️ CONTROLE DE THREADS
         self._initialize_ai_async()
         
         self.connection_manager = RobustConnectionManager(stream_url, symbol, max_reconnect_attempts=15)
@@ -240,9 +262,9 @@ class EnhancedMarketBot:
                 self.ai_initialization_attempted = True
                 
                 print("\n" + "="*30 + " INICIALIZANDO IA " + "="*30)
-                logging.info("🧠 Tentando inicializar AI Analyzer Híbrida...")
+                logging.info("🧠 Tentando inicializar AI Analyzer Qwen...")
                 
-                self.ai_analyzer = AIAnalyzer(headless=True)
+                self.ai_analyzer = AIAnalyzer()  # ✅ ALTERADO: Usa Qwen em vez de Gemini
                 
                 logging.info("✅ Módulo da IA carregado. Realizando teste de análise...")
                 test_event = {
@@ -329,29 +351,36 @@ class EnhancedMarketBot:
             return
 
         def ai_worker():
-            try:
-                logging.info(f"🧠 IA iniciando análise para evento: {event_data.get('resultado_da_batalha', 'N/A')}")
-                analysis_result = self.ai_analyzer.analyze_event(event_data)
-                if analysis_result and not self.should_stop:
-                    print("\n" + "═"*25 + " ANÁLISE PROFISSIONAL DA IA " + "═"*25)
-                    print(analysis_result)
-                    print("═"*75 + "\n")
-            except Exception as e:
-                logging.error(f"❌ Erro na thread de análise da IA: {e}")
+            with self.ai_semaphore:  # ⬅️ CONTROLA EXECUÇÃO CONCORRENTE
+                try:
+                    logging.info(f"🧠 IA iniciando análise para evento: {event_data.get('resultado_da_batalha', 'N/A')}")
+                    analysis_result = self.ai_analyzer.analyze_event(event_data)
+                    if analysis_result and not self.should_stop:
+                        print("\n" + "═"*25 + " ANÁLISE PROFISSIONAL DA IA " + "═"*25)
+                        print(analysis_result)
+                        print("═"*75 + "\n")
+                except Exception as e:
+                    logging.error(f"❌ Erro na thread de análise da IA: {e}")
         
         threading.Thread(target=ai_worker, daemon=True).start()
 
     def _process_vp_features(self, historical_profile, preco_atual: float):
-        """Cria resumo de volume profile em features de alta utilidade para IA."""
+        """Cria resumo de volume profile em features úteis para IA."""
         try:
+            if not preco_atual or preco_atual <= 0:
+                return {"status": "no_data"}
+
             vp_daily = historical_profile.get("daily", {})
             hvns = vp_daily.get("hvns", [])
             lvns = vp_daily.get("lvns", [])
             sp = vp_daily.get("single_prints", [])
             poc = vp_daily.get("poc", 0)
 
+            if not poc or (not hvns and not lvns):
+                return {"status": "no_data"}
+
             # Distâncias
-            dist_to_poc = preco_atual - poc if poc else 0
+            dist_to_poc = preco_atual - poc
             nearest_hvn = min(hvns, key=lambda x: abs(x - preco_atual)) if hvns else None
             nearest_lvn = min(lvns, key=lambda x: abs(x - preco_atual)) if lvns else None
             dist_hvn = (preco_atual - nearest_hvn) if nearest_hvn else None
@@ -366,18 +395,31 @@ class EnhancedMarketBot:
             in_single = any(abs(p - preco_atual) <= faixa_lim for p in sp)
 
             return {
-                "distance_to_poc": dist_to_poc,
+                "status": "ok",
+                "distance_to_poc": round(dist_to_poc, 2),
                 "nearest_hvn": nearest_hvn,
-                "dist_to_nearest_hvn": dist_hvn,
+                "dist_to_nearest_hvn": round(dist_hvn, 2) if dist_hvn is not None else None,
                 "nearest_lvn": nearest_lvn,
-                "dist_to_nearest_lvn": dist_lvn,
+                "dist_to_nearest_lvn": round(dist_lvn, 2) if dist_lvn is not None else None,
                 "hvns_within_0_5pct": hvn_near,
                 "lvns_within_0_5pct": lvn_near,
                 "in_single_print_zone": in_single
             }
         except Exception as e:
             logging.error(f"Erro ao gerar vp_features: {e}")
-            return {}
+            return {"status": "error"}
+
+    # ✅ NOVA FUNÇÃO: _log_event — ADICIONADA PARA SUPORTAR LOG DE EVENTOS
+    def _log_event(self, event):
+        """Loga um evento detectado de forma padronizada."""
+        ny_time = datetime.now(self.ny_tz)
+        resultado = event.get('resultado_da_batalha', 'N/A').upper()
+        tipo = event.get('tipo_evento', 'EVENTO')
+        descricao = event.get('descricao', '')
+        
+        print(f"\n🎯 {tipo}: {resultado} DETECTADO - {ny_time.strftime('%H:%M:%S')} NY")
+        print(f"   Símbolo: {self.symbol} | Janela #{self.window_count}")
+        print(f"   📝 {descricao}")
 
     def _process_window(self):
         if not self.window_data or self.should_stop or sum(float(trade.get('q', 0)) for trade in self.window_data) == 0:
@@ -398,34 +440,86 @@ class EnhancedMarketBot:
             open_ms, close_ms = self.window_end_ms - self.window_ms, self.window_end_ms
 
             # --- 2. ANÁLISE DA JANELA ATUAL ---
-            absorption_event, exhaustion_event = self.trade_flow_analyzer.analyze_window(
-                self.window_data, self.symbol, list(self.volume_history), 
-                dynamic_delta_threshold, historical_profile=historical_profile
+            flow_metrics = self.flow_analyzer.get_flow_metrics()
+
+            # ✅ CORREÇÃO: SÓ ANALISA ORDER BOOK SE HOUVER PELO MENOS UM TRADE
+            # ✅ FORÇA O PREÇO REAL DA JANELA NO EVENTO DE ORDERBOOK
+            if len(self.window_data) >= 1:
+                # Pega o último preço real da janela
+                last_price = float(self.window_data[-1]['p'])
+                
+                orderbook_event = self.orderbook_analyzer.analyze_order_book()
+                if orderbook_event and orderbook_event["resultado_da_batalha"] not in ["Neutro", "Erro"]:
+                    # ✅ FORÇA O PREÇO REAL NO EVENTO DE ORDERBOOK
+                    orderbook_event["preco_atual"] = last_price
+                    self.event_saver.save_event(orderbook_event)
+                    self._log_event(orderbook_event)
+            else:
+                logging.debug("🔇 Ignorando análise de Order Book: nenhum trade na janela.")
+
+            absorption_event = create_absorption_event(
+                self.window_data, self.symbol,
+                delta_threshold=dynamic_delta_threshold,
+                tz_output=self.ny_tz,
+                flow_metrics=flow_metrics,
+                historical_profile=historical_profile
             )
-            orderbook_event = self.orderbook_analyzer.analyze_order_book()
+            
+            exhaustion_event = create_exhaustion_event(
+                self.window_data, self.symbol,
+                history_volumes=list(self.volume_history),
+                volume_factor=config.VOL_FACTOR_EXH,
+                tz_output=self.ny_tz,
+                flow_metrics=flow_metrics,
+                historical_profile=historical_profile
+            )
             
             # --- 3. CONSTRUÇÃO DO EVENTO FINAL ---
-            base_candle_metrics = absorption_event.copy()
-            flow_metrics = self.flow_analyzer.get_flow_metrics()
-            if flow_metrics:
-                base_candle_metrics["fluxo_continuo"] = flow_metrics
-
             all_events = [absorption_event, exhaustion_event, orderbook_event]
-            master_event = next((event for event in all_events if event and event.get("is_signal")), absorption_event)
+            master_event = next((e for e in [absorption_event, exhaustion_event] if e and e.get("is_signal", False)), None)
+            if not master_event and orderbook_event and orderbook_event.get("is_signal", False):
+                master_event = orderbook_event
             
-            final_event_data = master_event.copy()
-            final_event_data.update(base_candle_metrics)
-            
+            if master_event:
+                final_event_data = master_event.copy()
+            else:
+                final_event_data = absorption_event.copy()
+
             if orderbook_event:
                 final_event_data.update({
                     "imbalance": orderbook_event.get("imbalance"),
                     "volume_ratio": orderbook_event.get("volume_ratio"),
+                    "pressure": orderbook_event.get("pressure"),
+                    "order_lifecycle": orderbook_event.get("order_lifecycle"),
+                    "spread_metrics": orderbook_event.get("spread_metrics"),
+                    "market_impact_buy": orderbook_event.get("market_impact_buy"),
+                    "market_impact_sell": orderbook_event.get("market_impact_sell"),
                     "alertas_liquidez": orderbook_event.get("alertas_liquidez")
                 })
             
-            preco_atual = base_candle_metrics.get("preco_fechamento", 0)
+            # Garante que os dados de fluxo e VP estejam sempre no evento final
+            final_event_data["fluxo_continuo"] = flow_metrics
+            final_event_data["historical_vp"] = historical_profile
+
+            # ✅ Corrigido: fallback robusto do preco_atual
+            preco_atual = final_event_data.get("preco_atual")
+            if not preco_atual or preco_atual <= 0:
+                preco_atual = final_event_data.get("preco_fechamento")
+
+            if not preco_atual or preco_atual <= 0:
+                if self.close_price_history:
+                    preco_atual = self.close_price_history[-1]
+                else:
+                    logging.warning("⚠️ Nenhum preço válido encontrado. Buscando via REST...")
+                    try:
+                        preco_atual = get_current_price(self.symbol)
+                        logging.info(f"✅ Preço obtido via REST: {preco_atual:,.2f}")
+                    except Exception as e:
+                        logging.error(f"❌ Falha ao obter preço via REST: {e}. Abortando janela.")
+                        return
+
             vp_features = self._process_vp_features(historical_profile, preco_atual)
-            
+
             final_event_data.update({
                 "candle_id_ms": close_ms,
                 "candle_open_time_ms": open_ms,
@@ -438,21 +532,35 @@ class EnhancedMarketBot:
 
             # --- 4. SALVAR E EXECUTAR IA ---
             self.event_saver.save_event(final_event_data)
-            self._run_ai_analysis_threaded(final_event_data.copy())
             
-            self.volume_history.append(base_candle_metrics.get("volume_total", 0))
-            self.delta_history.append(base_candle_metrics.get("delta", 0))
-            self.close_price_history.append(base_candle_metrics.get("preco_fechamento", 0))
+            if final_event_data.get("is_signal", False):
+                self._run_ai_analysis_threaded(final_event_data.copy())
+            else:
+                vol_total = final_event_data.get("volume_total", 0)
+                if vol_total > 0.1:  # ⬅️ FILTRO DE VOLUME MÍNIMO
+                    logging.info(f"ℹ️ Sem sinal operacional na janela #{self.window_count}. Análise de IA em modo informativo.")
+                    
+                    info_event = final_event_data.copy()
+                    info_event["tipo_evento"] = "Sem Sinal Operacional"
+                    info_event["resultado_da_batalha"] = "Sem Sinal Operacional"
+                    info_event["descricao"] = "Nenhum dos critérios de sinal foi atendido."
+                    self._run_ai_analysis_threaded(info_event)
+                else:
+                    logging.debug(f"🔇 Ignorando análise da IA: volume insignificante ({vol_total}) na janela #{self.window_count}.")
+
+            self.volume_history.append(final_event_data.get("volume_total", 0))
+            self.delta_history.append(final_event_data.get("delta", 0))
+            self.close_price_history.append(final_event_data.get("preco_fechamento", 0))
             
             # --- 5. LOG ---
-            print(f"[{datetime.now(self.ny_tz).strftime('%H:%M:%S')} NY] 🟡 Janela #{self.window_count} | Delta: {base_candle_metrics.get('delta', 0):,.2f} | Vol: {base_candle_metrics.get('volume_total', 0):,.2f}")
+            print(f"[{datetime.now(self.ny_tz).strftime('%H:%M:%S')} NY] 🟡 Janela #{self.window_count} | Delta: {final_event_data.get('delta', 0):,.2f} | Vol: {final_event_data.get('volume_total', 0):,.2f}")
             if macro_context:
                 trends_str = ", ".join([f"{tf.upper()}: {data['tendencia']}" for tf, data in macro_context.get('mtf_trends', {}).items()])
                 print(f"   Macro Context: {trends_str}")
                 
                 if historical_profile and historical_profile.get('daily'):
                     vp = historical_profile['daily']
-                    print(f"   VP Diário: POC @ {vp.get('poc', 0):,.2f} | VAL: {vp.get('val', 0):,.2f} | VAH: {vp.get('vah', 0):,.2f}")
+                    print(f"   VP Diário: POC @ {vp.get('poc', 0):,.2f} | VAL: {vp.get('val', 0):,.2f} | VAH: {vp.get('vah', 0):,.0f}")
                 
                 derivatives = macro_context.get('derivatives', {})
                 if derivatives and self.symbol in derivatives:

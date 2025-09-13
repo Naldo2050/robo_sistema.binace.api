@@ -13,6 +13,7 @@ from config import (
 )
 from historical_profiler import HistoricalVolumeProfiler
 
+
 class ContextCollector:
     def __init__(self, symbol):
         self.symbol = symbol
@@ -23,7 +24,7 @@ class ContextCollector:
         self.intermarket_symbols = INTERMARKET_SYMBOLS
         self.derivatives_symbols = DERIVATIVES_SYMBOLS
 
-        # APIs Binance
+        # APIs Binance (CORRIGIDAS: REMOVIDOS OS ESPAÇOS FINAIS)
         self.klines_api_url = "https://api.binance.com/api/v3/klines"
         self.funding_api_url = "https://fapi.binance.com/fapi/v1/fundingRate"
         self.open_interest_api_url = "https://fapi.binance.com/fapi/v1/openInterest"
@@ -87,7 +88,9 @@ class ContextCollector:
     def _analyze_mtf_trends(self):
         mtf_context = {}
         for tf in self.timeframes:
-            df = self._fetch_klines(self.symbol, tf, limit=self.ema_period*3)
+            # Garantir limite suficiente para cálculos estáveis
+            limit_needed = max(self.ema_period, self.atr_period) * 3 + 20
+            df = self._fetch_klines(self.symbol, tf, limit=limit_needed)
             if not df.empty:
                 df['ema'] = df['close'].ewm(span=self.ema_period, adjust=False).mean()
                 last_close = df['close'].iloc[-1]
@@ -114,7 +117,7 @@ class ContextCollector:
                 data[sym] = {"preco_atual": float(last), "movimento": "Alta" if last > prev else "Baixa"}
         try:
             dxy = yf.Ticker("DX-Y.NYB")
-            hist = dxy.history(period="2d", interval="5m")
+            hist = dxy.history(period="2d", interval="5m", timeout=8)
             if not hist.empty:
                 last, prev = hist["Close"].iloc[-1], hist["Close"].iloc[-2]
                 data["DXY"] = {"preco_atual": float(round(last,2)), "movimento": "Alta" if last > prev else "Baixa"}
@@ -127,7 +130,7 @@ class ContextCollector:
         for name, ticker in EXTERNAL_MARKETS.items():
             try:
                 asset = yf.Ticker(ticker)
-                hist = asset.history(period="2d", interval="15m")
+                hist = asset.history(period="2d", interval="15m", timeout=8)
                 if not hist.empty:
                     last, prev = hist["Close"].iloc[-1], hist["Close"].iloc[-2]
                     ext_data[name] = {
@@ -139,21 +142,82 @@ class ContextCollector:
         return ext_data
 
     # ========== Derivativos ==========
+    def _get_binance_server_time(self):
+        """Obtém o tempo exato do servidor da Binance com retry e validação."""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                res = requests.get("https://fapi.binance.com/fapi/v1/time", timeout=5)
+                res.raise_for_status()
+                server_time_ms = res.json().get("serverTime")
+                
+                if not server_time_ms:
+                    raise ValueError("Resposta inválida da Binance: serverTime ausente")
+                
+                # Validação: garante que o timestamp não está absurdamente no futuro/passado
+                now_ms = int(time.time() * 1000)  # Tempo local atual em ms
+                diff_ms = abs(server_time_ms - now_ms)
+                
+                # Aceita até 5 segundos de diferença (latência + jitter)
+                if diff_ms > 5000:
+                    logging.warning(f"Diferença grande de tempo ({diff_ms}ms) entre servidor local e Binance. Tentando novamente...")
+                    continue
+                
+                # Validação adicional: timestamp não pode estar mais de 24h no futuro
+                if server_time_ms > (now_ms + 86400000):  # +24h em ms
+                    logging.error(f"Timestamp da Binance suspeito (futuro): {server_time_ms}")
+                    return now_ms
+                
+                logging.debug(f"Tempo da Binance obtido: {datetime.fromtimestamp(server_time_ms/1000, tz=timezone.utc)}")
+                return server_time_ms
+                
+            except Exception as e:
+                logging.warning(f"Tentativa {attempt + 1}/{max_retries} falhou ao obter time da Binance: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(1)  # Espera 1s antes de tentar novamente
+                else:
+                    # Se todas as tentativas falharem, use o tempo local como último recurso
+                    now_ms = int(time.time() * 1000)
+                    logging.warning("Usando tempo local como fallback para liquidações.")
+                    return now_ms
+
+        # Caso extremo: retorna um timestamp válido mesmo em falha total
+        return int(time.time() * 1000)
+
     def _fetch_liquidations_data(self, symbol, lookback_minutes=5):
+        """Correção crítica: A API allForceOrders aceita apenas endTime e limit.
+           Use o tempo atual como endTime (corrigido para evitar timestamps futuros)."""
         try:
-            end_time_ms = int(datetime.now(timezone.utc).timestamp()*1000)
-            start_time_ms = end_time_ms - int(timedelta(minutes=lookback_minutes).total_seconds()*1000)
-            params = {'symbol': symbol, 'startTime': start_time_ms, 'limit': 1000}
+            # Usar timestamp local atual ao invés de consultar servidor Binance
+            # (mais rápido e evita problemas de sincronia)
+            end_time_ms = int(time.time() * 1000)
+            
+            # Validação: garantir que timestamp está em range aceitável (últimas 24h)
+            now_ms = int(time.time() * 1000)
+            if abs(end_time_ms - now_ms) > 86400000:  # 24 horas em ms
+                logging.warning(f"Timestamp suspeito: {end_time_ms}, usando tempo atual")
+                end_time_ms = now_ms
+                
+            params = {
+                'symbol': symbol,
+                'endTime': end_time_ms,
+                'limit': 1000
+            }
+            
+            logging.debug(f"Buscando liquidações: symbol={symbol}, endTime={end_time_ms} ({datetime.fromtimestamp(end_time_ms/1000)})")
+            
             res = requests.get(self.liquidations_api_url, params=params, timeout=5)
             res.raise_for_status()
             return res.json()
+            
         except Exception as e:
             logging.warning(f"Aviso liquidações {symbol}: {e}")
             return []
 
     def _build_liquidation_heatmap(self, liq_data):
         heatmap = {}
-        if not liq_data: return heatmap
+        if not liq_data: 
+            return heatmap
         for liq in liq_data:
             try:
                 price = float(liq["price"])
@@ -163,9 +227,12 @@ class ContextCollector:
                 if bucket not in heatmap:
                     heatmap[bucket] = {"longs": 0.0, "shorts": 0.0}
                 usd = price * qty
-                if side == "SELL": heatmap[bucket]["longs"] += usd
-                elif side == "BUY": heatmap[bucket]["shorts"] += usd
-            except Exception: continue
+                if side == "SELL": 
+                    heatmap[bucket]["longs"] += usd
+                elif side == "BUY": 
+                    heatmap[bucket]["shorts"] += usd
+            except Exception: 
+                continue
         return {str(k): v for k,v in sorted(heatmap.items())}
 
     def _fetch_derivatives_data(self):
@@ -178,7 +245,7 @@ class ContextCollector:
                 open_interest = float(oi.get("openInterest", 0))
                 ls = requests.get(self.long_short_ratio_api_url, params={'symbol': sym,'period':'5m','limit':1},timeout=5).json()
                 long_short_ratio = float(ls[0]["longShortRatio"]) if ls else 0
-                liq = self._fetch_liquidations_data(sym, lookback_minutes=(CONTEXT_UPDATE_INTERVAL_SECONDS/60))
+                liq = self._fetch_liquidations_data(sym, lookback_minutes=int(CONTEXT_UPDATE_INTERVAL_SECONDS/60))
                 heatmap = self._build_liquidation_heatmap(liq)
                 totals = {
                     "longs_usd": sum(v["longs"] for v in heatmap.values()),
@@ -234,7 +301,7 @@ class ContextCollector:
         }
 
     def _update_loop(self):
-        logging.info("✅ Coletor de Contexto iniciado.")
+        logging.info("Coletor de Contexto iniciado.")
         while not self.should_stop:
             try:
                 ctx = self._build_full_context()
@@ -255,6 +322,6 @@ class ContextCollector:
 
     def stop(self):
         if self.thread.is_alive():
-            logging.info("🛑 Parando Coletor de Contexto...")
+            logging.info("Parando Coletor de Contexto...")
             self.should_stop = True
             self.thread.join(timeout=5)

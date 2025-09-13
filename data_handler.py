@@ -244,6 +244,12 @@ def create_absorption_event(window_data: list, symbol: str, delta_threshold: flo
             "indice_absorcao_raw": float(indice_absorcao_raw)
         }
 
+        # ⬇️ CORREÇÃO: FORÇA is_signal=False SE VOLUME TOTAL == 0
+        if event.get("volume_total", 0) <= 0:
+            event["is_signal"] = False
+            event["signal_quality"]["passed"] = False
+            event["signal_quality"]["reasons"].append("volume_zero")
+
         # Integração com fluxo contínuo
         if flow_metrics:
             event["fluxo_continuo"] = flow_metrics
@@ -313,6 +319,11 @@ def create_exhaustion_event(window_data: list, symbol: str, history_volumes=None
         event.update(volume_profile_metrics)
         event.update(dwell_time_metrics)
         event.update(trade_speed_metrics)
+
+        # ⬇️ CORREÇÃO: FORÇA is_signal=False SE VOLUME TOTAL == 0
+        if event.get("volume_total", 0) <= 0:
+            event["is_signal"] = False
+            event["descricao"] += " | Volume zero detectado."
 
         # Integração com fluxo contínuo
         if flow_metrics:

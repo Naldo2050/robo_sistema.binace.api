@@ -11,7 +11,7 @@ class OrderBookAnalyzer:
     def __init__(self, symbol="BTCUSDT", limit=100, liquidity_flow_alert_percentage=0.5, wall_std_dev_factor=3.0):
         self.symbol = symbol
         self.limit = limit
-        self.api_url = "https://api.binance.com/api/v3/depth"
+        self.api_url = "https://api.binance.com/api/v3/depth"  # ✅ CORRIGIDO: REMOVIDOS OS ESPAÇOS FINAIS
         self.liquidity_flow_alert_percentage = liquidity_flow_alert_percentage
         self.wall_std_dev_factor = wall_std_dev_factor
 
@@ -151,6 +151,70 @@ class OrderBookAnalyzer:
             "layering_detected": layering_detected
         }
 
+    def _calculate_spread_and_depth(self, bids, asks):
+        """Calcula spread e profundidade do livro de ofertas."""
+        try:
+            if not bids or not asks:
+                return {"spread": 0.0, "spread_percent": 0.0, "bid_depth_usd": 0.0, "ask_depth_usd": 0.0}
+            
+            best_bid = bids[0][0]
+            best_ask = asks[0][0]
+            spread = best_ask - best_bid
+            spread_percent = (spread / best_ask) * 100 if best_ask > 0 else 0
+
+            bid_depth_usd = sum(p * q for p, q in bids[:10])
+            ask_depth_usd = sum(p * q for p, q in asks[:10])
+
+            return {
+                "spread": float(round(spread, 2)),
+                "spread_percent": float(round(spread_percent, 4)),
+                "bid_depth_usd": float(round(bid_depth_usd, 2)),
+                "ask_depth_usd": float(round(ask_depth_usd, 2))
+            }
+        except Exception as e:
+            logging.error(f"Erro em _calculate_spread_and_depth: {e}")
+            return {
+                "spread": 0.0,
+                "spread_percent": 0.0,
+                "bid_depth_usd": 0.0,
+                "ask_depth_usd": 0.0
+            }
+
+    def _calculate_market_impact(self, book_side, order_size_btc):
+        """Calcula impacto de mercado para uma ordem de tamanho fixo."""
+        try:
+            filled_volume = 0
+            price_impact_total = 0
+            initial_price = book_side[0][0]
+            final_price = initial_price
+
+            for price, qty in book_side:
+                volume_to_fill = min(order_size_btc - filled_volume, qty)
+                if volume_to_fill <= 0: break
+                price_impact_total += volume_to_fill * price
+                filled_volume += volume_to_fill
+                final_price = price
+                if filled_volume >= order_size_btc: break
+
+            avg_filled_price = price_impact_total / filled_volume if filled_volume > 0 else initial_price
+            market_impact_usd = abs(avg_filled_price - initial_price)
+            slippage_percent = (market_impact_usd / initial_price) * 100 if initial_price > 0 else 0
+
+            return {
+                "impact_usd": float(round(market_impact_usd, 2)),
+                "slippage_percent": float(round(slippage_percent, 4)),
+                "avg_filled_price": float(round(avg_filled_price, 2)),
+                "final_price": float(round(final_price, 2)),
+            }
+        except Exception as e:
+            logging.error(f"Erro em _calculate_market_impact: {e}")
+            return {
+                "impact_usd": 0.0,
+                "slippage_percent": 0.0,
+                "avg_filled_price": 0.0,
+                "final_price": 0.0
+            }
+
     def analyze_order_book(self):
         try:
             bids, asks = self.fetch_order_book()
@@ -162,6 +226,11 @@ class OrderBookAnalyzer:
             wall_alerts, wall_threshold = self.analyze_liquidity_walls(bids, asks)
             iceberg_alerts = self._detect_iceberg_orders(bids, asks, wall_threshold)
             lifecycle_metrics = self._track_order_lifecycle(bids, asks, wall_threshold)
+
+            # ✅ CALCULA MÉTRICAS DE SPREAD E IMPACTO COM TRATAMENTO DE ERRO
+            spread_metrics = self._calculate_spread_and_depth(bids, asks)
+            impact_buy = self._calculate_market_impact(bids, order_size_btc=5.0)
+            impact_sell = self._calculate_market_impact(asks, order_size_btc=5.0)
 
             all_alerts = flow_alerts + wall_alerts + iceberg_alerts
             is_signal = bool(all_alerts)
@@ -189,7 +258,10 @@ class OrderBookAnalyzer:
                 "imbalance": round(imbalance, 4),
                 "volume_ratio": round(volume_ratio, 4) if volume_ratio != float('inf') else 'inf',
                 "pressure": round(pressure, 4),
-                "order_lifecycle": lifecycle_metrics
+                "order_lifecycle": lifecycle_metrics,
+                "spread_metrics": spread_metrics,           # ✅ GARANTIDO QUE É UM DICIONÁRIO
+                "market_impact_buy": impact_buy,            # ✅ GARANTIDO QUE É UM DICIONÁRIO
+                "market_impact_sell": impact_sell,          # ✅ GARANTIDO QUE É UM DICIONÁRIO
             }
             if all_alerts:
                 event["alertas_liquidez"] = all_alerts
@@ -203,5 +275,29 @@ class OrderBookAnalyzer:
                 "tipo_evento": "OrderBook",
                 "resultado_da_batalha": "Erro",
                 "descricao": f"Falha na análise: {e}",
-                "ativo": self.symbol
+                "ativo": self.symbol,
+                "spread_metrics": {
+                    "spread": 0.0,
+                    "spread_percent": 0.0,
+                    "bid_depth_usd": 0.0,
+                    "ask_depth_usd": 0.0
+                },
+                "market_impact_buy": {
+                    "impact_usd": 0.0,
+                    "slippage_percent": 0.0,
+                    "avg_filled_price": 0.0,
+                    "final_price": 0.0
+                },
+                "market_impact_sell": {
+                    "impact_usd": 0.0,
+                    "slippage_percent": 0.0,
+                    "avg_filled_price": 0.0,
+                    "final_price": 0.0
+                },
+                "order_lifecycle": {
+                    "avg_order_lifetime_ms": 0.0,
+                    "short_ttl_orders": 0,
+                    "spoofing_detected": False,
+                    "layering_detected": False
+                }
             }

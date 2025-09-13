@@ -11,7 +11,7 @@ class FlowAnalyzer:
         self.cvd = 0.0
 
         # Whale Flow
-        self.whale_threshold = getattr(config, "WHALE_TRADE_THRESHOLD", 20.0)
+        self.whale_threshold = getattr(config, "WHALE_TRADE_THRESHOLD", 5.0)
         self.whale_buy_volume = 0.0
         self.whale_sell_volume = 0.0
         self.whale_delta = 0.0
@@ -118,7 +118,11 @@ class FlowAnalyzer:
         try:
             qty = float(trade.get('q', 0))
             is_buyer_maker = trade.get('m', False)
-            ts = int(trade.get('T', time.time() * 1000))
+            ts_str = trade.get('T')
+            if not ts_str:
+                logging.debug("Trade recebido sem timestamp 'T'. Descartado.")
+                return
+            ts = int(ts_str)
 
             trade_delta = -qty if is_buyer_maker else qty
 
