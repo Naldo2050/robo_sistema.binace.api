@@ -1,4 +1,3 @@
-# ai_analyzer_qwen.py
 import logging
 import os
 import random
@@ -22,6 +21,9 @@ except ImportError:
     DASHSCOPE_AVAILABLE = False
     logging.warning("DashScope não instalado. Para usar API real: pip install dashscope")
 
+# 🔹 IMPORTA TIME MANAGER
+from time_manager import TimeManager
+
 class AIAnalyzer:
     def __init__(self, headless: bool = True, user_data_dir: str = "./qwen_data"):
         self.enabled = True
@@ -33,20 +35,22 @@ class AIAnalyzer:
         # Configura chave API
         self.api_key = os.getenv('DASHSCOPE_API_KEY')
         if not self.api_key:
-            self.api_key = "sk-718563fc96564790af405699dd0c6e85"  # Fallback
+            self.api_key = "coloque_sua_chave_aqui"  # ⚠️ Substitua por variável de ambiente
             logging.warning("⚠️ Usando chave API hardcoded. Configure DASHSCOPE_API_KEY no ambiente.")
         
         # Tenta inicializar a API
         self._initialize_api()
         
+        # 🔹 Inicializa TimeManager
+        self.time_manager = TimeManager()
+        
         logging.info("🧠 IA Analyzer Qwen inicializada - Análise avançada ativada")
 
     def _initialize_api(self):
         """Inicializa a API preferencial disponível."""
-        
-        # Prioridade 1: OpenAI compatível (mais estável)
         if OPENAI_AVAILABLE:
             try:
+                # 🔹 CORRIGIDO: REMOVIDOS ESPAÇOS FINAIS
                 self.client = OpenAI(
                     api_key=self.api_key,
                     base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
@@ -56,9 +60,9 @@ class AIAnalyzer:
             except Exception as e:
                 logging.warning(f"Erro ao configurar OpenAI client: {e}")
         
-        # Prioridade 2: DashScope nativo
         if DASHSCOPE_AVAILABLE:
             try:
+                # 🔹 CORRIGIDO: REMOVIDOS ESPAÇOS FINAIS
                 dashscope.api_key = self.api_key
                 dashscope.base_http_api_url = 'https://dashscope-intl.aliyuncs.com/api/v1'
                 logging.info("🔧 DashScope configurado (modo nativo)")
@@ -69,265 +73,325 @@ class AIAnalyzer:
         logging.info("🎭 Nenhuma API disponível - usando apenas simulação")
 
     def _create_prompt(self, event_data: Dict[str, Any]) -> str:
-        """Cria o prompt otimizado para análise de eventos de mercado."""
+        """
+        Prompt institucional para análise da IA, adaptado:
+        - Para OrderBook: usa métricas de OB (imbalance/ratio/pressure/spread/impactos/alertas) e preco_atual.
+        - Para Absorção/Exaustão: usa delta/volume e demais features.
+        Inclui multi-timeframe, memória curta, probabilidades históricas, derivativos, VP histórico, e (NOVO) sizing dinâmico.
+        """
         tipo_evento = event_data.get("tipo_evento", "N/A")
         ativo = event_data.get("ativo", "N/A")
         descricao = event_data.get("descricao", "Sem descrição.")
-        delta = float(event_data.get("delta", 0.0) or 0.0)
-        volume_total = float(event_data.get("volume_total", 0.0) or 0.0)
-        preco_fechamento = float(event_data.get("preco_fechamento", 0.0) or 0.0)
-        volume_compra = float(event_data.get("volume_compra", 0.0) or 0.0)
-        volume_venda = float(event_data.get("volume_venda", 0.0) or 0.0)
 
-        contexto_extra = ""
-        if event_data.get("contexto_sma"):
-            contexto_extra += f"- **Contexto SMA:** {event_data.get('contexto_sma')}\n"
-        if event_data.get("indice_absorcao") is not None:
-            try:
-                contexto_extra += f"- **Índice de Absorção:** {float(event_data.get('indice_absorcao')):.2f}\n"
-            except Exception:
-                contexto_extra += f"- **Índice de Absorção:** {event_data.get('indice_absorcao')}\n"
+        # Valores gerais
+        delta = float(event_data.get("delta") or 0)
+        volume_total = float(event_data.get("volume_total") or 0)
+        volume_compra = float(event_data.get("volume_compra") or 0)
+        volume_venda = float(event_data.get("volume_venda") or 0)
+        preco = event_data.get("preco_atual") or event_data.get("preco_fechamento") or 0
 
-        prompt = f"""Analise este evento de mercado como um especialista em order flow:
+        # Multi-timeframes
+        multi_tf = event_data.get("multi_tf", {})
+        multi_tf_str = "\n".join(
+            [f"- {tf}: Δ={vals.get('delta')} | Vol={vals.get('volume')} | Tend={vals.get('tendencia')}" 
+             for tf, vals in multi_tf.items()]
+        ) if multi_tf else "Não informado"
 
-**DADOS DO EVENTO:**
-- Ativo: {ativo}
-- Tipo: {tipo_evento}
-- Descrição: {descricao}
-- Delta: {delta:.2f}
-- Volume Total: {volume_total:.0f}
-- Volume Compra: {volume_compra:.0f}
-- Volume Venda: {volume_venda:.0f}
-- Preço Fechamento: ${preco_fechamento:.2f}
-{contexto_extra}
+        # Memória curta
+        memoria = event_data.get("event_history", [])
+        memoria_str = "\n".join([f"- {e.get('timestamp')} | {e.get('tipo_evento')} {e.get('resultado_da_batalha')} Δ={e.get('delta')} Vol={e.get('volume_total')}"
+                                 for e in memoria]) if memoria else "Nenhum evento recente."
 
-**ANÁLISE SOLICITADA:**
-Forneça uma análise concisa (máximo 150 palavras) respondendo:
+        # Probabilidades
+        conf = event_data.get("historical_confidence", {})
+        prob_long = conf.get("long_prob", "N/A")
+        prob_short = conf.get("short_prob", "N/A")
+        prob_neutral = conf.get("neutral_prob", "N/A")
 
-1. **Interpretação:** O que este evento revela sobre o fluxo de ordens?
-2. **Força Dominante:** Compradores ou vendedores estão no controle?
-3. **Expectativa:** Qual movimento é mais provável no curto prazo?
-4. **Ação:** Recomendação prática para este cenário.
+        # Zona institucional (se existir)
+        z = event_data.get("zone_context") or {}
+        zone_str = ""
+        if z:
+            zone_str = f"""
+🟦 Zona Institucional
+- Tipo: {z.get('kind')} | TF: {z.get('timeframe')} | Score: {z.get('score')}
+- Faixa: {z.get('low')} ~ {z.get('high')} (centro: {z.get('anchor_price')})
+- Confluências: {", ".join(z.get('confluence', []))}
+- Toques: {z.get('touch_count')} | Último toque: {z.get('last_touched')}
+"""
 
-Seja direto e objetivo."""
+        # 🔹 NOVO: Derivativos
+        derivativos = event_data.get("derivatives", {}).get(ativo, {}) or event_data.get("derivatives", {}).get("BTCUSDT", {})
+        if derivativos:
+            deriv_str = f"""
+🏦 Derivativos ({ativo})
+- Funding Rate: {derivativos.get('funding_rate_percent', 0):.4f}%
+- Open Interest: {derivativos.get('open_interest', 0):,.0f}
+- Long/Short Ratio: {derivativos.get('long_short_ratio', 0):.2f}
+- Liquidações (5min): Longs=${derivativos.get('longs_usd', 0):,.0f} | Shorts=${derivativos.get('shorts_usd', 0):,.0f}
+"""
+        else:
+            deriv_str = "\n🏦 Derivativos: Dados indisponíveis no momento."
+
+        # 🔹 NOVO: Volume Profile Histórico
+        vp = event_data.get("historical_vp", {}).get("daily", {})
+        if vp:
+            vp_str = f"""
+📊 Volume Profile Histórico (Diário)
+- POC: ${vp.get('poc', 0):,.2f}
+- Value Area: ${vp.get('val', 0):,.2f} — ${vp.get('vah', 0):,.2f}
+- HVNs: {', '.join([f'${x:,.2f}' for x in vp.get('hvns', [])[:3]])}
+- LVNs: {', '.join([f'${x:,.2f}' for x in vp.get('lvns', [])[:3]])}
+"""
+        else:
+            vp_str = "\n📊 Volume Profile Histórico: Indisponível."
+
+        # Caso: OrderBook (tem métricas específicas)
+        if "imbalance" in event_data or tipo_evento == "OrderBook":
+            imbalance = event_data.get("imbalance", "N/A")
+            ratio = event_data.get("volume_ratio", "N/A")
+            pressure = event_data.get("pressure", "N/A")
+            sm = event_data.get("spread_metrics") or {}
+            spread = sm.get("spread", "N/A")
+            spread_pct = sm.get("spread_percent", "N/A")
+            bid_usd = sm.get("bid_depth_usd", "N/A")
+            ask_usd = sm.get("ask_depth_usd", "N/A")
+            mi_buy = event_data.get("market_impact_buy", {}) or {}
+            mi_sell = event_data.get("market_impact_sell", {}) or {}
+            alertas = event_data.get("alertas_liquidez", [])
+
+            ob_str = f"""
+📊 Evento OrderBook
+- Preço: {preco}
+- Imbalance: {imbalance} | Ratio: {ratio} | Pressure: {pressure}
+- Spread: {spread} ({spread_pct}%)
+- Profundidade (USD): Bid={bid_usd} | Ask={ask_usd}
+- Market Impact (Buy): {mi_buy}
+- Market Impact (Sell): {mi_sell}
+- Alertas: {", ".join(alertas) if alertas else "Nenhum"}
+
+{'⚠️ ALERTA: Fluxo institucional detectado (iceberg recarregando) — grandes players estão absorvendo para virar o jogo.' if event_data.get('iceberg_reloaded') else ''}
+"""
+
+            prompt = f"""
+📌 Ativo: {ativo} | Tipo: {tipo_evento}
+📝 Descrição: {descricao}
+{zone_str}
+{ob_str}
+{deriv_str}
+{vp_str}
+📈 Multi-Timeframes
+{multi_tf_str}
+
+⏳ Memória de eventos
+{memoria_str}
+
+📉 Probabilidade Histórica
+Long={prob_long} | Short={prob_short} | Neutro={prob_neutral}
+
+🎯 Tarefa
+Forneça parecer institucional e um PLANO ancorado na zona (se houver):
+1) Interpretação (order flow, liquidez, zona).
+2) Força dominante.
+3) Expectativa (curto/médio prazo).
+4) Probabilidade mais provável (considere os valores acima).
+5) Plano de trade: direção, condição de entrada (gatilho/trigger na zona), stop (invalidação fora da zona), alvos 1/2 (próximas zonas), riscos.
+6) Gestão de posição: sugerir sizing dinâmico baseado em:
+   - Risco em % do ATR (ex: não arriscar mais que 0.5x ATR)
+   - Volume da parede defendida (ex: não entrar com mais que 30% do volume da parede)
+   - Volatilidade do cluster (ex: reduzir posição se price_std > X%)
+"""
+            return prompt
+
+        # Caso padrão (Absorção/Exaustão etc.)
+        prompt = f"""
+📌 Ativo: {ativo} | Tipo: {tipo_evento}
+📝 Descrição: {descricao}
+{zone_str}
+{deriv_str}
+{vp_str}
+📊 Dados:
+- Preço: {preco}
+- Delta: {delta}
+- Vol: {volume_total} (Buy={volume_compra} | Sell={volume_venda})
+
+📈 Multi-Timeframes
+{multi_tf_str}
+
+⏳ Memória de eventos
+{memoria_str}
+
+📉 Probabilidade Histórica
+Long={prob_long} | Short={prob_short} | Neutro={prob_neutral}
+
+🎯 Tarefa
+Forneça parecer institucional e um PLANO ancorado na zona (se houver):
+1) Interpretação (order flow, liquidez, zona).
+2) Força dominante.
+3) Expectativa (curto/médio prazo).
+4) Probabilidade mais provável (considere os valores acima).
+5) Plano de trade: direção, condição de entrada (gatilho/trigger na zona), stop (invalidação fora da zona), alvos 1/2 (próximas zonas), riscos.
+6) Gestão de posição: sugerir sizing dinâmico baseado em:
+   - Risco em % do ATR (ex: não arriscar mais que 0.5x ATR)
+   - Volume da parede defendida (ex: não entrar com mais que 30% do volume da parede)
+   - Volatilidade do cluster (ex: reduzir posição se price_std > X%)
+"""
         return prompt
 
-    def _call_openai_compatible(self, prompt: str) -> str:
-        """Chama a API no modo OpenAI compatível."""
-        try:
-            response = self.client.chat.completions.create(
-                model="qwen-plus",
-                messages=[
-                    {"role": "system", "content": "Você é um analista especialista em order flow e trading algorítmico."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=512,
-                temperature=0.3,
-                top_p=0.8
-            )
-            
-            if response.choices and len(response.choices) > 0:
-                return response.choices[0].message.content.strip()
-            return ""
-            
-        except Exception as e:
-            logging.error(f"Erro na API OpenAI compatível: {e}")
-            return ""
+    def _call_openai_compatible(self, prompt: str, max_retries: int = 3) -> str:
+        """Chama a API OpenAI com retry e timeout."""
+        base_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model="qwen-plus",
+                    messages=[
+                        {"role": "system", "content": "Você é um analista institucional de trading e order flow."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=600,
+                    temperature=0.25,
+                    top_p=0.8,
+                    timeout=30  # 🔹 NOVO: timeout de 30 segundos
+                )
+                if response.choices and len(response.choices) > 0:
+                    content = response.choices[0].message.content.strip()
+                    if len(content) > 10:  # Verifica se a resposta é significativa
+                        return content
+                    else:
+                        logging.warning(f"Resposta da API muito curta: {content}")
+                return ""
+            except Exception as e:
+                logging.error(f"Erro na API OpenAI compatível (tentativa {attempt+1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logging.info(f"Aguardando {delay:.1f}s antes de retry...")
+                    time.sleep(delay)
+        return ""
 
-    def _call_dashscope_native(self, prompt: str) -> str:
-        """Chama a API no modo DashScope nativo."""
-        try:
-            response = Generation.call(
-                model="qwen-plus",
-                messages=[
-                    {"role": "system", "content": "Você é um analista especialista em order flow e trading algorítmico."},
-                    {"role": "user", "content": prompt}
-                ],
-                result_format="message",
-                max_tokens=512,
-                temperature=0.3,
-                top_p=0.8
-            )
-            
-            if hasattr(response, 'status_code') and response.status_code == 200:
-                if hasattr(response, 'output') and response.output:
-                    choices = response.output.get('choices', [])
-                    if choices and len(choices) > 0:
-                        message = choices[0].get('message', {})
-                        return message.get('content', '').strip()
-            
-            logging.error(f"Erro DashScope: status={getattr(response, 'status_code', 'N/A')}")
-            return ""
-            
-        except Exception as e:
-            logging.error(f"Erro na API DashScope: {e}")
-            return ""
+    def _call_dashscope_native(self, prompt: str, max_retries: int = 3) -> str:
+        """Chama a API DashScope com retry e timeout."""
+        base_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                response = Generation.call(
+                    model="qwen-plus",
+                    messages=[
+                        {"role": "system", "content": "Você é um analista institucional de trading e order flow."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    result_format="message",
+                    max_tokens=600,
+                    temperature=0.25,
+                    top_p=0.8,
+                    timeout=30  # 🔹 NOVO: timeout de 30 segundos
+                )
+                if hasattr(response, 'status_code') and response.status_code == 200:
+                    if hasattr(response, 'output') and response.output:
+                        choices = response.output.get('choices', [])
+                        if choices:
+                            content = choices[0].get('message', {}).get('content', '').strip()
+                            if len(content) > 10:  # Verifica se a resposta é significativa
+                                return content
+                return ""
+            except Exception as e:
+                logging.error(f"Erro API DashScope (tentativa {attempt+1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logging.info(f"Aguardando {delay:.1f}s antes de retry...")
+                    time.sleep(delay)
+        return ""
 
     def _generate_mock_analysis(self, event_data: Dict[str, Any]) -> str:
-        """Gera uma análise simulada baseada nos dados do evento."""
-        tipo_evento = event_data.get("tipo_evento", "N/A")
-        ativo = event_data.get("ativo", "BTCUSDT")
-        delta = float(event_data.get("delta", 0.0) or 0.0)
-        volume_compra = float(event_data.get("volume_compra", 0.0) or 0.0)
-        volume_venda = float(event_data.get("volume_venda", 0.0) or 0.0)
-        volume_total = float(event_data.get("volume_total", 0.0) or 0.0)
-        
-        templates = {
-            "Demanda Forte": [
-                f"**🟢 Interpretação:** Fluxo agressivo de compras no {ativo}. Delta {delta:.1f} confirma absorção eficiente da oferta pelos compradores.\n\n**Força Dominante:** Bulls controlam com {(volume_compra/max(volume_total,1)*100):.1f}% do volume total.\n\n**Expectativa:** Momentum altista sustentado se continuar o fluxo.\n\n**Ação:** Posições compradas em pullbacks. Stop loss ajustado nos suportes.",
-                
-                f"**🔥 Interpretação:** Pressão compradora institucional detectada. Delta {delta:.1f} indica desequilíbrio favorável aos bulls.\n\n**Força Dominante:** Smart money acumulando posições.\n\n**Expectativa:** Rompimento de resistências próximas provável.\n\n**Ação:** Aguarde confirmação de continuidade. Risk management rigoroso."
-            ],
-            
-            "Pressão de Venda": [
-                f"**🔴 Interpretação:** Distribuição agressiva identificada. Delta negativo de {delta:.1f} revela pressão vendedora institucional.\n\n**Força Dominante:** Bears dominam o tape com {volume_venda:.0f} em volume.\n\n**Expectativa:** Teste de suportes inferiores iminente.\n\n**Ação:** Cautela em longs. Considere proteções ou posições short.",
-                
-                f"**⚠️ Interpretação:** Absorção fraca dos compradores. Delta {delta:.1f} sinaliza capitulação.\n\n**Força Dominante:** Vendedores controlam o order flow.\n\n**Expectativa:** Continuação baixista até estabilização.\n\n**Ação:** Aguarde sinais de reversão antes de comprar."
-            ],
-            
-            "Alerta de Liquidez": [
-                f"**⚡ Interpretação:** Desequilíbrio crítico de liquidez no {ativo}. Paredes significativas podem gerar breakout explosivo.\n\n**Força Dominante:** Assimetria na liquidez criando tensão.\n\n**Expectativa:** Movimento violento na direção do rompimento.\n\n**Ação:** Posição reduzida até confirmação de direção. Prepare-se para volatilidade.",
-                
-                f"**🎯 Interpretação:** Market makers posicionando grandes volumes. Concentração anômala de ordens detectada.\n\n**Força Dominante:** Institucionais preparando movimento.\n\n**Expectativa:** Breakout violento quando absorvidas as paredes.\n\n**Ação:** Evite contra-tendência. Siga a direção confirmada."
-            ],
-            
-            "Absorção": [
-                f"**📊 Interpretação:** Smart money processando {volume_total:.0f} em volume sem impacto no preço. Acumulação/distribuição ativa.\n\n**Força Dominante:** Equilíbrio temporário entre forças.\n\n**Expectativa:** Consolidação até definição clara.\n\n**Ação:** Posições neutras. Aguarde rompimento confirmado.",
-                
-                f"**🟡 Interpretação:** Absorção institucional no {ativo}. Delta {delta:.1f} sugere processo de acumulação.\n\n**Força Dominante:** Grandes players ativos.\n\n**Expectativa:** Movimento direcional pós-absorção.\n\n**Ação:** Monitor contínuo. Siga o smart money."
-            ]
-        }
-        
-        event_templates = templates.get(tipo_evento, templates["Absorção"])
-        analysis = random.choice(event_templates)
-        
-        # Simula tempo de processamento
-        time.sleep(random.uniform(1.0, 2.5))
-        return analysis
+        # 🔹 USA TIME MANAGER NO MOCK
+        timestamp = self.time_manager.now_iso()
+        return f"""**Interpretação (mock):** Detecção de {event_data.get('tipo_evento')} no {event_data.get('ativo')} às {timestamp}.
+**Força Dominante:** {event_data.get('resultado_da_batalha')}
+**Expectativa:** Teste de continuação provável baseado em mock.
+**Plano:** Short abaixo do POC, alvo no VAL. Stop no HVN."""
 
     def test_connection(self) -> bool:
-        """Testa conectividade com as APIs disponíveis."""
-        
-        # Teste 1: OpenAI compatível
+        """Testa conexão com as APIs com retry."""
         if OPENAI_AVAILABLE and self.client:
             try:
                 response = self.client.chat.completions.create(
                     model="qwen-plus",
                     messages=[{"role": "user", "content": "Responda: OK"}],
-                    max_tokens=10
+                    max_tokens=10,
+                    timeout=10
                 )
-                if response.choices and response.choices[0].message.content:
-                    logging.info("✅ API OpenAI compatível funcionando")
+                if response.choices and response.choices[0].message.content and "OK" in response.choices[0].message.content.upper():
                     self.api_mode = 'openai'
                     self.use_mock = False
+                    logging.info("✅ Conexão com OpenAI bem-sucedida")
                     return True
             except Exception as e:
-                logging.debug(f"OpenAI compatível falhou: {e}")
-        
-        # Teste 2: DashScope nativo
+                logging.warning(f"Erro ao testar conexão OpenAI: {e}")
+
         if DASHSCOPE_AVAILABLE:
             try:
                 response = Generation.call(
                     model="qwen-plus",
                     messages=[{"role": "user", "content": "Responda: OK"}],
                     result_format="message",
-                    max_tokens=10
+                    max_tokens=10,
+                    timeout=10
                 )
                 if hasattr(response, 'status_code') and response.status_code == 200:
-                    logging.info("✅ API DashScope nativa funcionando")
-                    self.api_mode = 'dashscope'
-                    self.use_mock = False
-                    return True
+                    if hasattr(response, 'output') and response.output:
+                        choices = response.output.get('choices', [])
+                        if choices and "OK" in choices[0].get('message', {}).get('content', '').upper():
+                            self.api_mode = 'dashscope'
+                            self.use_mock = False
+                            logging.info("✅ Conexão com DashScope bem-sucedida")
+                            return True
             except Exception as e:
-                logging.debug(f"DashScope nativo falhou: {e}")
-        
-        # Fallback para simulação
-        logging.info("⚠️ APIs indisponíveis - usando simulação")
+                logging.warning(f"Erro ao testar conexão DashScope: {e}")
+
+        logging.warning("⚠️ Nenhuma API disponível - usando modo mock")
         self.api_mode = 'mock'
         self.use_mock = True
         return False
 
     def analyze_event(self, event_data: Dict[str, Any]) -> str:
-        """Analisa um evento de mercado."""
+        """Analisa evento com fallback robusto."""
         if not self.enabled:
-            return "Analisador de IA desabilitado."
+            return "IA Analyzer desabilitado."
 
-        # Se ainda não testou, testa primeiro
+        # Garante que a API foi testada
         if self.api_mode is None:
             self.test_connection()
 
         prompt = self._create_prompt(event_data)
-        logging.info(f"🤖 Analisando evento: {event_data.get('tipo_evento', 'N/A')}")
-
         analysis = ""
-        
-        # Tenta API real primeiro
-        if self.api_mode == 'openai' and self.client:
-            analysis = self._call_openai_compatible(prompt)
-        elif self.api_mode == 'dashscope':
-            analysis = self._call_dashscope_native(prompt)
-        
-        # Se API falhou ou não há API, usa simulação
-        if not analysis or self.api_mode == 'mock':
-            if self.api_mode != 'mock':
-                logging.warning("🔄 API falhou, usando simulação como fallback")
+
+        max_retries = 2
+        for attempt in range(max_retries + 1):  # inclui tentativa original + retries
+            if self.api_mode == 'openai' and self.client:
+                analysis = self._call_openai_compatible(prompt)
+            elif self.api_mode == 'dashscope':
+                analysis = self._call_dashscope_native(prompt)
+            else:
+                analysis = ""
+
+            # Verifica se a análise é válida
+            if analysis and len(analysis.strip()) > 50:  # análise válida
+                break
+            elif attempt < max_retries:
+                logging.warning(f"IA retornou resposta inválida. Retry {attempt+1}/{max_retries}...")
+                time.sleep(2 ** attempt)  # backoff exponencial
+
+        # 🔹 Fallback: usa análise básica se tudo falhar
+        if not analysis or len(analysis.strip()) <= 50:
+            logging.warning("⚠️ IA falhou ou retornou resposta curta. Usando análise básica.")
             analysis = self._generate_mock_analysis(event_data)
-            logging.info("🎭 Análise simulada gerada")
-        else:
-            logging.info("✅ Análise real da API gerada")
 
         return analysis
 
     def close(self):
-        """Limpa recursos."""
         self.client = None
 
     def __del__(self):
         self.close()
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
-    print("🧪 Teste do AIAnalyzer Qwen\n")
-
-    # Inicializa analisador
-    analyzer = AIAnalyzer()
-    
-    print("=== TESTE DE CONECTIVIDADE ===")
-    connection_ok = analyzer.test_connection()
-    print(f"Modo ativo: {analyzer.api_mode}")
-    print(f"Usando simulação: {analyzer.use_mock}\n")
-
-    # Testes com diferentes tipos de eventos
-    test_events = [
-        {
-            "tipo_evento": "Demanda Forte",
-            "ativo": "BTCUSDT",
-            "descricao": "Pressão compradora detectada",
-            "delta": 145.8,
-            "volume_total": 2850,
-            "preco_fechamento": 67500.0,
-            "volume_compra": 1800,
-            "volume_venda": 1050,
-            "contexto_sma": "acima da SMA200",
-            "indice_absorcao": 0.78
-        },
-        {
-            "tipo_evento": "Alerta de Liquidez",
-            "ativo": "ETHUSDT",
-            "descricao": "Parede significativa",
-            "delta": -32.4,
-            "volume_total": 1650,
-            "preco_fechamento": 3450.0,
-            "volume_compra": 650,
-            "volume_venda": 1000
-        }
-    ]
-
-    for i, event in enumerate(test_events, 1):
-        print(f"=== TESTE {i}: {event['tipo_evento']} ===")
-        result = analyzer.analyze_event(event)
-        print(f"{result}\n")
-        print("-" * 70)
-
-    analyzer.close()

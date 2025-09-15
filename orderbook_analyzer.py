@@ -1,303 +1,326 @@
-import requests
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 import logging
-import numpy as np
+import requests
 import time
+import numpy as np
+from collections import deque
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from config import LIQUIDITY_FLOW_ALERT_PERCENTAGE, WALL_STD_DEV_FACTOR
 
-NY_TZ = ZoneInfo("America/New_York")
+# 🔹 IMPORTA TIME MANAGER
+from time_manager import TimeManager
 
 class OrderBookAnalyzer:
-    def __init__(self, symbol="BTCUSDT", limit=100, liquidity_flow_alert_percentage=0.5, wall_std_dev_factor=3.0):
+    def __init__(self, symbol: str, liquidity_flow_alert_percentage: float = 0.4, wall_std_dev_factor: float = 3.0):
         self.symbol = symbol
-        self.limit = limit
-        self.api_url = "https://api.binance.com/api/v3/depth"  # ✅ CORRIGIDO: REMOVIDOS OS ESPAÇOS FINAIS
         self.liquidity_flow_alert_percentage = liquidity_flow_alert_percentage
         self.wall_std_dev_factor = wall_std_dev_factor
+        self.ny_tz = ZoneInfo("America/New_York")
+        
+        # 🔹 Inicializa TimeManager
+        self.time_manager = TimeManager()
+        
+        # URLs da Binance
+        self.depth_url = "https://fapi.binance.com/fapi/v1/depth"
+        self.last_snapshot = None
+        self.last_liquidity_check_time = 0
+        self.liquidity_check_interval = 5  # segundos
 
-        # Estado para fluxo de liquidez
-        self.prev_top_bids_volume = None
-        self.prev_top_asks_volume = None
+        # Histórico para detecção de spoofing/layering
+        self.order_history = deque(maxlen=100)
+        self.last_ob = None  # 🔹 NOVO: para detecção de recarga de icebergs
 
-        # Estado para detecção de Icebergs
-        self.iceberg_tracker = {}
-        self.ICEBERG_HIT_THRESHOLD = 3
-        self.ICEBERG_TTL_SECONDS = 60 * 10
+        logging.info(f"✅ OrderBook Analyzer inicializado para {symbol} | Alerta de fluxo: {liquidity_flow_alert_percentage*100}% | Wall STD: {wall_std_dev_factor}x")
 
-        # Estado para detecção de spoofing e TTL
-        self.current_orders = {}   # { "price_side": {"qty":..., "timestamp":...} }
-        self.order_lifetimes = []  # lista de lifetimes em ms
-        self.spoofing_threshold_ms = 2000  # se ordem dura menos de 2s e é grande, suspeita spoof
-        self.short_ttl_orders = 0
-        self.layering_events = 0
-
-    def fetch_order_book(self):
-        params = {"symbol": self.symbol, "limit": self.limit}
-        response = requests.get(self.api_url, params=params, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        bids = [(float(price), float(qty)) for price, qty in data['bids']]
-        asks = [(float(price), float(qty)) for price, qty in data['asks']]
-        return bids, asks
-
-    def calculate_metrics(self, bids, asks):
-        buy_volume_total = sum(qty for _, qty in bids)
-        sell_volume_total = sum(qty for _, qty in asks)
-        total_volume = buy_volume_total + sell_volume_total
-        imbalance = (buy_volume_total - sell_volume_total) / total_volume if total_volume > 0 else 0
-        top_buy_volume = sum(qty for _, qty in bids[:10])
-        top_sell_volume = sum(qty for _, qty in asks[:10])
-        volume_ratio = top_buy_volume / top_sell_volume if top_sell_volume > 0 else float('inf')
-        top_bids_pressure = sum(price * qty for price, qty in bids[:10])
-        top_asks_pressure = sum(price * qty for price, qty in asks[:10])
-        total_pressure = top_bids_pressure + top_asks_pressure
-        pressure = (top_bids_pressure - top_asks_pressure) / total_pressure if total_pressure > 0 else 0
-        return imbalance, volume_ratio, pressure, top_buy_volume, top_sell_volume
-
-    def analyze_liquidity_flow(self, current_bids_volume, current_asks_volume):
-        alerts = []
-        if self.prev_top_bids_volume and current_bids_volume > 0:
-            change_percent = (current_bids_volume - self.prev_top_bids_volume) / self.prev_top_bids_volume
-            if change_percent > self.liquidity_flow_alert_percentage:
-                alerts.append(f"FLUXO: Aumento de {change_percent:.1%} na liquidez de compra (Bids).")
-            elif change_percent < -self.liquidity_flow_alert_percentage:
-                alerts.append(f"FLUXO: Retirada de {abs(change_percent):.1%} da liquidez de compra (Bids).")
-        if self.prev_top_asks_volume and current_asks_volume > 0:
-            change_percent = (current_asks_volume - self.prev_top_asks_volume) / self.prev_top_asks_volume
-            if change_percent > self.liquidity_flow_alert_percentage:
-                alerts.append(f"FLUXO: Aumento de {change_percent:.1%} na liquidez de venda (Asks).")
-            elif change_percent < -self.liquidity_flow_alert_percentage:
-                alerts.append(f"FLUXO: Retirada de {abs(change_percent):.1%} da liquidez de venda (Asks).")
-        self.prev_top_bids_volume = current_bids_volume
-        self.prev_top_asks_volume = current_asks_volume
-        return alerts
-
-    def analyze_liquidity_walls(self, bids, asks):
-        alerts = []
-        quantities = [qty for _, qty in bids] + [qty for _, qty in asks]
-        if len(quantities) < 10: return alerts, 0
-        mean_qty = np.mean(quantities); std_qty = np.std(quantities)
-        wall_threshold = mean_qty + (self.wall_std_dev_factor * std_qty)
-        for price, qty in bids[:20]:
-            if qty > wall_threshold:
-                alerts.append(f"PAREDE DE COMPRA: {qty:,.2f} @ ${price:,.2f} (limite: {wall_threshold:,.2f})")
-        for price, qty in asks[:20]:
-            if qty > wall_threshold:
-                alerts.append(f"PAREDE DE VENDA: {qty:,.2f} @ ${price:,.2f} (limite: {wall_threshold:,.2f})")
-        return alerts, wall_threshold
-
-    def _detect_iceberg_orders(self, bids, asks, wall_threshold):
-        alerts = []
-        now = time.time()
-        current_book_map = {f"{price}_{side}": qty for side, book in [("bid", bids), ("ask", asks)] for price, qty in book}
-        for key, tracker in list(self.iceberg_tracker.items()):
-            price, side = key.split("_")
-            if key not in current_book_map or (now - tracker['timestamp']) > self.ICEBERG_TTL_SECONDS:
-                del self.iceberg_tracker[key]
-                continue
-            current_qty = current_book_map[key]; last_qty = tracker['last_qty']
-            if current_qty < last_qty:
-                tracker['last_qty'] = current_qty; tracker['timestamp'] = now
-            elif current_qty > last_qty and last_qty < tracker['initial_qty']:
-                tracker['hits'] += 1
-                tracker['last_qty'] = current_qty
-                tracker['initial_qty'] = max(tracker['initial_qty'], current_qty)
-                tracker['timestamp'] = now
-                if tracker['hits'] >= self.ICEBERG_HIT_THRESHOLD:
-                    side_str = "COMPRA" if side == "bid" else "VENDA"
-                    alerts.append(f"ICEBERG DE {side_str}?: Atividade de recarga em ${float(price):,.2f} (detectada {tracker['hits']}x)")
-                    tracker['hits'] = 0
-        all_walls = [(p, q, "bid") for p, q in bids[:20] if q > wall_threshold] + \
-                    [(p, q, "ask") for p, q in asks[:20] if q > wall_threshold]
-        for price, qty, side in all_walls:
-            key = f"{price}_{side}"
-            if key not in self.iceberg_tracker:
-                self.iceberg_tracker[key] = {'hits': 0, 'last_qty': qty, 'initial_qty': qty, 'timestamp': now}
-        return alerts
-
-    def _track_order_lifecycle(self, bids, asks, wall_threshold):
-        """Detecta spoofing/layering com base na vida média das ordens."""
-        now = time.time()*1000
-        current_snapshot = {f"{price}_{side}": qty for side, book in [("bid", bids), ("ask", asks)] for price, qty in book}
-
-        # Verifica ordens que sumiram/reduziram
-        for key, meta in list(self.current_orders.items()):
-            if key not in current_snapshot:
-                lifetime = now - meta['timestamp']
-                self.order_lifetimes.append(lifetime)
-                if lifetime < self.spoofing_threshold_ms and meta['qty'] > wall_threshold:
-                    self.short_ttl_orders += 1
-                del self.current_orders[key]
-            else:
-                self.current_orders[key]['qty'] = current_snapshot[key]
-
-        # Adiciona ordens novas
-        for key, qty in current_snapshot.items():
-            if key not in self.current_orders:
-                self.current_orders[key] = {"qty": qty, "timestamp": now}
-
-        # Layering detection: várias ordens grandes surgindo ao mesmo tempo em diferentes níveis
-        bids_large = [p for p, q in bids if q > wall_threshold]
-        asks_large = [p for p, q in asks if q > wall_threshold]
-        layering_detected = (len(bids_large) >= 3) or (len(asks_large) >= 3)
-
-        avg_ttl_ms = np.mean(self.order_lifetimes) if self.order_lifetimes else 0
-        spoofing_detected = self.short_ttl_orders > 0
-
-        return {
-            "avg_order_lifetime_ms": float(avg_ttl_ms),
-            "short_ttl_orders": self.short_ttl_orders,
-            "spoofing_detected": spoofing_detected,
-            "layering_detected": layering_detected
-        }
-
-    def _calculate_spread_and_depth(self, bids, asks):
-        """Calcula spread e profundidade do livro de ofertas."""
+    def _fetch_orderbook(self, limit: int = 500):
+        """Busca o livro de ofertas da Binance."""
         try:
-            if not bids or not asks:
-                return {"spread": 0.0, "spread_percent": 0.0, "bid_depth_usd": 0.0, "ask_depth_usd": 0.0}
-            
-            best_bid = bids[0][0]
-            best_ask = asks[0][0]
-            spread = best_ask - best_bid
-            spread_percent = (spread / best_ask) * 100 if best_ask > 0 else 0
+            params = {"symbol": self.symbol, "limit": limit}
+            response = requests.get(self.depth_url, params=params, timeout=5)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logging.error(f"Erro ao buscar orderbook: {e}")
+            return None
 
-            bid_depth_usd = sum(p * q for p, q in bids[:10])
-            ask_depth_usd = sum(p * q for p, q in asks[:10])
+    def _calculate_liquidity_metrics(self, bids: list, asks: list):
+        """Calcula métricas de liquidez e pressão."""
+        try:
+            # Converte para arrays numpy
+            bid_prices = np.array([float(bid[0]) for bid in bids])
+            bid_volumes = np.array([float(bid[1]) for bid in bids])
+            ask_prices = np.array([float(ask[0]) for ask in asks])
+            ask_volumes = np.array([float(ask[1]) for ask in asks])
+
+            # Profundidade total em USD
+            bid_depth_usd = np.sum(bid_prices * bid_volumes)
+            ask_depth_usd = np.sum(ask_prices * ask_volumes)
+
+            # Imbalance e ratio
+            total_liquidity = bid_depth_usd + ask_depth_usd
+            imbalance = (bid_depth_usd - ask_depth_usd) / total_liquidity if total_liquidity > 0 else 0
+            volume_ratio = bid_depth_usd / ask_depth_usd if ask_depth_usd > 0 else 0
+
+            # Pressão (ponderada pela distância do mid)
+            mid_price = (bid_prices[0] + ask_prices[0]) / 2 if len(bid_prices) > 0 and len(ask_prices) > 0 else 0
+            if mid_price > 0:
+                bid_pressure = np.sum(bid_volumes * (1 - np.abs(bid_prices - mid_price) / mid_price))
+                ask_pressure = np.sum(ask_volumes * (1 - np.abs(ask_prices - mid_price) / mid_price))
+                total_pressure = bid_pressure + ask_pressure
+                pressure = (bid_pressure - ask_pressure) / total_pressure if total_pressure > 0 else 0
+            else:
+                pressure = 0
 
             return {
-                "spread": float(round(spread, 2)),
-                "spread_percent": float(round(spread_percent, 4)),
-                "bid_depth_usd": float(round(bid_depth_usd, 2)),
-                "ask_depth_usd": float(round(ask_depth_usd, 2))
+                "imbalance": float(imbalance),
+                "volume_ratio": float(volume_ratio),
+                "pressure": float(pressure),
+                "spread": float(ask_prices[0] - bid_prices[0]) if len(ask_prices) > 0 and len(bid_prices) > 0 else 0,
+                "spread_percent": float((ask_prices[0] - bid_prices[0]) / mid_price * 100) if mid_price > 0 and len(ask_prices) > 0 and len(bid_prices) > 0 else 0,
+                "bid_depth_usd": float(bid_depth_usd),
+                "ask_depth_usd": float(ask_depth_usd),
+                "mid_price": float(mid_price)
             }
         except Exception as e:
-            logging.error(f"Erro em _calculate_spread_and_depth: {e}")
+            logging.error(f"Erro ao calcular métricas de liquidez: {e}")
             return {
+                "imbalance": 0.0,
+                "volume_ratio": 1.0,
+                "pressure": 0.0,
                 "spread": 0.0,
                 "spread_percent": 0.0,
                 "bid_depth_usd": 0.0,
-                "ask_depth_usd": 0.0
+                "ask_depth_usd": 0.0,
+                "mid_price": 0.0
             }
 
-    def _calculate_market_impact(self, book_side, order_size_btc):
-        """Calcula impacto de mercado para uma ordem de tamanho fixo."""
+    def _detect_walls(self, prices: np.array, volumes: np.array, side: str) -> list:
+        """Detecta paredes de liquidez (ordens > X desvios padrão da média)."""
+        if len(volumes) == 0:
+            return []
+        
+        mean_vol = np.mean(volumes)
+        std_vol = np.std(volumes)
+        threshold = mean_vol + (self.wall_std_dev_factor * std_vol)
+        
+        walls = []
+        for i, vol in enumerate(volumes):
+            if vol >= threshold:
+                walls.append({
+                    "price": float(prices[i]),
+                    "volume": float(vol),
+                    "side": side,
+                    "threshold": float(threshold)
+                })
+        return walls
+
+    def _detect_spoofing_layering(self, current_snapshot):
+        """Detecta spoofing/layering baseado em mudanças rápidas de ordens."""
         try:
-            filled_volume = 0
-            price_impact_total = 0
-            initial_price = book_side[0][0]
-            final_price = initial_price
+            current_time = time.time()
+            self.order_history.append({
+                "timestamp": current_time,
+                "snapshot": current_snapshot
+            })
 
-            for price, qty in book_side:
-                volume_to_fill = min(order_size_btc - filled_volume, qty)
-                if volume_to_fill <= 0: break
-                price_impact_total += volume_to_fill * price
-                filled_volume += volume_to_fill
-                final_price = price
-                if filled_volume >= order_size_btc: break
+            if len(self.order_history) < 5:
+                return {"avg_order_lifetime_ms": 0, "short_ttl_orders": 0, "spoofing_detected": False, "layering_detected": False}
 
-            avg_filled_price = price_impact_total / filled_volume if filled_volume > 0 else initial_price
-            market_impact_usd = abs(avg_filled_price - initial_price)
-            slippage_percent = (market_impact_usd / initial_price) * 100 if initial_price > 0 else 0
+            # Calcula vida média das ordens
+            lifetimes = []
+            for i in range(1, len(self.order_history)):
+                prev = self.order_history[i-1]["snapshot"]
+                curr = self.order_history[i]["snapshot"]
+                # Simplificação: compara profundidade total
+                prev_bid = sum(float(b[1]) for b in prev.get("bids", []))
+                curr_bid = sum(float(b[1]) for b in curr.get("bids", []))
+                if abs(prev_bid - curr_bid) / prev_bid > 0.5:  # 50% de mudança
+                    lifetimes.append((self.order_history[i]["timestamp"] - self.order_history[i-1]["timestamp"]) * 1000)
+
+            avg_lifetime = np.mean(lifetimes) if lifetimes else 0
+            short_ttl = sum(1 for lt in lifetimes if lt < 1000)  # menos de 1s
+
+            spoofing_detected = short_ttl > len(lifetimes) * 0.3  # 30% das ordens com TTL curto
+            layering_detected = len(lifetimes) > 5 and avg_lifetime < 5000  # média < 5s
 
             return {
-                "impact_usd": float(round(market_impact_usd, 2)),
-                "slippage_percent": float(round(slippage_percent, 4)),
-                "avg_filled_price": float(round(avg_filled_price, 2)),
-                "final_price": float(round(final_price, 2)),
+                "avg_order_lifetime_ms": float(avg_lifetime),
+                "short_ttl_orders": int(short_ttl),
+                "spoofing_detected": bool(spoofing_detected),
+                "layering_detected": bool(layering_detected)
             }
         except Exception as e:
-            logging.error(f"Erro em _calculate_market_impact: {e}")
+            logging.error(f"Erro ao detectar spoofing/layering: {e}")
+            return {
+                "avg_order_lifetime_ms": 0.0,
+                "short_ttl_orders": 0,
+                "spoofing_detected": False,
+                "layering_detected": False
+            }
+
+    def detect_iceberg_reloads(self, current_snapshot, previous_snapshot, threshold_pct=0.8):
+        """
+        Detecta icebergs que "recarregam" — ordens que são repostas rapidamente após serem consumidas.
+        """
+        if not previous_snapshot:
+            return False, 0, 0
+
+        # Compara profundidade de asks e bids
+        prev_bid_usd = previous_snapshot.get("spread_metrics", {}).get("bid_depth_usd", 0)
+        curr_bid_usd = current_snapshot.get("spread_metrics", {}).get("bid_depth_usd", 0)
+        
+        prev_ask_usd = previous_snapshot.get("spread_metrics", {}).get("ask_depth_usd", 0)
+        curr_ask_usd = current_snapshot.get("spread_metrics", {}).get("ask_depth_usd", 0)
+
+        # Verifica se houve recarga significativa (>80% do volume anterior)
+        bid_reloaded = curr_bid_usd > prev_bid_usd * threshold_pct
+        ask_reloaded = curr_ask_usd > prev_ask_usd * threshold_pct
+
+        return (bid_reloaded or ask_reloaded), curr_bid_usd, curr_ask_usd
+
+    def analyze_order_book(self) -> dict:
+        """Analisa o livro de ofertas e retorna evento estruturado."""
+        try:
+            ob = self._fetch_orderbook()
+            if not ob:
+                return {"is_signal": False, "error": "Falha ao buscar orderbook"}
+
+            bids = ob.get("bids", [])[:20]  # Top 20 bids
+            asks = ob.get("asks", [])[:20]  # Top 20 asks
+
+            if len(bids) == 0 or len(asks) == 0:
+                return {"is_signal": False, "error": "Orderbook vazio"}
+
+            # Métricas de liquidez
+            metrics = self._calculate_liquidity_metrics(bids, asks)
+
+            # Detecção de paredes
+            bid_prices = np.array([float(bid[0]) for bid in bids])
+            bid_volumes = np.array([float(bid[1]) for bid in bids])
+            ask_prices = np.array([float(ask[0]) for ask in asks])
+            ask_volumes = np.array([float(ask[1]) for ask in asks])
+
+            bid_walls = self._detect_walls(bid_prices, bid_volumes, "buy")
+            ask_walls = self._detect_walls(ask_prices, ask_volumes, "sell")
+
+            # Detecção de spoofing/layering
+            lifecycle = self._detect_spoofing_layering(ob)
+
+            # 🔹 NOVO: Detecção de recarga de icebergs
+            iceberg_reloaded, bid_reload, ask_reload = self.detect_iceberg_reloads(ob, self.last_ob)
+            self.last_ob = ob.copy()
+
+            # Gera alertas
+            alerts = []
+            current_time = time.time()
+
+            if current_time - self.last_liquidity_check_time > self.liquidity_check_interval:
+                if self.last_snapshot:
+                    # Compara profundidade
+                    prev_bid_usd = self.last_snapshot.get("spread_metrics", {}).get("bid_depth_usd", 0)
+                    prev_ask_usd = self.last_snapshot.get("spread_metrics", {}).get("ask_depth_usd", 0)
+                    curr_bid_usd = metrics["bid_depth_usd"]
+                    curr_ask_usd = metrics["ask_depth_usd"]
+
+                    if prev_bid_usd > 0 and abs(curr_bid_usd - prev_bid_usd) / prev_bid_usd > self.liquidity_flow_alert_percentage:
+                        change_pct = (curr_bid_usd - prev_bid_usd) / prev_bid_usd * 100
+                        alerts.append(f"FLUXO: {'Aumento' if change_pct > 0 else 'Retirada'} de {abs(change_pct):.1f}% na liquidez de compra (Bids).")
+                    
+                    if prev_ask_usd > 0 and abs(curr_ask_usd - prev_ask_usd) / prev_ask_usd > self.liquidity_flow_alert_percentage:
+                        change_pct = (curr_ask_usd - prev_ask_usd) / prev_ask_usd * 100
+                        alerts.append(f"FLUXO: {'Aumento' if change_pct > 0 else 'Retirada'} de {abs(change_pct):.1f}% na liquidez de venda (Asks).")
+
+                self.last_snapshot = {
+                    "spread_metrics": {
+                        "bid_depth_usd": metrics["bid_depth_usd"],
+                        "ask_depth_usd": metrics["ask_depth_usd"]
+                    }
+                }
+                self.last_liquidity_check_time = current_time
+
+            # Adiciona paredes aos alertas
+            for wall in bid_walls[:3]:
+                alerts.append(f"PAREDE DE COMPRA: {wall['volume']:.2f} @ ${wall['price']:,.2f} (limite: {wall['threshold']:.2f})")
+            for wall in ask_walls[:3]:
+                alerts.append(f"PAREDE DE VENDA: {wall['volume']:.2f} @ ${wall['price']:,.2f} (limite: {wall['threshold']:.2f})")
+
+            # Decisão de sinal
+            is_signal = len(alerts) > 0
+            resultado = "Neutro"
+            if metrics["pressure"] < -0.7:
+                resultado = "Oferta Forte"
+            elif metrics["pressure"] > 0.7:
+                resultado = "Demanda Forte"
+            elif len(alerts) > 0:
+                resultado = "Alerta de Liquidez"
+
+            # 🔹 USA TIME MANAGER
+            timestamp = self.time_manager.now_iso()
+
+            event = {
+                "is_signal": is_signal,
+                "timestamp": timestamp,
+                "tipo_evento": "OrderBook",
+                "resultado_da_batalha": resultado,
+                "descricao": " | ".join(alerts) if alerts else "Nenhum alerta gerado.",
+                "ativo": self.symbol,
+                "imbalance": metrics["imbalance"],
+                "volume_ratio": metrics["volume_ratio"],
+                "pressure": metrics["pressure"],
+                "order_lifecycle": lifecycle,
+                "spread_metrics": {
+                    "spread": metrics["spread"],
+                    "spread_percent": metrics["spread_percent"],
+                    "bid_depth_usd": metrics["bid_depth_usd"],
+                    "ask_depth_usd": metrics["ask_depth_usd"]
+                },
+                "market_impact_buy": self._simulate_market_impact(bid_prices, bid_volumes, 10),  # Simula impacto de comprar 10 BTC
+                "market_impact_sell": self._simulate_market_impact(ask_prices, ask_volumes, 10),  # Simula impacto de vender 10 BTC
+                "alertas_liquidez": alerts,
+                "layer": "signal",
+                "iceberg_reloaded": iceberg_reloaded,  # 🔹 NOVO: flag de recarga
+                "bid_reload_usd": bid_reload,
+                "ask_reload_usd": ask_reload
+            }
+
+            return event
+
+        except Exception as e:
+            logging.error(f"Erro ao analisar orderbook: {e}")
+            return {"is_signal": False, "error": str(e)}
+
+    def _simulate_market_impact(self, prices: np.array, volumes: np.array, target_volume: float):
+        """Simula o impacto de mercado ao executar uma ordem de mercado."""
+        try:
+            if len(prices) == 0 or len(volumes) == 0:
+                return {"impact_usd": 0.0, "slippage_percent": 0.0, "avg_filled_price": 0.0, "final_price": 0.0}
+
+            total_volume = 0.0
+            total_cost = 0.0
+            final_price = prices[0]
+
+            for i in range(len(prices)):
+                if total_volume >= target_volume:
+                    break
+                vol = min(volumes[i], target_volume - total_volume)
+                total_volume += vol
+                total_cost += vol * prices[i]
+                final_price = prices[i]
+
+            avg_price = total_cost / total_volume if total_volume > 0 else prices[0]
+            slippage = (avg_price - prices[0]) / prices[0] if len(prices) > 0 and prices[0] > 0 else 0
+
+            return {
+                "impact_usd": float(avg_price - prices[0]) if len(prices) > 0 else 0.0,
+                "slippage_percent": float(slippage * 100),
+                "avg_filled_price": float(avg_price),
+                "final_price": float(final_price)
+            }
+        except Exception as e:
+            logging.error(f"Erro ao simular impacto de mercado: {e}")
             return {
                 "impact_usd": 0.0,
                 "slippage_percent": 0.0,
                 "avg_filled_price": 0.0,
                 "final_price": 0.0
-            }
-
-    def analyze_order_book(self):
-        try:
-            bids, asks = self.fetch_order_book()
-            if not bids or not asks:
-                raise ValueError("Livro de ofertas vazio ou inválido.")
-
-            imbalance, volume_ratio, pressure, top_buy_vol, top_sell_vol = self.calculate_metrics(bids, asks)
-            flow_alerts = self.analyze_liquidity_flow(top_buy_vol, top_sell_vol)
-            wall_alerts, wall_threshold = self.analyze_liquidity_walls(bids, asks)
-            iceberg_alerts = self._detect_iceberg_orders(bids, asks, wall_threshold)
-            lifecycle_metrics = self._track_order_lifecycle(bids, asks, wall_threshold)
-
-            # ✅ CALCULA MÉTRICAS DE SPREAD E IMPACTO COM TRATAMENTO DE ERRO
-            spread_metrics = self._calculate_spread_and_depth(bids, asks)
-            impact_buy = self._calculate_market_impact(bids, order_size_btc=5.0)
-            impact_sell = self._calculate_market_impact(asks, order_size_btc=5.0)
-
-            all_alerts = flow_alerts + wall_alerts + iceberg_alerts
-            is_signal = bool(all_alerts)
-
-            if imbalance > 0.3 and volume_ratio > 1.2:
-                result, description = "Demanda Forte", f"Pressão de compra. Imbalance: {imbalance:.2%}, Ratio: {volume_ratio:.2f}"
-                is_signal = True
-            elif imbalance < -0.3 and volume_ratio < 0.8:
-                result, description = "Oferta Forte", f"Pressão de venda. Imbalance: {imbalance:.2%}, Ratio: {volume_ratio:.2f}"
-                is_signal = True
-            else:
-                result, description = "Equilíbrio", "Livro de ofertas equilibrado."
-
-            if is_signal and result == "Equilíbrio":
-                result = "Alerta de Liquidez"
-                description = " | ".join(all_alerts)
-
-            event = {
-                "is_signal": is_signal,
-                "timestamp": datetime.now(timezone.utc).astimezone(NY_TZ).isoformat(timespec="seconds"),
-                "tipo_evento": "OrderBook",
-                "resultado_da_batalha": result,
-                "descricao": description,
-                "ativo": self.symbol,
-                "imbalance": round(imbalance, 4),
-                "volume_ratio": round(volume_ratio, 4) if volume_ratio != float('inf') else 'inf',
-                "pressure": round(pressure, 4),
-                "order_lifecycle": lifecycle_metrics,
-                "spread_metrics": spread_metrics,           # ✅ GARANTIDO QUE É UM DICIONÁRIO
-                "market_impact_buy": impact_buy,            # ✅ GARANTIDO QUE É UM DICIONÁRIO
-                "market_impact_sell": impact_sell,          # ✅ GARANTIDO QUE É UM DICIONÁRIO
-            }
-            if all_alerts:
-                event["alertas_liquidez"] = all_alerts
-
-            return event
-        except Exception as e:
-            logging.error(f"Erro ao analisar o livro de ofertas: {e}")
-            return {
-                "is_signal": False,
-                "timestamp": datetime.now(timezone.utc).astimezone(NY_TZ).isoformat(timespec="seconds"),
-                "tipo_evento": "OrderBook",
-                "resultado_da_batalha": "Erro",
-                "descricao": f"Falha na análise: {e}",
-                "ativo": self.symbol,
-                "spread_metrics": {
-                    "spread": 0.0,
-                    "spread_percent": 0.0,
-                    "bid_depth_usd": 0.0,
-                    "ask_depth_usd": 0.0
-                },
-                "market_impact_buy": {
-                    "impact_usd": 0.0,
-                    "slippage_percent": 0.0,
-                    "avg_filled_price": 0.0,
-                    "final_price": 0.0
-                },
-                "market_impact_sell": {
-                    "impact_usd": 0.0,
-                    "slippage_percent": 0.0,
-                    "avg_filled_price": 0.0,
-                    "final_price": 0.0
-                },
-                "order_lifecycle": {
-                    "avg_order_lifetime_ms": 0.0,
-                    "short_ttl_orders": 0,
-                    "spoofing_detected": False,
-                    "layering_detected": False
-                }
             }

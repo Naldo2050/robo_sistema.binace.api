@@ -1,0 +1,3033 @@
+[
+  {
+    "id": "2dc37649-7046-4947-9b88-2027e9d9a0cc",
+    "kind": "POC",
+    "timeframe": "daily",
+    "anchor_price": 115252.0,
+    "low": 115211.66,
+    "high": 115292.34,
+    "score": 105.0,
+    "confluence": [
+      "DAILY_POC"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "cdcfd93f-4a4e-4f03-a972-ed5289ee43dd",
+    "kind": "VAH",
+    "timeframe": "daily",
+    "anchor_price": 115820.0,
+    "low": 115773.67,
+    "high": 115866.33,
+    "score": 105.0,
+    "confluence": [
+      "DAILY_VAH"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "1f8af93c-abcb-4de0-8e23-640da22bc685",
+    "kind": "VAL",
+    "timeframe": "daily",
+    "anchor_price": 115194.0,
+    "low": 115147.92,
+    "high": 115240.08,
+    "score": 105.0,
+    "confluence": [
+      "DAILY_VAL"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "cf603806-c28f-4e42-9c12-b106fa4636eb",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115243.98,
+    "low": 115177.44,
+    "high": 115284.57,
+    "score": 210.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "d2abf08e-8346-4b09-a935-cb44af68e1c5",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115286.65,
+    "low": 115216.42,
+    "high": 115326.59,
+    "score": 370.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "915d1631-2785-439f-8146-b649fbc2ee86",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115362.29,
+    "low": 115295.4,
+    "high": 115400.61,
+    "score": 210.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f5996193-6b17-4a5e-93bb-e8474ba217d5",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115414.57,
+    "low": 115367.38,
+    "high": 115454.63,
+    "score": 205.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "daab90fa-d3c4-4570-9866-3f30613c9bdc",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115487.0,
+    "low": 115452.35,
+    "high": 115521.65,
+    "score": 105.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "99f49c66-f369-4774-8453-7845b1beb41f",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115704.67,
+    "low": 115663.29,
+    "high": 115742.71,
+    "score": 155.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "cfee7db7-e58a-4eb8-ac83-912e67718a11",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115778.13,
+    "low": 115695.28,
+    "high": 115816.73,
+    "score": 325.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "6719f3ed-dfc9-46d4-bd53-44b7bd885df3",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115262.99,
+    "low": 115182.2,
+    "high": 115301.82,
+    "score": 1035.0,
+    "confluence": [
+      "DAILY_LVN",
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "3811188b-516f-4c4f-9b50-01fa6e35b058",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115270.34,
+    "low": 115236.18,
+    "high": 115323.82,
+    "score": 305.0,
+    "confluence": [
+      "DAILY_LVN",
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "7f93b9dd-dbd4-4f0d-8b11-4a5638636853",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115326.0,
+    "low": 115297.17,
+    "high": 115354.83,
+    "score": 105.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "71405f13-318b-4f14-b280-d3079b801462",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115381.65,
+    "low": 115347.16,
+    "high": 115425.85,
+    "score": 135.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ec3e770c-40bc-48a0-a5f5-c94a2969eb18",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115473.86,
+    "low": 115424.14,
+    "high": 115508.87,
+    "score": 205.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "763c1b89-7439-4e1c-87af-5561bf28e6f8",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115595.0,
+    "low": 115566.1,
+    "high": 115623.9,
+    "score": 105.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "6bcb2467-69b0-467d-b520-de9042395fab",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115667.0,
+    "low": 115638.08,
+    "high": 115695.92,
+    "score": 105.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "46a5fbd2-444d-475a-a60e-5986210a3e31",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115742.6,
+    "low": 115671.07,
+    "high": 115776.94,
+    "score": 280.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "3999d819-08c9-4948-8fe2-b6ef2a87eb83",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115819.49,
+    "low": 115740.06,
+    "high": 115853.96,
+    "score": 430.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ec34bb5c-e265-454a-ae0c-c40921559167",
+    "kind": "POC",
+    "timeframe": "weekly",
+    "anchor_price": 113333.0,
+    "low": 113293.33,
+    "high": 113372.67,
+    "score": 358.0,
+    "confluence": [
+      "WEEKLY_POC"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "db45f017-75e4-48a0-a681-1c0c0ea6e87e",
+    "kind": "VAH",
+    "timeframe": "weekly",
+    "anchor_price": 114400.0,
+    "low": 114354.24,
+    "high": 114445.76,
+    "score": 358.0,
+    "confluence": [
+      "WEEKLY_VAH"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "559b5667-1986-4e4c-8900-919cec776f43",
+    "kind": "VAL",
+    "timeframe": "weekly",
+    "anchor_price": 111807.0,
+    "low": 111762.28,
+    "high": 111851.72,
+    "score": 123.0,
+    "confluence": [
+      "WEEKLY_VAL"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "756d8699-20b6-4295-bf62-52a398d4a6f0",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 110802.0,
+    "low": 110768.76,
+    "high": 110835.24,
+    "score": 178.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ae0260c6-b04f-405b-a29b-95067c46d797",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 110915.67,
+    "low": 110873.73,
+    "high": 110953.28,
+    "score": 643.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "a3ac7204-0d5d-4a34-9f2b-06fed803e78a",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 110951.0,
+    "low": 110917.71,
+    "high": 110984.29,
+    "score": 358.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "28b9d20c-9eab-43de-a9b5-03efc8bafe08",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 111017.0,
+    "low": 110983.69,
+    "high": 111050.31,
+    "score": 178.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "b15133bf-f913-4d02-a780-ec8a0db2eb69",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 111280.0,
+    "low": 111246.62,
+    "high": 111313.38,
+    "score": 358.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "20a6723c-e17e-4b8a-9754-fda052e29857",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 111313.99,
+    "low": 111270.61,
+    "high": 111352.4,
+    "score": 643.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "504eafe8-2025-4fe3-9cc5-ceb68b2e7d0f",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 111388.0,
+    "low": 111354.58,
+    "high": 111421.42,
+    "score": 358.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "d7834ce6-4b98-457a-9b99-b8252ab4b758",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 111505.33,
+    "low": 111458.55,
+    "high": 111553.46,
+    "score": 853.0,
+    "confluence": [
+      "MONTHLY_HVN",
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "518789c3-bf59-4d65-9a45-c9ee823b4604",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 111573.0,
+    "low": 111539.53,
+    "high": 111606.47,
+    "score": 358.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "1a69780c-4ed2-46d4-bf58-65b5da13b652",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 111617.67,
+    "low": 111581.52,
+    "high": 111656.49,
+    "score": 643.0,
+    "confluence": [
+      "MONTHLY_HVN",
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "70f880d4-28f1-4703-8d71-6281fe564fa4",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 111696.0,
+    "low": 111662.49,
+    "high": 111729.51,
+    "score": 358.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "0195b978-9d45-49c2-8d00-13b5d0ffdaa1",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 111736.0,
+    "low": 111702.48,
+    "high": 111769.52,
+    "score": 178.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "d395514d-4dc2-42f3-b224-eec68b17c99b",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 111807.0,
+    "low": 111773.46,
+    "high": 111840.54,
+    "score": 358.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "a228abde-0002-4f97-bdcb-bc8b1e263a64",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 111847.99,
+    "low": 111802.45,
+    "high": 111887.56,
+    "score": 643.0,
+    "confluence": [
+      "MONTHLY_HVN",
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e52174d5-c85c-4c8e-ad5f-e3bb48aa1231",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 111953.0,
+    "low": 111919.41,
+    "high": 111986.59,
+    "score": 178.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "69a67823-a35f-4a31-b559-5c6a633f356e",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 112002.01,
+    "low": 111968.4,
+    "high": 112044.6,
+    "score": 463.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "9cdf926a-2b03-4b5b-b8e8-d86c682b73da",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 112106.71,
+    "low": 112061.37,
+    "high": 112148.63,
+    "score": 928.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "dca53153-2395-426c-bf62-a0918ba6e03c",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 112156.71,
+    "low": 112119.35,
+    "high": 112195.65,
+    "score": 928.0,
+    "confluence": [
+      "MONTHLY_HVN",
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "1489ee68-9210-43cd-a43e-2762475dd758",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 112201.33,
+    "low": 112162.34,
+    "high": 112237.66,
+    "score": 643.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "b38237af-5d91-45d6-9024-0578983bc13c",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 112232.0,
+    "low": 112198.33,
+    "high": 112265.67,
+    "score": 358.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "a61f40e2-5ea4-4e85-a0df-51c1edbe7f4f",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 112279.43,
+    "low": 112238.32,
+    "high": 112317.69,
+    "score": 928.0,
+    "confluence": [
+      "MONTHLY_HVN",
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "6540b179-78a9-442a-a140-af87e097c083",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 110735.0,
+    "low": 110707.32,
+    "high": 110762.68,
+    "score": 358.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "bd7b4786-5bb9-4de5-a75e-a688546be8a1",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 110856.0,
+    "low": 110828.29,
+    "high": 110883.71,
+    "score": 328.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "add817ec-5008-43b6-a7de-f73d4b261f02",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 110979.86,
+    "low": 110863.28,
+    "high": 111011.75,
+    "score": 1023.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ab1bcb4a-2d55-45fc-a204-e89359d1be67",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 110979.86,
+    "low": 110902.27,
+    "high": 111011.75,
+    "score": 1118.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "9f2889d7-93e6-4f16-b3ac-56f3f484f9b9",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 111005.99,
+    "low": 110956.25,
+    "high": 111033.75,
+    "score": 258.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "fecfa3b5-49dd-4666-b880-d0c1cf8846ed",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 111029.0,
+    "low": 111001.24,
+    "high": 111056.76,
+    "score": 358.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "7488a237-a63c-47eb-842c-b42d0368b75e",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 111057.99,
+    "low": 111024.24,
+    "high": 111088.77,
+    "score": 643.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "47bfd3c9-53f3-4ae8-b2bf-48df1679f5bb",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 111131.2,
+    "low": 111062.23,
+    "high": 111165.78,
+    "score": 1268.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "328646b0-a985-41eb-8d83-dd7cfb994687",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 111165.67,
+    "low": 111137.21,
+    "high": 111193.79,
+    "score": 643.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "eb270e24-8593-4814-b8a9-9b516135fe3e",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 111208.67,
+    "low": 111172.2,
+    "high": 111240.8,
+    "score": 643.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "7ed70066-9413-4584-a1d2-eab11b71b03b",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 111336.33,
+    "low": 111303.17,
+    "high": 111366.83,
+    "score": 463.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ec7f39bb-f443-489e-9bfe-83e7a7ba9e94",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 111372.0,
+    "low": 111344.16,
+    "high": 111399.84,
+    "score": 278.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "c6620cde-49ac-4b8f-994c-b375ab05467a",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 111396.01,
+    "low": 111368.15,
+    "high": 111445.85,
+    "score": 288.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e54233c2-4334-48b4-987f-ba1bd399e373",
+    "kind": "POC",
+    "timeframe": "monthly",
+    "anchor_price": 113079.0,
+    "low": 113039.42,
+    "high": 113118.58,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_POC"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "adb3118d-f870-4687-841b-324a948064d0",
+    "kind": "VAH",
+    "timeframe": "monthly",
+    "anchor_price": 115217.01,
+    "low": 115170.91,
+    "high": 115266.09,
+    "score": 395.0,
+    "confluence": [
+      "DAILY_VAH",
+      "MONTHLY_VAH"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "fb119139-6fc4-4725-8a78-debe953d6244",
+    "kind": "VAL",
+    "timeframe": "monthly",
+    "anchor_price": 109100.0,
+    "low": 109056.36,
+    "high": 109143.64,
+    "score": 140.0,
+    "confluence": [
+      "MONTHLY_VAL"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "cea74e68-9df3-4751-bd97-65ca39dd3087",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 109100.0,
+    "low": 109067.27,
+    "high": 109132.73,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "5904cbaa-6c66-4b25-99d2-cb2435ff730c",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 109415.0,
+    "low": 109382.18,
+    "high": 109447.82,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "04b0021a-9f08-4aa6-9a25-6ffdaf7bdef2",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 109488.0,
+    "low": 109455.15,
+    "high": 109520.85,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "7543ee6b-3d32-462b-af43-b5f75a74c2c0",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 109562.0,
+    "low": 109529.13,
+    "high": 109594.87,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "454cef76-ca60-41cb-919c-c6aee6efcfa1",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 109716.0,
+    "low": 109683.09,
+    "high": 109748.91,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "c83ff2ac-1f67-4f13-9fe7-01d9abcdeac6",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 109946.0,
+    "low": 109913.02,
+    "high": 109978.98,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "307b6adb-1d67-4764-af6a-a2e4455f4583",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 110071.0,
+    "low": 110037.98,
+    "high": 110104.02,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "bfee5138-a8b4-42a0-936f-9b5558ee0f42",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 110519.0,
+    "low": 110485.84,
+    "high": 110552.16,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "56e8aacd-510b-484b-ae5c-2c49f25d2b6f",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 110716.0,
+    "low": 110682.79,
+    "high": 110749.21,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "a6dae81d-905d-4e3e-ac14-866e1f5a16cd",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 110832.0,
+    "low": 110798.75,
+    "high": 110865.25,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "64cb1e8d-40ec-4166-89fc-bcdf905bfbb0",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 110984.0,
+    "low": 110950.7,
+    "high": 111017.3,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "a1c83dfa-00c2-4004-9b01-715fa0aa3a5d",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 111659.67,
+    "low": 111623.5,
+    "high": 111694.5,
+    "score": 655.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "0e4aa394-e28f-45ad-b1b6-51965cdfad19",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 111910.0,
+    "low": 111876.43,
+    "high": 111943.57,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "6ad5be11-c9ec-4968-a6a7-2ed8a31996f4",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112337.01,
+    "low": 112293.3,
+    "high": 112375.7,
+    "score": 550.0,
+    "confluence": [
+      "MONTHLY_HVN",
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "7f277c66-d801-4670-b1ba-c238caf471f5",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112488.67,
+    "low": 112446.26,
+    "high": 112526.75,
+    "score": 550.0,
+    "confluence": [
+      "MONTHLY_HVN",
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f7fb080f-9108-43c4-9fb9-08a42dbe2854",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112600.0,
+    "low": 112566.22,
+    "high": 112633.78,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "2afda0b4-f511-47f4-b96a-79b2a34286f2",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112641.99,
+    "low": 112601.21,
+    "high": 112689.8,
+    "score": 550.0,
+    "confluence": [
+      "MONTHLY_HVN",
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "b9b33fb4-4bdf-409b-a7f0-305d1951ffcf",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112693.0,
+    "low": 112659.19,
+    "high": 112726.81,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ea9f701b-8882-4996-9e68-a0fd0e1dd169",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112716.0,
+    "low": 112682.19,
+    "high": 112749.81,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "6fa22dab-9273-46ab-91e9-eaf82f6c4162",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112855.0,
+    "low": 112821.14,
+    "high": 112888.86,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "cf0d9d22-8a88-4957-821a-5454d2c7ee07",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112997.0,
+    "low": 112963.1,
+    "high": 113030.9,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "41d250ad-d154-49a5-af71-b98ad2f077ae",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 113079.0,
+    "low": 113045.08,
+    "high": 113112.92,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "b3a741a0-064e-44a5-a1be-52bf77abd101",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 113153.0,
+    "low": 113119.05,
+    "high": 113186.95,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "859941d7-9f70-44c9-954e-e4e8c3eaf8a4",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 112403.0,
+    "low": 112374.9,
+    "high": 112431.1,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f6de3e49-d062-4688-9805-8181847446cd",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 112460.0,
+    "low": 112431.88,
+    "high": 112488.12,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "d556428c-11de-4626-969f-96184f051e66",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 112511.0,
+    "low": 112482.87,
+    "high": 112539.13,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "4b8278bf-f89c-410b-8997-5cb96a469f0b",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 112629.71,
+    "low": 112597.84,
+    "high": 112659.16,
+    "score": 940.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "77d9512e-369c-4767-9f90-b6d5738f330d",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 113087.0,
+    "low": 113058.73,
+    "high": 113115.27,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "fcbb8ebd-6db0-4b9a-96cc-90617b160d1b",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 113170.0,
+    "low": 113141.71,
+    "high": 113198.29,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "849f4a02-616c-4391-8a75-bc6a7d70b923",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 113205.0,
+    "low": 113176.7,
+    "high": 113233.3,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e0fb9010-dd3b-492a-a913-188b7b899141",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 113377.0,
+    "low": 113348.66,
+    "high": 113405.34,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "7010e026-f2ec-4b0d-968a-5a76f3bb9e94",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 113419.0,
+    "low": 113390.65,
+    "high": 113447.35,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "7b8e4283-844f-4fc0-8a9e-2a7f6be784df",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 113649.0,
+    "low": 113620.59,
+    "high": 113677.41,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "33cfaed6-59c8-42f9-a7f8-b5a43a0920d5",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 113771.0,
+    "low": 113742.56,
+    "high": 113799.44,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "d6b837a5-f124-4705-9aec-7b24f1946702",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 113896.0,
+    "low": 113867.53,
+    "high": 113924.47,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "81b1a3b5-8439-48a8-8699-680cb98ffcc9",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 113919.0,
+    "low": 113890.52,
+    "high": 113947.48,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "320eee36-803b-4806-a8c4-7d6bd11f7dc7",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 113955.0,
+    "low": 113926.51,
+    "high": 113983.49,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "28303d10-1144-45dc-9e97-afaad37fbbf7",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 114132.0,
+    "low": 114103.47,
+    "high": 114160.53,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "c1deb42f-c7be-48bb-b4a8-85abd4abb863",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 114192.0,
+    "low": 114163.45,
+    "high": 114220.55,
+    "score": 370.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e62e4f34-1321-4de3-88f2-cb2bc7c593dd",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 114893.67,
+    "low": 114840.28,
+    "high": 114933.73,
+    "score": 550.0,
+    "confluence": [
+      "DAILY_LVN",
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "a523a234-cc05-448f-a8de-e168ac1f23db",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115098.27,
+    "low": 115033.23,
+    "high": 115145.78,
+    "score": 1795.0,
+    "confluence": [
+      "DAILY_LVN",
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "4f90205d-88f8-4a11-bb6c-3efa5e13a8ef",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115202.68,
+    "low": 115108.22,
+    "high": 115234.8,
+    "score": 1300.0,
+    "confluence": [
+      "DAILY_LVN",
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e0ac7824-71a6-4605-a0eb-caefb2c959f8",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115228.33,
+    "low": 115197.19,
+    "high": 115280.81,
+    "score": 285.0,
+    "confluence": [
+      "DAILY_LVN",
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "77fc7b46-79b2-40e1-a498-a92ffd6779e7",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115250.01,
+    "low": 115215.43,
+    "high": 115291.58,
+    "score": 395.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-14T23:53:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f1dd0e66-5380-4003-b8a5-a569d4916200",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115330.0,
+    "low": 115295.4,
+    "high": 115364.6,
+    "score": 100.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-14T23:53:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "cff20a66-aedc-4d33-b321-5ce0fc63221c",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115745.99,
+    "low": 115695.28,
+    "high": 115784.73,
+    "score": 235.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-14T23:53:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "723a622e-0c09-459e-bcbc-cbaf9b824a42",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115707.55,
+    "low": 115671.07,
+    "high": 115737.93,
+    "score": 280.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-14T23:53:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "06176b91-93a4-4405-a301-52d6b92b2b6c",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115784.93,
+    "low": 115740.06,
+    "high": 115823.95,
+    "score": 280.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-14T23:53:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "652e5e41-b6ca-4d72-813b-65ca753a5d4d",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 110952.92,
+    "low": 110902.27,
+    "high": 110982.74,
+    "score": 1423.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:53:01+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "9078d420-4be0-41c5-ab45-da0027dd3cd2",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 111090.0,
+    "low": 111062.23,
+    "high": 111117.77,
+    "score": 353.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:53:01+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "3143dc4b-5465-481e-a796-a16e2b9a1279",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115219.87,
+    "low": 115159.2,
+    "high": 115254.81,
+    "score": 570.0,
+    "confluence": [
+      "DAILY_LVN",
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-14T23:56:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "141c790e-23d6-4d74-981d-f39303c5457f",
+    "kind": "POC",
+    "timeframe": "daily",
+    "anchor_price": 115081.0,
+    "low": 115040.72,
+    "high": 115121.28,
+    "score": 290.0,
+    "confluence": [
+      "DAILY_POC"
+    ],
+    "created_at": "2025-09-15T00:12:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ae5978f3-56f6-4c89-af48-e3b9696b93a9",
+    "kind": "VAH",
+    "timeframe": "daily",
+    "anchor_price": 115163.0,
+    "low": 115116.93,
+    "high": 115209.07,
+    "score": 60.0,
+    "confluence": [
+      "DAILY_VAH"
+    ],
+    "created_at": "2025-09-15T00:12:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "b26138d1-fd16-420c-a43a-d1eec31560c9",
+    "kind": "VAL",
+    "timeframe": "daily",
+    "anchor_price": 115055.53,
+    "low": 115008.98,
+    "high": 115118.03,
+    "score": 85.0,
+    "confluence": [
+      "DAILY_VAL"
+    ],
+    "created_at": "2025-09-15T00:12:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "bf831114-8072-4ed8-823f-392cae749c42",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115081.0,
+    "low": 115046.48,
+    "high": 115115.52,
+    "score": 290.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-15T00:12:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "5acff548-0404-4723-9857-285e74b66096",
+    "kind": "VAL",
+    "timeframe": "weekly",
+    "anchor_price": 111832.0,
+    "low": 111787.27,
+    "high": 111876.73,
+    "score": 78.0,
+    "confluence": [
+      "WEEKLY_VAL"
+    ],
+    "created_at": "2025-09-15T00:12:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "1863fbea-607d-445d-b873-18ecdc8da210",
+    "kind": "ABS_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 114969.6,
+    "low": 114946.61,
+    "high": 114992.59,
+    "score": 70.0,
+    "confluence": [
+      "Absorção",
+      "Absorção de Venda"
+    ],
+    "created_at": "2025-09-15T01:04:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "2032470d-ec36-4923-8af5-43a79fc922c9",
+    "kind": "LIQUIDITY_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 114964.45,
+    "low": 114920.95,
+    "high": 115007.96,
+    "score": 75.0,
+    "confluence": [
+      "IMB_-0.33",
+      "IMB_0.02",
+      "LIQ_VOL_16",
+      "LIQ_VOL_3"
+    ],
+    "created_at": "2025-09-15T01:04:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Cluster: 34 trades, age: 272ms | Liquidity Cluster: 351 trades, age: 186ms"
+  },
+  {
+    "id": "2485cf8e-a60c-4ef1-a39c-d361c5497ad6",
+    "kind": "LIQUIDITY_HIGH",
+    "timeframe": "intraday",
+    "anchor_price": 114977.2,
+    "low": 114959.95,
+    "high": 114994.45,
+    "score": 80.0,
+    "confluence": [
+      "LIQ_HIGH",
+      "VOL_16",
+      "VOL_3",
+      "VOL_56"
+    ],
+    "created_at": "2025-09-15T01:04:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity High: 3 | Liquidity High: 16 | Liquidity High: 56"
+  },
+  {
+    "id": "0445274f-dad1-46f4-8aeb-86ae258cb15b",
+    "kind": "LIQUIDITY_LOW",
+    "timeframe": "intraday",
+    "anchor_price": 114969.6,
+    "low": 114952.35,
+    "high": 114986.85,
+    "score": 70.0,
+    "confluence": [
+      "LIQ_LOW",
+      "VOL_3"
+    ],
+    "created_at": "2025-09-15T01:04:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Low: 3"
+  },
+  {
+    "id": "261179e7-f651-4077-91b5-ad8e5bdd2b14",
+    "kind": "VAH",
+    "timeframe": "daily",
+    "anchor_price": 115250.0,
+    "low": 115203.9,
+    "high": 115296.1,
+    "score": 150.0,
+    "confluence": [
+      "DAILY_VAH"
+    ],
+    "created_at": "2025-09-15T01:05:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "bb66576e-a3c6-457d-b174-95dd38fe5e82",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 114990.0,
+    "low": 114955.5,
+    "high": 115024.5,
+    "score": 285.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-15T01:05:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e78c9870-ebc3-4d43-8481-f107d872d45c",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115167.0,
+    "low": 115132.45,
+    "high": 115201.55,
+    "score": 285.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-15T01:05:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f6729154-33cd-476e-901a-ccf883d45e11",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115077.14,
+    "low": 114976.25,
+    "high": 115111.77,
+    "score": 945.0,
+    "confluence": [
+      "DAILY_LVN",
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-15T01:05:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "54e332b4-a4f1-42e6-a0e6-776c46b088d9",
+    "kind": "VAL",
+    "timeframe": "weekly",
+    "anchor_price": 111878.0,
+    "low": 111833.25,
+    "high": 111922.75,
+    "score": 123.0,
+    "confluence": [
+      "WEEKLY_VAL"
+    ],
+    "created_at": "2025-09-15T01:05:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "03299780-d6fd-499a-acc4-6fcaecc598f7",
+    "kind": "VAL",
+    "timeframe": "monthly",
+    "anchor_price": 109415.0,
+    "low": 109371.23,
+    "high": 109458.77,
+    "score": 315.0,
+    "confluence": [
+      "MONTHLY_VAL"
+    ],
+    "created_at": "2025-09-15T01:05:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "d0903037-23ef-4ceb-b87e-6ea1d407e2b2",
+    "kind": "LIQUIDITY_LOW",
+    "timeframe": "intraday",
+    "anchor_price": 114930.05,
+    "low": 114902.76,
+    "high": 114957.34,
+    "score": 75.0,
+    "confluence": [
+      "LIQ_LOW",
+      "VOL_16",
+      "VOL_56"
+    ],
+    "created_at": "2025-09-15T01:05:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Low: 16 | Liquidity Low: 56"
+  },
+  {
+    "id": "cb994653-13c7-4a3e-a08b-72c1353b0f28",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115044.29,
+    "low": 114976.25,
+    "high": 115078.76,
+    "score": 730.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-15T01:06:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "9eae1537-8ab4-49c5-be5b-2ce592c890a2",
+    "kind": "LIQUIDITY_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 114940.84,
+    "low": 114906.36,
+    "high": 114975.32,
+    "score": 70.0,
+    "confluence": [
+      "LIQ_VOL_56",
+      "IMB_-0.20"
+    ],
+    "created_at": "2025-09-15T01:06:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Cluster: 799 trades, age: 200ms"
+  },
+  {
+    "id": "e04de369-8776-419f-ad28-d1167a71276a",
+    "kind": "LIQUIDITY_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 114886.74,
+    "low": 114850.76,
+    "high": 114922.7,
+    "score": 75.0,
+    "confluence": [
+      "IMB_0.14",
+      "IMB_0.15",
+      "LIQ_VOL_291",
+      "LIQ_VOL_471"
+    ],
+    "created_at": "2025-09-15T01:07:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Cluster: 2000 trades, age: 359ms | Liquidity Cluster: 2000 trades, age: 401ms"
+  },
+  {
+    "id": "61ccb922-0155-459e-836e-b8ab1576e53e",
+    "kind": "LIQUIDITY_HIGH",
+    "timeframe": "intraday",
+    "anchor_price": 114948.9,
+    "low": 114931.66,
+    "high": 114966.14,
+    "score": 75.0,
+    "confluence": [
+      "LIQ_HIGH",
+      "VOL_291",
+      "VOL_471"
+    ],
+    "created_at": "2025-09-15T01:07:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity High: 471 | Liquidity High: 291"
+  },
+  {
+    "id": "2c2f45f3-c06e-4a28-8cbe-841fa4de5394",
+    "kind": "LIQUIDITY_LOW",
+    "timeframe": "intraday",
+    "anchor_price": 114850.0,
+    "low": 114832.77,
+    "high": 114867.23,
+    "score": 75.0,
+    "confluence": [
+      "LIQ_LOW",
+      "VOL_291",
+      "VOL_471"
+    ],
+    "created_at": "2025-09-15T01:07:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Low: 471 | Liquidity Low: 291"
+  },
+  {
+    "id": "2e539a38-df7b-4cbb-b92e-8cc12e6dabb8",
+    "kind": "LIQUIDITY_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 114845.09,
+    "low": 114780.26,
+    "high": 114888.0,
+    "score": 135.0,
+    "confluence": [
+      "IMB_-0.08",
+      "IMB_-0.09",
+      "IMB_-0.12",
+      "IMB_-0.32",
+      "IMB_-0.33",
+      "IMB_-0.37",
+      "IMB_-0.40",
+      "IMB_-0.46",
+      "IMB_-0.49",
+      "IMB_0.01",
+      "IMB_0.03",
+      "IMB_0.09",
+      "IMB_0.10",
+      "IMB_0.13",
+      "LIQ_VOL_120",
+      "LIQ_VOL_133",
+      "LIQ_VOL_151",
+      "LIQ_VOL_152",
+      "LIQ_VOL_178",
+      "LIQ_VOL_224",
+      "LIQ_VOL_234",
+      "LIQ_VOL_239",
+      "LIQ_VOL_250",
+      "LIQ_VOL_252",
+      "LIQ_VOL_281",
+      "LIQ_VOL_285",
+      "LIQ_VOL_319"
+    ],
+    "created_at": "2025-09-15T01:09:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Cluster: 2000 trades, age: 413ms | Liquidity Cluster: 2000 trades, age: 379ms | Liquidity Cluster: 2000 trades, age: 383ms | Liquidity Cluster: 2000 trades, age: 361ms | Liquidity Cluster: 2000 trades, age: 400ms | Liquidity Cluster: 2000 trades, age: 401ms | Liquidity Cluster: 2000 trades, age: 285ms | Liquidity Cluster: 2000 trades, age: 444ms | Liquidity Cluster: 2000 trades, age: 383ms | Liquidity Cluster: 2000 trades, age: 397ms | Liquidity Cluster: 2000 trades, age: 366ms | Liquidity Cluster: 2000 trades, age: 435ms | Liquidity Cluster: 2000 trades, age: 334ms | Liquidity Cluster: 2000 trades, age: 395ms"
+  },
+  {
+    "id": "8badef70-bf0b-4e21-8555-91e557f99f74",
+    "kind": "LIQUIDITY_HIGH",
+    "timeframe": "intraday",
+    "anchor_price": 114865.12,
+    "low": 114842.37,
+    "high": 114918.14,
+    "score": 100.0,
+    "confluence": [
+      "LIQ_HIGH",
+      "VOL_120",
+      "VOL_133",
+      "VOL_224",
+      "VOL_234",
+      "VOL_239",
+      "VOL_285",
+      "VOL_319"
+    ],
+    "created_at": "2025-09-15T01:09:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity High: 239 | Liquidity High: 224 | Liquidity High: 234 | Liquidity High: 285 | Liquidity High: 319 | Liquidity High: 133 | Liquidity High: 120"
+  },
+  {
+    "id": "904bbe14-e49c-4b34-94da-73cc0d1be9c3",
+    "kind": "LIQUIDITY_LOW",
+    "timeframe": "intraday",
+    "anchor_price": 114791.04,
+    "low": 114762.78,
+    "high": 114830.22,
+    "score": 120.0,
+    "confluence": [
+      "LIQ_LOW",
+      "VOL_120",
+      "VOL_151",
+      "VOL_152",
+      "VOL_178",
+      "VOL_224",
+      "VOL_234",
+      "VOL_239",
+      "VOL_250",
+      "VOL_252",
+      "VOL_285"
+    ],
+    "created_at": "2025-09-15T01:09:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Low: 239 | Liquidity Low: 252 | Liquidity Low: 250 | Liquidity Low: 224 | Liquidity Low: 234 | Liquidity Low: 285 | Liquidity Low: 120 | Liquidity Low: 151 | Liquidity Low: 151 | Liquidity Low: 152 | Liquidity Low: 178"
+  },
+  {
+    "id": "4c2385d2-5a55-4a7c-b668-6313db17f2a8",
+    "kind": "VAL",
+    "timeframe": "daily",
+    "anchor_price": 115025.0,
+    "low": 114978.99,
+    "high": 115071.01,
+    "score": 80.0,
+    "confluence": [
+      "DAILY_VAL"
+    ],
+    "created_at": "2025-09-15T01:10:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ab525d32-b0c1-4db7-bfb5-6f4e1d61d835",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 114914.0,
+    "low": 114879.53,
+    "high": 114948.47,
+    "score": 260.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-15T01:10:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "9e34c144-a4d1-40db-9737-633304171544",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 114976.0,
+    "low": 114947.26,
+    "high": 115004.74,
+    "score": 125.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-15T01:10:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "6a5d9bf4-bc41-4e41-bdd1-4e9f4c9d8036",
+    "kind": "ABS_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 114817.37,
+    "low": 114791.27,
+    "high": 114845.86,
+    "score": 80.0,
+    "confluence": [
+      "Absorção",
+      "Absorção de Compra"
+    ],
+    "created_at": "2025-09-15T01:10:01+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "94554302-a6d4-471b-b03f-68d570babfad",
+    "kind": "LIQUIDITY_HIGH",
+    "timeframe": "intraday",
+    "anchor_price": 114855.59,
+    "low": 114834.37,
+    "high": 114892.33,
+    "score": 85.0,
+    "confluence": [
+      "LIQ_HIGH",
+      "VOL_250",
+      "VOL_252",
+      "VOL_281",
+      "VOL_330"
+    ],
+    "created_at": "2025-09-15T01:10:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity High: 252 | Liquidity High: 250 | Liquidity High: 330 | Liquidity High: 281"
+  },
+  {
+    "id": "7ace414b-5384-4386-815a-7c93e9029752",
+    "kind": "VAL",
+    "timeframe": "daily",
+    "anchor_price": 114976.44,
+    "low": 114930.01,
+    "high": 115041.0,
+    "score": 150.0,
+    "confluence": [
+      "DAILY_VAL"
+    ],
+    "created_at": "2025-09-15T01:15:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "c6d7d82f-6c3d-4786-8065-7b830157bcdc",
+    "kind": "VAL",
+    "timeframe": "weekly",
+    "anchor_price": 111945.99,
+    "low": 111873.23,
+    "high": 111991.78,
+    "score": 253.0,
+    "confluence": [
+      "WEEKLY_VAL"
+    ],
+    "created_at": "2025-09-15T01:15:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "90348b84-8698-49ea-a644-1aac1c54169f",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 112362.0,
+    "low": 112328.29,
+    "high": 112395.71,
+    "score": 253.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-15T01:15:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "1a85969f-9c74-4b1e-9363-3f454944d9be",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 112434.0,
+    "low": 112400.27,
+    "high": 112467.73,
+    "score": 253.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-15T01:15:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "2b433821-abfc-4375-8816-18e67ae31441",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 112568.67,
+    "low": 112520.23,
+    "high": 112609.77,
+    "score": 433.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-09-15T01:15:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "60581091-1125-49a2-b43f-9032c8e51c83",
+    "kind": "LIQUIDITY_LOW",
+    "timeframe": "intraday",
+    "anchor_price": 114777.76,
+    "low": 114759.78,
+    "high": 114797.92,
+    "score": 85.0,
+    "confluence": [
+      "LIQ_LOW",
+      "VOL_133",
+      "VOL_281",
+      "VOL_319",
+      "VOL_330"
+    ],
+    "created_at": "2025-09-15T01:15:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Low: 319 | Liquidity Low: 330 | Liquidity Low: 281 | Liquidity Low: 133"
+  },
+  {
+    "id": "c95b3bb1-0b04-40b2-beef-cab0e9ea0202",
+    "kind": "LIQUIDITY_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 114812.03,
+    "low": 114777.59,
+    "high": 114846.48,
+    "score": 70.0,
+    "confluence": [
+      "LIQ_VOL_330",
+      "IMB_-0.51"
+    ],
+    "created_at": "2025-09-15T01:16:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Cluster: 2000 trades, age: 396ms"
+  },
+  {
+    "id": "fdbbfac5-cd22-4113-ad2c-4ea3584d74ca",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 114864.0,
+    "low": 114829.54,
+    "high": 114898.46,
+    "score": 210.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-15T01:20:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "b61522ce-2940-40cf-8d49-88c1c44bd979",
+    "kind": "LIQUIDITY_HIGH",
+    "timeframe": "intraday",
+    "anchor_price": 114889.4,
+    "low": 114872.17,
+    "high": 114906.63,
+    "score": 85.0,
+    "confluence": [
+      "LIQ_HIGH",
+      "VOL_151",
+      "VOL_152",
+      "VOL_178"
+    ],
+    "created_at": "2025-09-15T01:20:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity High: 151 | Liquidity High: 151 | Liquidity High: 152 | Liquidity High: 178"
+  },
+  {
+    "id": "e32a8df4-5599-4e18-9f3e-5338e965c536",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 115107.0,
+    "low": 115072.47,
+    "high": 115141.53,
+    "score": 190.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-09-15T01:42:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ee14f8ba-560a-42e5-ba6d-e57089f4cc15",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 114832.0,
+    "low": 114803.29,
+    "high": 114860.71,
+    "score": 190.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-15T01:42:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "6aba8af8-2b87-4b34-bc6a-b7ad1ef318f5",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 114940.0,
+    "low": 114911.26,
+    "high": 114968.74,
+    "score": 190.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-15T01:42:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "af391453-162b-4be7-a29a-746acc9025b1",
+    "kind": "LIQUIDITY_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 115133.01,
+    "low": 115093.5,
+    "high": 115197.05,
+    "score": 135.0,
+    "confluence": [
+      "IMB_-0.10",
+      "IMB_-0.12",
+      "IMB_-0.13",
+      "IMB_-0.24",
+      "IMB_-0.43",
+      "IMB_-0.66",
+      "IMB_0.01",
+      "IMB_0.03",
+      "IMB_0.05",
+      "IMB_0.17",
+      "IMB_0.18",
+      "IMB_0.20",
+      "IMB_0.25",
+      "IMB_0.69",
+      "LIQ_VOL_100",
+      "LIQ_VOL_101",
+      "LIQ_VOL_12",
+      "LIQ_VOL_143",
+      "LIQ_VOL_149",
+      "LIQ_VOL_154",
+      "LIQ_VOL_177",
+      "LIQ_VOL_191",
+      "LIQ_VOL_291",
+      "LIQ_VOL_34",
+      "LIQ_VOL_42",
+      "LIQ_VOL_52",
+      "LIQ_VOL_66",
+      "LIQ_VOL_98"
+    ],
+    "created_at": "2025-09-15T01:42:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Cluster: 233 trades, age: 259ms | Liquidity Cluster: 529 trades, age: 232ms | Liquidity Cluster: 676 trades, age: 280ms | Liquidity Cluster: 912 trades, age: 300ms | Liquidity Cluster: 1090 trades, age: 307ms | Liquidity Cluster: 1379 trades, age: 326ms | Liquidity Cluster: 1977 trades, age: 392ms | Liquidity Cluster: 2000 trades, age: 272ms | Liquidity Cluster: 2000 trades, age: 262ms | Liquidity Cluster: 2000 trades, age: 376ms | Liquidity Cluster: 2000 trades, age: 353ms | Liquidity Cluster: 2000 trades, age: 377ms | Liquidity Cluster: 2000 trades, age: 233ms | Liquidity Cluster: 2000 trades, age: 383ms"
+  },
+  {
+    "id": "11d4d2ce-9025-4c1f-80e0-b5db579abb66",
+    "kind": "LIQUIDITY_HIGH",
+    "timeframe": "intraday",
+    "anchor_price": 115188.34,
+    "low": 115157.72,
+    "high": 115210.88,
+    "score": 130.0,
+    "confluence": [
+      "LIQ_HIGH",
+      "VOL_100",
+      "VOL_101",
+      "VOL_12",
+      "VOL_137",
+      "VOL_175",
+      "VOL_189",
+      "VOL_190",
+      "VOL_291",
+      "VOL_34",
+      "VOL_42",
+      "VOL_52",
+      "VOL_66",
+      "VOL_98"
+    ],
+    "created_at": "2025-09-15T01:42:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity High: 12 | Liquidity High: 34 | Liquidity High: 42 | Liquidity High: 52 | Liquidity High: 66 | Liquidity High: 98 | Liquidity High: 190 | Liquidity High: 189 | Liquidity High: 175 | Liquidity High: 137 | Liquidity High: 101 | Liquidity High: 100 | Liquidity High: 291"
+  },
+  {
+    "id": "dfaaff4c-edaa-4909-8e1c-394562aa7a20",
+    "kind": "LIQUIDITY_LOW",
+    "timeframe": "intraday",
+    "anchor_price": 115122.64,
+    "low": 115102.73,
+    "high": 115159.37,
+    "score": 110.0,
+    "confluence": [
+      "LIQ_LOW",
+      "VOL_12",
+      "VOL_143",
+      "VOL_149",
+      "VOL_154",
+      "VOL_34",
+      "VOL_42",
+      "VOL_52",
+      "VOL_66",
+      "VOL_98"
+    ],
+    "created_at": "2025-09-15T01:42:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Low: 12 | Liquidity Low: 34 | Liquidity Low: 42 | Liquidity Low: 52 | Liquidity Low: 66 | Liquidity Low: 98 | Liquidity Low: 143 | Liquidity Low: 154 | Liquidity Low: 149"
+  },
+  {
+    "id": "3d2431a6-2244-4456-ae99-592df796bbf9",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 110920.71,
+    "low": 110871.28,
+    "high": 110957.73,
+    "score": 263.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-15T01:45:01+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f5c1b1aa-5a27-421b-bacd-61e1c929db40",
+    "kind": "VAH",
+    "timeframe": "daily",
+    "anchor_price": 115190.99,
+    "low": 115141.92,
+    "high": 115237.08,
+    "score": 165.0,
+    "confluence": [
+      "DAILY_VAH"
+    ],
+    "created_at": "2025-09-15T01:47:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "78c98fe7-3faf-462d-a1d9-61fb7631d1c7",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115153.33,
+    "low": 115117.21,
+    "high": 115193.79,
+    "score": 580.0,
+    "confluence": [
+      "DAILY_LVN",
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-09-15T01:47:01+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e39cb67d-f149-47f9-a808-1b74667e1add",
+    "kind": "ABS_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 115174.09,
+    "low": 115151.06,
+    "high": 115197.12,
+    "score": 70.0,
+    "confluence": [
+      "Absorção",
+      "Absorção de Venda"
+    ],
+    "created_at": "2025-09-15T01:48:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "b0cb17b8-0fb6-47e8-a23c-62e4d9c841af",
+    "kind": "LIQUIDITY_HIGH",
+    "timeframe": "intraday",
+    "anchor_price": 115205.4,
+    "low": 115188.12,
+    "high": 115222.68,
+    "score": 90.0,
+    "confluence": [
+      "LIQ_HIGH",
+      "VOL_143",
+      "VOL_149",
+      "VOL_154",
+      "VOL_177",
+      "VOL_191"
+    ],
+    "created_at": "2025-09-15T01:48:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity High: 143 | Liquidity High: 154 | Liquidity High: 149 | Liquidity High: 177 | Liquidity High: 191"
+  },
+  {
+    "id": "5fa0a05e-c9b2-4553-8a1d-4416a8edfd63",
+    "kind": "ABS_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 115127.3,
+    "low": 115104.27,
+    "high": 115150.33,
+    "score": 70.0,
+    "confluence": [
+      "Absorção",
+      "Absorção de Venda"
+    ],
+    "created_at": "2025-09-15T01:50:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "cfd788e9-0c9b-48ce-b67a-60299e3657b5",
+    "kind": "LIQUIDITY_LOW",
+    "timeframe": "intraday",
+    "anchor_price": 115080.73,
+    "low": 115059.64,
+    "high": 115099.26,
+    "score": 85.0,
+    "confluence": [
+      "LIQ_LOW",
+      "VOL_100",
+      "VOL_101",
+      "VOL_177",
+      "VOL_291"
+    ],
+    "created_at": "2025-09-15T01:51:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Low: 177 | Liquidity Low: 101 | Liquidity Low: 100 | Liquidity Low: 291"
+  },
+  {
+    "id": "ea301ba3-372e-47b1-a960-4c4ce7c9f737",
+    "kind": "VAL",
+    "timeframe": "daily",
+    "anchor_price": 114914.24,
+    "low": 114868.03,
+    "high": 114974.97,
+    "score": 140.0,
+    "confluence": [
+      "DAILY_VAL"
+    ],
+    "created_at": "2025-09-15T01:52:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "bbb268f9-fea4-4f29-8b44-c21720f9042f",
+    "kind": "ABS_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 115050.0,
+    "low": 115026.99,
+    "high": 115073.01,
+    "score": 70.0,
+    "confluence": [
+      "Absorção",
+      "Absorção de Venda"
+    ],
+    "created_at": "2025-09-15T01:52:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "5dc5b137-ae1d-4f82-95c3-4f3b6483a490",
+    "kind": "LIQUIDITY_LOW",
+    "timeframe": "intraday",
+    "anchor_price": 115050.0,
+    "low": 115032.74,
+    "high": 115067.26,
+    "score": 95.0,
+    "confluence": [
+      "LIQ_LOW",
+      "VOL_137",
+      "VOL_175",
+      "VOL_185",
+      "VOL_189",
+      "VOL_190",
+      "VOL_191"
+    ],
+    "created_at": "2025-09-15T01:52:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Low: 191 | Liquidity Low: 190 | Liquidity Low: 189 | Liquidity Low: 185 | Liquidity Low: 175 | Liquidity Low: 137"
+  },
+  {
+    "id": "71836c1a-35c6-4779-9610-26b071635d37",
+    "kind": "LIQUIDITY_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 115113.74,
+    "low": 115067.43,
+    "high": 115154.65,
+    "score": 90.0,
+    "confluence": [
+      "IMB_0.01",
+      "IMB_0.02",
+      "IMB_0.04",
+      "IMB_0.11",
+      "IMB_0.18",
+      "LIQ_VOL_137",
+      "LIQ_VOL_175",
+      "LIQ_VOL_185",
+      "LIQ_VOL_189",
+      "LIQ_VOL_190"
+    ],
+    "created_at": "2025-09-15T01:53:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Cluster: 2000 trades, age: 382ms | Liquidity Cluster: 2000 trades, age: 354ms | Liquidity Cluster: 2000 trades, age: 384ms | Liquidity Cluster: 2000 trades, age: 343ms | Liquidity Cluster: 2000 trades, age: 409ms"
+  },
+  {
+    "id": "4d3f815e-aad2-46de-8952-989d0b527cd4",
+    "kind": "LIQUIDITY_HIGH",
+    "timeframe": "intraday",
+    "anchor_price": 115151.8,
+    "low": 115134.53,
+    "high": 115169.07,
+    "score": 70.0,
+    "confluence": [
+      "LIQ_HIGH",
+      "VOL_185"
+    ],
+    "created_at": "2025-09-15T01:55:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity High: 185"
+  },
+  {
+    "id": "2acfbcf8-22d4-41e8-9312-f36f51b1aa38",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 115009.99,
+    "low": 114976.25,
+    "high": 115048.76,
+    "score": 125.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-09-15T02:00:00+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "313423cf-8a59-4832-9938-ba0069171b9b",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 110899.0,
+    "low": 110871.28,
+    "high": 110926.72,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-09-15T02:00:01+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "65fb4a4a-5b93-4798-97a0-59400ccd3d06",
+    "kind": "LIQUIDITY_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 115215.92,
+    "low": 115181.36,
+    "high": 115250.49,
+    "score": 70.0,
+    "confluence": [
+      "LIQ_VOL_327",
+      "IMB_0.65"
+    ],
+    "created_at": "2025-09-15T02:01:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Cluster: 2000 trades, age: 391ms"
+  },
+  {
+    "id": "c19257dd-815e-42ac-a98b-939e2da9a3da",
+    "kind": "LIQUIDITY_HIGH",
+    "timeframe": "intraday",
+    "anchor_price": 115284.0,
+    "low": 115266.71,
+    "high": 115301.29,
+    "score": 70.0,
+    "confluence": [
+      "LIQ_HIGH",
+      "VOL_327"
+    ],
+    "created_at": "2025-09-15T02:01:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity High: 327"
+  },
+  {
+    "id": "67342f5a-dc80-4d5c-a7a5-387ec8791ada",
+    "kind": "LIQUIDITY_LOW",
+    "timeframe": "intraday",
+    "anchor_price": 115157.3,
+    "low": 115140.03,
+    "high": 115174.57,
+    "score": 70.0,
+    "confluence": [
+      "LIQ_LOW",
+      "VOL_327"
+    ],
+    "created_at": "2025-09-15T02:01:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Low: 327"
+  },
+  {
+    "id": "9f744497-b226-4080-8009-0d0e44ecf458",
+    "kind": "LIQUIDITY_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 115337.65,
+    "low": 115299.32,
+    "high": 115385.57,
+    "score": 100.0,
+    "confluence": [
+      "IMB_-0.02",
+      "IMB_-0.08",
+      "IMB_-0.19",
+      "IMB_0.10",
+      "IMB_0.32",
+      "IMB_0.50",
+      "LIQ_VOL_197",
+      "LIQ_VOL_257",
+      "LIQ_VOL_267",
+      "LIQ_VOL_377",
+      "LIQ_VOL_414",
+      "LIQ_VOL_487",
+      "LIQ_VOL_498"
+    ],
+    "created_at": "2025-09-15T02:02:04+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Cluster: 2000 trades, age: 381ms | Liquidity Cluster: 2000 trades, age: 233ms | Liquidity Cluster: 2000 trades, age: 379ms | Liquidity Cluster: 2000 trades, age: 380ms | Liquidity Cluster: 2000 trades, age: 382ms | Liquidity Cluster: 2000 trades, age: 414ms | Liquidity Cluster: 2000 trades, age: 369ms"
+  },
+  {
+    "id": "2887b354-8215-44c0-9c8d-ccb239f778fc",
+    "kind": "LIQUIDITY_HIGH",
+    "timeframe": "intraday",
+    "anchor_price": 115378.57,
+    "low": 115358.39,
+    "high": 115400.61,
+    "score": 100.0,
+    "confluence": [
+      "LIQ_HIGH",
+      "VOL_197",
+      "VOL_257",
+      "VOL_267",
+      "VOL_377",
+      "VOL_414",
+      "VOL_487",
+      "VOL_498"
+    ],
+    "created_at": "2025-09-15T02:02:04+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity High: 498 | Liquidity High: 487 | Liquidity High: 414 | Liquidity High: 377 | Liquidity High: 267 | Liquidity High: 257 | Liquidity High: 197"
+  },
+  {
+    "id": "657cc9fb-96c3-4d99-becc-33d4a3ad4161",
+    "kind": "LIQUIDITY_LOW",
+    "timeframe": "intraday",
+    "anchor_price": 115242.3,
+    "low": 115225.01,
+    "high": 115259.59,
+    "score": 70.0,
+    "confluence": [
+      "LIQ_LOW",
+      "VOL_498"
+    ],
+    "created_at": "2025-09-15T02:02:04+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Low: 498"
+  },
+  {
+    "id": "207ea07d-ac21-415e-8d94-c1b4b9dc55cb",
+    "kind": "LIQUIDITY_LOW",
+    "timeframe": "intraday",
+    "anchor_price": 115324.2,
+    "low": 115306.9,
+    "high": 115341.5,
+    "score": 80.0,
+    "confluence": [
+      "LIQ_LOW",
+      "VOL_377",
+      "VOL_414",
+      "VOL_487"
+    ],
+    "created_at": "2025-09-15T02:03:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Low: 487 | Liquidity Low: 414 | Liquidity Low: 377"
+  },
+  {
+    "id": "e75683a5-b159-47a1-a899-d48490505f2e",
+    "kind": "ABS_CLUSTER",
+    "timeframe": "intraday",
+    "anchor_price": 115335.16,
+    "low": 115312.09,
+    "high": 115358.23,
+    "score": 70.0,
+    "confluence": [
+      "Absorção",
+      "Absorção de Venda"
+    ],
+    "created_at": "2025-09-15T02:06:02+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "44667b20-d5b3-4453-8cae-7d2a72c11775",
+    "kind": "LIQUIDITY_LOW",
+    "timeframe": "intraday",
+    "anchor_price": 115293.0,
+    "low": 115275.71,
+    "high": 115310.29,
+    "score": 80.0,
+    "confluence": [
+      "LIQ_LOW",
+      "VOL_197",
+      "VOL_257",
+      "VOL_267"
+    ],
+    "created_at": "2025-09-15T02:06:03+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": "Liquidity Low: 267 | Liquidity Low: 257 | Liquidity Low: 197"
+  }
+]
