@@ -33,6 +33,10 @@ class TimeManager:
                 # 🔹 NOVO: Alerta se o offset for muito grande
                 if abs(self.server_time_offset_ms) > 5000:  # 5 segundos
                     logging.critical(f"💀 DRIFT DE TEMPO DETECTADO: {self.server_time_offset_ms}ms!")
+                    logging.critical("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                    logging.critical("!!! ATENÇÃO: O RELÓGIO DO SEU COMPUTADOR ESTÁ FORA DE SINCRONIA. !!!")
+                    logging.critical("!!! ATIVE A SINCRONIZAÇÃO AUTOMÁTICA DE HORA NAS CONFIGURAÇÕES DO SEU SISTEMA. !!!")
+                    logging.critical("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
                 
                 logging.info(f"✅ TimeManager sincronizado. Offset: {self.server_time_offset_ms}ms")
                 return

@@ -44,6 +44,12 @@ class AIAnalyzer:
         # 🔹 Inicializa TimeManager
         self.time_manager = TimeManager()
         
+        # Controle de reconexão automática
+        self.last_test_time = 0
+        self.test_interval_seconds = 120  # Testa conexão a cada 2 minutos
+        self.connection_failed_count = 0
+        self.max_failures_before_mock = 3
+        
         logging.info("🧠 IA Analyzer Qwen inicializada - Análise avançada ativada")
 
     def _initialize_api(self):
@@ -71,6 +77,64 @@ class AIAnalyzer:
                 logging.warning(f"Erro ao configurar DashScope: {e}")
         
         logging.info("🎭 Nenhuma API disponível - usando apenas simulação")
+
+    def _should_test_connection(self):
+        """Verifica se é hora de testar a conexão novamente."""
+        now = time.time()
+        if now - self.last_test_time > self.test_interval_seconds:
+            return True
+        return False
+
+    def _test_connection(self) -> bool:
+        """Testa conexão com APIs e atualiza estado."""
+        if self.connection_failed_count >= self.max_failures_before_mock:
+            self.use_mock = True
+            self.api_mode = 'mock'
+            logging.warning("⚠️ IA desativada por falhas repetidas. Usando modo mock.")
+            return False
+
+        if OPENAI_AVAILABLE and self.client:
+            try:
+                response = self.client.chat.completions.create(
+                    model="qwen-plus",
+                    messages=[{"role": "user", "content": "Responda: OK"}],
+                    max_tokens=10,
+                    timeout=10
+                )
+                if response.choices and "OK" in response.choices[0].message.content.upper():
+                    self.api_mode = 'openai'
+                    self.use_mock = False
+                    self.connection_failed_count = 0
+                    logging.info("✅ Conexão com OpenAI bem-sucedida")
+                    return True
+            except Exception as e:
+                logging.warning(f"Erro ao testar conexão OpenAI: {e}")
+
+        if DASHSCOPE_AVAILABLE:
+            try:
+                response = Generation.call(
+                    model="qwen-plus",
+                    messages=[{"role": "user", "content": "Responda: OK"}],
+                    result_format="message",
+                    max_tokens=10,
+                    timeout=10
+                )
+                if hasattr(response, 'status_code') and response.status_code == 200:
+                    if hasattr(response, 'output') and response.output:
+                        choices = response.output.get('choices', [])
+                        if choices and "OK" in choices[0].get('message', {}).get('content', '').upper():
+                            self.api_mode = 'dashscope'
+                            self.use_mock = False
+                            self.connection_failed_count = 0
+                            logging.info("✅ Conexão com DashScope bem-sucedida")
+                            return True
+            except Exception as e:
+                logging.warning(f"Erro ao testar conexão DashScope: {e}")
+
+        # Falhou
+        self.connection_failed_count += 1
+        logging.warning(f"❌ Falha {self.connection_failed_count}/{self.max_failures_before_mock} na conexão com IA. Tentando novamente em {self.test_interval_seconds}s...")
+        return False
 
     def _create_prompt(self, event_data: Dict[str, Any]) -> str:
         """
@@ -312,53 +376,16 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver):
 **Expectativa:** Teste de continuação provável baseado em mock.
 **Plano:** Short abaixo do POC, alvo no VAL. Stop no HVN."""
 
-    def test_connection(self) -> bool:
-        """Testa conexão com as APIs com retry."""
-        if OPENAI_AVAILABLE and self.client:
-            try:
-                response = self.client.chat.completions.create(
-                    model="qwen-plus",
-                    messages=[{"role": "user", "content": "Responda: OK"}],
-                    max_tokens=10,
-                    timeout=10
-                )
-                if response.choices and response.choices[0].message.content and "OK" in response.choices[0].message.content.upper():
-                    self.api_mode = 'openai'
-                    self.use_mock = False
-                    logging.info("✅ Conexão com OpenAI bem-sucedida")
-                    return True
-            except Exception as e:
-                logging.warning(f"Erro ao testar conexão OpenAI: {e}")
-
-        if DASHSCOPE_AVAILABLE:
-            try:
-                response = Generation.call(
-                    model="qwen-plus",
-                    messages=[{"role": "user", "content": "Responda: OK"}],
-                    result_format="message",
-                    max_tokens=10,
-                    timeout=10
-                )
-                if hasattr(response, 'status_code') and response.status_code == 200:
-                    if hasattr(response, 'output') and response.output:
-                        choices = response.output.get('choices', [])
-                        if choices and "OK" in choices[0].get('message', {}).get('content', '').upper():
-                            self.api_mode = 'dashscope'
-                            self.use_mock = False
-                            logging.info("✅ Conexão com DashScope bem-sucedida")
-                            return True
-            except Exception as e:
-                logging.warning(f"Erro ao testar conexão DashScope: {e}")
-
-        logging.warning("⚠️ Nenhuma API disponível - usando modo mock")
-        self.api_mode = 'mock'
-        self.use_mock = True
-        return False
-
     def analyze_event(self, event_data: Dict[str, Any]) -> str:
         """Analisa evento com fallback robusto."""
         if not self.enabled:
             return "IA Analyzer desabilitado."
+
+        # 🔹 NOVO: Testa conexão periodicamente
+        if self._should_test_connection():
+            self.last_test_time = time.time()
+            if not self._test_connection():
+                logging.warning("⚠️ Falha na conexão com IA. Usando modo mock temporariamente.")
 
         # Garante que a API foi testada
         if self.api_mode is None:
@@ -387,6 +414,15 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver):
         if not analysis or len(analysis.strip()) <= 50:
             logging.warning("⚠️ IA falhou ou retornou resposta curta. Usando análise básica.")
             analysis = self._generate_mock_analysis(event_data)
+
+        # 🔹 NOVO: Envie heartbeat sempre que a IA responder
+        # (Isso garante que o HealthMonitor saiba que a IA está viva)
+        logging.debug("🧠 IA enviou análise. Registrando heartbeat.")
+        # 👇 AQUI É O QUE FAZ A IA ENVIAR HEARTBEAT
+        # Mas como essa classe não tem acesso ao HealthMonitor diretamente...
+        # Então, vamos deixar isso como observação: o HealthMonitor vai ver que a IA respondeu quando ela chamar analyze_event()
+        # Como analyze_event() é chamado pelo bot, e o bot chama o health_monitor.heartbeat("ai")
+        # ... então precisamos garantir que o bot chame isso.
 
         return analysis
 

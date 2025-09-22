@@ -5,11 +5,13 @@ import logging
 import threading
 import time
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from time_manager import TimeManager
 
 NY_TZ = ZoneInfo("America/New_York")
+SP_TZ = ZoneInfo("America/Sao_Paulo")
+UTC_TZ = ZoneInfo("UTC")
 
 DATA_DIR = Path("dados")
 DATA_DIR.mkdir(exist_ok=True)
@@ -22,6 +24,11 @@ class EventSaver:
         self.visual_log_file = DATA_DIR / "eventos_visuais.log"
         self.last_candle_id = None
         self.time_manager = TimeManager()
+
+        # Controle de cabeçalho por minuto (não repetir)
+        self._last_logged_block = None  # chave: "YYYY-mm-dd HH:MM|context"
+        # Anti-duplicado simples no LOG por bloco (opcional)
+        self._seen_in_block = set()
 
         # 🔹 NOVO: buffer de escrita + thread de flush (Fase 2)
         self._write_buffer = []
@@ -158,23 +165,45 @@ class EventSaver:
             logging.critical(f"💀 FALHA TOTAL DE PERSISTÊNCIA para JSONL: {e2}")
 
     def save_event(self, event: dict):
-        """Salva evento com validação e fallback."""
+        """Salva evento com validação, horários SP/NY e contexto histórico vs real_time."""
         try:
             # Validação básica do evento
             if not isinstance(event, dict):
                 logging.error("Tentativa de salvar evento inválido: não é um dicionário")
                 return
-                
+
+            # 🔹 Conversão de timestamp + contexto
+            ts = event.get("timestamp")
+            if ts:
+                try:
+                    dt = datetime.fromisoformat(ts)  # timezone-aware (ISO8601)
+                    now = datetime.now(UTC_TZ)
+
+                    # Critério simples: se estiver mais de 1 dia à frente do relógio → histórico
+                    if dt > now + timedelta(days=1):
+                        event["data_context"] = "historical"
+                    else:
+                        event["data_context"] = "real_time"
+
+                    # Converte para SP/NY (para salvar nos JSONs)
+                    event["time_ny"] = dt.astimezone(NY_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+                    event["time_sp"] = dt.astimezone(SP_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+                except Exception as e:
+                    logging.error(f"Erro ao converter timestamp do evento: {e}")
+                    event["data_context"] = "unknown"
+            else:
+                event["data_context"] = "unknown"
+
             # Adiciona separador para nova janela
             candle_id = event.get("candle_id_ms")
             if candle_id and candle_id != self.last_candle_id:
                 self._add_visual_separator(event)
                 self.last_candle_id = candle_id
-            
+
             # Bufferiza o evento
             with self._buffer_lock:
                 self._write_buffer.append(event)
-            
+
             # Alerta sonoro (não bufferizado)
             if self.sound_alert and event.get("is_signal", False):
                 self._play_sound()
@@ -206,20 +235,73 @@ class EventSaver:
                 logging.critical(f"💀 FALHA TOTAL ao salvar separador visual: {e2}")
 
     def _add_visual_log_entry(self, event: dict):
-        """Adiciona uma entrada formatada e detalhada no arquivo de log visual."""
+        """
+        Log visual amigável:
+        - Cabeçalho (UTC, NY, SP, CONTEXT) 1x por minuto+contexto.
+        - Não repetir time_ny/time_sp dentro do corpo do evento.
+        - Exibir o timestamp do evento como 'timestamp_utc' para não confundir.
+        - Filtro anti-duplicado opcional por bloco (timestamp+tipo_evento+descricao).
+        """
         try:
+            ts = event.get("timestamp")
+            minute_block = None
+            utc_header = ny_header = sp_header = None
+            context = event.get("data_context", "unknown")
+
+            if ts:
+                try:
+                    dt = datetime.fromisoformat(ts)  # aware
+                    # Bloco: minuto em UTC para ser consistente
+                    minute_key = dt.astimezone(UTC_TZ).strftime("%Y-%m-%d %H:%M")
+                    minute_block = f"{minute_key}|{context}"
+
+                    # Cabeçalho com os 3 fusos (para acabar com a dúvida)
+                    utc_header = dt.astimezone(UTC_TZ).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    ny_header = dt.astimezone(NY_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+                    sp_header = dt.astimezone(SP_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+                except Exception as e:
+                    logging.error(f"Erro ao interpretar timestamp no log visual: {e}")
+
             with open(self.visual_log_file, "a", encoding="utf-8") as f:
+                # Se mudou bloco (minuto+contexto), imprime cabeçalho e reseta anti-duplicado
+                if minute_block and minute_block != self._last_logged_block:
+                    f.write("\n" + "="*150 + "\n")
+                    if utc_header:
+                        f.write(f"HORÁRIO UTC: {utc_header}\n")
+                    if ny_header:
+                        f.write(f"HORÁRIO NY:  {ny_header}\n")
+                    if sp_header:
+                        f.write(f"HORÁRIO SP:  {sp_header}\n")
+                    f.write(f"CONTEXT: {context}\n")
+                    f.write("------------------------------\n")
+                    self._last_logged_block = minute_block
+                    self._seen_in_block.clear()
+
+                # Anti-duplicado simples no LOG por minuto+contexto (opcional)
+                dedupe_key = (
+                    str(event.get("timestamp")),
+                    str(event.get("tipo_evento")),
+                    str(event.get("resultado_da_batalha")),
+                    str(event.get("descricao")),
+                )
+                if dedupe_key in self._seen_in_block:
+                    return
+                self._seen_in_block.add(dedupe_key)
+
+                # Escreve o evento, sem repetir time_ny/time_sp e renomeando timestamp
                 f.write("{\n")
                 for key, value in event.items():
+                    if key in ("time_ny", "time_sp"):
+                        continue  # não repetir no corpo do evento
+                    out_key = "timestamp_utc" if key == "timestamp" else key
+
                     if isinstance(value, (int, float)):
-                        f.write(f"  \"{key}\": {value},\n")
+                        f.write(f"  \"{out_key}\": {value},\n")
                     elif isinstance(value, str):
-                        # Escapa caracteres especiais na string
                         escaped_value = value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
-                        f.write(f"  \"{key}\": \"{escaped_value}\",\n")
+                        f.write(f"  \"{out_key}\": \"{escaped_value}\",\n")
                     else:
-                        # Converte qualquer outro tipo para string
-                        f.write(f"  \"{key}\": {json.dumps(value, ensure_ascii=False, default=str)},\n")
+                        f.write(f"  \"{out_key}\": {json.dumps(value, ensure_ascii=False, default=str)},\n")
                 f.write("}\n")
         except Exception as e:
             logging.error(f"Erro ao adicionar entrada visual: {e}")

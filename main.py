@@ -707,6 +707,16 @@ class EnhancedMarketBot:
             except Exception as e:
                 logging.error(f"Erro ao atualizar zonas de liquidez: {e}")
 
+            # --- 7. 🔹 NOVO: ENVIA O MAPA DE LIQUIDEZ PARA O EVENTO SALVO!
+            # Garante que o heatmap está presente nos eventos salvos
+            if flow_metrics and "liquidity_heatmap" in flow_metrics:
+                # Atualiza o último sinal (se houver) com o heatmap
+                if signals:
+                    main_event = signals[0]
+                    main_event["liquidity_heatmap"] = flow_metrics["liquidity_heatmap"]
+                    # Re-salva o evento para garantir que o EventSaver veja o campo
+                    self.event_saver.save_event(main_event)
+
             print("─" * 80)
         except Exception as e:
             logging.error(f"Erro no processamento da janela #{self.window_count}: {e}", exc_info=True)
