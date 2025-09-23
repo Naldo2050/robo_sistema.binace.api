@@ -120,31 +120,44 @@ def calcular_delta_normalizado(df: pd.DataFrame) -> pd.DataFrame:
         return df_copy
 
 def detectar_absorcao(df: pd.DataFrame, delta_threshold: float = 0.5) -> pd.DataFrame:
-    """Detecta absorção de compra/venda"""
+    """Detecta absorção de compra/venda com lógica de preço corrigida."""
     try:
         df = df.copy()
         
         # Validação de dados
-        if "Close" not in df.columns or "Open" not in df.columns:
-            raise ValueError("Colunas Close ou Open ausentes")
-            
+        required_cols = ["Delta", "Close", "Open", "High", "Low"]
+        if not all(col in df.columns for col in required_cols):
+            raise ValueError(f"Colunas ausentes para detectar absorção: {', '.join(c for c in required_cols if c not in df.columns)}")
+
+        candle_range = df["High"] - df["Low"]
+        # Evita divisão por zero em candles sem range
+        candle_range[candle_range == 0] = 0.0001 
+
+        # CORREÇÃO: Adiciona verificação da posição do fechamento no candle
+        # Para absorver venda, o preço deve fechar na metade SUPERIOR, mostrando que compradores seguraram
+        close_pos_compra = (df["Close"] - df["Low"]) / candle_range
+        # Para absorver compra, o preço deve fechar na metade INFERIOR, mostrando que vendedores seguraram
+        close_pos_venda = (df["High"] - df["Close"]) / candle_range
+
+        # Absorção de Compra (compradores absorvem a venda)
         cond_absorcao_compra = (
-            (df["Delta"] < -abs(delta_threshold)) & 
-            (df["Close"] >= df["Open"]) &
-            (df["Close"] > 0) & (df["Open"] > 0)
+            (df["Delta"] < -abs(delta_threshold)) &  # Forte agressão de venda
+            (df["Close"] >= df["Open"] * 0.998) &      # Preço não despenca, fecha perto ou acima da abertura
+            (close_pos_compra > 0.5)                # Fecha na metade superior do candle (sinal de rejeição da queda)
         )
+        
+        # Absorção de Venda (vendedores absorvem a compra)
         cond_absorcao_venda = (
-            (df["Delta"] > abs(delta_threshold)) &
-            (df["Close"] <= df["Open"]) &
-            (df["Close"] > 0) & (df["Open"] > 0)
+            (df["Delta"] > abs(delta_threshold)) &   # Forte agressão de compra
+            (df["Close"] <= df["Open"] * 1.002) &      # Preço não dispara, fecha perto ou abaixo da abertura
+            (close_pos_venda > 0.5)                 # Fecha na metade inferior do candle (sinal de rejeição da alta)
         )
         
         df["AbsorcaoCompra"] = cond_absorcao_compra.astype(int)
         df["AbsorcaoVenda"] = cond_absorcao_venda.astype(int)
         
-        price_range = df["High"] - df["Low"]
         min_atr = df["Close"] * 0.001  # 0.1% do preço
-        atr = np.maximum(price_range.rolling(14, min_periods=1).mean(), min_atr)
+        atr = np.maximum(candle_range.rolling(14, min_periods=1).mean(), min_atr)
         df["IndiceAbsorcao"] = (df["Delta"].abs() / atr).replace([np.inf, -np.inf], 0).fillna(0)
         
         return df
@@ -333,7 +346,7 @@ def calcular_trade_speed(df: pd.DataFrame) -> dict:
 # ===============================
 
 def create_absorption_event(window_data: list, symbol: str, delta_threshold: float = 0.5,
-                            tz_output=NY_TZ, flow_metrics: dict=None,
+                            tz_output=timezone.utc, flow_metrics: dict=None,
                             historical_profile: dict=None) -> dict:
     try:
         # validar dados
@@ -438,8 +451,8 @@ def create_absorption_event(window_data: list, symbol: str, delta_threshold: flo
         if flow_metrics: event["fluxo_continuo"]=flow_metrics
         if historical_profile: event["historical_vp"]=historical_profile
         
-        # 🔹 USA TIME MANAGER
-        event["timestamp"] = time_manager.now_iso(tz=tz_output)
+        # CORREÇÃO: Garante que o timestamp é sempre UTC
+        event["timestamp"] = time_manager.now_iso(tz=timezone.utc)
         
         return event
     except Exception as e:
@@ -451,7 +464,7 @@ def create_absorption_event(window_data: list, symbol: str, delta_threshold: flo
 # ===============================
 
 def create_exhaustion_event(window_data: list, symbol: str, history_volumes=None, volume_factor: float=2.0,
-                            tz_output=NY_TZ,
+                            tz_output=timezone.utc,
                             flow_metrics: dict=None,
                             historical_profile: dict=None) -> dict:
     try:
@@ -545,8 +558,8 @@ def create_exhaustion_event(window_data: list, symbol: str, history_volumes=None
         if flow_metrics: event["fluxo_continuo"]=flow_metrics
         if historical_profile: event["historical_vp"]=historical_profile
         
-        # 🔹 USA TIME MANAGER
-        event["timestamp"] = time_manager.now_iso(tz=tz_output)
+        # CORREÇÃO: Garante que o timestamp é sempre UTC
+        event["timestamp"] = time_manager.now_iso(tz=timezone.utc)
         
         return event
     except Exception as e:

@@ -213,22 +213,31 @@ class OrderBookAnalyzer:
             # Gera alertas
             alerts = []
             current_time = time.time()
-
+            
+            # CORREÇÃO: Lógica de fluxo de liquidez aprimorada para evitar alertas exagerados
             if current_time - self.last_liquidity_check_time > self.liquidity_check_interval:
                 if self.last_snapshot:
-                    # Compara profundidade
                     prev_bid_usd = self.last_snapshot.get("spread_metrics", {}).get("bid_depth_usd", 0)
                     prev_ask_usd = self.last_snapshot.get("spread_metrics", {}).get("ask_depth_usd", 0)
                     curr_bid_usd = metrics["bid_depth_usd"]
                     curr_ask_usd = metrics["ask_depth_usd"]
-
-                    if prev_bid_usd > 0 and abs(curr_bid_usd - prev_bid_usd) / prev_bid_usd > self.liquidity_flow_alert_percentage:
-                        change_pct = (curr_bid_usd - prev_bid_usd) / prev_bid_usd * 100
-                        alerts.append(f"FLUXO: {'Aumento' if change_pct > 0 else 'Retirada'} de {abs(change_pct):.1f}% na liquidez de compra (Bids).")
                     
-                    if prev_ask_usd > 0 and abs(curr_ask_usd - prev_ask_usd) / prev_ask_usd > self.liquidity_flow_alert_percentage:
-                        change_pct = (curr_ask_usd - prev_ask_usd) / prev_ask_usd * 100
-                        alerts.append(f"FLUXO: {'Aumento' if change_pct > 0 else 'Retirada'} de {abs(change_pct):.1f}% na liquidez de venda (Asks).")
+                    # Limite de mudança absoluta em USD para considerar um fluxo relevante
+                    MIN_ABSOLUTE_CHANGE_USD = 500000 # $500k
+
+                    # Lógica para Bids
+                    bid_change_usd = curr_bid_usd - prev_bid_usd
+                    if prev_bid_usd > 0 and abs(bid_change_usd) > MIN_ABSOLUTE_CHANGE_USD:
+                        change_pct = bid_change_usd / prev_bid_usd
+                        if abs(change_pct) > self.liquidity_flow_alert_percentage:
+                            alerts.append(f"FLUXO: {'Aumento' if change_pct > 0 else 'Retirada'} de {abs(change_pct)*100:.1f}% na liquidez de compra (Bids).")
+
+                    # Lógica para Asks
+                    ask_change_usd = curr_ask_usd - prev_ask_usd
+                    if prev_ask_usd > 0 and abs(ask_change_usd) > MIN_ABSOLUTE_CHANGE_USD:
+                        change_pct = ask_change_usd / prev_ask_usd
+                        if abs(change_pct) > self.liquidity_flow_alert_percentage:
+                            alerts.append(f"FLUXO: {'Aumento' if change_pct > 0 else 'Retirada'} de {abs(change_pct)*100:.1f}% na liquidez de venda (Asks).")
 
                 self.last_snapshot = {
                     "spread_metrics": {

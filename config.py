@@ -95,7 +95,8 @@ VP_VALUE_AREA_PERCENT = 0.70
 VP_ADVANCED = True  # se True, calcula HVN/LVN/multi-timeframes/single prints
 
 # -- Intervalo de atualização --
-CONTEXT_UPDATE_INTERVAL_SECONDS = 60 * 5  # 5 min
+# CORREÇÃO: Reduzido de 5 minutos para 1 minuto para dados mais recentes.
+CONTEXT_UPDATE_INTERVAL_SECONDS = 60 * 1  # 1 min
 
 # ==============================================================================
 # PARÂMETROS DE MACHINE LEARNING / ESTATÍSTICA

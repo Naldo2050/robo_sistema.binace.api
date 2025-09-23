@@ -610,7 +610,7 @@ class EnhancedMarketBot:
                 try:
                     touched = self.levels.check_price(float(preco_atual))
                     for z in touched:
-                        zone_event = signal.copy() if signals else {}
+                        zone_event = signals[0].copy() if signals else {}
                         zone_event.update({
                             "tipo_evento": "Zona",
                             "resultado_da_batalha": f"Toque em Zona {z.kind}",
@@ -637,14 +637,19 @@ class EnhancedMarketBot:
                     logging.error(f"Erro ao verificar toques em zonas: {e}")
 
             # --- 5. ATUALIZA HISTÓRICOS ---
-            if signals:
-                main_event = signals[0]
-                self.volume_history.append(main_event.get("volume_total", 0))
-                self.delta_history.append(main_event.get("delta", 0))
-                self.close_price_history.append(main_event.get("preco_fechamento", 0))
+            # CORREÇÃO: Usa os dados da janela (enriched) para o histórico, não do sinal.
+            window_volume = enriched.get("volume_total", 0)
+            window_delta = enriched.get("delta_fechamento", 0) # 'delta_fechamento' contém o delta total da janela
+            window_close = enriched.get("ohlc", {}).get("close", 0)
 
+            self.volume_history.append(window_volume)
+            self.delta_history.append(window_delta)
+            if window_close > 0:
+                self.close_price_history.append(window_close)
+
+            # CORREÇÃO: Utiliza as variáveis corretas para o print
             print(
-                f"[{datetime.now(self.ny_tz).strftime('%H:%M:%S')} NY] 🟡 Janela #{self.window_count} | Delta: {signals[0].get('delta', 0):,.2f} | Vol: {signals[0].get('volume_total', 0):,.2f}"
+                f"[{datetime.now(self.ny_tz).strftime('%H:%M:%S')} NY] 🟡 Janela #{self.window_count} | Delta: {window_delta:,.2f} | Vol: {window_volume:,.2f}"
             )
             if macro_context:
                 trends = macro_context.get("mtf_trends", {})
@@ -709,13 +714,14 @@ class EnhancedMarketBot:
 
             # --- 7. 🔹 NOVO: ENVIA O MAPA DE LIQUIDEZ PARA O EVENTO SALVO!
             # Garante que o heatmap está presente nos eventos salvos
-            if flow_metrics and "liquidity_heatmap" in flow_metrics:
+            if 'flow_metrics' in locals() and flow_metrics and "liquidity_heatmap" in flow_metrics:
                 # Atualiza o último sinal (se houver) com o heatmap
                 if signals:
-                    main_event = signals[0]
-                    main_event["liquidity_heatmap"] = flow_metrics["liquidity_heatmap"]
-                    # Re-salva o evento para garantir que o EventSaver veja o campo
-                    self.event_saver.save_event(main_event)
+                    # Itera sobre todos os sinais para adicionar o heatmap
+                    for signal_event in signals:
+                        signal_event["liquidity_heatmap"] = flow_metrics["liquidity_heatmap"]
+                        # Re-salva o evento para garantir que o EventSaver veja o campo
+                        self.event_saver.save_event(signal_event)
 
             print("─" * 80)
         except Exception as e:
