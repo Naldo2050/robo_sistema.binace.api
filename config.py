@@ -35,6 +35,10 @@ CONTEXT_SMA_PERIOD = 10
 # Alerta se a liquidez no topo do book mudar mais que X% entre as checagens.
 LIQUIDITY_FLOW_ALERT_PERCENTAGE = 0.4  # 40%
 
+# Mínimo absoluto de variação (USD) na profundidade do book para disparar alerta de fluxo.
+# (Se o analisador não importar esta chave, ele usa fallback interno de 500_000.)
+MIN_OB_ABS_CHANGE_USD = 500_000  # aumente para 1_000_000 para reduzir ruído de alertas
+
 # -- Paredes de Liquidez (Walls) --
 # Uma ordem é considerada uma "parede" se for X desvios padrão maior que a média das ordens.
 WALL_STD_DEV_FACTOR = 3.0
@@ -127,3 +131,36 @@ MIN_SIGNAL_TPS = 2.0              # Trades por segundo mínimo para validar sina
 MIN_ABS_DELTA_BTC = 0.5           # Piso de |delta| para validar absorção (além do delta_threshold dinâmico)
 MIN_REVERSAL_RATIO = 0.2          # Reversão mínima relativa ao |delta| para caracterizar absorção (20%)
 INDEX_ATR_FLOOR_PCT = 0.001       # Piso de ATR como % do preço para cálculo robusto do índice de absorção
+
+# ==============================================================================
+# PARÂMETROS DE VALIDAÇÃO E SEGURANÇA (NOVOS)
+# ==============================================================================
+
+# -- Limite de volume para trades considerados válidos
+MAX_TRADE_VOLUME_BTC = 100.0      # Volume máximo considerado válido (evita outliers)
+MIN_TRADE_VOLUME_BTC = 0.001      # Volume mínimo considerado válido
+
+# -- Limite de preço para trades considerados válidos
+MAX_PRICE_DEVIATION_PCT = 0.05    # 5% de desvio máximo em relação ao preço médio recente
+
+# -- Intervalo de tempo entre atualizações de segurança
+HEALTH_CHECK_INTERVAL = 30        # Segundos entre verificações de saúde do sistema
+
+# -- Parâmetros de fallback para dados ausentes
+FALLBACK_DELTA_THRESHOLD = 1.0    # Threshold de delta para fallback quando dados são inconsistentes
+FALLBACK_VOLUME_THRESHOLD = 5.0   # Volume mínimo para fallback
+
+# -- Parâmetros de tolerância para dados incompletos
+MAX_MISSING_FIELDS_RATIO = 0.1    # Máximo de 10% de campos ausentes permitidos
+TRADE_VALIDATION_WINDOW = 60      # Janela de tempo para validação de trades (em segundos)
+
+# -- Configurações de log e monitoramento
+LOG_LEVEL = "INFO"                # Nível de log (DEBUG, INFO, WARNING, ERROR)
+LOG_TO_FILE = True                # Se deve logar para arquivo
+LOG_FILE_MAX_SIZE = 10 * 1024 * 1024  # 10MB
+LOG_FILE_BACKUP_COUNT = 5         # Número de arquivos de backup
+
+# -- Configurações de performance
+MAX_PIPELINE_CACHE_SIZE = 100     # Tamanho máximo do cache do pipeline
+PIPELINE_TIMEOUT_SECONDS = 10     # Timeout para operações do pipeline
+MAX_CONCURRENT_ANALYSES = 5       # Número máximo de análises concorrentes
