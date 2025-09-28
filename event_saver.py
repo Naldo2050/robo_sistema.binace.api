@@ -4,8 +4,8 @@ import platform
 import logging
 import threading
 import time
-import random
-from datetime import datetime, timezone, timedelta
+import atexit
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from time_manager import TimeManager
 
@@ -22,7 +22,7 @@ class EventSaver:
         self.snapshot_file = DATA_DIR / "eventos-fluxo.json"
         self.history_file = DATA_DIR / "eventos_fluxo.jsonl"
         self.visual_log_file = DATA_DIR / "eventos_visuais.log"
-        self.last_candle_id = None
+        self.last_window_id = None
         self.time_manager = TimeManager()
 
         # Controle de cabeçalho por minuto (não repetir)
@@ -30,16 +30,60 @@ class EventSaver:
         # Anti-duplicado simples no LOG por bloco (opcional)
         self._seen_in_block = set()
 
-        # 🔹 NOVO: buffer de escrita + thread de flush (Fase 2)
+        # Buffer de escrita + thread de flush
         self._write_buffer = []
         self._buffer_lock = threading.Lock()
         self._flush_interval = 5  # segundos
+        self._stop_event = threading.Event()
         self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
         self._flush_thread.start()
 
+        # Encerra limpo no exit
+        atexit.register(self.stop)
+
+    # ---------- Utilidades internas ----------
+
+    @staticmethod
+    def _parse_iso8601(ts: str) -> datetime:
+        """
+        Aceita ISO-8601 com 'Z' (UTC) e com offset.
+        """
+        try:
+            # Normaliza 'Z' -> +00:00 para compatibilidade ampla
+            if ts.endswith("Z"):
+                ts = ts[:-1] + "+00:00"
+            return datetime.fromisoformat(ts)
+        except Exception:
+            # Último recurso: tenta sem microsegundos
+            try:
+                base, _, offset = ts.partition("+")
+                if base and offset:
+                    base = base.split(".")[0]
+                    return datetime.fromisoformat(base + "+" + offset)
+            except Exception:
+                raise
+
+    def stop(self):
+        """Para a thread de flush e realiza um flush final."""
+        if not self._stop_event.is_set():
+            self._stop_event.set()
+            try:
+                if self._flush_thread.is_alive():
+                    self._flush_thread.join(timeout=1.5)
+            except Exception:
+                pass
+            # Flush final do que sobrou
+            with self._buffer_lock:
+                buffer_copy = self._write_buffer.copy()
+                self._write_buffer.clear()
+            if buffer_copy:
+                self._flush_buffer(buffer_copy)
+
+    # ---------- Loop/flush ----------
+
     def _flush_loop(self):
         """Thread que esvazia o buffer periodicamente."""
-        while True:
+        while not self._stop_event.is_set():
             time.sleep(self._flush_interval)
             with self._buffer_lock:
                 if not self._write_buffer:
@@ -57,6 +101,8 @@ class EventSaver:
             self._save_to_jsonl(event)
             # Adiciona ao log visual
             self._add_visual_log_entry(event)
+
+    # ---------- Persistência JSON/JSONL ----------
 
     def _save_to_json(self, event: dict):
         """Salva evento em arquivo JSON com retry e fallback."""
@@ -96,7 +142,7 @@ class EventSaver:
                 if attempt < max_retries - 1:
                     time.sleep(base_delay * (2 ** attempt))
         
-        # 🔹 Fallback: salva em diretório alternativo
+        # Fallback: salva em diretório alternativo
         try:
             fallback_dir = Path("./fallback_events")
             fallback_dir.mkdir(exist_ok=True)
@@ -150,7 +196,7 @@ class EventSaver:
                 if attempt < max_retries - 1:
                     time.sleep(base_delay * (2 ** attempt))
         
-        # 🔹 Fallback: salva em diretório alternativo
+        # Fallback: salva em diretório alternativo
         try:
             fallback_dir = Path("./fallback_events")
             fallback_dir.mkdir(exist_ok=True)
@@ -164,6 +210,8 @@ class EventSaver:
         except Exception as e2:
             logging.critical(f"💀 FALHA TOTAL DE PERSISTÊNCIA para JSONL: {e2}")
 
+    # ---------- API Pública ----------
+
     def save_event(self, event: dict):
         """Salva evento com validação, horários SP/NY e contexto histórico vs real_time."""
         try:
@@ -172,11 +220,11 @@ class EventSaver:
                 logging.error("Tentativa de salvar evento inválido: não é um dicionário")
                 return
 
-            # 🔹 Conversão de timestamp + contexto
+            # Conversão de timestamp + contexto
             ts = event.get("timestamp")
             if ts:
                 try:
-                    dt = datetime.fromisoformat(ts)  # timezone-aware (ISO8601)
+                    dt = self._parse_iso8601(ts)  # timezone-aware
                     now = datetime.now(UTC_TZ)
 
                     # Critério simples: se estiver mais de 1 dia à frente do relógio → histórico
@@ -194,11 +242,11 @@ class EventSaver:
             else:
                 event["data_context"] = "unknown"
 
-            # Adiciona separador para nova janela
-            candle_id = event.get("candle_id_ms")
-            if candle_id and candle_id != self.last_candle_id:
+            # Adiciona separador para nova janela (prioriza window_id; fallback para legado)
+            window_id = event.get("window_id") or event.get("candle_id_ms")
+            if window_id and window_id != self.last_window_id:
                 self._add_visual_separator(event)
-                self.last_candle_id = candle_id
+                self.last_window_id = window_id
 
             # Bufferiza o evento
             with self._buffer_lock:
@@ -211,20 +259,36 @@ class EventSaver:
         except Exception as e:
             logging.error(f"Erro ao processar evento para salvamento: {e}")
 
+    # ---------- Saídas visuais ----------
+
     def _add_visual_separator(self, event: dict):
         """Adiciona um separador visual no arquivo de log."""
         try:
             timestamp_ny = self.time_manager.now_iso(tz=NY_TZ)
             
-            start_time = datetime.fromtimestamp(event.get('candle_open_time_ms', 0) / 1000, tz=NY_TZ).isoformat(timespec="seconds")
-            end_time = datetime.fromtimestamp(event.get('candle_close_time_ms', 0) / 1000, tz=NY_TZ).isoformat(timespec="seconds")
+            open_ms = event.get("window_open_ms")
+            close_ms = event.get("window_close_ms")
+
+            # Compatibilidade com eventos legados
+            if open_ms is None:
+                open_ms = event.get("candle_open_time_ms")
+            if close_ms is None:
+                close_ms = event.get("candle_close_time_ms")
+
+            def _fmt(ms):
+                if not ms or ms <= 0:
+                    return "N/A"
+                return datetime.fromtimestamp(ms / 1000, tz=NY_TZ).isoformat(timespec="seconds")
+
+            start_time = _fmt(open_ms)
+            end_time = _fmt(close_ms)
             
             separator = f"\n{timestamp_ny} | --- INÍCIO DE NOVA JANELA --- | {start_time} --> {end_time}\n"
             with open(self.visual_log_file, "a", encoding="utf-8") as f:
                 f.write(separator)
         except Exception as e:
             logging.error(f"Erro ao adicionar separador visual: {e}")
-            # 🔹 Fallback: salva em diretório alternativo
+            # Fallback: salva em diretório alternativo
             try:
                 fallback_dir = Path("./fallback_events")
                 fallback_dir.mkdir(exist_ok=True)
@@ -250,7 +314,7 @@ class EventSaver:
 
             if ts:
                 try:
-                    dt = datetime.fromisoformat(ts)  # aware
+                    dt = self._parse_iso8601(ts)  # aware
                     # Bloco: minuto em UTC para ser consistente
                     minute_key = dt.astimezone(UTC_TZ).strftime("%Y-%m-%d %H:%M")
                     minute_block = f"{minute_key}|{context}"
@@ -288,24 +352,17 @@ class EventSaver:
                     return
                 self._seen_in_block.add(dedupe_key)
 
-                # Escreve o evento, sem repetir time_ny/time_sp e renomeando timestamp
-                f.write("{\n")
-                for key, value in event.items():
-                    if key in ("time_ny", "time_sp"):
-                        continue  # não repetir no corpo do evento
-                    out_key = "timestamp_utc" if key == "timestamp" else key
+                # JSON visual limpo: remove time_ny/time_sp e renomeia timestamp -> timestamp_utc
+                clean = dict(event)
+                clean.pop("time_ny", None)
+                clean.pop("time_sp", None)
+                if "timestamp" in clean:
+                    clean["timestamp_utc"] = clean.pop("timestamp")
 
-                    if isinstance(value, (int, float)):
-                        f.write(f"  \"{out_key}\": {value},\n")
-                    elif isinstance(value, str):
-                        escaped_value = value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
-                        f.write(f"  \"{out_key}\": \"{escaped_value}\",\n")
-                    else:
-                        f.write(f"  \"{out_key}\": {json.dumps(value, ensure_ascii=False, default=str)},\n")
-                f.write("}\n")
+                f.write(json.dumps(clean, ensure_ascii=False, default=str, indent=2) + "\n")
         except Exception as e:
             logging.error(f"Erro ao adicionar entrada visual: {e}")
-            # 🔹 Fallback: salva em diretório alternativo
+            # Fallback: salva em diretório alternativo
             try:
                 fallback_dir = Path("./fallback_events")
                 fallback_dir.mkdir(exist_ok=True)
@@ -314,6 +371,8 @@ class EventSaver:
                     f.write(f"Erro ao adicionar entrada: {e}\nEvento: {json.dumps(event, ensure_ascii=False, default=str)}\n")
             except Exception as e2:
                 logging.critical(f"💀 FALHA TOTAL ao salvar entrada visual: {e2}")
+
+    # ---------- Alerta sonoro ----------
 
     def _play_sound(self):
         """Reproduz um som de alerta dependendo do sistema operacional."""

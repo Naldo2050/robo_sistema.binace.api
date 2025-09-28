@@ -1,4 +1,4 @@
-# MAIN.PY
+# market_analyzer.py
 import websocket
 import json
 import time
@@ -26,7 +26,6 @@ logging.basicConfig(
 )
 
 class RobustConnectionManager:
-    # ... (O CÓDIGO DESTA CLASSE CONTINUA EXATAMENTE O MESMO) ...
     def __init__(self, stream_url, symbol, max_reconnect_attempts=10, 
                  initial_delay=1, max_delay=60, backoff_factor=1.5):
         self.stream_url = stream_url
@@ -223,7 +222,12 @@ class MarketAnalyzer:
         
         logging.info(f"Analisando janela de trades com {len(window_data)} trades...")
         
-        absorption_event = create_absorption_event(window_data, symbol, k=self.k_absor)
+        # CORREÇÃO APLICADA: k=self.k_absor mudado para delta_threshold=self.k_absor
+        absorption_event = create_absorption_event(
+            window_data,
+            symbol,
+            delta_threshold=self.k_absor
+        )
         
         # --- CORREÇÃO APLICADA AQUI ---
         # Passa uma lista de volumes para a função, em vez do DataFrame completo.

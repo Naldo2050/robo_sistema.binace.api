@@ -210,12 +210,25 @@ class AIAnalyzer:
 - Toques: {z.get('touch_count')} | Último toque: {z.get('last_touched')}
 """
 
-        derivativos = event_data.get("derivatives", {}).get(ativo, {}) or event_data.get("derivatives", {}).get("BTCUSDT", {})
+        # Derivativos: pega o bloco do ativo; fallback para BTCUSDT
+        deriv_map = event_data.get("derivatives", {}) or {}
+        derivativos = deriv_map.get(ativo, {}) or deriv_map.get("BTCUSDT", {})
         if derivativos:
+            # Fallback: se OI em USD ausente/zero, mostra OI bruto (contratos)
+            try:
+                oi_usd_val = float(derivativos.get("open_interest_usd") or 0)
+            except Exception:
+                oi_usd_val = 0.0
+            oi_val = derivativos.get("open_interest")
+            if oi_usd_val and oi_usd_val > 0:
+                oi_line = f"{oi_usd_val:,.0f} USD"
+            else:
+                oi_line = f"{oi_val:,.0f} contratos" if oi_val is not None else "Indisponível"
+
             deriv_str = f"""
 🏦 Derivativos ({ativo})
 - Funding Rate: {derivativos.get('funding_rate_percent', 0):.4f}%
-- OI (USD): {derivativos.get('open_interest_usd', 0):,.0f}
+- OI: {oi_line}
 - Long/Short Ratio: {derivativos.get('long_short_ratio', 0):.2f}
 - Liquidações (5min): Longs=${derivativos.get('longs_usd', 0):,.0f} | Shorts=${derivativos.get('shorts_usd', 0):,.0f}
 """
@@ -309,6 +322,8 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver):
 - Preço: {preco}
 - Delta: {delta}
 {vol_line}
+
+{zone_str}{deriv_str}{vp_str}
 
 📈 Multi-Timeframes
 {multi_tf_str}

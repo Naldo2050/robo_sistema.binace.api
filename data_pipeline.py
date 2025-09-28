@@ -1,5 +1,3 @@
-# data_pipeline.py
-
 import pandas as pd
 import numpy as np
 import logging
@@ -258,8 +256,9 @@ class DataPipeline:
         historical_vp: Dict | None = None,
         orderbook_data: Dict | None = None,
         multi_tf: Dict | None = None,
+        derivatives: Dict | None = None,   # ✅ novo parâmetro
     ) -> Dict[str, Any]:
-        """Enriquece com contexto externo (fluxo contínuo, VP histórico, MTF, order book)."""
+        """Enriquece com contexto externo (fluxo contínuo, VP histórico, MTF, order book, derivativos)."""
         if self.enriched_data is None:
             self.enrich()
 
@@ -269,6 +268,7 @@ class DataPipeline:
             "historical_vp": historical_vp or {},
             "orderbook_data": orderbook_data or {},  # mantém compatibilidade com main.py
             "multi_tf": multi_tf or {},
+            "derivatives": derivatives or {},        # ✅ agora persistido
         })
 
         self.contextual_data = contextual
@@ -350,6 +350,7 @@ class DataPipeline:
                 "historical_vp": {},
                 "orderbook_data": {},
                 "multi_tf": {},
+                "derivatives": {},   # ✅ inclui fallback
             }
         if self.signal_data is None:
             self.signal_data = []

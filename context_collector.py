@@ -5,7 +5,7 @@ import time
 import threading
 import yfinance as yf
 import random  # 🔹 NOVO: import adicionado para usar random.uniform()
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from config import (
     CONTEXT_TIMEFRAMES, CONTEXT_EMA_PERIOD, CONTEXT_ATR_PERIOD,
     CONTEXT_UPDATE_INTERVAL_SECONDS, INTERMARKET_SYMBOLS, DERIVATIVES_SYMBOLS,
@@ -31,6 +31,8 @@ class ContextCollector:
         self.open_interest_api_url = "https://fapi.binance.com/fapi/v1/openInterest"
         self.long_short_ratio_api_url = "https://fapi.binance.com/futures/data/globalLongShortAccountRatio"
         self.liquidations_api_url = "https://fapi.binance.com/fapi/v1/allForceOrders"
+        # 🔹 NOVO: usar Mark Price (mais estável p/ perp USDⓈ-M)
+        self.mark_price_api_url = "https://fapi.binance.com/fapi/v1/premiumIndex"
 
         # Volume Profile
         self.historical_profiler = HistoricalVolumeProfiler(
@@ -79,7 +81,16 @@ class ContextCollector:
                     
                 res.raise_for_status()
                 data = res.json()
-                df = pd.DataFrame(data, columns=['open_time','open','high','low','close','volume','close_time','qav','num_trades','tbbav','tbqav','ignore'])
+
+                # 🔒 Garanta que é uma lista de candles; senão, devolve vazio
+                if not isinstance(data, list):
+                    logging.debug(f"Resposta inesperada em klines {symbol} {timeframe}: {str(data)[:160]}")
+                    return pd.DataFrame()
+
+                df = pd.DataFrame(data, columns=[
+                    'open_time','open','high','low','close','volume',
+                    'close_time','qav','num_trades','tbbav','tbqav','ignore'
+                ])
                 for col in ['open','high','low','close','volume']:
                     df[col] = pd.to_numeric(df[col], errors="coerce")
                 return df
@@ -100,6 +111,27 @@ class ContextCollector:
     def _fetch_klines(self, symbol, timeframe, limit=200):
         cache_key = f"klines_{symbol}_{timeframe}_{limit}"
         return self._fetch_with_cache(cache_key, lambda: self._fetch_klines_uncached(symbol, timeframe, limit))
+
+    # 🔹 NOVO: preço de referência dos derivativos via Mark Price
+    def _fetch_symbol_price(self, symbol: str) -> float:
+        """
+        Usa o Mark Price (premiumIndex) para reduzir ruído/manipulação.
+        TTL curto porque muda rápido.
+        """
+        cache_key = f"mark_price_{symbol}"
+
+        def _do_fetch():
+            try:
+                r = requests.get(self.mark_price_api_url, params={"symbol": symbol}, timeout=5)
+                r.raise_for_status()
+                data = r.json()
+                # premiumIndex retorna "markPrice"
+                return float(data.get("markPrice", 0.0))
+            except Exception as e:
+                logging.debug(f"Falha ao buscar markPrice de {symbol}: {e}")
+                return 0.0
+
+        return float(self._fetch_with_cache(cache_key, _do_fetch, ttl_seconds=15) or 0.0)
 
     # ========== Utilitários de tempo ==========
     def _get_binance_server_time(self) -> int:
@@ -132,13 +164,18 @@ class ContextCollector:
 
     # ========== Núcleo técnico ==========
     def _calculate_atr(self, df: pd.DataFrame, period: int) -> float:
+        if df is None or df.empty:
+            return 0.0
         df = df.copy()
         df['h-l'] = df['high'] - df['low']
         df['h-pc'] = (df['high'] - df['close'].shift()).abs()
         df['l-pc'] = (df['low'] - df['close'].shift()).abs()
         df['tr'] = df[['h-l','h-pc','l-pc']].max(axis=1)
         atr = df['tr'].ewm(span=period, adjust=False).mean()
-        return float(atr.iloc[-1])
+        try:
+            return float(atr.iloc[-1])
+        except Exception:
+            return 0.0
 
     def _classify_regime(self, df: pd.DataFrame, atr_value: float):
         if df.empty:
@@ -319,9 +356,15 @@ class ContextCollector:
                     "longs_usd": sum(v["longs"] for v in heatmap.values()),
                     "shorts_usd": sum(v["shorts"] for v in heatmap.values())
                 }
+
+                # 🔹 NOVO: valor nocional de OI em USD (Mark Price). Fallback para OI bruto.
+                price = self._fetch_symbol_price(sym)
+                open_interest_usd = open_interest * price if price else open_interest
+
                 derivatives_data[sym] = {
                     "funding_rate_percent": round(funding_rate, 4),
                     "open_interest": open_interest,
+                    "open_interest_usd": round(open_interest_usd, 2) if open_interest_usd else 0.0,
                     "long_short_ratio": long_short_ratio,
                     "liquidation_heatmap": heatmap,
                     **totals

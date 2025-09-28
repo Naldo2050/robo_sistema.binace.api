@@ -2,3 +2,4 @@ websocket-client==1.6.4
 requests>=2.31.0
 pandas==1.5.3
 numpy==1.24.3
+yfinance==0.2.37

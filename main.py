@@ -1,4 +1,5 @@
-import json
+#main
+import json 
 import time
 import logging
 import threading
@@ -696,6 +697,7 @@ class EnhancedMarketBot:
                     historical_vp=historical_profile,
                     orderbook_data=ob_event,
                     multi_tf=macro_context.get("mtf_trends", {}),
+                    derivatives=macro_context.get("derivatives", {}),  # ✅ novo: passa derivativos ao contexto
                 )
 
                 signals = pipeline.detect_signals(
@@ -754,8 +756,13 @@ class EnhancedMarketBot:
                 logging.error(f"Erro no DataPipeline: {e}")
                 return
 
+            derivatives_context = macro_context.get("derivatives", {})  # ✅ novo: cache local
             for signal in signals:
                 if signal.get("is_signal", False):
+                    # ✅ anexa derivativos ao evento para consumo pela IA
+                    if "derivatives" not in signal:
+                        signal["derivatives"] = derivatives_context
+
                     if "fluxo_continuo" not in signal and flow_metrics:
                         signal["fluxo_continuo"] = flow_metrics
 

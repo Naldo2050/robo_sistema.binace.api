@@ -265,8 +265,8 @@ class OrderBookAnalyzer:
             ts_ms = event_epoch_ms if event_epoch_ms is not None else self.tm.now_ms()
 
         tindex = self.tm.build_time_index(ts_ms, include_local=True, timespec="seconds")
-        ny_time = tindex.get("ny_time")
-        utc_iso = tindex.get("utc_iso")
+        timestamp_ny = tindex.get("timestamp_ny")
+        timestamp_utc = tindex.get("timestamp_utc")
 
         sm = self._spread_and_depth(bids, asks)
         mid = sm.get("mid")
@@ -324,7 +324,11 @@ class OrderBookAnalyzer:
             "market_impact_sell": {"100k": mi_sell_100k, "1M": mi_sell_1m},
             "top_n": self.top_n,
             "ob_limit": self.ob_limit_fetch,
-            "timestamps": {"exchange_ms": ts_ms, "ny_time": ny_time, "utc_iso": utc_iso},
+            "timestamps": {
+                "exchange_ms": ts_ms,
+                "timestamp_ny": timestamp_ny,
+                "timestamp_utc": timestamp_utc,
+            },
             "source": {"exchange": "binance_futures", "endpoint": "fapi/v1/depth", "symbol": self.symbol},
             "labels": {
                 "dominant_label": resultado_da_batalha,
