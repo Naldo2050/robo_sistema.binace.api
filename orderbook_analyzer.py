@@ -12,6 +12,15 @@ except Exception:
 
 from time_manager import TimeManager
 
+# Importa parâmetros adicionais de configuração
+try:
+    from config import ORDER_BOOK_DEPTH_LEVELS, SPREAD_TIGHT_THRESHOLD_BPS, SPREAD_AVG_WINDOWS_MIN
+except Exception:
+    # Valores padrão se não definidos
+    ORDER_BOOK_DEPTH_LEVELS = [1, 5, 10, 25]
+    SPREAD_TIGHT_THRESHOLD_BPS = 0.2
+    SPREAD_AVG_WINDOWS_MIN = [60, 1440]
+
 SCHEMA_VERSION = "1.2.1"
 
 
@@ -119,6 +128,14 @@ class OrderBookAnalyzer:
         self.ob_limit_fetch = int(ob_limit_fetch)
         self.tz_ny = ZoneInfo("America/New_York") if ZoneInfo else None
         self.tm = time_manager or TimeManager()
+
+        # Configurações adicionais
+        self.depth_levels: List[int] = list(ORDER_BOOK_DEPTH_LEVELS)
+        self.spread_tight_threshold_bps: float = float(SPREAD_TIGHT_THRESHOLD_BPS)
+        # Janela(s) de cálculo de médias de spread (minutos)
+        self.spread_avg_windows_min: List[int] = list(SPREAD_AVG_WINDOWS_MIN)
+        # Histórico de spreads (timestamp_ms, spread_bps)
+        self.spread_history: List[Tuple[int, float]] = []
 
         # memória leve para heurística de recarga
         self.prev_snapshot: Optional[Dict[str, Any]] = None
@@ -285,6 +302,17 @@ class OrderBookAnalyzer:
         mi_sell_100k = _simulate_market_impact(bids[: self.top_n][::-1], usd_amount=100_000.0, side="sell", mid=mid)
         mi_sell_1m = _simulate_market_impact(bids[: self.top_n][::-1], usd_amount=1_000_000.0, side="sell", mid=mid)
 
+        # Atualiza histórico de spread (bps) com timestamp
+        # Converte spread_percent (percentual) para basis points (bps). 1% = 100 bps.
+        if sm.get("spread_percent") is not None and sm["spread_percent"] >= 0:
+            try:
+                spread_bps = float(sm["spread_percent"]) * 100.0
+                # Utiliza ts_ms (tempo do exchange) como timestamp; fallback no tempo local se None
+                now_ms = ts_ms if ts_ms is not None else self.tm.now_ms()
+                self.spread_history.append((int(now_ms), spread_bps))
+            except Exception:
+                pass
+
         # rótulo claro (estoque de liquidez)
         resultado_da_batalha = "Equilíbrio"
         if imbalance is not None:
@@ -305,6 +333,103 @@ class OrderBookAnalyzer:
             alertas.append("Iceberg possivelmente recarregando")
         if sm.get("spread") is not None and sm["spread"] <= 0.5:
             alertas.append("Spread apertado")
+
+        # Remove entradas antigas do histórico de spreads (mantém ~24h)
+        try:
+            cutoff_ms = (ts_ms if ts_ms is not None else self.tm.now_ms()) - max(self.spread_avg_windows_min) * 60 * 1000
+            # Filtra apenas entradas dentro da janela máxima
+            self.spread_history = [(t, s) for (t, s) in self.spread_history if t >= cutoff_ms]
+        except Exception:
+            pass
+
+        # ---------- Depth summary ----------
+        depth_summary: Dict[str, Any] = {}
+        total_bids_last = 0.0
+        total_asks_last = 0.0
+        for lvl in self.depth_levels:
+            try:
+                b_usd = _sum_depth_usd(bids, lvl)
+                a_usd = _sum_depth_usd(asks, lvl)
+                imbalance_level = None
+                denom = b_usd + a_usd
+                if denom > 0:
+                    imbalance_level = (b_usd - a_usd) / denom
+                depth_summary[f"L{lvl}"] = {
+                    "bids": round(b_usd, 2),
+                    "asks": round(a_usd, 2),
+                    "imbalance": round(imbalance_level, 4) if imbalance_level is not None else None,
+                }
+                total_bids_last = b_usd
+                total_asks_last = a_usd
+            except Exception:
+                depth_summary[f"L{lvl}"] = {"bids": None, "asks": None, "imbalance": None}
+        # Ratio total bids/asks no nível mais profundo
+        total_ratio = None
+        try:
+            if total_asks_last > 0:
+                total_ratio = total_bids_last / total_asks_last
+        except Exception:
+            pass
+        depth_summary["total_depth_ratio"] = round(total_ratio, 3) if total_ratio is not None else None
+
+        # ---------- Spread analysis ----------
+        spread_analysis: Dict[str, Any] = {
+            "current_spread_bps": None,
+            "spread_percentile": None,
+            "tight_spread_duration_min": None,
+            "spread_volatility": None,
+        }
+        try:
+            current_bps = None
+            if sm.get("spread_percent") is not None:
+                current_bps = float(sm["spread_percent"]) * 100.0
+                spread_analysis["current_spread_bps"] = round(current_bps, 4)
+            # Médias móveis do spread para janelas definidas
+            for window_min in self.spread_avg_windows_min:
+                window_ms = window_min * 60 * 1000
+                now_ms = ts_ms if ts_ms is not None else self.tm.now_ms()
+                values = [s for (t, s) in self.spread_history if (now_ms - t) <= window_ms]
+                if values:
+                    avg = float(np.mean(values))
+                else:
+                    avg = None
+                # Nomeia a chave com base na janela: 60->1h, 1440->24h ou Xmin
+                if window_min >= 60 and window_min % 60 == 0:
+                    hours = window_min // 60
+                    key = f"avg_spread_{hours}h"
+                else:
+                    key = f"avg_spread_{window_min}m"
+                spread_analysis[key] = round(avg, 4) if avg is not None else None
+            # Percentil do spread atual em relação aos últimos 24h (maior janela)
+            try:
+                if current_bps is not None:
+                    all_values = [s for (_, s) in self.spread_history]
+                    if all_values:
+                        sorted_vals = sorted(all_values)
+                        less = sum(1 for v in sorted_vals if v < current_bps)
+                        pct = (less / len(sorted_vals)) * 100.0
+                        spread_analysis["spread_percentile"] = round(pct, 1)
+                        # Desvio padrão como volatilidade
+                        spread_analysis["spread_volatility"] = round(float(np.std(sorted_vals)), 4)
+            except Exception:
+                pass
+            # Duração em minutos em que o spread permaneceu abaixo do threshold estreito
+            try:
+                if current_bps is not None:
+                    now_ms = ts_ms if ts_ms is not None else self.tm.now_ms()
+                    # Percorre histórico de trás para frente até encontrar valor > threshold
+                    duration_ms = 0
+                    threshold = self.spread_tight_threshold_bps
+                    for (t, s) in reversed(self.spread_history):
+                        if s <= threshold:
+                            duration_ms = now_ms - t
+                        else:
+                            break
+                    spread_analysis["tight_spread_duration_min"] = round(duration_ms / 60000.0, 2) if duration_ms else 0.0
+            except Exception:
+                pass
+        except Exception as e:
+            logging.debug(f"Erro em spread_analysis: {e}")
 
         event: Dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
@@ -334,6 +459,9 @@ class OrderBookAnalyzer:
                 "dominant_label": resultado_da_batalha,
                 "note": "Rótulo baseado no livro (estoque de liquidez), não na fita executada (delta).",
             },
+            # Novas análises de profundidade e spread
+            "order_book_depth": depth_summary,
+            "spread_analysis": spread_analysis,
         }
 
         # memória

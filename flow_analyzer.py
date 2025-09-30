@@ -13,6 +13,13 @@ from time_manager import TimeManager
 # Liquidity Heatmap
 from liquidity_heatmap import LiquidityHeatmap
 
+# Novos parâmetros para net flow e análise de participantes
+try:
+    from config import NET_FLOW_WINDOWS_MIN, AGGRESSIVE_ORDER_SIZE_THRESHOLD
+except Exception:
+    NET_FLOW_WINDOWS_MIN = [1, 5, 15]
+    AGGRESSIVE_ORDER_SIZE_THRESHOLD = 0.0
+
 
 class FlowAnalyzer:
     """
@@ -78,6 +85,12 @@ class FlowAnalyzer:
             update_interval_ms=lhm_update_interval_ms
         )
 
+        # Janelas para cálculo de net flows (em minutos) e histórico de trades para métricas temporais
+        self.net_flow_windows_min: List[int] = list(NET_FLOW_WINDOWS_MIN)
+        # Deque armazenando trades recentes para cálculo de flows e participação por segmento
+        # Cada item: dict {'ts': timestamp_ms, 'delta': notional_delta (USD), 'qty': qty (BTC), 'side': 'buy'/'sell', 'sector': nome do bucket}
+        self.flow_trades: deque = deque()
+
     @staticmethod
     def map_absorcao_label(aggression_side: str) -> str:
         """
@@ -128,6 +141,21 @@ class FlowAnalyzer:
         except Exception as e:
             logging.error(f"Erro ao remover trades antigos: {e}")
             self.recent_trades.clear()
+
+    def _prune_flow_history(self, now_ms: int):
+        """
+        Remove entradas antigas do histórico de fluxo (flow_trades) com base na maior
+        janela configurada em net_flow_windows_min.
+        """
+        try:
+            if not self.net_flow_windows_min:
+                return
+            max_window = max(self.net_flow_windows_min)
+            cutoff_ms = now_ms - max_window * 60 * 1000
+            while self.flow_trades and self.flow_trades[0]['ts'] < cutoff_ms:
+                self.flow_trades.popleft()
+        except Exception as e:
+            logging.debug(f"Erro ao podar histórico de fluxo: {e}")
 
     def _update_bursts(self, ts_ms: int, qty: float):
         """Detecta bursts em microtempo com cooldown."""
@@ -228,6 +256,29 @@ class FlowAnalyzer:
                     side=side,
                     timestamp_ms=ts
                 )
+
+                # ---- Histórico de fluxo para net flows e participante ----
+                try:
+                    # Determina o bucket/sector do trade
+                    sector_name: Optional[str] = None
+                    for name, (minv, maxv) in self._order_buckets.items():
+                        if minv <= qty < maxv:
+                            sector_name = name
+                            break
+                    # Delta notional em USD (trade_delta * price). trade_delta já contém o sinal (buy positive, sell negative)
+                    delta_notional = trade_delta * price
+                    # Armazena no deque
+                    self.flow_trades.append({
+                        'ts': ts,
+                        'delta': float(delta_notional),
+                        'qty': float(qty),
+                        'side': side,
+                        'sector': sector_name,
+                    })
+                    # Remove entradas antigas (maior janela)
+                    self._prune_flow_history(ts)
+                except Exception as e:
+                    logging.debug(f"Erro ao registrar fluxo: {e}")
 
         except Exception as e:
             logging.debug(f"Erro ao processar trade (ignorado): {e}")
@@ -374,6 +425,73 @@ class FlowAnalyzer:
                         "last_reset_iso_utc": self.time_manager.format_timestamp(self.last_reset_ms)
                     }
                 }
+
+                # ----------------- Order Flow e Participantes -----------------
+                try:
+                    order_flow: Dict[str, Any] = {}
+                    # Net flows para cada janela configurada
+                    for window_min in self.net_flow_windows_min:
+                        window_ms = window_min * 60 * 1000
+                        start_ms = now_ms - window_ms
+                        # Filtra trades da janela
+                        relevant = [t for t in self.flow_trades if t['ts'] >= start_ms]
+                        total_delta = sum(t['delta'] for t in relevant)
+                        total_buy_notional = sum(t['delta'] for t in relevant if t['delta'] > 0)
+                        total_sell_notional = -sum(t['delta'] for t in relevant if t['delta'] < 0)
+                        order_flow[f"net_flow_{window_min}m"] = round(total_delta, 4)
+                        # Para a menor janela, calcula percentuais de compra/venda e razão
+                        if window_min == min(self.net_flow_windows_min):
+                            total_vol = total_buy_notional + total_sell_notional
+                            if total_vol > 0:
+                                order_flow["aggressive_buy_pct"] = round((total_buy_notional / total_vol) * 100.0, 2)
+                                order_flow["aggressive_sell_pct"] = round((total_sell_notional / total_vol) * 100.0, 2)
+                                order_flow["buy_sell_ratio"] = round((total_buy_notional / total_sell_notional), 4) if total_sell_notional > 0 else None
+                            else:
+                                order_flow["aggressive_buy_pct"] = None
+                                order_flow["aggressive_sell_pct"] = None
+                                order_flow["buy_sell_ratio"] = None
+                    # ----------------- Participantes -----------------
+                    participant_analysis: Dict[str, Any] = {}
+                    if self.net_flow_windows_min:
+                        largest_window = max(self.net_flow_windows_min)
+                        start_ms_p = now_ms - largest_window * 60 * 1000
+                        all_trades = [t for t in self.flow_trades if t['ts'] >= start_ms_p]
+                        total_qty_all = sum(t['qty'] for t in all_trades)
+                        # Prepara contagem por setor
+                        for sector in self._order_buckets.keys():
+                            sector_trades = [t for t in all_trades if t.get('sector') == sector]
+                            total_qty_sector = sum(t['qty'] for t in sector_trades)
+                            buy_qty = sum(t['qty'] for t in sector_trades if t['delta'] > 0)
+                            sell_qty = sum(t['qty'] for t in sector_trades if t['delta'] < 0)
+                            count_trades = len(sector_trades)
+                            direction = None
+                            if buy_qty > sell_qty:
+                                direction = "BUY"
+                            elif sell_qty > buy_qty:
+                                direction = "SELL"
+                            else:
+                                direction = "NEUTRAL"
+                            avg_order_size = round(total_qty_sector / count_trades, 4) if count_trades > 0 else None
+                            volume_pct = round((total_qty_sector / total_qty_all) * 100.0, 2) if total_qty_all > 0 else None
+                            sentiment = "BULLISH" if direction == "BUY" else ("BEARISH" if direction == "SELL" else "NEUTRAL")
+                            # Taxa de trades por segundo para atividade (apenas referência)
+                            duration_seconds = largest_window * 60
+                            trades_per_sec = round(count_trades / duration_seconds, 4) if duration_seconds > 0 else None
+                            activity_level = None
+                            # Consideramos o segmento com maior frequência de trades como HFT quando taxa >= 1 tps
+                            activity_level = "HIGH" if trades_per_sec and trades_per_sec >= 1.0 else "LOW"
+                            participant_analysis[sector] = {
+                                "volume_pct": volume_pct,
+                                "direction": direction,
+                                "avg_order_size": avg_order_size,
+                                "sentiment": sentiment,
+                            }
+                            # Inclui activity_level para todos os setores
+                            participant_analysis[sector]["activity_level"] = activity_level
+                    metrics["order_flow"] = order_flow
+                    metrics["participant_analysis"] = participant_analysis
+                except Exception as e:
+                    logging.debug(f"Erro ao calcular order_flow ou participant_analysis: {e}")
 
                 # Heatmap
                 try:

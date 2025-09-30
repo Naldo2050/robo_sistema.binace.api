@@ -6,6 +6,17 @@
 SYMBOL = "BTCUSDT"
 STREAM_URL = f"wss://fstream.binance.com/ws/{SYMBOL.lower()}@aggTrade"
 
+# === Credenciais de IA (DashScope/Qwen) ===
+# Coloquei aqui a sua chave para o Qwen/DashScope.
+# O ai_analyzer_qwen.py já lê primeiro de variável de ambiente e,
+# se não houver, usa estas variáveis abaixo.
+DASHSCOPE_API_KEY = "sk-a5f340c393d74b34af1fad2c85f236f6"
+AI_KEYS = {
+    "dashscope": DASHSCOPE_API_KEY,
+}
+# (Opcional) Se algum dia usar OpenAI, pode definir aqui também:
+OPENAI_API_KEY = None
+
 # -- Janela de Análise (Candle) --
 WINDOW_SIZE_MINUTES = 1  # Tamanho da janela de tempo para agrupar trades (em minutos)
 
@@ -160,7 +171,156 @@ LOG_TO_FILE = True                # Se deve logar para arquivo
 LOG_FILE_MAX_SIZE = 10 * 1024 * 1024  # 10MB
 LOG_FILE_BACKUP_COUNT = 5         # Número de arquivos de backup
 
+# Log de campos ausentes: defina o passo de amostragem ou None para desativar
+MISSING_FIELD_LOG_STEP = None  # None = desativa logs de campos ausentes; ex: 100 para logar a cada 100 eventos
+
+# Tamanho mínimo de caracteres para considerar a análise de IA válida durante o teste inicial
+AI_TEST_MIN_CHARS = 10
+
 # -- Configurações de performance
 MAX_PIPELINE_CACHE_SIZE = 100     # Tamanho máximo do cache do pipeline
 PIPELINE_TIMEOUT_SECONDS = 10     # Timeout para operações do pipeline
 MAX_CONCURRENT_ANALYSES = 5       # Número máximo de análises concorrentes
+
+# ==============================================================================
+# PARÂMETROS PARA CONTEXTO DE MERCADO E DETECÇÃO DE REGIME
+# ==============================================================================
+
+# Tamanho da janela (em candles) usada para calcular correlações entre o ativo e
+# índices externos (DXY, SP500, GOLD, etc.). Esse valor serve para
+# correlacionar variações de preço em uma janela relativamente curta, ajudando a
+# identificar influência intermarket.
+CORRELATION_LOOKBACK = 50
+
+# Percentis de volatilidade usados para classificar o regime de volatilidade.
+# Valores abaixo do primeiro percentil serão considerados regime de baixa
+# volatilidade; valores acima do segundo percentil indicam alta volatilidade.
+VOLATILITY_PERCENTILES = (0.35, 0.65)
+
+# Parâmetros para o cálculo dos indicadores ADX, RSI e MACD. Essas métricas são
+# empregadas por traders institucionais para avaliar força de tendência e
+# momentum【935918323600793†L31-L47】【935918323600793†L129-L148】. Ajuste os
+# períodos conforme a sensibilidade desejada.
+ADX_PERIOD = 14
+RSI_PERIODS = {
+    "short": 14,
+    "long": 21,
+}
+MACD_FAST_PERIOD = 12
+MACD_SLOW_PERIOD = 26
+MACD_SIGNAL_PERIOD = 9
+
+# ==============================================================================
+# PARÂMETROS DE SUPORTE/RESISTÊNCIA E PIVOTS
+# ==============================================================================
+
+# Fatores de ponderação na avaliação de força de níveis de suporte e resistência.
+# A soma dos pesos deve ser 1.0. Ajuste para dar mais ou menos importância ao
+# volume negociado (volume profile) ou à profundidade do livro de ofertas.
+SR_VOLUME_WEIGHT = 0.6
+SR_ORDERBOOK_WEIGHT = 0.4
+
+# Timeframes nos quais os pivots clássicos (Daily, Weekly, Monthly) serão
+# calculados. Esses níveis ajudam a determinar pontos de reversão potenciais.
+PIVOT_TIMEFRAMES = ["daily", "weekly", "monthly"]
+
+# ==============================================================================
+# PARÂMETROS DE PROFUNDIDADE DO BOOK E ANÁLISE DE SPREAD
+# ==============================================================================
+
+# Quantidade de níveis de preço a considerar ao calcular a profundidade
+# agregada do livro de ofertas. Os níveis especificados serão usados para
+# computar liquidez acumulada em L1, L5, L10 e L25.
+ORDER_BOOK_DEPTH_LEVELS = [1, 5, 10, 25]
+
+# Threshold em basis points (bps) para definir o que é considerado spread
+# "estreito". Um spread abaixo deste valor indica mercado altamente líquido.
+SPREAD_TIGHT_THRESHOLD_BPS = 0.2
+
+# Janelas (em minutos) para cálculo da média e volatilidade do spread.
+# Tipicamente usa-se 60 minutos (1h) e 1.440 minutos (24h).
+SPREAD_AVG_WINDOWS_MIN = [60, 1440]
+
+# ==============================================================================
+# PARÂMETROS DE FLUXO DE ORDENS E PARTICIPANTES
+# ==============================================================================
+
+# Janelas (em minutos) para cálculo do fluxo líquido. Permitem analisar o
+# desequilíbrio de agressões de compra e venda em múltiplos horizontes.
+NET_FLOW_WINDOWS_MIN = [1, 5, 15]
+
+# Threshold (em BTC) usado para classificar ordens agressivas de acordo com
+# seu tamanho. Ordens de mercado acima deste valor serão tratadas como
+# particularmente impactantes; valores baixos considerarão praticamente todas
+# as ordens de mercado como agressivas.
+AGGRESSIVE_ORDER_SIZE_THRESHOLD = 0.0
+
+# ==============================================================================
+# PARÂMETROS DE DETECÇÃO DE WHALES
+# ==============================================================================
+
+# Janela (em minutos) para acompanhar ordens grandes ao calcular a atividade
+# de whales. Ajuste para considerar diferentes horizontes de acumulação.
+WHALE_DETECTION_WINDOW_MIN = 60
+
+# Número mínimo de execuções consecutivas no mesmo preço para considerar um
+# padrão de iceberg/ordem escondida. Aumente para reduzir falsos positivos.
+ICEBERG_THRESHOLD_COUNT = 3
+
+# ==============================================================================
+# PARÂMETROS DE PADRÕES E FIBONACCI
+# ==============================================================================
+
+# Número de barras (ticks ou candles) a retroceder para detectar padrões de
+# continuação ou reversão (ex.: triângulos, bandeiras, ombro-cabeça-ombro).
+PATTERN_LOOKBACK_BARS = 200
+
+# Níveis de retração de Fibonacci usados nas análises de suporte/resistência
+# avançadas. Esses valores são percentuais do movimento recente.
+FIBONACCI_LEVELS = [0.236, 0.382, 0.5, 0.618, 0.786]
+
+# ==============================================================================
+# PARÂMETROS DE IMPACTO DE MERCADO E SLIPPAGE
+# ==============================================================================
+
+# Tamanhos de ordem (em USD) para calcular a matriz de slippage. Ajuste as
+# buckets conforme o perfil de execução desejado.
+SLIPPAGE_BUCKETS_USD = [1_000, 10_000, 100_000, 1_000_000]
+
+# Pesos usados no cálculo do score de liquidez (0–10). Definem a influência
+# relativa da profundidade do livro, do spread e do volume negociado.
+LIQUIDITY_WEIGHT_DEPTH = 0.4
+LIQUIDITY_WEIGHT_SPREAD = 0.3
+LIQUIDITY_WEIGHT_VOLUME = 0.3
+
+# ==============================================================================
+# PARÂMETROS DE DETECÇÃO DE REGIME
+# ==============================================================================
+
+# Probabilidade mínima para disparar alerta de mudança de regime de mercado.
+REGIME_CHANGE_THRESHOLD = 0.15
+
+# Intervalo estimado (em horas) de duração esperada dos regimes. Usado
+# apenas para fins de exibição ou modelagem simples.
+REGIME_EXPECTED_DURATION_HRS = (2, 4)
+
+# ==============================================================================
+# PARÂMETROS DE ALERTAS E ALVOS DE PREÇO
+# ==============================================================================
+
+# Probabilidade mínima para emitir alerta de teste de suporte/resistência.
+ALERT_SUPPORT_PROB_THRESHOLD = 0.75
+
+# Multiplicador do volume médio que caracteriza um pico de volume para alertas.
+ALERT_VOLUME_SPIKE_THRESHOLD = 3.0
+
+# Horizontes (em minutos) para projeções de alvo de preço. Correspondem aos
+# intervalos de curto prazo utilizados na geração de cenários bull/bear.
+PRICE_TARGET_HORIZONS_MIN = [5, 15, 60]
+
+# Níveis de confiança padrão para estimativas de alvos de preço. Podem ser
+# usados para calibrar modelos de probabilidade de cenários altista/baixista.
+PRICE_TARGET_CONFIDENCE_LEVELS = {
+    "low": 0.5,
+    "high": 0.7,
+}

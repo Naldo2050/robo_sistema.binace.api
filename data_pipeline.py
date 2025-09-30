@@ -5,6 +5,11 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 
 from time_manager import TimeManager
+# Import ML feature generator for advanced features
+try:
+    from ml_features import generate_ml_features
+except Exception:
+    generate_ml_features = None
 
 
 class DataPipeline:
@@ -256,9 +261,14 @@ class DataPipeline:
         historical_vp: Dict | None = None,
         orderbook_data: Dict | None = None,
         multi_tf: Dict | None = None,
-        derivatives: Dict | None = None,   # ✅ novo parâmetro
+        derivatives: Dict | None = None,
+        market_context: Dict | None = None,
+        market_environment: Dict | None = None,
     ) -> Dict[str, Any]:
-        """Enriquece com contexto externo (fluxo contínuo, VP histórico, MTF, order book, derivativos)."""
+        """
+        Enriquece com contexto externo (fluxo contínuo, VP histórico, MTF, order book, derivativos,
+        contexto de mercado e ambiente). Adiciona todas as fontes ao dicionário contextual.
+        """
         if self.enriched_data is None:
             self.enrich()
 
@@ -268,7 +278,9 @@ class DataPipeline:
             "historical_vp": historical_vp or {},
             "orderbook_data": orderbook_data or {},  # mantém compatibilidade com main.py
             "multi_tf": multi_tf or {},
-            "derivatives": derivatives or {},        # ✅ agora persistido
+            "derivatives": derivatives or {},        # derivativos
+            "market_context": market_context or {},
+            "market_environment": market_environment or {},
         })
 
         self.contextual_data = contextual
@@ -371,5 +383,24 @@ class DataPipeline:
             "enriched": self.enriched_data or {},
             "contextual": self.contextual_data or {},
             "signals": self.signal_data,
+            # Placeholder; will be populated with engineered ML features if available
+            "ml_features": {},
         }
+
+        # Compute machine learning features when possible
+        try:
+            if generate_ml_features is not None and self.df is not None and self.contextual_data:
+                # Extract order book and flow metrics from contextual data
+                orderbook_data = self.contextual_data.get("orderbook_data", {})
+                flow_metrics = self.contextual_data.get("flow_metrics", {})
+                ml_feats = generate_ml_features(
+                    self.df,
+                    orderbook_data,
+                    flow_metrics,
+                    lookback_windows=[1, 5, 15],
+                    volume_ma_window=20,
+                )
+                features["ml_features"] = ml_feats
+        except Exception as e:
+            logging.error(f"Erro ao gerar ML features: {e}")
         return features

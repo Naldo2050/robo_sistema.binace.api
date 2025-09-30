@@ -5,6 +5,12 @@ import random
 import time
 from typing import Any, Dict
 
+# config é opcional (permite pegar a key via config.DASHSCOPE_API_KEY ou config.AI_KEYS["dashscope"])
+try:
+    import config as app_config
+except Exception:  # pragma: no cover
+    app_config = None
+
 # Tentativa de importar OpenAI (modo compatível)
 try:
     from openai import OpenAI
@@ -99,9 +105,10 @@ class AIAnalyzer:
             self.enabled = True  # mock ligado
 
     def _initialize_api(self):
+        # 1) OpenAI (compatível). Usa OPENAI_API_KEY/OPENAI_BASE_URL se existirem.
         if OPENAI_AVAILABLE:
             try:
-                self.client = OpenAI()  # usa OPENAI_API_KEY/OPENAI_BASE_URL se existirem
+                self.client = OpenAI()
                 self.mode = "openai"
                 self.enabled = True
                 logging.info("🔧 OpenAI client configurado (modo compatível)")
@@ -109,17 +116,31 @@ class AIAnalyzer:
             except Exception as e:
                 logging.warning(f"OpenAI indisponível: {e}")
 
-        if DASHSCOPE_AVAILABLE:
+        # 2) DashScope (nativo): resolve token por env e/ou config
+        token = os.getenv("DASHSCOPE_API_KEY")
+        if not token and app_config is not None:
+            token = getattr(app_config, "DASHSCOPE_API_KEY", None)
+            if token is None:
+                ai_keys = getattr(app_config, "AI_KEYS", None)
+                if isinstance(ai_keys, dict):
+                    token = ai_keys.get("dashscope") or ai_keys.get("DASHSCOPE_API_KEY")
+
+        if DASHSCOPE_AVAILABLE and token:
             try:
+                import dashscope  # garantir objeto raiz para setar api_key
+                dashscope.api_key = token
                 self.mode = "dashscope"
                 self.enabled = True
-                logging.info("🔧 DashScope (Qwen) configurado (modo nativo)")
+                logging.info("🔧 DashScope configurado (modo nativo)")
                 return
             except Exception as e:
                 logging.warning(f"DashScope indisponível: {e}")
+        elif DASHSCOPE_AVAILABLE and not token:
+            logging.warning("DashScope API key não encontrada. Mantendo modo mock.")
 
+        # 3) Mock (sem provedores externos)
         self.mode = None
-        self.enabled = True  # mock
+        self.enabled = True
         logging.info("🔧 Modo MOCK ativado (sem provedores externos).")
 
     def _should_test_connection(self) -> bool:
@@ -247,6 +268,178 @@ class AIAnalyzer:
         else:
             vp_str = "\n📊 Volume Profile Histórico: Indisponível."
 
+        # ------------ Contexto e ambiente de mercado ------------
+        # Tenta extrair dados de contexto do evento ou do bloco contextual
+        market_ctx = event_data.get("market_context") or event_data.get("contextual", {}).get("market_context", {})  # type: ignore
+        market_env = event_data.get("market_environment") or event_data.get("contextual", {}).get("market_environment", {})  # type: ignore
+
+        market_ctx_str = ""
+        if isinstance(market_ctx, dict) and market_ctx:
+            try:
+                sess = market_ctx.get("trading_session", "Indisponível")
+                phase = market_ctx.get("session_phase", "Indisponível")
+                close_sec = market_ctx.get("time_to_session_close", None)
+                close_str = f"{close_sec}seg" if close_sec is not None else "Indisponível"
+                dow = market_ctx.get("day_of_week", "Indisponível")
+                is_holiday = market_ctx.get("is_holiday", None)
+                holiday_str = "Sim" if is_holiday else ("Não" if is_holiday is not None else "Indisponível")
+                hours_type = market_ctx.get("market_hours_type", "Indisponível")
+                market_ctx_str = f"\n🌍 Contexto de Mercado\n- Sessão: {sess} ({phase}), fecha em {close_str}\n- Dia da semana: {dow} | Feriado: {holiday_str}\n- Horário de mercado: {hours_type}\n"
+            except Exception:
+                market_ctx_str = ""
+
+        market_env_str = ""
+        if isinstance(market_env, dict) and market_env:
+            try:
+                vol_reg = market_env.get("volatility_regime", "Indisponível")
+                trend_dir = market_env.get("trend_direction", "Indisponível")
+                mkt_struct = market_env.get("market_structure", "Indisponível")
+                liq_env = market_env.get("liquidity_environment", "Indisponível")
+                risk_sent = market_env.get("risk_sentiment", "Indisponível")
+                corr_spy = market_env.get("correlation_spy", None)
+                corr_dxy = market_env.get("correlation_dxy", None)
+                corr_gold = market_env.get("correlation_gold", None)
+                # Formata correlações apenas se numéricas
+                def fmt_corr(v):
+                    try:
+                        return f"{float(v):+0.2f}"  # ex: +0.45
+                    except Exception:
+                        return "Indisponível"
+                corr_str = f"SP500 {fmt_corr(corr_spy)}, DXY {fmt_corr(corr_dxy)}, GOLD {fmt_corr(corr_gold)}"
+                market_env_str = f"\n🌡 Ambiente de Mercado\n- Volatilidade: {vol_reg} | Tendência: {trend_dir} | Estrutura: {mkt_struct}\n- Liquidez: {liq_env} | Sentimento de risco: {risk_sent}\n- Correlações: {corr_str}\n"
+            except Exception:
+                market_env_str = ""
+
+        # ------------ Ordem de livro: profundidade e spread ------------
+        ob_depth = event_data.get("order_book_depth") or event_data.get("contextual", {}).get("order_book_depth", {})  # type: ignore
+        depth_str = ""
+        if isinstance(ob_depth, dict) and ob_depth:
+            try:
+                # Usar apenas alguns níveis principais se disponíveis
+                lines = []
+                for lvl in ("L1", "L5", "L10", "L25"):
+                    d = ob_depth.get(lvl)
+                    if isinstance(d, dict) and d:
+                        bids = d.get("bids")
+                        asks = d.get("asks")
+                        imb = d.get("imbalance")
+                        bid_str = f"{bids:,.0f}" if isinstance(bids, (int, float)) else "Ind"  # Indisponível
+                        ask_str = f"{asks:,.0f}" if isinstance(asks, (int, float)) else "Ind"
+                        imb_str = f"{imb:+0.2f}" if isinstance(imb, (int, float)) else "Ind"
+                        lines.append(f"- {lvl}: Bid {bid_str}, Ask {ask_str}, Imb {imb_str}")
+                total_ratio = ob_depth.get("total_depth_ratio")
+                ratio_str = f"{total_ratio:+0.3f}" if isinstance(total_ratio, (int, float)) else "Indisponível"
+                if lines:
+                    depth_str = "\n📑 Profundidade do Livro (USD)\n" + "\n".join(lines) + f"\n- Desvio total: {ratio_str}\n"
+            except Exception:
+                depth_str = ""
+
+        spread_ana = event_data.get("spread_analysis") or event_data.get("contextual", {}).get("spread_analysis", {})  # type: ignore
+        spread_str = ""
+        if isinstance(spread_ana, dict) and spread_ana:
+            try:
+                cs = spread_ana.get("current_spread_bps")
+                avg1 = spread_ana.get("avg_spread_1h")
+                avg24 = spread_ana.get("avg_spread_24h")
+                pct = spread_ana.get("spread_percentile")
+                tdur = spread_ana.get("tight_spread_duration_min")
+                vol_sp = spread_ana.get("spread_volatility")
+                def fmt_num(x, dec=2):
+                    try:
+                        return f"{float(x):0.{dec}f}"
+                    except Exception:
+                        return "Ind"
+                spread_str = "\n📏 Spread\n" + \
+                    f"- Atual: {fmt_num(cs,2)} bps\n" + \
+                    f"- Médias: 1h {fmt_num(avg1,2)} bps, 24h {fmt_num(avg24,2)} bps\n" + \
+                    f"- Percentil: {fmt_num(pct,1)}% | Tight Dur: {fmt_num(tdur,1)} min | Vol: {fmt_num(vol_sp,3)}\n"
+            except Exception:
+                spread_str = ""
+
+        # ------------ Fluxo de ordens e participantes ------------
+        # Procura métricas de fluxo no evento
+        flow = event_data.get("fluxo_continuo") or event_data.get("flow_metrics") or event_data.get("contextual", {}).get("flow_metrics", {})  # type: ignore
+        order_flow_str = ""
+        participants_str = ""
+        if isinstance(flow, dict) and flow:
+            # Order flow
+            of = flow.get("order_flow", {})
+            if isinstance(of, dict) and of:
+                try:
+                    nf1 = of.get("net_flow_1m")
+                    nf5 = of.get("net_flow_5m")
+                    nf15 = of.get("net_flow_15m")
+                    ab = of.get("aggressive_buy_pct")
+                    asell = of.get("aggressive_sell_pct")
+                    pb = of.get("passive_buy_pct")
+                    ps = of.get("passive_sell_pct")
+                    bsr = of.get("buy_sell_ratio")
+                    def fmt_nf(x):
+                        try:
+                            return f"{float(x):+,.0f}"
+                        except Exception:
+                            return "Ind"
+                    def fmt_pct(x):
+                        try:
+                            return f"{float(x):0.1f}%"
+                        except Exception:
+                            return "Ind"
+                    of_lines = []
+                    if any(v is not None for v in (nf1, nf5, nf15)):
+                        of_lines.append(f"- Net Flow: 1m {fmt_nf(nf1)}, 5m {fmt_nf(nf5)}, 15m {fmt_nf(nf15)}")
+                    if any(v is not None for v in (ab, asell, pb, ps)):
+                        of_lines.append(f"- Agressivo: Buy {fmt_pct(ab)} | Sell {fmt_pct(asell)} | Passivo: Buy {fmt_pct(pb)} | Sell {fmt_pct(ps)}")
+                    if bsr is not None:
+                        try:
+                            bsr_str = f"{float(bsr):0.2f}"
+                        except Exception:
+                            bsr_str = "Ind"
+                        of_lines.append(f"- Razão Buy/Sell: {bsr_str}")
+                    if of_lines:
+                        order_flow_str = "\n🚰 Fluxo de Ordens\n" + "\n".join(of_lines) + "\n"
+                except Exception:
+                    order_flow_str = ""
+
+            # Participant analysis
+            pa = flow.get("participant_analysis", {})
+            if isinstance(pa, dict) and pa:
+                try:
+                    lines = []
+                    for role in ("retail_flow", "institutional_flow", "hft_flow"):
+                        info = pa.get(role)
+                        if not isinstance(info, dict):
+                            continue
+                        vol_pct = info.get("volume_pct")
+                        direction = info.get("direction") or "Ind"
+                        avg_sz = info.get("avg_order_size")
+                        sentiment = info.get("sentiment") or info.get("activity_level") or "Ind"
+                        act_level = info.get("activity_level") or info.get("activity" )
+                        # Some mapping to friendly names
+                        label_map = {
+                            "retail_flow": "Retail",
+                            "institutional_flow": "Institucional",
+                            "hft_flow": "HFT"
+                        }
+                        name = label_map.get(role, role)
+                        try:
+                            vol_pct_str = f"{float(vol_pct):0.1f}%" if vol_pct is not None else "Ind"
+                        except Exception:
+                            vol_pct_str = "Ind"
+                        try:
+                            avg_sz_str = f"{float(avg_sz):0.2f}" if avg_sz is not None else "Ind"
+                        except Exception:
+                            avg_sz_str = "Ind"
+                        if act_level and sentiment and act_level != sentiment:
+                            sent_str = f"{sentiment} ({act_level})"
+                        else:
+                            sent_str = sentiment
+                        lines.append(f"- {name}: Vol {vol_pct_str}, Dir {direction}, Avg {avg_sz_str}, Sent. {sent_str}")
+                    if lines:
+                        participants_str = "\n👥 Participantes\n" + "\n".join(lines) + "\n"
+                except Exception:
+                    participants_str = ""
+
+
         if "imbalance" in event_data or tipo_evento == "OrderBook":
             imbalance = event_data.get("imbalance", "Indisponível")
             ratio = event_data.get("volume_ratio", "Indisponível")
@@ -285,7 +478,7 @@ class AIAnalyzer:
 
 📝 Descrição: {descricao}
 {ob_str}
-{zone_str}{deriv_str}{vp_str}
+{zone_str}{deriv_str}{vp_str}{market_ctx_str}{market_env_str}{depth_str}{spread_str}{order_flow_str}{participants_str}
 
 📈 Multi-Timeframes
 {multi_tf_str}
@@ -323,7 +516,7 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver):
 - Delta: {delta}
 {vol_line}
 
-{zone_str}{deriv_str}{vp_str}
+{zone_str}{deriv_str}{vp_str}{market_ctx_str}{market_env_str}{depth_str}{spread_str}{order_flow_str}{participants_str}
 
 📈 Multi-Timeframes
 {multi_tf_str}
@@ -417,9 +610,9 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver):
                 self._initialize_api()
             except Exception:
                 pass
-            if not self.enabled:
-                logging.warning("IA não inicializada; retornando análise mock.")
-                return self._generate_mock_analysis(event_data)
+        if not self.enabled:
+            logging.warning("IA não inicializada; retornando análise mock.")
+            return self._generate_mock_analysis(event_data)
 
         if self._should_test_connection():
             self.last_test_time = time.time()

@@ -2,13 +2,82 @@
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
+import os
+import json
 
 try:
-    import yfinance as yf
+    import config as app_config  # opcional para ler chave do Alpha Vantage
+except Exception:  # pragma: no cover
+    app_config = None
+
+try:
+    import yfinance as yf  # fonte principal
     _YF_OK = True
 except Exception as e:
     _YF_OK = False
     logging.warning(f"yfinance indisponível: {e}. Macro vai retornar status=failed.")
+
+# ---------------------------------------------------------------------------
+#  Suporte opcional ao Alpha Vantage para fallback quando yfinance falhar
+#  Requer definir a variável de ambiente ALPHAVANTAGE_API_KEY ou em config.py
+# ---------------------------------------------------------------------------
+import requests  # usado somente quando _YF_OK falha
+
+# Carrega chave API do AlphaVantage de env ou config
+_AV_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY")
+if not _AV_API_KEY and app_config is not None:
+    _AV_API_KEY = getattr(app_config, "ALPHAVANTAGE_API_KEY", None)
+
+# Possíveis mapeamentos de símbolos para AlphaVantage (índices, commodities)
+_ALPHA_CANDIDATES = {
+    "DXY": ["DX-Y.NYB", "DXY"],
+    "GOLD": ["XAUUSD", "GOLD"],
+    "SPX": ["SPX", "SPY"],
+    "NDX": ["IXIC", "QQQ", "NDX"],
+}
+
+def _dl_alphavantage(symbol: str) -> Optional[Dict[str, Any]]:
+    """
+    Baixa dados diários do AlphaVantage para um símbolo.
+    Retorna dicionário com close, pct_change_1d e timestamp ou None em caso de erro.
+    """
+    if not _AV_API_KEY:
+        return None
+    # Usa endpoint TIME_SERIES_DAILY. Poderá ser mudado para outras funções conforme necessidade.
+    url = (
+        "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY"
+        f"&symbol={symbol}&apikey={_AV_API_KEY}"
+    )
+    try:
+        resp = requests.get(url, timeout=15)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        # A API devolve os dados sob a chave 'Time Series (Daily)'
+        ts = data.get("Time Series (Daily)")
+        if not ts:
+            return None
+        # ordena as datas para extrair o último dia disponível
+        dates = sorted(ts.keys())
+        if not dates:
+            return None
+        last_day = dates[-1]
+        last_close = float(ts[last_day].get("4. close"))
+        # calcula variação em relação ao dia anterior, se disponível
+        pct = None
+        if len(dates) > 1:
+            prev_day = dates[-2]
+            prev_close = float(ts[prev_day].get("4. close"))
+            pct = ((last_close - prev_close) / prev_close) * 100.0 if prev_close else None
+        # normaliza timestamp para ISO (data + tempo 00:00 UTC)
+        ts_iso = f"{last_day}T00:00:00Z"
+        return {
+            "close": last_close,
+            "pct_change_1d": pct,
+            "timestamp": ts_iso,
+        }
+    except Exception:
+        return None
 
 # --- TICKERS DE BACKUP POR ATIVO ---
 # Obs.: yfinance às vezes muda cookies/rotas; manter múltiplas opções ajuda.
@@ -61,9 +130,11 @@ def _extract_snapshot(df) -> Optional[Dict[str, Any]]:
 
 def _try_tickers(name: str, candidates: List[str]) -> Dict[str, Any]:
     """
-    Itera tickers candidatos e períodos/intervalos.
+    Itera tickers candidatos e períodos/intervalos via yfinance.
+    Em caso de falha, tenta fallback via AlphaVantage se configurado.
     Retorna payload com status ok/failed sem levantar exceção.
     """
+    # 1) Tenta yfinance para cada candidato e combinação de períodos/intervalos
     for symbol in candidates:
         for period in _PERIODS:
             for interval in _INTERVALS:
@@ -80,8 +151,21 @@ def _try_tickers(name: str, candidates: List[str]) -> Dict[str, Any]:
                 snap["interval"] = interval
                 return snap
 
-    # falhou nos candidatos
-    logging.warning(f"[Macro] {name}: dados indisponíveis em yfinance (candidatos={candidates})")
+    # 2) Fallback via AlphaVantage se disponível
+    if _AV_API_KEY:
+        alpha_candidates = _ALPHA_CANDIDATES.get(name, candidates)
+        for symbol in alpha_candidates:
+            snap = _dl_alphavantage(symbol)
+            if not snap:
+                continue
+            # incorpora campos extras
+            snap["symbol_used"] = symbol
+            snap["status"] = "ok"
+            snap["source"] = "alphavantage"
+            return snap
+
+    # 3) Sem dados disponíveis
+    logging.warning(f"[Macro] {name}: dados indisponíveis em yfinance e AlphaVantage (candidatos={candidates})")
     return {
         "status": "failed",
         "symbol_used": None,
