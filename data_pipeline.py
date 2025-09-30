@@ -1,3 +1,4 @@
+# data_pipeline.py
 import pandas as pd
 import numpy as np
 import logging
@@ -5,7 +6,8 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 
 from time_manager import TimeManager
-# Import ML feature generator for advanced features
+
+# Importador opcional do gerador de features de ML
 try:
     from ml_features import generate_ml_features
 except Exception:
@@ -19,7 +21,7 @@ class DataPipeline:
         Camadas:
           1. Raw → dados crus da Binance
           2. Enriched → métricas básicas (OHLC, VWAP, volumes, speed, dwell, delta intra)
-          3. Contextual → adiciona fluxo, VP histórico, MTF, order book
+          3. Contextual → adiciona fluxo, VP histórico, MTF, order book, derivativos, macro/ambiente
           4. Signal → detecta Absorção/Exaustão/OrderBook/Zonas
         """
         self.raw_trades = raw_trades
@@ -76,7 +78,7 @@ class DataPipeline:
                 q = self._coerce_float(t.get("q"))
                 T = self._coerce_int(t.get("T"))
 
-                # m: mantenha 'como vier'; se ausente, deixa NaN para tick-rule no data_handler
+                # m: mantém como vier; se ausente, deixa NaN (tick-rule pode inferir depois)
                 m = t.get("m", np.nan)
 
                 if p is None or q is None or T is None:
@@ -191,7 +193,7 @@ class DataPipeline:
             open_iso = self.tm.format_timestamp(open_time, tz=self.tm.tz_utc, timespec="seconds")
             close_iso = self.tm.format_timestamp(close_time, tz=self.tm.tz_utc, timespec="seconds")
 
-            base_volume = float(df["q"].sum())              # ex.: BTC
+            base_volume = float(df["q"].sum())               # ex.: BTC
             quote_volume = float((df["p"] * df["q"]).sum())  # ex.: USDT
             vwap = float(quote_volume / base_volume) if base_volume > 0 else close_price
 
@@ -276,9 +278,9 @@ class DataPipeline:
         contextual.update({
             "flow_metrics": flow_metrics or {},
             "historical_vp": historical_vp or {},
-            "orderbook_data": orderbook_data or {},  # mantém compatibilidade com main.py
+            "orderbook_data": orderbook_data or {},  # compatível com main.py
             "multi_tf": multi_tf or {},
-            "derivatives": derivatives or {},        # derivativos
+            "derivatives": derivatives or {},
             "market_context": market_context or {},
             "market_environment": market_environment or {},
         })
@@ -355,14 +357,14 @@ class DataPipeline:
         if self.enriched_data is None:
             self.enrich()
         if self.contextual_data is None:
-            # cria contexto vazio mínimo
+            # cria contexto mínimo
             self.contextual_data = {
                 **(self.enriched_data or {}),
                 "flow_metrics": {},
                 "historical_vp": {},
                 "orderbook_data": {},
                 "multi_tf": {},
-                "derivatives": {},   # ✅ inclui fallback
+                "derivatives": {},
             }
         if self.signal_data is None:
             self.signal_data = []
@@ -383,18 +385,36 @@ class DataPipeline:
             "enriched": self.enriched_data or {},
             "contextual": self.contextual_data or {},
             "signals": self.signal_data,
-            # Placeholder; will be populated with engineered ML features if available
-            "ml_features": {},
+            "ml_features": {},  # será preenchido abaixo
         }
 
-        # Compute machine learning features when possible
+        # ✅ Geração robusta de ML features com DF de ticks (corrige falta de 'close')
         try:
             if generate_ml_features is not None and self.df is not None and self.contextual_data:
-                # Extract order book and flow metrics from contextual data
                 orderbook_data = self.contextual_data.get("orderbook_data", {})
                 flow_metrics = self.contextual_data.get("flow_metrics", {})
+
+                # Monta DF amigável ao gerador de ML
+                df_for_ml = self.df.copy()
+
+                # Garantir colunas esperadas
+                if "close" not in df_for_ml.columns:
+                    df_for_ml["close"] = pd.to_numeric(df_for_ml["p"], errors="coerce")
+                else:
+                    df_for_ml["close"] = pd.to_numeric(df_for_ml["close"], errors="coerce")
+
+                df_for_ml["p"] = pd.to_numeric(df_for_ml.get("p", df_for_ml.get("close")), errors="coerce")
+                df_for_ml["q"] = pd.to_numeric(df_for_ml.get("q", 0.0), errors="coerce")
+
+                if "m" not in df_for_ml.columns:
+                    df_for_ml["m"] = False
+                else:
+                    df_for_ml["m"] = df_for_ml["m"].fillna(False).astype(bool)
+
+                df_for_ml = df_for_ml.dropna(subset=["close", "p", "q"])
+
                 ml_feats = generate_ml_features(
-                    self.df,
+                    df_for_ml,
                     orderbook_data,
                     flow_metrics,
                     lookback_windows=[1, 5, 15],
@@ -403,4 +423,5 @@ class DataPipeline:
                 features["ml_features"] = ml_feats
         except Exception as e:
             logging.error(f"Erro ao gerar ML features: {e}")
+
         return features

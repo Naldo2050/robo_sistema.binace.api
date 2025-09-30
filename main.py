@@ -390,6 +390,13 @@ class EnhancedMarketBot:
         # 🔹 PARA INFERÊNCIA DO 'm'
         self._last_price = None
 
+        # 🔹 Cooldown simples para alertas
+        self._last_alert_ts = {}
+        try:
+            self._alert_cooldown_sec = getattr(config, "ALERT_COOLDOWN_SEC", 30)
+        except Exception:
+            self._alert_cooldown_sec = 30
+
         self._register_cleanup_handlers()
 
     def _initialize_ai_async(self):
@@ -793,6 +800,11 @@ class EnhancedMarketBot:
                 features = pipeline.get_final_features()
                 self.feature_store.save_features(window_id=str(close_ms), features=features)
 
+                # ▼▼ NEW: extratos que vamos injetar nos eventos
+                ml_payload = features.get("ml_features", {}) or {}
+                enriched_snapshot = features.get("enriched", {}) or {}
+                contextual_snapshot = features.get("contextual", {}) or {}
+
             except Exception as e:
                 logging.error(f"Erro no DataPipeline: {e}")
                 return
@@ -816,6 +828,12 @@ class EnhancedMarketBot:
                     except Exception:
                         pass
 
+                    # ▼▼ NEW: anexa ML features e snapshots ao evento para a IA usar
+                    signal.setdefault("features_window_id", str(close_ms))
+                    signal["ml_features"] = ml_payload
+                    signal["enriched_snapshot"] = enriched_snapshot
+                    signal["contextual_snapshot"] = contextual_snapshot
+
                     self.levels.add_from_event(signal)
                     self.event_bus.publish("signal", signal)
                     self.event_saver.save_event(signal)
@@ -830,9 +848,7 @@ class EnhancedMarketBot:
 
                     self._log_event(signal)
 
-            # Adiciona contexto de mercado/ambiente a todos os sinais (inclui OrderBook)
-            # (Context injection moved inside signal processing loop above)
-
+            # Verifica toques em zonas
             preco_atual = enriched.get("ohlc", {}).get("close", 0)
             if preco_atual > 0:
                 try:
@@ -876,22 +892,36 @@ class EnhancedMarketBot:
 
             # Atualiza histórico de volatilidade (usa volatilidade de 5 barras se disponível)
             try:
-                ml_feats = features.get('ml_features', {}) or {}
-                price_feats = ml_feats.get('price_features', {}) or {}
+                price_feats = (ml_payload.get('price_features') or {})
                 current_volatility = None
-                # Prefira volatilidade de 5 períodos, se não houver, use a primeira disponível
                 if 'volatility_5' in price_feats:
                     current_volatility = price_feats['volatility_5']
                 elif 'volatility_1' in price_feats:
                     current_volatility = price_feats['volatility_1']
-                elif price_feats:
-                    # pega qualquer valor de volatilidade disponível
+                else:
                     for k, v in price_feats.items():
                         if k.startswith('volatility_'):
                             current_volatility = v
                             break
                 if current_volatility is not None:
                     self.volatility_history.append(float(current_volatility))
+            except Exception:
+                pass
+
+            # (Opcional) Log curto de ML features por janela
+            try:
+                pf = ml_payload.get("price_features", {}) if ml_payload else {}
+                vf = ml_payload.get("volume_features", {}) if ml_payload else {}
+                mf = ml_payload.get("microstructure", {}) if ml_payload else {}
+                if pf or vf or mf:
+                    print(
+                        f"   ML: ret5={pf.get('returns_5', 0):+.4f} "
+                        f"vol5={pf.get('volatility_5', 0):.5f} "
+                        f"V/SMA={vf.get('volume_sma_ratio', 0):.2f} "
+                        f"BSpress={vf.get('buy_sell_pressure', 0):+.2f} "
+                        f"OBslope={mf.get('order_book_slope', 0):+.3f} "
+                        f"FlowImb={mf.get('flow_imbalance', 0):+.3f}"
+                    )
             except Exception:
                 pass
 
@@ -910,6 +940,7 @@ class EnhancedMarketBot:
                             sr = {"immediate_support": [], "immediate_resistance": []}
                     else:
                         sr = {"immediate_support": [], "immediate_resistance": []}
+
                     current_price_alert = window_close
                     avg_vol = (sum(self.volume_history) / len(self.volume_history)) if len(self.volume_history) > 0 else window_volume
                     rec_vols = list(self.volatility_history)
@@ -919,6 +950,7 @@ class EnhancedMarketBot:
                             curr_vol = self.volatility_history[-1]
                     except Exception:
                         curr_vol = None
+
                     alerts_list = generate_alerts(
                         price=current_price_alert,
                         support_resistance=sr,
@@ -929,8 +961,17 @@ class EnhancedMarketBot:
                         volume_threshold=3.0,
                         tolerance_pct=0.001,
                     )
+
                     for alert in alerts_list or []:
                         try:
+                            # Cooldown por tipo de alerta
+                            atype = alert.get('type', 'GENERIC')
+                            now_s = time.time()
+                            last_ts = self._last_alert_ts.get(atype, 0)
+                            if now_s - last_ts < self._alert_cooldown_sec:
+                                continue
+                            self._last_alert_ts[atype] = now_s
+
                             # Constrói uma descrição amigável do alerta
                             desc_parts = [f"Tipo: {alert.get('type')}"]
                             if 'level' in alert:
@@ -938,7 +979,6 @@ class EnhancedMarketBot:
                             if 'threshold_exceeded' in alert:
                                 desc_parts.append(f"Fator: {alert['threshold_exceeded']}")
                             if 'level' not in alert and 'threshold_exceeded' not in alert:
-                                # outros campos
                                 for k, v in alert.items():
                                     if k not in ('type', 'severity', 'probability', 'action'):
                                         desc_parts.append(f"{k}: {v}")
