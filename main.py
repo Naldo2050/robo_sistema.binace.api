@@ -732,7 +732,11 @@ class EnhancedMarketBot:
             self.levels.update_from_vp(historical_profile)
 
             try:
-                pipeline = DataPipeline(valid_window_data, self.symbol)
+                pipeline = DataPipeline(
+                    valid_window_data,
+                    self.symbol,
+                    time_manager=self.time_manager,
+                )
 
                 flow_metrics = self.flow_analyzer.get_flow_metrics(reference_epoch_ms=close_ms)
                 ob_event = self.orderbook_analyzer.analyze_order_book(event_epoch_ms=close_ms, window_id=str(close_ms))

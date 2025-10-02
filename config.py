@@ -1,3 +1,4 @@
+# CONFIG.PY
 # ==============================================================================
 # CONFIGURAÇÕES GERAIS DO BOT
 # ==============================================================================
@@ -10,7 +11,7 @@ STREAM_URL = f"wss://fstream.binance.com/ws/{SYMBOL.lower()}@aggTrade"
 # Coloquei aqui a sua chave para o Qwen/DashScope.
 # O ai_analyzer_qwen.py já lê primeiro de variável de ambiente e,
 # se não houver, usa estas variáveis abaixo.
-DASHSCOPE_API_KEY = "sk-a5f340c393d74b34af1fad2c85f236f6"
+DASHSCOPE_API_KEY = "sk-6f40dca1f07b492d8ee6fa6b724dd4dc"
 AI_KEYS = {
     "dashscope": DASHSCOPE_API_KEY,
 }

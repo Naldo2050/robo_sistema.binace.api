@@ -5,6 +5,8 @@ import random
 import time
 from typing import Any, Dict, Optional
 
+from dotenv import load_dotenv # Importa load_dotenv
+
 # config é opcional (permite pegar tokens e modelo)
 try:
     import config as app_config
@@ -30,6 +32,7 @@ except Exception:
 
 from time_manager import TimeManager
 
+load_dotenv() # Carrega variáveis de ambiente do arquivo .env, se existir
 
 def _extract_dashscope_text(resp) -> str:
     """Extrai texto de respostas do DashScope em formatos variados."""
@@ -129,13 +132,16 @@ class AIAnalyzer:
                 logging.warning(f"OpenAI indisponível: {e}")
 
         # 2) DashScope (nativo)
+        # Lê a chave *exclusivamente* da variável de ambiente
         token = os.getenv("DASHSCOPE_API_KEY")
-        if not token and app_config is not None:
-            token = getattr(app_config, "DASHSCOPE_API_KEY", None) or (
-                getattr(app_config, "AI_KEYS", {}).get("dashscope")
-                if isinstance(getattr(app_config, "AI_KEYS", None), dict)
-                else None
-            )
+
+        # Removido o fallback para config.py
+        # if not token and app_config is not None:
+        #     token = getattr(app_config, "DASHSCOPE_API_KEY", None) or (
+        #         getattr(app_config, "AI_KEYS", {}).get("dashscope")
+        #         if isinstance(getattr(app_config, "AI_KEYS", None), dict)
+        #         else None
+        #     )
 
         if DASHSCOPE_AVAILABLE and token:
             try:
@@ -147,7 +153,7 @@ class AIAnalyzer:
             except Exception as e:
                 logging.warning(f"DashScope indisponível: {e}")
         elif DASHSCOPE_AVAILABLE and not token:
-            logging.warning("DashScope API key não encontrada. Mantendo modo mock.")
+            logging.warning("DashScope API key não encontrada (variável DASHSCOPE_API_KEY). Mantendo modo mock.")
 
         # 3) Mock (sem provedores externos)
         self.mode = None

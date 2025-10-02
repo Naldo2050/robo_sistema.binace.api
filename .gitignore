@@ -32,3 +32,8 @@ gemini_data/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Environment variables (NEVER commit secrets!)
+.env
+.env.local
+.env.*.local
