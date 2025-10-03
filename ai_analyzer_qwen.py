@@ -308,6 +308,7 @@ class AIAnalyzer:
         else:
             deriv_str = "\n🏦 Derivativos: Indisponível."
 
+        # >>>>> INÍCIO DA CORREÇÃO <<<<<
         # Volume Profile (Diário)
         vp = (
             event_data.get("historical_vp", {}).get("daily", {})
@@ -316,19 +317,27 @@ class AIAnalyzer:
         )
         if vp:
             try:
-                hvn_str = ", ".join([f"${x:,.2f}" for x in (vp.get("hvns") or [])[:3]]) or "—"
-                lvn_str = ", ".join([f"${x:,.2f}" for x in (vp.get("lvns") or [])[:3]]) or "—"
+                # Ordena HVNs e LVNs pela proximidade ao preço atual para pegar os mais relevantes
+                current_price_for_vp = float(preco)
+                hvns_list = sorted(vp.get("hvns") or [], key=lambda x: abs(x - current_price_for_vp))
+                lvns_list = sorted(vp.get("lvns") or [], key=lambda x: abs(x - current_price_for_vp))
+
+                # Formata as listas de forma compacta e limita a 12 itens
+                hvn_str = ", ".join([f"${x:,.2f}" for x in hvns_list[:12]]) or "Nenhum"
+                lvn_str = ", ".join([f"${x:,.2f}" for x in lvns_list[:12]]) or "Nenhum"
             except Exception:
-                hvn_str = lvn_str = "—"
+                hvn_str = lvn_str = "Indisponível"
+            
             vp_str = f"""
-📊 Volume Profile Histórico (Diário)
-- POC: ${_fmt_num(vp.get('poc'),2)}
-- Value Area: ${_fmt_num(vp.get('val'),2)} — ${_fmt_num(vp.get('vah'),2)}
-- HVNs: {hvn_str}
-- LVNs: {lvn_str}
+📊 Volume Profile (Diário)
+- POC: ${_fmt_num(vp.get('poc'), 2)} | Value Area: ${_fmt_num(vp.get('val'), 2)} a ${_fmt_num(vp.get('vah'), 2)}
+- HVNs (próximos): {hvn_str}
+- LVNs (próximos): {lvn_str}
 """
         else:
             vp_str = "\n📊 Volume Profile Histórico: Indisponível."
+        # >>>>> FIM DA CORREÇÃO <<<<<
+
 
         # Contexto de mercado
         ctx_snap = event_data.get("contextual_snapshot", {}) or {}

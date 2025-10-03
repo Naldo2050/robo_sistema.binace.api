@@ -298,14 +298,36 @@ class EventSaver:
                     f.write(f"Erro ao adicionar separador: {e}\n")
             except Exception as e2:
                 logging.critical(f"💀 FALHA TOTAL ao salvar separador visual: {e2}")
+    
+    # >>>>> INÍCIO DA CORREÇÃO <<<<<
+    def _compact_json_log(self, data, indent=2):
+        """Função customizada para serializar JSON com listas em uma única linha."""
+        if isinstance(data, dict):
+            # Formata listas de números (hvns, lvns, etc.) em uma única linha
+            formatted_items = []
+            for key, value in data.items():
+                if isinstance(value, list) and all(isinstance(i, (int, float)) for i in value):
+                    # Formata a lista como uma string de linha única
+                    list_str = json.dumps(value)
+                    formatted_items.append(f'{" " * (indent + 2)}"{key}": {list_str}')
+                else:
+                    # Recursivamente formata outros dicionários/valores
+                    value_str = self._compact_json_log(value, indent + 2)
+                    formatted_items.append(f'{" " * (indent + 2)}"{key}": {value_str}')
+            return f"{{\n" + ",\n".join(formatted_items) + f"\n{' ' * indent}}}"
+        elif isinstance(data, list):
+            # Mantém a formatação padrão para listas de objetos
+            if any(isinstance(i, dict) for i in data):
+                 return json.dumps(data, ensure_ascii=False, default=str, indent=indent)
+            # Para listas simples, usa a formatação compacta
+            return json.dumps(data, ensure_ascii=False, default=str)
+        else:
+            # Para outros tipos, usa a representação padrão
+            return json.dumps(data, ensure_ascii=False, default=str)
 
     def _add_visual_log_entry(self, event: dict):
         """
-        Log visual amigável:
-        - Cabeçalho (UTC, NY, SP, CONTEXT) 1x por minuto+contexto.
-        - Não repetir time_ny/time_sp dentro do corpo do evento.
-        - Exibir o timestamp do evento como 'timestamp_utc' para não confundir.
-        - Filtro anti-duplicado opcional por bloco (timestamp+tipo_evento+descricao).
+        Log visual amigável com formatação customizada para compactar listas.
         """
         try:
             ts = event.get("timestamp")
@@ -316,11 +338,9 @@ class EventSaver:
             if ts:
                 try:
                     dt = self._parse_iso8601(ts)  # aware
-                    # Bloco: minuto em UTC para ser consistente
                     minute_key = dt.astimezone(UTC_TZ).strftime("%Y-%m-%d %H:%M")
                     minute_block = f"{minute_key}|{context}"
 
-                    # Cabeçalho com os 3 fusos (para acabar com a dúvida)
                     utc_header = dt.astimezone(UTC_TZ).strftime("%Y-%m-%d %H:%M:%S UTC")
                     ny_header = dt.astimezone(NY_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
                     sp_header = dt.astimezone(SP_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -328,42 +348,37 @@ class EventSaver:
                     logging.error(f"Erro ao interpretar timestamp no log visual: {e}")
 
             with open(self.visual_log_file, "a", encoding="utf-8") as f:
-                # Se mudou bloco (minuto+contexto), imprime cabeçalho e reseta anti-duplicado
                 if minute_block and minute_block != self._last_logged_block:
                     f.write("\n" + "="*150 + "\n")
-                    if utc_header:
-                        f.write(f"HORÁRIO UTC: {utc_header}\n")
-                    if ny_header:
-                        f.write(f"HORÁRIO NY:  {ny_header}\n")
-                    if sp_header:
-                        f.write(f"HORÁRIO SP:  {sp_header}\n")
+                    if utc_header: f.write(f"HORÁRIO UTC: {utc_header}\n")
+                    if ny_header: f.write(f"HORÁRIO NY:  {ny_header}\n")
+                    if sp_header: f.write(f"HORÁRIO SP:  {sp_header}\n")
                     f.write(f"CONTEXT: {context}\n")
                     f.write("------------------------------\n")
                     self._last_logged_block = minute_block
                     self._seen_in_block.clear()
 
-                # Anti-duplicado simples no LOG por minuto+contexto (opcional)
                 dedupe_key = (
                     str(event.get("timestamp")),
                     str(event.get("tipo_evento")),
                     str(event.get("resultado_da_batalha")),
-                    str(event.get("descricao")),
                 )
                 if dedupe_key in self._seen_in_block:
                     return
                 self._seen_in_block.add(dedupe_key)
 
-                # JSON visual limpo: remove time_ny/time_sp e renomeia timestamp -> timestamp_utc
                 clean = dict(event)
                 clean.pop("time_ny", None)
                 clean.pop("time_sp", None)
                 if "timestamp" in clean:
                     clean["timestamp_utc"] = clean.pop("timestamp")
 
-                f.write(json.dumps(clean, ensure_ascii=False, default=str, indent=2) + "\n")
+                # Usa a função de formatação customizada
+                log_string = self._compact_json_log(clean, indent=0)
+                f.write(log_string + "\n")
+
         except Exception as e:
             logging.error(f"Erro ao adicionar entrada visual: {e}")
-            # Fallback: salva em diretório alternativo
             try:
                 fallback_dir = Path("./fallback_events")
                 fallback_dir.mkdir(exist_ok=True)
@@ -372,6 +387,7 @@ class EventSaver:
                     f.write(f"Erro ao adicionar entrada: {e}\nEvento: {json.dumps(event, ensure_ascii=False, default=str)}\n")
             except Exception as e2:
                 logging.critical(f"💀 FALHA TOTAL ao salvar entrada visual: {e2}")
+    # >>>>> FIM DA CORREÇÃO <<<<<
 
     # ---------- Alerta sonoro ----------
 

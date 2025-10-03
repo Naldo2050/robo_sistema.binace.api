@@ -1,4 +1,5 @@
-#MAIN.PY
+# main.py (corrigido)
+
 from dotenv import load_dotenv; load_dotenv()
 import json 
 import time
@@ -16,10 +17,8 @@ from collections import deque
 import signal
 import sys
 import atexit
-
 # Importa o arquivo de configurações central
 import config
-
 # Importações internas
 from data_handler import (
     create_absorption_event,
@@ -36,16 +35,14 @@ from event_saver import EventSaver
 from context_collector import ContextCollector
 from flow_analyzer import FlowAnalyzer
 from ai_analyzer_qwen import AIAnalyzer
-from report_generator import ReportGenerator
+from report_generator import generate_ai_analysis_report
 from levels_registry import LevelRegistry
-
-# 🔹 NOVOS MÓDULOS
+# 🔹 NOVOS MÓDulos
 from time_manager import TimeManager
 from health_monitor import HealthMonitor
 from event_bus import EventBus
 from data_pipeline import DataPipeline
 from feature_store import FeatureStore
-
 # Alert engine and support/resistance for institutional alerts
 try:
     from alert_engine import generate_alerts
@@ -55,9 +52,7 @@ try:
     from support_resistance import detect_support_resistance
 except Exception:
     detect_support_resistance = None
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
 
 # ===============================
 # GESTOR DE CONEXÃO WEBSOCKET (COM MITIGAÇÃO DE FALHAS)
@@ -70,7 +65,6 @@ class RobustConnectionManager:
         self.initial_delay = initial_delay
         self.max_delay = max_delay
         self.backoff_factor = backoff_factor
-
         self.current_delay = initial_delay
         self.reconnect_count = 0
         self.is_connected = False
@@ -86,17 +80,14 @@ class RobustConnectionManager:
         self.total_messages_received = 0
         self.total_reconnects = 0
         self.external_heartbeat_cb = None  # <- novo
-
     def set_callbacks(self, on_message=None, on_open=None, on_close=None, on_error=None):
         self.on_message_callback = on_message
         self.on_open_callback = on_open
         self.on_close_callback = on_close
         self.on_error_callback = on_error
-
     def set_heartbeat_cb(self, cb):
         """Permite injetar um heartbeat externo (ex.: HealthMonitor.heartbeat('main'))."""
         self.external_heartbeat_cb = cb
-
     def _test_connection(self):
         """
         Teste rápido de conectividade:
@@ -108,33 +99,25 @@ class RobustConnectionManager:
             parsed = urlparse(self.stream_url)
             host = parsed.hostname
             port = parsed.port or (443 if parsed.scheme == "wss" else 80)
-
             # DNS resolve
             socket.getaddrinfo(host, port)
-
             # TCP connect rápido
             with socket.create_connection((host, port), timeout=3):
                 return True
         except Exception as e:
             logging.error(f"Erro ao testar conexão (TCP quick): {e}")
             return False
-
     def _on_message(self, ws, message):
         try:
             self.last_message_time = datetime.now(timezone.utc)
             self.total_messages_received += 1
-
             if self.on_message_callback:
                 self.on_message_callback(ws, message)
-
             self.last_successful_message_time = self.last_message_time
-
             if self.current_delay > self.initial_delay:
                 self.current_delay = max(self.initial_delay, self.current_delay * 0.9)
-
         except Exception as e:
             logging.error(f"Erro no processamento da mensagem: {e}")
-
     def _on_open(self, ws):
         self.is_connected = True
         self.reconnect_count = 0
@@ -146,29 +129,24 @@ class RobustConnectionManager:
         self._start_heartbeat()
         if self.on_open_callback:
             self.on_open_callback(ws)
-
     def _on_close(self, ws, close_status_code, close_msg):
         self.is_connected = False
         logging.warning(f"🔌 Conexão fechada - Código: {close_status_code}, Msg: {close_msg}")
         self._stop_heartbeat()
         if self.on_close_callback:
             self.on_close_callback(ws, close_status_code, close_msg)
-
     def _on_error(self, ws, error):
         logging.error(f"❌ Erro WebSocket: {error}")
         if self.on_error_callback:
             self.on_error_callback(ws, error)
-
     def _start_heartbeat(self):
         self.should_stop = False
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_monitor, daemon=True)
         self.heartbeat_thread.start()
-
     def _stop_heartbeat(self):
         self.should_stop = True
         if self.heartbeat_thread:
             self.heartbeat_thread.join(timeout=1)
-
     def _heartbeat_monitor(self):
         while not self.should_stop and self.is_connected:
             time.sleep(30)
@@ -178,22 +156,18 @@ class RobustConnectionManager:
                     logging.warning(f"⚠️ Sem mensagens há {gap:.0f}s. Forçando reconexão.")
                     self.is_connected = False
                     break
-
             if self.last_successful_message_time:
                 valid_gap = (datetime.now(timezone.utc) - self.last_successful_message_time).total_seconds()
                 if valid_gap > 300:
                     logging.critical("💀 SEM MENSAGENS VÁLIDAS HÁ %ds! Fallback de preço ativado.", valid_gap)
-
     def _calculate_next_delay(self):
         delay = min(self.current_delay * self.backoff_factor, self.max_delay)
         jitter = delay * 0.2 * (random.random() - 0.5)
         self.current_delay = max(self.initial_delay, delay + jitter)
         return self.current_delay
-
     def connect(self):
         ping_interval = getattr(config, "WS_PING_INTERVAL", 25)
         ping_timeout = getattr(config, "WS_PING_TIMEOUT", 10)
-
         while self.reconnect_count < self.max_reconnect_attempts and not self.should_stop:
             try:
                 # Mantém heartbeat enquanto tenta
@@ -202,11 +176,9 @@ class RobustConnectionManager:
                         self.external_heartbeat_cb()
                     except Exception:
                         pass
-
                 # Teste leve (TCP) — não trava no TLS
                 if not self._test_connection():
                     raise ConnectionError("Falha no teste de conectividade")
-
                 logging.info(f"🔄 Tentativa {self.reconnect_count + 1}/{self.max_reconnect_attempts}")
                 ws = websocket.WebSocketApp(
                     self.stream_url,
@@ -243,27 +215,23 @@ class RobustConnectionManager:
                     logging.error("💀 Máximo de tentativas atingido. Encerrando.")
                     break
         self._stop_heartbeat()
-
     def disconnect(self):
         logging.info("🛑 Iniciando desconexão...")
         self.should_stop = True
 
-
 # ===============================
-# ANALISADOR DE TRADE FLOW (compatibilidade)
+# ANALISADOR DE TRADE FLOW
 # ===============================
 class TradeFlowAnalyzer:
     def __init__(self, vol_factor_exh, tz_output: ZoneInfo):
         self.vol_factor_exh = vol_factor_exh
         self.tz_output = tz_output
-
     def analyze_window(self, window_data, symbol, history_volumes, dynamic_delta_threshold, historical_profile=None):
         if not window_data or len(window_data) < 2:
             return (
                 {"is_signal": False, "delta": 0, "volume_total": 0, "preco_fechamento": 0},
                 {"is_signal": False, "delta": 0, "volume_total": 0, "preco_fechamento": 0},
             )
-
         absorption_event = create_absorption_event(
             window_data,
             symbol,
@@ -271,7 +239,6 @@ class TradeFlowAnalyzer:
             tz_output=self.tz_output,
             historical_profile=historical_profile,
         )
-
         exhaustion_event = create_exhaustion_event(
             window_data,
             symbol,
@@ -282,14 +249,12 @@ class TradeFlowAnalyzer:
         )
         return absorption_event, exhaustion_event
 
-
 # ===============================
-# FUNÇÃO AUXILIAR: GET CURRENT PRICE VIA REST (COM MITIGAÇÃO)
+# FUNÇÃO AUXILIAR: GET CURRENT PRICE VIA REST
 # ===============================
 def get_current_price(symbol: str) -> float:
     max_retries = 3
     base_delay = 1.0
-
     for attempt in range(max_retries):
         try:
             url = "https://fapi.binance.com/fapi/v1/ticker/price"
@@ -306,10 +271,8 @@ def get_current_price(symbol: str) -> float:
             logging.error(f"Erro inesperado ao buscar preço via REST (tentativa {attempt+1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
                 time.sleep(base_delay * (2**attempt))
-
     logging.critical("💀 FALHA CRÍTICA: Não foi possível obter preço via REST após todas as tentativas")
     return 0.0
-
 
 # ===============================
 # BOT PRINCIPAL
@@ -322,18 +285,15 @@ class EnhancedMarketBot:
         self.ny_tz = NY_TZ
         self.should_stop = False
         self.is_cleaning_up = False
-
         # 🔹 TimeManager único para todo o app
         self.time_manager = TimeManager()
-
-        # 🔹 INICIALIZA MÓDULOS
+        # 🔹 INICIALIZA MÓDulos
         self.health_monitor = HealthMonitor()
         self.event_bus = EventBus()
         self.feature_store = FeatureStore()
-
+        self.levels = LevelRegistry(self.symbol)  # ✅ Correção: inicializado aqui
         # 🔹 HEARTBEAT
         self.health_monitor.heartbeat("main")
-
         # Módulos existentes (com TimeManager injetado)
         self.trade_flow_analyzer = TradeFlowAnalyzer(vol_factor_exh, tz_output=self.ny_tz)
         self.orderbook_analyzer = OrderBookAnalyzer(
@@ -345,7 +305,6 @@ class EnhancedMarketBot:
         self.event_saver = EventSaver(sound_alert=True)
         self.context_collector = ContextCollector(symbol=self.symbol)
         self.flow_analyzer = FlowAnalyzer(time_manager=self.time_manager)
-
         self.ai_analyzer = None
         self.ai_initialization_attempted = False
         self.ai_test_passed = False
@@ -353,16 +312,13 @@ class EnhancedMarketBot:
         self.max_ai_threads = 3
         self.ai_semaphore = threading.Semaphore(3)
         self._initialize_ai_async()
-
         # 🔹 EVENT BUS
         self.event_bus.subscribe("signal", self._handle_signal_event)
         self.event_bus.subscribe("zone_touch", self._handle_zone_touch_event)
-
         self.connection_manager = RobustConnectionManager(stream_url, symbol, max_reconnect_attempts=15)
         self.connection_manager.set_callbacks(on_message=self.on_message, on_open=self.on_open, on_close=self.on_close)
         # Heartbeat durante reconexões
         self.connection_manager.set_heartbeat_cb(lambda: self.health_monitor.heartbeat("main"))
-
         self.window_end_ms = None
         self.window_data = []
         self.window_count = 0
@@ -371,33 +327,23 @@ class EnhancedMarketBot:
         self.delta_history = deque(maxlen=history_size)
         self.close_price_history = deque(maxlen=context_sma_period)
         self.delta_std_dev_factor = delta_std_dev_factor
-
         # Histórico de volatilidade (usado em alertas)
         self.volatility_history = deque(maxlen=history_size)
-
-        self.reporter = ReportGenerator(output_dir="./reports", mode="csv")
-        self.levels = LevelRegistry(self.symbol)
-
         # 🔹 CONTADORES DE CAMPOS AUSENTES
         self._missing_field_counts = {"q": 0, "m": 0, "p": 0, "T": 0}
-        # log_step define a cada quantos eventos um aviso de campos ausentes é logado.
-        # None ou 0 desliga o logging de amostragem. Valor menor = mais frequente.
         try:
             import config as cfg  # leitura dinâmica de config
             self._missing_field_log_step = getattr(cfg, "MISSING_FIELD_LOG_STEP", None)
         except Exception:
             self._missing_field_log_step = None
-
         # 🔹 PARA INFERÊNCIA DO 'm'
         self._last_price = None
-
         # 🔹 Cooldown simples para alertas
         self._last_alert_ts = {}
         try:
             self._alert_cooldown_sec = getattr(config, "ALERT_COOLDOWN_SEC", 30)
         except Exception:
             self._alert_cooldown_sec = 30
-
         self._register_cleanup_handlers()
 
     def _initialize_ai_async(self):
@@ -406,12 +352,9 @@ class EnhancedMarketBot:
                 if self.ai_initialization_attempted:
                     return
                 self.ai_initialization_attempted = True
-
                 print("\n" + "=" * 30 + " INICIALIZANDO IA " + "=" * 30)
                 logging.info("🧠 Tentando inicializar AI Analyzer Qwen...")
-
                 self.ai_analyzer = AIAnalyzer()
-
                 logging.info("✅ Módulo da IA carregado. Realizando teste de análise...")
                 current_price = get_current_price(self.symbol)
                 test_event = {
@@ -423,7 +366,6 @@ class EnhancedMarketBot:
                     "preco_fechamento": current_price,
                 }
                 analysis = self.ai_analyzer.analyze_event(test_event)
-
                 # Define limite mínimo para considerar o teste da IA como bem-sucedido.
                 # Lê de config se disponível, com fallback para 10 caracteres.
                 try:
@@ -443,14 +385,12 @@ class EnhancedMarketBot:
                     logging.warning("⚠️ Teste da IA retornou resultado inesperado ou vazio. Prosseguindo em modo de fallback.")
                     print(f"Resultado recebido: {analysis}")
                     print("=" * 75 + "\n")
-
             except Exception as e:
                 self.ai_analyzer = None
                 self.ai_test_passed = False
                 print("=" * 30 + " ERRO NA IA " + "=" * 30)
                 logging.error(f"❌ Falha crítica ao inicializar a IA: {e}", exc_info=True)
                 print("=" * 75 + "\n")
-
         threading.Thread(target=ai_init_worker, daemon=True).start()
 
     def _cleanup_handler(self, signum=None, frame=None):
@@ -491,23 +431,19 @@ class EnhancedMarketBot:
             return
         try:
             raw = json.loads(message)
-
             # Suporta combined stream ({"stream": "...", "data": {...}}) ou payload direto
             trade = raw.get("data", raw)
-
             # 🔹 Aceita chaves alternativas / maiúsculas
             p = trade.get("p") or trade.get("P") or trade.get("price")
             q = trade.get("q") or trade.get("Q") or trade.get("quantity")
             T = trade.get("T") or trade.get("E") or trade.get("tradeTime")
             m = trade.get("m")  # True => agressor vendedor; False => agressor comprador
-
             # 🔹 Se vier KLINE, sintetiza p/q/T a partir de k.c/k.v/k.T
             if (p is None or q is None or T is None) and isinstance(trade.get("k"), dict):
                 k = trade["k"]
                 p = p if p is not None else k.get("c")
                 q = q if q is not None else k.get("v")
                 T = T if T is not None else k.get("T") or raw.get("E")
-
             # 🔹 Verifica campos obrigatórios
             missing = []
             if p is None:
@@ -537,7 +473,6 @@ class EnhancedMarketBot:
                         )
                 # Sempre ignora trade incompleto
                 return
-
             # 🔹 Coerção de tipos
             try:
                 p = float(p)
@@ -546,7 +481,6 @@ class EnhancedMarketBot:
             except (TypeError, ValueError):
                 logging.error("Trade inválido (tipos): %s", trade)
                 return
-
             # 🔹 Inferência de 'm' via tick-direction quando ausente
             if m is None:
                 last_price = self._last_price
@@ -555,28 +489,22 @@ class EnhancedMarketBot:
                 else:
                     m = False
             self._last_price = p
-
             norm = {"p": p, "q": q, "T": T, "m": bool(m)}
-
             # 🔹 Heartbeat do módulo principal a cada mensagem válida
             try:
                 self.health_monitor.heartbeat("main")
             except Exception as hb_err:
                 logging.debug("Falha ao enviar heartbeat: %s", hb_err)
-
             # 🔹 Fluxo normal
             self.flow_analyzer.process_trade(norm)
-
             if self.window_end_ms is None:
                 self.window_end_ms = self._next_boundary_ms(T)
-
             if T >= self.window_end_ms:
                 self._process_window()
                 self.window_end_ms = self._next_boundary_ms(T)
                 self.window_data = [norm]
             else:
                 self.window_data.append(norm)
-
         except json.JSONDecodeError as e:
             logging.error(f"Erro ao decodificar mensagem JSON: {e}")
         except Exception as e:
@@ -600,48 +528,84 @@ class EnhancedMarketBot:
             if self.ai_analyzer and not self.ai_test_passed:
                 logging.warning("⚠️ Análise da IA ignorada: sistema não passou no teste inicial.")
             return
-
+        
+        logging.debug("🔍 Evento recebido para análise da IA: %s", event_data.get("tipo_evento", "N/A"))
+        
         def ai_worker():
             try:
                 with self.ai_semaphore:
                     logging.info("🧠 IA iniciando análise para evento: %s", event_data.get("resultado_da_batalha", "N/A"))
+                    # Envia heartbeat antes da chamada longa
+                    self.health_monitor.heartbeat("ai")
+                    
+                    # Log detalhado do evento recebido
+                    logging.debug("📊 Dados do evento para IA: %s", {
+                        "tipo": event_data.get("tipo_evento"),
+                        "delta": event_data.get("delta"),
+                        "volume": event_data.get("volume_total"),
+                        "preco": event_data.get("preco_fechamento")
+                    })
+                    
                     analysis_result = self.ai_analyzer.analyze_event(event_data)
+                    
                     if analysis_result and not self.should_stop:
-                        print("\n" + "═" * 25 + " ANÁLISE PROFISSIONAL DA IA " + "═" * 25)
-                        print(analysis_result)
-                        print("═" * 75 + "\n")
-                        self.reporter.save_report(event_data, analysis_result)
-                        self.health_monitor.heartbeat("ai")
+                        try:
+                            # Log detalhado dos dados para a análise
+                            ml_features = event_data.get("ml_features", {})
+                            orderbook_data = event_data.get("orderbook_data", {})
+                            historical_vp = event_data.get("historical_vp", {})
+                            multi_tf = event_data.get("multi_tf", {})
+                            
+                            logging.debug("📊 Dados para análise da IA:")
+                            logging.debug("ML Features: %s", ml_features)
+                            logging.debug("Orderbook Data: %s", orderbook_data)
+                            logging.debug("Historical VP: %s", historical_vp)
+                            logging.debug("Multi TF: %s", multi_tf)
+                            
+                            # Gera o relatório
+                            ai_report = generate_ai_analysis_report(
+                                event_data,
+                                ml_features,
+                                orderbook_data,
+                                historical_vp,
+                                multi_tf
+                            )
+                            
+                            print("\n" + "═" * 25 + " ANÁLISE PROFISSIONAL DA IA " + "═" * 25)
+                            print(ai_report)
+                            print("═" * 75 + "\n")
+                            
+                            # Log de sucesso
+                            logging.info("✅ Análise da IA concluída com sucesso")
+                        except Exception as e:
+                            logging.error(f"❌ Erro ao gerar relatório com generate_ai_analysis_report: {e}", exc_info=True)
             except Exception as e:
-                logging.error(f"❌ Erro na thread de análise da IA: {e}")
-
+                logging.error(f"❌ Erro na thread de análise da IA: {e}", exc_info=True)
+        
+        # Log para verificar se a thread está sendo criada
+        logging.debug("🔧 Criando thread para análise da IA...")
         threading.Thread(target=ai_worker, daemon=True).start()
 
     def _process_vp_features(self, historical_profile, preco_atual: float):
         try:
             if not preco_atual or preco_atual <= 0:
                 return {"status": "no_data"}
-
             vp_daily = historical_profile.get("daily", {})
             hvns = vp_daily.get("hvns", [])
             lvns = vp_daily.get("lvns", [])
             sp = vp_daily.get("single_prints", [])
             poc = vp_daily.get("poc", 0)
-
             if not poc or (not hvns and not lvns):
                 return {"status": "no_data"}
-
             dist_to_poc = preco_atual - poc
             nearest_hvn = min(hvns, key=lambda x: abs(x - preco_atual)) if hvns else None
             nearest_lvn = min(lvns, key=lambda x: abs(x - preco_atual)) if lvns else None
             dist_hvn = (preco_atual - nearest_hvn) if nearest_hvn else None
             dist_lvn = (preco_atual - nearest_lvn) if nearest_lvn else None
-
             faixa_lim = preco_atual * 0.005
             hvn_near = sum(1 for h in hvns if abs(h - preco_atual) <= faixa_lim)
             lvn_near = sum(1 for l in lvns if abs(l - preco_atual) <= faixa_lim)
             in_single = any(abs(px - preco_atual) <= faixa_lim for px in sp)
-
             return {
                 "status": "ok",
                 "distance_to_poc": round(dist_to_poc, 2),
@@ -666,12 +630,10 @@ class EnhancedMarketBot:
                 ny_time = datetime.now(self.ny_tz)
         else:
             ny_time = datetime.now(self.ny_tz)
-
         resultado = event.get("resultado_da_batalha", "N/A").upper()
         tipo = event.get("tipo_evento", "EVENTO")
         descricao = event.get("descricao", "")
         conf = event.get("historical_confidence", {})
-
         print(f"\n🎯 {tipo}: {resultado} DETECTADO - {ny_time.strftime('%H:%M:%S')} NY")
         print(f"   Símbolo: {self.symbol} | Janela #{self.window_count}")
         print(f"   📝 {descricao}")
@@ -679,7 +641,6 @@ class EnhancedMarketBot:
             print(
                 f"   📊 Probabilidades -> Long={conf.get('long_prob')} | Short={conf.get('short_prob')} | Neutro={conf.get('neutral_prob')}"
             )
-
         ultimos = [e for e in obter_memoria_eventos(n=4) if e.get("tipo_evento") != "OrderBook"]
         if ultimos:
             print("   🕒 Últimos sinais:")
@@ -693,7 +654,6 @@ class EnhancedMarketBot:
         if not self.window_data or self.should_stop:
             self.window_data = []
             return
-
         valid_window_data = []
         for trade in self.window_data:
             if "q" in trade and "p" in trade and "T" in trade:
@@ -704,43 +664,34 @@ class EnhancedMarketBot:
                     valid_window_data.append(trade)
                 except (ValueError, TypeError):
                     continue
-
         if not valid_window_data:
             logging.warning("Janela sem dados válidos para processamento")
             self.window_data = []
             return
-
         total_volume = sum(float(trade.get("q", 0)) for trade in valid_window_data)
         if total_volume == 0:
             self.window_data = []
             return
-
         self.window_count += 1
         try:
             self.health_monitor.heartbeat("main")
-
             dynamic_delta_threshold = 0
             if len(self.delta_history) > 10:
                 mean_delta = np.mean(self.delta_history)
                 std_delta = np.std(self.delta_history)
                 dynamic_delta_threshold = abs(mean_delta + self.delta_std_dev_factor * std_delta)
-
             macro_context = self.context_collector.get_context()
             historical_profile = macro_context.get("historical_vp", {})
             open_ms, close_ms = self.window_end_ms - self.window_ms, self.window_end_ms
-
             self.levels.update_from_vp(historical_profile)
-
             try:
                 pipeline = DataPipeline(
                     valid_window_data,
                     self.symbol,
                     time_manager=self.time_manager,
                 )
-
                 flow_metrics = self.flow_analyzer.get_flow_metrics(reference_epoch_ms=close_ms)
                 ob_event = self.orderbook_analyzer.analyze_order_book(event_epoch_ms=close_ms, window_id=str(close_ms))
-
                 enriched = pipeline.enrich()
                 # Inclui contexto de mercado e ambiente no pipeline
                 pipeline.add_context(
@@ -752,7 +703,6 @@ class EnhancedMarketBot:
                     market_context=macro_context.get("market_context", {}),
                     market_environment=macro_context.get("market_environment", {}),
                 )
-
                 signals = pipeline.detect_signals(
                     absorption_detector=lambda data, sym: create_absorption_event(
                         data,
@@ -777,7 +727,20 @@ class EnhancedMarketBot:
                     ),
                     orderbook_data=ob_event,
                 )
-
+                # Forçar análise da IA em todas as janelas
+                signals.append({
+                    "is_signal": True,
+                    "tipo_evento": "ANALYSIS_TRIGGER",
+                    "descricao": "Evento automático para análise da IA",
+                    "timestamp": datetime.now(self.ny_tz).isoformat(timespec="seconds"),
+                    "delta": enriched.get("delta_fechamento", 0),
+                    "volume_total": enriched.get("volume_total", 0),
+                    "preco_fechamento": enriched.get("ohlc", {}).get("close", 0),
+                    "ml_features": pipeline.get_final_features().get("ml_features", {}),
+                    "orderbook_data": ob_event,
+                    "historical_vp": historical_profile,
+                    "multi_tf": macro_context.get("mtf_trends", {}),
+                })
                 # ---- LOG DO HEATMAP: COM DECIMAIS E SEGUNDOS (ajuste pedido) ----
                 try:
                     liquidity_data = flow_metrics.get("liquidity_heatmap", {})
@@ -801,29 +764,23 @@ class EnhancedMarketBot:
                         print(f"\n📊 LIQUIDITY HEATMAP - Janela #{self.window_count}: Nenhum cluster detectado")
                 except Exception as e:
                     logging.error(f"Erro ao logar liquidity heatmap: {e}")
-
                 features = pipeline.get_final_features()
                 self.feature_store.save_features(window_id=str(close_ms), features=features)
-
                 # ▼▼ NEW: extratos que vamos injetar nos eventos
                 ml_payload = features.get("ml_features", {}) or {}
                 enriched_snapshot = features.get("enriched", {}) or {}
                 contextual_snapshot = features.get("contextual", {}) or {}
-
             except Exception as e:
                 logging.error(f"Erro no DataPipeline: {e}")
                 return
-
             derivatives_context = macro_context.get("derivatives", {})  # ✅ novo: cache local
             for signal in signals:
                 if signal.get("is_signal", False):
                     # ✅ anexa derivativos ao evento para consumo pela IA
                     if "derivatives" not in signal:
                         signal["derivatives"] = derivatives_context
-
                     if "fluxo_continuo" not in signal and flow_metrics:
                         signal["fluxo_continuo"] = flow_metrics
-
                     # ✅ adiciona contexto de mercado e ambiente ao sinal
                     try:
                         if "market_context" not in signal:
@@ -832,27 +789,21 @@ class EnhancedMarketBot:
                             signal["market_environment"] = macro_context.get("market_environment", {})
                     except Exception:
                         pass
-
                     # ▼▼ NEW: anexa ML features e snapshots ao evento para a IA usar
                     signal.setdefault("features_window_id", str(close_ms))
                     signal["ml_features"] = ml_payload
                     signal["enriched_snapshot"] = enriched_snapshot
                     signal["contextual_snapshot"] = contextual_snapshot
-
                     self.levels.add_from_event(signal)
                     self.event_bus.publish("signal", signal)
                     self.event_saver.save_event(signal)
-
                     if "timestamp" not in signal:
                         signal["timestamp"] = datetime.fromisoformat(
                             signal.get("timestamp_ny", datetime.now(self.ny_tz).isoformat(timespec="seconds")).replace("Z", "+00:00")
                         ).strftime("%Y-%m-%d %H:%M:%S")
-
                     if signal.get("tipo_evento") != "OrderBook":
                         adicionar_memoria_evento(signal)
-
                     self._log_event(signal)
-
             # Verifica toques em zonas
             preco_atual = enriched.get("ohlc", {}).get("close", 0)
             if preco_atual > 0:
@@ -885,16 +836,13 @@ class EnhancedMarketBot:
                         )
                 except Exception as e:
                     logging.error(f"Erro ao verificar toques em zonas: {e}")
-
             window_volume = enriched.get("volume_total", 0)
             window_delta = enriched.get("delta_fechamento", 0)
             window_close = enriched.get("ohlc", {}).get("close", 0)
-
             self.volume_history.append(window_volume)
             self.delta_history.append(window_delta)
             if window_close > 0:
                 self.close_price_history.append(window_close)
-
             # Atualiza histórico de volatilidade (usa volatilidade de 5 barras se disponível)
             try:
                 price_feats = (ml_payload.get('price_features') or {})
@@ -912,7 +860,6 @@ class EnhancedMarketBot:
                     self.volatility_history.append(float(current_volatility))
             except Exception:
                 pass
-
             # (Opcional) Log curto de ML features por janela
             try:
                 pf = ml_payload.get("price_features", {}) if ml_payload else {}
@@ -929,7 +876,6 @@ class EnhancedMarketBot:
                     )
             except Exception:
                 pass
-
             # Gera alertas institucionais
             if generate_alerts is not None:
                 try:
@@ -945,7 +891,6 @@ class EnhancedMarketBot:
                             sr = {"immediate_support": [], "immediate_resistance": []}
                     else:
                         sr = {"immediate_support": [], "immediate_resistance": []}
-
                     current_price_alert = window_close
                     avg_vol = (sum(self.volume_history) / len(self.volume_history)) if len(self.volume_history) > 0 else window_volume
                     rec_vols = list(self.volatility_history)
@@ -955,7 +900,6 @@ class EnhancedMarketBot:
                             curr_vol = self.volatility_history[-1]
                     except Exception:
                         curr_vol = None
-
                     alerts_list = generate_alerts(
                         price=current_price_alert,
                         support_resistance=sr,
@@ -966,7 +910,6 @@ class EnhancedMarketBot:
                         volume_threshold=3.0,
                         tolerance_pct=0.001,
                     )
-
                     for alert in alerts_list or []:
                         try:
                             # Cooldown por tipo de alerta
@@ -976,7 +919,6 @@ class EnhancedMarketBot:
                             if now_s - last_ts < self._alert_cooldown_sec:
                                 continue
                             self._last_alert_ts[atype] = now_s
-
                             # Constrói uma descrição amigável do alerta
                             desc_parts = [f"Tipo: {alert.get('type')}"]
                             if 'level' in alert:
@@ -1011,7 +953,6 @@ class EnhancedMarketBot:
                             logging.error(f"Erro ao processar alerta: {e}")
                 except Exception as e:
                     logging.error(f"Erro ao gerar alertas: {e}")
-
             print(
                 f"[{datetime.now(self.ny_tz).strftime('%H:%M:%S')} NY] 🟡 Janela #{self.window_count} | Delta: {window_delta:,.2f} | Vol: {window_volume:,.2f}"
             )
@@ -1031,7 +972,6 @@ class EnhancedMarketBot:
                 print(
                     f"   VP Diário: POC @ {vp.get('poc', 0):,.2f} | VAL: {vp.get('val', 0):,.2f} | VAH: {vp.get('vah', 0):,.2f}"
                 )
-
             print("─" * 80)
         except Exception as e:
             logging.error(f"Erro no processamento da janela #{self.window_count}: {e}", exc_info=True)
@@ -1061,7 +1001,6 @@ class EnhancedMarketBot:
             logging.critical(f"❌ Erro crítico ao executar o bot: {e}", exc_info=True)
         finally:
             self._cleanup_handler()
-
 
 if __name__ == "__main__":
     try:

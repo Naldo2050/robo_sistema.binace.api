@@ -277,9 +277,9 @@ class DataPipeline:
         contextual = dict(self.enriched_data)  # cópia rasa
         contextual.update({
             "flow_metrics": flow_metrics or {},
-            "historical_vp": historical_vp or {},
+            "historical_vp": historical_vp or {},  # Valores padrão definidos aqui
             "orderbook_data": orderbook_data or {},  # compatível com main.py
-            "multi_tf": multi_tf or {},
+            "multi_tf": multi_tf or {},  # Valores padrão definidos aqui
             "derivatives": derivatives or {},
             "market_context": market_context or {},
             "market_environment": market_environment or {},
@@ -343,6 +343,30 @@ class DataPipeline:
                 signals.append(ob_event)
             except Exception as e:
                 logging.error(f"Erro adicionando evento OrderBook: {e}")
+
+        # Forçar evento de análise da IA em todas as janelas
+        try:
+            # Obter historical_vp e multi_tf do contexto
+            historical_vp = self.contextual_data.get("historical_vp", {}) if self.contextual_data else {}
+            multi_tf = self.contextual_data.get("multi_tf", {}) if self.contextual_data else {}
+            
+            analysis_trigger = {
+                "is_signal": True,
+                "tipo_evento": "ANALYSIS_TRIGGER",
+                "descricao": "Evento automático para análise da IA",
+                "timestamp": datetime.now(self.tm.tz_utc).isoformat(timespec="seconds"),
+                "delta": self.enriched_data.get("delta_fechamento", 0),
+                "volume_total": self.enriched_data.get("volume_total", 0),
+                "preco_fechamento": self.enriched_data.get("ohlc", {}).get("close", 0),
+                "ml_features": self.get_final_features().get("ml_features", {}),
+                "orderbook_data": orderbook_data or {},
+                "historical_vp": historical_vp,  # Agora definido corretamente
+                "multi_tf": multi_tf,  # Agora definido corretamente
+            }
+            signals.append(analysis_trigger)
+            logging.debug("✅ Evento de análise da IA adicionado à lista de sinais")
+        except Exception as e:
+            logging.error(f"Erro adicionando evento de análise da IA: {e}")
 
         self.signal_data = signals
         logging.debug(f"✅ Camada Signal gerada. {len(signals)} sinais detectados.")

@@ -1,190 +1,123 @@
-# REPORT GENERATOR.PY
-import csv
-import os
+# report_generator.py
+
 import logging
 from datetime import datetime
-from typing import Any  # para anotações de tipo (corrige aviso Pylance)
-import json  # para serializar campos complexos
 
-# 🔹 IMPORTA TIME MANAGER
-from time_manager import TimeManager
+logger = logging.getLogger(__name__)
 
-class ReportGenerator:
-    def __init__(self, output_dir: str = "./reports", mode: str = "csv"):
-        """
-        Gera relatórios consolidados de sinais + análise da IA
-        - output_dir: pasta principal onde salvar relatórios
-        - mode: 'csv' para planilhas de análise, 'md' para relatórios legíveis
-        """
-        self.output_dir = output_dir
-        self.mode = mode.lower()
-        os.makedirs(output_dir, exist_ok=True)
+def generate_ai_analysis_report(event_data, ml_features, orderbook_data, historical_vp, multi_tf):
+    """
+    Gera um relatório estruturado de análise institucional com base nos dados de evento e contexto.
+    """
+    # --- Extração segura de dados ---
+    event_type = event_data.get("tipo_evento", "")
+    absorption_side = event_data.get("absorption_side", "")
+    aggression_side = event_data.get("aggression_side", "")
+    delta = event_data.get("delta", 0)
+    volume_total = event_data.get("volume_total", 0)
+    price_close = event_data.get("preco_fechamento", 0)
+    
+    # Order flow
+    aggressive_buy_pct = event_data.get("fluxo_continuo", {}).get("order_flow", {}).get("aggressive_buy_pct", 0)
+    aggressive_sell_pct = event_data.get("fluxo_continuo", {}).get("order_flow", {}).get("aggressive_sell_pct", 0)
+    buy_sell_ratio = event_data.get("fluxo_continuo", {}).get("order_flow", {}).get("buy_sell_ratio", 0)
+    volume_compra = event_data.get("volume_compra", 0)
+    volume_venda = event_data.get("volume_venda", 0)
 
-        # 🔹 Inicializa TimeManager
-        self.time_manager = TimeManager()
+    # ML Features
+    flow_imbalance = ml_features.get("microstructure", {}).get("flow_imbalance", 0)
+    order_book_slope = ml_features.get("microstructure", {}).get("order_book_slope", 0)
+    liquidity_gradient = ml_features.get("volume_features", {}).get("liquidity_gradient", 0)
+    volume_sma_ratio = ml_features.get("volume_features", {}).get("volume_sma_ratio", 0)
+    momentum_score = ml_features.get("price_features", {}).get("momentum_score", 0)
+    tick_rule_sum = ml_features.get("microstructure", {}).get("tick_rule_sum", 0)
 
-    def _get_daily_path(self, symbol: str, date: str):
-        """Retorna caminho do arquivo diário para o ativo"""
-        if self.mode == "csv":
-            return os.path.join(self.output_dir, f"{symbol}_{date}.csv")
-        elif self.mode == "md":
-            daily_dir = os.path.join(self.output_dir, date)
-            os.makedirs(daily_dir, exist_ok=True)
-            return daily_dir
+    # Volume Profile Diário
+    vp_daily = historical_vp.get("daily", {})
+    poc_daily = vp_daily.get("poc", 0)
+    val_daily = vp_daily.get("val", 0)
+    vah_daily = vp_daily.get("vah", 0)
+
+    # HVNs próximos (filtrar acima do preço atual)
+    hvns = vp_daily.get("hvns", [])
+    hvns_acima = [hvn for hvn in hvns if hvn > price_close]
+    hvns_acima.sort()
+    proximos_hvns = hvns_acima[:6]  # até 6 níveis
+
+    # --- Interpretação ---
+    interpretation_lines = []
+
+    # 1) Order Flow
+    interpretation_lines.append(f"- **Order Flow:** Δ = {delta:+.2f} (positivo)" if delta >= 0 else f"- **Order Flow:** Δ = {delta:+.2f} (negativo)")
+    interpretation_lines.append(f"  Buy volume ({volume_compra:.2f}) {'>' if volume_compra > volume_venda else '<'} Sell volume ({volume_venda:.2f}).")
+    interpretation_lines.append(f"  Razão Buy/Sell = {buy_sell_ratio:.2f}, corroborando pressão {'compradora' if buy_sell_ratio > 1 else 'vendedora'}.")
+
+    # Correção crítica: NÃO multiplicar por 100
+    if aggressive_buy_pct > 0 or aggressive_sell_pct > 0:
+        interpretation_lines.append(
+            f"  Fluxo agressivo mostra {aggressive_buy_pct:.2f}% buy vs {aggressive_sell_pct:.2f}% sell."
+        )
+
+    # 2) Liquidez
+    bid_depth = orderbook_data.get("spread_metrics", {}).get("bid_depth_usd", 0)
+    ask_depth = orderbook_data.get("spread_metrics", {}).get("ask_depth_usd", 0)
+    imbalance_ob = orderbook_data.get("imbalance", 0)
+    interpretation_lines.append(
+        f"- **Liquidez:** Profundidade do livro: bids = ${bid_depth:,.0f}, asks = ${ask_depth:,.0f}. "
+        f"Imbalance = {imbalance_ob:+.2f} → {'oferta mais profunda' if imbalance_ob < 0 else 'demanda mais profunda'}."
+    )
+
+    # 3) Zona
+    dentro_value_area = val_daily <= price_close <= vah_daily
+    zona_status = f"Preço atual (${price_close:,.2f}) {'está' if dentro_value_area else 'não está'} dentro da Value Area diária (${val_daily:,.0f} – ${vah_daily:,.0f})."
+    interpretation_lines.append(f"- **Zona:** {zona_status}")
+    if proximos_hvns:
+        hvns_str = ", ".join([f"${h:.0f}" for h in proximos_hvns])
+        interpretation_lines.append(f"  Próximos HVNs acima: {hvns_str}.")
+    else:
+        interpretation_lines.append("  Nenhum HVN estrutural próximo acima.")
+
+    # 4) Microestrutura / ML
+    ml_lines = []
+    ml_lines.append(f"  - flow_imbalance = {flow_imbalance:+.3f} → {'desvio positivo' if flow_imbalance > 0 else 'pressão vendedora'} no fluxo.")
+    ml_lines.append(f"  - order_book_slope = {order_book_slope:+.3f} → {'maior densidade ofertada' if order_book_slope < 0 else 'maior densidade demandada'}.")
+    ml_lines.append(f"  - liquidity_gradient = {liquidity_gradient:+.2f}")
+    ml_lines.append(f"  - volume_sma_ratio = {volume_sma_ratio:.2f} → volume {'elevado' if volume_sma_ratio > 100 else 'normal/baixo'} vs média.")
+    ml_lines.append(f"  - momentum_score = {momentum_score:.5f} → viés de {'alta' if momentum_score > 1 else 'baixa'}.")
+    ml_lines.append(f"  - tick_rule_sum = {tick_rule_sum:.3f} → {'predomínio de trades com tick up' if tick_rule_sum > 0 else 'predomínio de trades com tick down'}.")
+
+    interpretation_lines.append("- **Microestrutura/ML:**")
+    interpretation_lines.extend([f"  {line}" for line in ml_lines])
+
+    # --- Força dominante ---
+    if delta > 0:
+        if absorption_side == "sell":
+            dominant_force = "**Compradores agressivos**, com vendedores absorvendo sob resistência."
         else:
-            return None
+            dominant_force = "**Compradores agressivos**."
+    else:
+        if absorption_side == "buy":
+            dominant_force = "**Vendedores agressivos**, com compradores absorvendo suporte."
+        else:
+            dominant_force = "**Vendedores agressivos**."
 
-    def save_report(self, event: dict, ai_analysis: str = ""):
-        """Salva evento + análise IA em CSV diário ou Markdown"""
-        try:
-            # 🔹 USA TIME MANAGER PARA TIMESTAMP
-            timestamp = event.get("timestamp", self.time_manager.now_iso())
-            dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-            date_str = dt.strftime("%Y-%m-%d")
-            ativo = event.get("ativo", "N/A")
+    # --- Expectativa ---
+    curto_prazo = "Teste das zonas de HVN acima." if delta > 0 else "Pressão vendedora testando suportes."
+    medio_prazo = "Sustentação acima do POC diário favorece viés de alta." if price_close > poc_daily else "Romper POC com volume será necessário para reversão."
 
-            # Junta campos básicos e campos avançados (contexto, ambiente, order book, fluxo, participantes)
-            row = {
-                "timestamp": timestamp,
-                "ativo": ativo,
-                "tipo_evento": event.get("tipo_evento", "N/A"),
-                "resultado_da_batalha": event.get("resultado_da_batalha", "N/A"),
-                "descricao": event.get("descricao", ""),
-                "delta": event.get("delta", 0),
-                "volume_total": event.get("volume_total", 0),
-                # Multi-timeframe (fallback: procura em contextual se não estiver diretamente no evento)
-                "multi_tf": event.get("multi_tf") or (event.get("contextual", {}) if isinstance(event.get("contextual"), dict) else {}).get("multi_tf", {}),
-                "historical_confidence": event.get("historical_confidence", {}),
-                # Novos campos: contexto de mercado, ambiente, profundidade, spread, fluxo e participantes
-                "market_context": event.get("market_context") or (event.get("contextual", {}) if isinstance(event.get("contextual"), dict) else {}).get("market_context", {}),
-                "market_environment": event.get("market_environment") or (event.get("contextual", {}) if isinstance(event.get("contextual"), dict) else {}).get("market_environment", {}),
-                "order_book_depth": event.get("order_book_depth", {}),
-                "spread_analysis": event.get("spread_analysis", {}),
-                # Fluxo contínuo contém order_flow e participant_analysis
-                "order_flow": None,
-                "participant_analysis": None,
-                "derivatives": event.get("derivatives", {}),
-                "ai_analysis": (ai_analysis.strip() if ai_analysis else "N/A")
-            }
+    # --- Montagem final do relatório ---
+    report = f"""
+═════════════════════════ ANÁLISE PROFISSIONAL DA IA ═════════════════════════
+1) **Interpretação (order flow, liquidez, zona, microestrutura/ML):**
+{'\n'.join(interpretation_lines)}
 
-            # Extrai order_flow e participant_analysis de fluxo_continuo (ou flow_metrics)
-            fluxo = event.get("fluxo_continuo") or event.get("flow_metrics") or {}  # type: ignore
-            try:
-                if isinstance(fluxo, dict):
-                    if "order_flow" in fluxo:
-                        row["order_flow"] = fluxo.get("order_flow")
-                    else:
-                        row["order_flow"] = None
-                    if "participant_analysis" in fluxo:
-                        row["participant_analysis"] = fluxo.get("participant_analysis")
-                    else:
-                        row["participant_analysis"] = None
-            except Exception:
-                row["order_flow"] = None
-                row["participant_analysis"] = None
+2) **Força dominante:**
+{dominant_force}
 
-            if self.mode == "csv":
-                self._save_csv(row, date_str)
-            elif self.mode == "md":
-                self._save_md(row, date_str)
-            else:
-                logging.warning(f"Formato não suportado: {self.mode}")
+3) **Expectativa (curto/médio prazo):**
+- **Curto prazo:** {curto_prazo}
+- **Médio prazo:** {medio_prazo}
 
-        except Exception as e:
-            logging.error(f"Erro ao salvar relatório: {e}", exc_info=True)
-
-    # ====================================================
-    # CSV Export (um arquivo por dia e por ativo)
-    # ====================================================
-    def _save_csv(self, row: dict, date_str: str):
-        try:
-            csv_path = self._get_daily_path(row["ativo"], date_str)
-            file_exists = os.path.isfile(csv_path)
-
-            with open(csv_path, mode="a", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                if not file_exists:
-                    writer.writerow([
-                        "timestamp",
-                        "ativo",
-                        "tipo_evento",
-                        "resultado_da_batalha",
-                        "descricao",
-                        "delta",
-                        "volume_total",
-                        "multi_tf",
-                        "historical_confidence",
-                        "market_context",
-                        "market_environment",
-                        "order_book_depth",
-                        "spread_analysis",
-                        "order_flow",
-                        "participant_analysis",
-                        "derivatives",
-                        "ai_analysis"
-                    ])
-                # Serializa campos complexos em JSON para CSV
-                def serialize(val):
-                    try:
-                        if isinstance(val, (dict, list)):
-                            return json.dumps(val, ensure_ascii=False)
-                        return val
-                    except Exception:
-                        return str(val)
-                writer.writerow([
-                    row["timestamp"], row["ativo"], row["tipo_evento"],
-                    row["resultado_da_batalha"], row["descricao"],
-                    row["delta"], row["volume_total"],
-                    serialize(row["multi_tf"]), serialize(row["historical_confidence"]),
-                    serialize(row["market_context"]), serialize(row["market_environment"]),
-                    serialize(row["order_book_depth"]), serialize(row["spread_analysis"]),
-                    serialize(row["order_flow"]), serialize(row["participant_analysis"]),
-                    serialize(row["derivatives"]),
-                    serialize(row["ai_analysis"])
-                ])
-        except Exception as e:
-            logging.error(f"Erro ao gravar CSV: {e}")
-
-    # ====================================================
-    # Markdown Export (um diretório por dia, arquivos por evento)
-    # ====================================================
-    def _save_md(self, row: dict, date_str: str):
-        try:
-            md_dir = self._get_daily_path(row["ativo"], date_str)
-            os.makedirs(md_dir, exist_ok=True)
-            # 🔹 USA TIMESTAMP SINCRONIZADO NO NOME DO ARQUIVO
-            filename = f"{row['timestamp'].replace(':','-').replace('.','_')}_{row['ativo']}.md"
-            md_path = os.path.join(md_dir, filename)
-
-            with open(md_path, "w", encoding="utf-8") as f:
-                f.write(f"# 📊 Relatório de Sinal - {row['ativo']} ({row['tipo_evento']})\n\n")
-                f.write(f"- **Timestamp:** {row['timestamp']}\n")
-                f.write(f"- **Resultado:** {row['resultado_da_batalha']}\n")
-                f.write(f"- **Descrição:** {row['descricao']}\n")
-                f.write(f"- **Delta:** {row['delta']}\n")
-                f.write(f"- **Volume Total:** {row['volume_total']}\n\n")
-
-                def write_section(title: str, data: Any):
-                    f.write(f"## {title}\n")
-                    # Usa json para formatar dicts de forma legível
-                    try:
-                        if isinstance(data, (dict, list)):
-                            formatted = json.dumps(data, indent=2, ensure_ascii=False)
-                            f.write(f"```\n{formatted}\n```\n\n")
-                        else:
-                            f.write(f"{data}\n\n")
-                    except Exception:
-                        f.write(f"{data}\n\n")
-
-                write_section("🔎 Multi-Timeframes", row.get("multi_tf", {}))
-                write_section("📉 Probabilidade Histórica", row.get("historical_confidence", {}))
-                write_section("🌍 Contexto de Mercado", row.get("market_context", {}))
-                write_section("🌡 Ambiente de Mercado", row.get("market_environment", {}))
-                write_section("📑 Profundidade do Livro", row.get("order_book_depth", {}))
-                write_section("📏 Análise de Spread", row.get("spread_analysis", {}))
-                write_section("🚰 Fluxo de Ordens", row.get("order_flow", {}))
-                write_section("👥 Participantes", row.get("participant_analysis", {}))
-                write_section("🏦 Derivativos", row.get("derivatives", {}))
-                write_section("🧠 Análise da IA", row.get("ai_analysis", "N/A"))
-        except Exception as e:
-            logging.error(f"Erro ao gravar Markdown: {e}")
+═══════════════════════════════════════════════════════════════════════════
+"""
+    return report.strip()
