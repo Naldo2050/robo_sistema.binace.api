@@ -1,73 +1,108 @@
+# event_bus.py
+
+import time
 import threading
-import queue
+from collections import deque
+from typing import Dict, Any, Callable
 import logging
-from typing import Callable, Any
+import hashlib
 
 class EventBus:
-    def __init__(self, max_queue_size=1000):
+    def __init__(self, max_queue_size=1000, deduplication_window=30):
         """
-        Gerencia eventos de forma assíncrona entre módulos.
-        - max_queue_size: tamanho máximo da fila de eventos (evita estouro de memória)
+        max_queue_size: Tamanho máximo da fila de eventos
+        deduplication_window: Tempo em segundos para deduplicação (30s padrão)
         """
-        self.queue = queue.Queue(maxsize=max_queue_size)
-        self.subscribers = {}  # { event_type: [callbacks] }
+        self._handlers = {}
+        self._queue = deque(maxlen=max_queue_size)
         self._lock = threading.Lock()
-        self._running = True
+        self._processing = False
+        self._thread = None
+        self._stop = False
+        self._dedup_cache = {}
+        self._dedup_window = deduplication_window
+        self._logger = logging.getLogger("EventBus")
+        
+        # Iniciar thread de processamento
+        self.start()
 
-        # Thread worker que processa eventos em background
-        self.worker = threading.Thread(target=self._process_events, daemon=True)
-        self.worker.start()
+    def _generate_event_id(self, event: Dict) -> str:
+        """Gera ID único para deduplicação"""
+        # Campos mais relevantes para identificação única
+        key = f"{event.get('timestamp', '')}|{event.get('delta', '')}|{event.get('volume_total', '')}|{event.get('preco_fechamento', '')}"
+        return hashlib.md5(key.encode()).hexdigest()
 
-        logging.info("✅ EventBus inicializado. Processamento assíncrono ativado.")
+    def _is_duplicate(self, event: Dict) -> bool:
+        """Verifica se evento é duplicado"""
+        event_id = self._generate_event_id(event)
+        current_time = time.time()
+        
+        # Limpar cache antigo
+        expired_keys = [k for k, t in self._dedup_cache.items() if current_time - t > self._dedup_window]
+        for k in expired_keys:
+            del self._dedup_cache[k]
+        
+        # Verificar duplicado
+        if event_id in self._dedup_cache:
+            return True
+            
+        # Registrar novo evento
+        self._dedup_cache[event_id] = current_time
+        return False
 
-    def subscribe(self, event_type: str, callback: Callable[[dict], Any]):
-        """Inscreve um callback para um tipo de evento."""
+    def subscribe(self, event_type: str, handler: Callable):
         with self._lock:
-            if event_type not in self.subscribers:
-                self.subscribers[event_type] = []
-            self.subscribers[event_type].append(callback)
-            logging.debug(f"🔔 Inscrição: {callback.__qualname__} em '{event_type}'")
+            if event_type not in self._handlers:
+                self._handlers[event_type] = []
+            self._handlers[event_type].append(handler)
 
-    def publish(self, event_type: str, event_data: dict):
-        """Publica um evento na fila para processamento assíncrono."""
-        try:
-            self.queue.put_nowait((event_type, event_data))
-        except queue.Full:
-            logging.warning(f"⚠️ Fila cheia. Evento '{event_type}' descartado.")
-        except Exception as e:
-            logging.error(f"❌ Falha ao publicar evento: {e}")
+    def publish(self, event_type: str, event_data: Dict):
+        with self._lock:
+            # Ignorar eventos duplicados
+            if self._is_duplicate(event_data):
+                self._logger.debug(f"Evento duplicado ignorado: {event_type}")
+                return
+                
+            # Adicionar à fila
+            self._queue.append((event_type, event_data))
+            
+            # Log de debug
+            self._logger.debug(f"Evento publicado: {event_type}")
 
-    def _process_events(self):
-        """Processa eventos da fila em loop, chamando os subscribers registrados."""
-        while self._running:
+    def _process_queue(self):
+        while not self._stop:
             try:
-                event_type, event_data = self.queue.get(timeout=1)
-                if event_type == "__shutdown__":
-                    break
-
-                with self._lock:
-                    callbacks = self.subscribers.get(event_type, [])
-
-                for callback in callbacks:
-                    try:
-                        callback(event_data)
-                    except Exception as e:
-                        logging.error(f"❌ Erro no callback {callback.__qualname__} para evento '{event_type}': {e}")
-
-                self.queue.task_done()
-
-            except queue.Empty:
-                continue
+                if self._queue:
+                    with self._lock:
+                        event_type, event_data = self._queue.popleft()
+                    
+                    # Processar evento
+                    self._dispatch(event_type, event_data)
+                else:
+                    time.sleep(0.01)  # Pequena pausa para reduzir uso de CPU
             except Exception as e:
-                logging.error(f"❌ Erro no worker do EventBus: {e}")
+                self._logger.error(f"Erro no processamento de eventos: {e}")
+
+    def _dispatch(self, event_type: str, event_data: Dict):
+        """Envia evento para todos os handlers registrados"""
+        if event_type in self._handlers:
+            for handler in self._handlers[event_type]:
+                try:
+                    handler(event_data)
+                except Exception as e:
+                    self._logger.error(f"Erro no handler para {event_type}: {e}")
+        else:
+            self._logger.debug(f"Nenhum handler para {event_type}")
+
+    def start(self):
+        if not self._thread or not self._thread.is_alive():
+            self._stop = False
+            self._thread = threading.Thread(target=self._process_queue, daemon=True)
+            self._thread.start()
+            self._logger.info("EventBus iniciado")
 
     def shutdown(self):
-        """Encerra o EventBus de forma limpa."""
-        self._running = False
-        try:
-            self.queue.put_nowait(("__shutdown__", {}))
-        except queue.Full:
-            pass
-        if self.worker.is_alive():
-            self.worker.join(timeout=5)
-        logging.info("🛑 EventBus encerrado.")
+        self._stop = True
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+        self._logger.info("EventBus desligado")

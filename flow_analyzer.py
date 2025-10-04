@@ -15,10 +15,33 @@ from liquidity_heatmap import LiquidityHeatmap
 
 # Novos parâmetros para net flow e análise de participantes
 try:
-    from config import NET_FLOW_WINDOWS_MIN, AGGRESSIVE_ORDER_SIZE_THRESHOLD
+    from config import NET_FLOW_WINDOWS_MIN, AGGRESSIVE_ORDER_SIZE_THRESHOLD, ABSORCAO_DELTA_EPS, ABSORCAO_GUARD_MODE
 except Exception:
     NET_FLOW_WINDOWS_MIN = [1, 5, 15]
     AGGRESSIVE_ORDER_SIZE_THRESHOLD = 0.0
+    ABSORCAO_DELTA_EPS = 1.0
+    ABSORCAO_GUARD_MODE = "warn"
+
+
+def _guard_absorcao(delta: float, rotulo: str, eps: float, mode: str = "warn"):
+    """
+    Guardião de consistência para a classificação de absorção (Modelo A).
+    mode: "raise" para lançar erro, "warn" para logar aviso, "off" para desativar.
+    """
+    try:
+        mode = (mode or "warn").strip().lower()
+    except Exception:
+        mode = "warn"
+
+    if mode == "off":
+        return
+
+    mismatch = (delta > eps and rotulo != "Absorção de Compra") or (delta < -eps and rotulo != "Absorção de Venda")
+    if mismatch:
+        msg = f"[ABSORCAO_GUARD] delta={delta:.4f} eps={eps} rotulo='{rotulo}' (modo={mode})"
+        if mode == "raise":
+            raise AssertionError(msg)
+        logging.warning(msg)
 
 
 class FlowAnalyzer:
@@ -30,6 +53,11 @@ class FlowAnalyzer:
     - Todas as referências de tempo em milissegundos (ms).
     - get_flow_metrics aceita reference_epoch_ms para normalizar age_ms dos clusters.
     - Parâmetros (bursts/heatmap) podem vir via config.
+
+    Correções de Absorção:
+    - Adicionado classificador baseado no sinal do delta (modelo A: lado dominante do fluxo agressivo).
+    - Exposição dos rótulos de absorção por janela (absorcao_{N}m) em order_flow.
+    - Campo agregado tipo_absorcao usando a menor janela configurada.
     """
 
     def __init__(self, time_manager: Optional[TimeManager] = None):
@@ -91,9 +119,17 @@ class FlowAnalyzer:
         # Cada item: dict {'ts': timestamp_ms, 'delta': notional_delta (USD), 'qty': qty (BTC), 'side': 'buy'/'sell', 'sector': nome do bucket}
         self.flow_trades: deque = deque()
 
+        # Epsilon para classificador de absorção (por delta) e modo do guardião
+        self.absorcao_eps: float = float(getattr(config, "ABSORCAO_DELTA_EPS", ABSORCAO_DELTA_EPS))
+        try:
+            self.absorcao_guard_mode: str = str(getattr(config, "ABSORCAO_GUARD_MODE", ABSORCAO_GUARD_MODE)).lower()
+        except Exception:
+            self.absorcao_guard_mode = "warn"
+
     @staticmethod
     def map_absorcao_label(aggression_side: str) -> str:
         """
+        Mantido por compatibilidade:
         - 'buy'  → Agressão compradora absorvida → "Absorção de Compra"
         - 'sell' → Agressão vendedora absorvida → "Absorção de Venda"
         """
@@ -103,6 +139,25 @@ class FlowAnalyzer:
         if side == "sell":
             return "Absorção de Venda"
         return "Absorção"
+
+    @staticmethod
+    def classificar_absorcao_por_delta(delta: float, eps: float = 1.0) -> str:
+        """
+        Modelo A (lado dominante do fluxo agressivo):
+        - delta > +eps  → Absorção de Compra
+        - delta < -eps  → Absorção de Venda
+        - |delta| ≤ eps → Neutra
+        Obs.: delta aqui é o NET FLOW da janela (soma de deltas dos trades).
+        """
+        try:
+            d = float(delta)
+        except Exception:
+            return "Neutra"
+        if d > eps:
+            return "Absorção de Compra"
+        if d < -eps:
+            return "Absorção de Venda"
+        return "Neutra"
 
     def _reset_metrics(self):
         """Reseta todas as métricas acumuladas."""
@@ -232,11 +287,12 @@ class FlowAnalyzer:
             else:
                 return  # ignora para não enviesar
 
+            # trade_delta: +qty para taker BUY, -qty para taker SELL
             trade_delta = -qty if is_buyer_maker else qty
             side = "sell" if is_buyer_maker else "buy"
 
             with self._lock:
-                # CVD e Whale
+                # CVD (em qty) e Whale
                 self.cvd += trade_delta
                 if qty >= self.whale_threshold:
                     if trade_delta > 0:
@@ -365,6 +421,7 @@ class FlowAnalyzer:
         Retorna as métricas de fluxo atuais.
         - reference_epoch_ms: se fornecido, normaliza age_ms dos clusters com base nesse epoch
           e constrói time_index derivado desse epoch (consistência com eventos).
+        - Inclui rótulos de absorção por janela (absorcao_{N}m) e tipo_absorcao agregado.
         """
         try:
             acquired = self._lock.acquire(timeout=5.0)
@@ -426,21 +483,37 @@ class FlowAnalyzer:
                     }
                 }
 
-                # ----------------- Order Flow e Participantes -----------------
+                # ----------------- Order Flow, Absorção e Participantes -----------------
                 try:
                     order_flow: Dict[str, Any] = {}
+                    absorcao_por_janela: Dict[int, str] = {}
+
                     # Net flows para cada janela configurada
+                    if self.net_flow_windows_min:
+                        smallest_window = min(self.net_flow_windows_min)
+
                     for window_min in self.net_flow_windows_min:
                         window_ms = window_min * 60 * 1000
                         start_ms = now_ms - window_ms
                         # Filtra trades da janela
                         relevant = [t for t in self.flow_trades if t['ts'] >= start_ms]
-                        total_delta = sum(t['delta'] for t in relevant)
+                        total_delta = sum(t['delta'] for t in relevant)  # notional delta (USD), mantém o SINAL
                         total_buy_notional = sum(t['delta'] for t in relevant if t['delta'] > 0)
                         total_sell_notional = -sum(t['delta'] for t in relevant if t['delta'] < 0)
-                        order_flow[f"net_flow_{window_min}m"] = round(total_delta, 4)
+
+                        # Net flow e rótulo de absorção da janela
+                        key_net = f"net_flow_{window_min}m"
+                        order_flow[key_net] = round(total_delta, 4)
+
+                        rotulo = self.classificar_absorcao_por_delta(total_delta, eps=self.absorcao_eps)
+                        # Guardião: valida o rótulo vs o sinal do delta (modelo A)
+                        _guard_absorcao(total_delta, rotulo, self.absorcao_eps, self.absorcao_guard_mode)
+
+                        order_flow[f"absorcao_{window_min}m"] = rotulo
+                        absorcao_por_janela[window_min] = rotulo
+
                         # Para a menor janela, calcula percentuais de compra/venda e razão
-                        if window_min == min(self.net_flow_windows_min):
+                        if window_min == smallest_window:
                             total_vol = total_buy_notional + total_sell_notional
                             if total_vol > 0:
                                 order_flow["aggressive_buy_pct"] = round((total_buy_notional / total_vol) * 100.0, 2)
@@ -450,6 +523,11 @@ class FlowAnalyzer:
                                 order_flow["aggressive_buy_pct"] = None
                                 order_flow["aggressive_sell_pct"] = None
                                 order_flow["buy_sell_ratio"] = None
+
+                    # Tipo de absorção agregado pela menor janela
+                    if self.net_flow_windows_min:
+                        metrics["tipo_absorcao"] = absorcao_por_janela.get(min(self.net_flow_windows_min), "Neutra")
+
                     # ----------------- Participantes -----------------
                     participant_analysis: Dict[str, Any] = {}
                     if self.net_flow_windows_min:
@@ -477,21 +555,18 @@ class FlowAnalyzer:
                             # Taxa de trades por segundo para atividade (apenas referência)
                             duration_seconds = largest_window * 60
                             trades_per_sec = round(count_trades / duration_seconds, 4) if duration_seconds > 0 else None
-                            activity_level = None
-                            # Consideramos o segmento com maior frequência de trades como HFT quando taxa >= 1 tps
                             activity_level = "HIGH" if trades_per_sec and trades_per_sec >= 1.0 else "LOW"
                             participant_analysis[sector] = {
                                 "volume_pct": volume_pct,
                                 "direction": direction,
                                 "avg_order_size": avg_order_size,
                                 "sentiment": sentiment,
+                                "activity_level": activity_level,
                             }
-                            # Inclui activity_level para todos os setores
-                            participant_analysis[sector]["activity_level"] = activity_level
                     metrics["order_flow"] = order_flow
                     metrics["participant_analysis"] = participant_analysis
                 except Exception as e:
-                    logging.debug(f"Erro ao calcular order_flow ou participant_analysis: {e}")
+                    logging.debug(f"Erro ao calcular order_flow/absorcao ou participant_analysis: {e}")
 
                 # Heatmap
                 try:
@@ -565,3 +640,20 @@ class FlowAnalyzer:
                     "last_reset_iso_utc": self.time_manager.format_timestamp(self.last_reset_ms)
                 }
             }
+
+
+if __name__ == "__main__":
+    # Self-test rápido (não substitui pytest). Executa somente se rodar este arquivo diretamente.
+    fa = FlowAnalyzer()
+    eps = getattr(fa, "absorcao_eps", 1.0)
+    casos = [
+        (-35.57, "Absorção de Venda"),
+        (+7.53,  "Absorção de Compra"),
+        (+1.50,  "Absorção de Compra"),
+        (0.0,    "Neutra"),
+    ]
+    for delta, esperado in casos:
+        rotulo = fa.classificar_absorcao_por_delta(delta, eps=eps)
+        _guard_absorcao(delta, rotulo, eps, getattr(fa, "absorcao_guard_mode", "warn"))
+        assert rotulo == esperado, f"delta={delta} → {rotulo}, esperado={esperado}"
+    print("Self-test OK ✅")

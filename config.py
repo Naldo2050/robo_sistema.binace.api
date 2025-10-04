@@ -55,6 +55,14 @@ MIN_OB_ABS_CHANGE_USD = 500_000  # aumente para 1_000_000 para reduzir ruído de
 # Uma ordem é considerada uma "parede" se for X desvios padrão maior que a média das ordens.
 WALL_STD_DEV_FACTOR = 3.0
 
+# ---- CRÍTICO: limiares para desequilíbrio extremo no livro ----
+# Promove alerta "CRITICAL" quando QUALQUER destes cenários ocorrer:
+# 1) |imbalance| >= 0.95 e (ratio_dom >= 20x OU lado dominante >= 2M USD)
+# 2) ratio_dom >= 50x (independente do imbalance) — proteção para assimetrias extremas
+ORDERBOOK_CRITICAL_IMBALANCE = 0.95
+ORDERBOOK_MIN_DOMINANT_USD   = 2_000_000.0
+ORDERBOOK_MIN_RATIO_DOM      = 20.0
+
 # ==============================================================================
 # PARÂMETROS DO FLUXO CONTÍNUO (flow_analyzer.py)
 # ==============================================================================
@@ -200,7 +208,7 @@ VOLATILITY_PERCENTILES = (0.35, 0.65)
 
 # Parâmetros para o cálculo dos indicadores ADX, RSI e MACD. Essas métricas são
 # empregadas por traders institucionais para avaliar força de tendência e
-# momentum【935918323600793†L31-L47】【935918323600793†L129-L148】. Ajuste os
+# momentum. Ajuste os
 # períodos conforme a sensibilidade desejada.
 ADX_PERIOD = 14
 RSI_PERIODS = {

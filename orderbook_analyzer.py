@@ -12,16 +12,27 @@ except Exception:
 
 from time_manager import TimeManager
 
-# Importa parâmetros adicionais de configuração
+# Importa parâmetros adicionais de configuração (inclui limiares CRÍTICOS)
 try:
-    from config import ORDER_BOOK_DEPTH_LEVELS, SPREAD_TIGHT_THRESHOLD_BPS, SPREAD_AVG_WINDOWS_MIN
+    from config import (
+        ORDER_BOOK_DEPTH_LEVELS,
+        SPREAD_TIGHT_THRESHOLD_BPS,
+        SPREAD_AVG_WINDOWS_MIN,
+        # novos limiares p/ elevação a CRITICAL
+        ORDERBOOK_CRITICAL_IMBALANCE,
+        ORDERBOOK_MIN_DOMINANT_USD,
+        ORDERBOOK_MIN_RATIO_DOM,
+    )
 except Exception:
     # Valores padrão se não definidos
     ORDER_BOOK_DEPTH_LEVELS = [1, 5, 10, 25]
     SPREAD_TIGHT_THRESHOLD_BPS = 0.2
     SPREAD_AVG_WINDOWS_MIN = [60, 1440]
+    ORDERBOOK_CRITICAL_IMBALANCE = 0.95
+    ORDERBOOK_MIN_DOMINANT_USD = 2_000_000.0
+    ORDERBOOK_MIN_RATIO_DOM = 20.0
 
-SCHEMA_VERSION = "1.2.1"
+SCHEMA_VERSION = "1.3.0"
 
 
 # ------------------------- Utils -------------------------
@@ -110,6 +121,7 @@ class OrderBookAnalyzer:
       - paredes (walls) por desvio-padrão
       - iceberg reload (heurístico)
       - market impact (100k / 1M) determinístico
+      - promoção a CRITICAL quando há desequilíbrio extremo
     """
 
     def __init__(
@@ -302,12 +314,10 @@ class OrderBookAnalyzer:
         mi_sell_100k = _simulate_market_impact(bids[: self.top_n][::-1], usd_amount=100_000.0, side="sell", mid=mid)
         mi_sell_1m = _simulate_market_impact(bids[: self.top_n][::-1], usd_amount=1_000_000.0, side="sell", mid=mid)
 
-        # Atualiza histórico de spread (bps) com timestamp
-        # Converte spread_percent (percentual) para basis points (bps). 1% = 100 bps.
+        # Atualiza histórico de spread (bps)
         if sm.get("spread_percent") is not None and sm["spread_percent"] >= 0:
             try:
-                spread_bps = float(sm["spread_percent"]) * 100.0
-                # Utiliza ts_ms (tempo do exchange) como timestamp; fallback no tempo local se None
+                spread_bps = float(sm["spread_percent"]) * 100.0  # 1% = 100 bps
                 now_ms = ts_ms if ts_ms is not None else self.tm.now_ms()
                 self.spread_history.append((int(now_ms), spread_bps))
             except Exception:
@@ -334,10 +344,9 @@ class OrderBookAnalyzer:
         if sm.get("spread") is not None and sm["spread"] <= 0.5:
             alertas.append("Spread apertado")
 
-        # Remove entradas antigas do histórico de spreads (mantém ~24h)
+        # Remove spreads antigos (~24h)
         try:
             cutoff_ms = (ts_ms if ts_ms is not None else self.tm.now_ms()) - max(self.spread_avg_windows_min) * 60 * 1000
-            # Filtra apenas entradas dentro da janela máxima
             self.spread_history = [(t, s) for (t, s) in self.spread_history if t >= cutoff_ms]
         except Exception:
             pass
@@ -363,7 +372,7 @@ class OrderBookAnalyzer:
                 total_asks_last = a_usd
             except Exception:
                 depth_summary[f"L{lvl}"] = {"bids": None, "asks": None, "imbalance": None}
-        # Ratio total bids/asks no nível mais profundo
+
         total_ratio = None
         try:
             if total_asks_last > 0:
@@ -384,59 +393,85 @@ class OrderBookAnalyzer:
             if sm.get("spread_percent") is not None:
                 current_bps = float(sm["spread_percent"]) * 100.0
                 spread_analysis["current_spread_bps"] = round(current_bps, 4)
-            # Médias móveis do spread para janelas definidas
             for window_min in self.spread_avg_windows_min:
                 window_ms = window_min * 60 * 1000
                 now_ms = ts_ms if ts_ms is not None else self.tm.now_ms()
                 values = [s for (t, s) in self.spread_history if (now_ms - t) <= window_ms]
-                if values:
-                    avg = float(np.mean(values))
-                else:
-                    avg = None
-                # Nomeia a chave com base na janela: 60->1h, 1440->24h ou Xmin
+                avg = float(np.mean(values)) if values else None
                 if window_min >= 60 and window_min % 60 == 0:
                     hours = window_min // 60
                     key = f"avg_spread_{hours}h"
                 else:
                     key = f"avg_spread_{window_min}m"
                 spread_analysis[key] = round(avg, 4) if avg is not None else None
-            # Percentil do spread atual em relação aos últimos 24h (maior janela)
-            try:
-                if current_bps is not None:
-                    all_values = [s for (_, s) in self.spread_history]
-                    if all_values:
-                        sorted_vals = sorted(all_values)
-                        less = sum(1 for v in sorted_vals if v < current_bps)
-                        pct = (less / len(sorted_vals)) * 100.0
-                        spread_analysis["spread_percentile"] = round(pct, 1)
-                        # Desvio padrão como volatilidade
-                        spread_analysis["spread_volatility"] = round(float(np.std(sorted_vals)), 4)
-            except Exception:
-                pass
-            # Duração em minutos em que o spread permaneceu abaixo do threshold estreito
-            try:
-                if current_bps is not None:
-                    now_ms = ts_ms if ts_ms is not None else self.tm.now_ms()
-                    # Percorre histórico de trás para frente até encontrar valor > threshold
-                    duration_ms = 0
-                    threshold = self.spread_tight_threshold_bps
-                    for (t, s) in reversed(self.spread_history):
-                        if s <= threshold:
-                            duration_ms = now_ms - t
-                        else:
-                            break
-                    spread_analysis["tight_spread_duration_min"] = round(duration_ms / 60000.0, 2) if duration_ms else 0.0
-            except Exception:
-                pass
+            if current_bps is not None:
+                all_values = [s for (_, s) in self.spread_history]
+                if all_values:
+                    sorted_vals = sorted(all_values)
+                    less = sum(1 for v in sorted_vals if v < current_bps)
+                    pct = (less / len(sorted_vals)) * 100.0
+                    spread_analysis["spread_percentile"] = round(pct, 1)
+                    spread_analysis["spread_volatility"] = round(float(np.std(sorted_vals)), 4)
+            if current_bps is not None:
+                now_ms = ts_ms if ts_ms is not None else self.tm.now_ms()
+                duration_ms = 0
+                threshold = self.spread_tight_threshold_bps
+                for (t, s) in reversed(self.spread_history):
+                    if s <= threshold:
+                        duration_ms = now_ms - t
+                    else:
+                        break
+                spread_analysis["tight_spread_duration_min"] = round(duration_ms / 60000.0, 2) if duration_ms else 0.0
         except Exception as e:
             logging.debug(f"Erro em spread_analysis: {e}")
 
+        # ----------- PROMOÇÃO A CRITICAL -----------
+        # ratio_dom >= 1.0 (sempre expressa "dominância" >= 1)
+        ratio_dom = None
+        if ratio is not None:
+            if ratio > 0:
+                ratio_dom = ratio if ratio >= 1.0 else (1.0 / ratio)
+            else:
+                ratio_dom = float("inf")
+
+        dominant_usd = max(bid_usd, ask_usd)
+        is_extreme_imbalance = (imbalance is not None) and (abs(imbalance) >= ORDERBOOK_CRITICAL_IMBALANCE)
+        is_extreme_ratio = (ratio_dom is not None) and (ratio_dom >= ORDERBOOK_MIN_RATIO_DOM)
+        is_extreme_usd = dominant_usd >= ORDERBOOK_MIN_DOMINANT_USD
+        # Regra: |imbalance| >= 0.95 e (ratio_dom >= 20x OU lado dominante >= 2M)
+        # + proteção para casos de ratio absolutamente absurdo (>=50x) mesmo sem |imbalance| >= 0.95
+        is_critical = bool(is_extreme_imbalance and (is_extreme_ratio or is_extreme_usd) or
+                           (ratio_dom is not None and ratio_dom >= max(50.0, ORDERBOOK_MIN_RATIO_DOM)))
+
+        if is_critical:
+            side_dom = "ASKS" if (imbalance is not None and imbalance < 0) else "BIDS"
+            alertas.append(f"DESEQUILÍBRIO CRÍTICO ({side_dom})")
+
+        # Resultado da batalha (texto curto)
+        if imbalance is None:
+            batalha = "INDISPONÍVEL"
+        elif imbalance < -0.05:
+            batalha = "Oferta domina"
+        elif imbalance > 0.05:
+            batalha = "Demanda domina"
+        else:
+            batalha = "Equilíbrio"
+
+        # Descrição resumida
+        descricao = (
+            f"Livro: Δ={imbalance:+.4f} | ratio={ratio:.4f} | "
+            f"bids=${bid_usd:,.2f} vs asks=${ask_usd:,.2f}"
+            if imbalance is not None and ratio is not None
+            else "Livro: dados insuficientes"
+        )
+
+        # Payload principal
         event: Dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "tipo_evento": "OrderBook",
             "ativo": self.symbol,
-            "descricao": f"{resultado_da_batalha} | TopN={self.top_n}",
-            "resultado_da_batalha": resultado_da_batalha,
+            "descricao": descricao,
+            "resultado_da_batalha": batalha,
             "imbalance": round(imbalance, 4) if imbalance is not None else None,
             "volume_ratio": round(ratio, 4) if ratio not in (None, float("inf")) else None,
             "pressure": round(pressure, 4) if pressure is not None else None,
@@ -462,6 +497,32 @@ class OrderBookAnalyzer:
             # Novas análises de profundidade e spread
             "order_book_depth": depth_summary,
             "spread_analysis": spread_analysis,
+
+            # -------- NOVOS CAMPOS DE CRÍTICO --------
+            "severity": "CRITICAL" if is_critical else "INFO",
+            "critical_flags": {
+                "is_critical": is_critical,
+                "abs_imbalance": round(abs(imbalance), 4) if imbalance is not None else None,
+                "ratio_dom": (round(ratio_dom, 4) if (ratio_dom not in (None, float("inf"))) else ratio_dom),
+                "dominant_usd": round(dominant_usd, 2),
+                "thresholds": {
+                    "ORDERBOOK_CRITICAL_IMBALANCE": ORDERBOOK_CRITICAL_IMBALANCE,
+                    "ORDERBOOK_MIN_DOMINANT_USD": ORDERBOOK_MIN_DOMINANT_USD,
+                    "ORDERBOOK_MIN_RATIO_DOM": ORDERBOOK_MIN_RATIO_DOM,
+                },
+            },
+
+            # Alias para compatibilidade com consumidores que esperam "orderbook_data"
+            "orderbook_data": {
+                "mid": sm["mid"],
+                "spread": sm["spread"],
+                "spread_percent": sm["spread_percent"],
+                "bid_depth_usd": bid_usd,
+                "ask_depth_usd": ask_usd,
+                "imbalance": round(imbalance, 4) if imbalance is not None else None,
+                "volume_ratio": round(ratio, 4) if ratio not in (None, float("inf")) else None,
+                "pressure": round(pressure, 4) if pressure is not None else None,
+            },
         }
 
         # memória
@@ -481,3 +542,10 @@ class OrderBookAnalyzer:
     def analyze_orderbook(self, *args, **kwargs) -> Dict[str, Any]:
         """Compat sem sublinhado."""
         return self.analyze(*args, **kwargs)
+
+
+if __name__ == "__main__":
+    # Smoke test simples
+    oba = OrderBookAnalyzer(symbol="BTCUSDT")
+    evt = oba.analyze()
+    print(evt.get("severity"), evt.get("resultado_da_batalha"), evt.get("alertas_liquidez"))

@@ -543,18 +543,20 @@ def create_absorption_event(
         absorcao_venda  = bool(agg_df["AbsorcaoVenda"].iloc[0])  if len(agg_df) > 0 else False
         indice_absorcao = float(agg_df["IndiceAbsorcao"].iloc[0]) if len(agg_df) > 0 else 0.0
 
-        # Rótulo coerente com o delta (agressão vendedora absorvida → Absorção de Compra)
+        # CORREÇÃO PRINCIPAL: Inversão dos rótulos para refletir corretamente a natureza da agressão absorvida
         resultado = "Sem Absorção"
         descricao = f"Δ={delta_btc:.2f}, índice={indice_absorcao:.2f}"
         absorption_side = None
         aggression_side = "sell" if delta_btc < 0 else ("buy" if delta_btc > 0 else "flat")
 
         if absorcao_compra:
-            resultado = "Absorção de Compra"
+            # Agressão vendedora absorvida -> evento é "Absorção de Venda"
+            resultado = "Absorção de Venda"
             absorption_side = "buy"
             descricao = f"Agressão vendedora absorvida. Δ={delta_btc:.2f}, índice={indice_absorcao:.2f}"
         elif absorcao_venda:
-            resultado = "Absorção de Venda"
+            # Agressão compradora absorvida -> evento é "Absorção de Compra"
+            resultado = "Absorção de Compra"
             absorption_side = "sell"
             descricao = f"Agressão compradora absorvida. Δ={delta_btc:.2f}, índice={indice_absorcao:.2f}"
 
