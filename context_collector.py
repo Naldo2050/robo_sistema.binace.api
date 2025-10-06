@@ -6,13 +6,11 @@ import threading
 import os
 import random  # ✅ Adicionado
 import numpy as np  # ✅ Para cálculos numéricos
-
 # Tipos para anotações
 from typing import Tuple
 from datetime import datetime, timedelta
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
 from config import (
     CONTEXT_TIMEFRAMES, CONTEXT_EMA_PERIOD, CONTEXT_ATR_PERIOD,
     CONTEXT_UPDATE_INTERVAL_SECONDS, INTERMARKET_SYMBOLS, DERIVATIVES_SYMBOLS,
@@ -25,7 +23,6 @@ try:
     from config import ENABLE_ALPHAVANTAGE
 except Exception:
     ENABLE_ALPHAVANTAGE = True
-
 # Novos parâmetros de configuração para regime, indicadores e correlações
 try:
     from config import (
@@ -46,10 +43,8 @@ except Exception:
     MACD_FAST_PERIOD = 12
     MACD_SLOW_PERIOD = 26
     MACD_SIGNAL_PERIOD = 9
-
 from historical_profiler import HistoricalVolumeProfiler
 from time_manager import TimeManager
-
 
 class ContextCollector:
     def __init__(self, symbol):
@@ -60,7 +55,6 @@ class ContextCollector:
         self.update_interval = CONTEXT_UPDATE_INTERVAL_SECONDS
         self.intermarket_symbols = INTERMARKET_SYMBOLS
         self.derivatives_symbols = DERIVATIVES_SYMBOLS
-
         # Endpoints Binance
         self.klines_api_url = "https://api.binance.com/api/v3/klines"
         self.funding_api_url = "https://fapi.binance.com/fapi/v1/fundingRate"
@@ -68,28 +62,23 @@ class ContextCollector:
         self.long_short_ratio_api_url = "https://fapi.binance.com/futures/data/globalLongShortAccountRatio"
         self.liquidations_api_url = "https://fapi.binance.com/fapi/v1/allForceOrders"
         self.mark_price_api_url = "https://fapi.binance.com/fapi/v1/premiumIndex"
-
         # Volume Profile
         self.historical_profiler = HistoricalVolumeProfiler(
             symbol=self.symbol,
             num_days=VP_NUM_DAYS_HISTORY,
             value_area_percent=VP_VALUE_AREA_PERCENT
         )
-
         self.context_data = {}
         self._lock = threading.Lock()
         self.should_stop = False
         self.thread = threading.Thread(target=self._update_loop, daemon=True)
         self.time_manager = TimeManager()
-
         # Cache simples
         self._api_cache = {}
         self._cache_ttl = 60  # s
-
         # ---------- Alpha Vantage ----------
         self.alpha_vantage_api_key = os.getenv("ALPHAVANTAGE_API_KEY", "KC4IE0MBOEXK88Y3")
         self.alpha_vantage_url = "https://www.alphavantage.co/query"
-
         # Fallbacks por mercado
         self._dxy_candidates = ["DXY"]  # Alpha Vantage usa "DXY" para ECONOMIC_INDICATORS
         self._fallback_map = {
@@ -101,7 +90,6 @@ class ContextCollector:
         }
 
     # ---------- Helpers Alpha Vantage ----------
-
     def _build_retrying_session(self) -> requests.Session:
         sess = requests.Session()
         sess.headers.update({
@@ -148,7 +136,6 @@ class ContextCollector:
                 elif function == "FX_DAILY":
                     params["from_symbol"] = symbol.split("/")[0]
                     params["to_symbol"] = symbol.split("/")[1]
-
                 res = requests.get(self.alpha_vantage_url, params=params, timeout=10)
                 if res.status_code == 200:
                     data = res.json()
@@ -199,7 +186,6 @@ class ContextCollector:
         return pd.DataFrame()
 
     # ---------- Cache genérico ----------
-
     def _fetch_with_cache(self, cache_key: str, fetch_fn, ttl_seconds: int = None):
         ttl = ttl_seconds or self._cache_ttl
         now = time.time()
@@ -212,7 +198,6 @@ class ContextCollector:
         return data
 
     # ---------- Binance ----------
-
     def _fetch_klines_uncached(self, symbol, timeframe, limit=200):
         max_retries = 3
         base_delay = 1.0
@@ -256,7 +241,6 @@ class ContextCollector:
 
     def _fetch_symbol_price(self, symbol: str) -> float:
         cache_key = f"mark_price_{symbol}"
-
         def _do_fetch():
             try:
                 r = requests.get(self.mark_price_api_url, params={"symbol": symbol}, timeout=5)
@@ -266,11 +250,9 @@ class ContextCollector:
             except Exception as e:
                 logging.debug(f"Falha markPrice {symbol}: {e}")
                 return 0.0
-
         return float(self._fetch_with_cache(cache_key, _do_fetch, ttl_seconds=15) or 0.0)
 
     # ---------- Tempo ----------
-
     def _get_binance_server_time(self) -> int:
         max_retries = 3
         for attempt in range(max_retries):
@@ -292,7 +274,6 @@ class ContextCollector:
         return self.time_manager.now()
 
     # ---------- Cálculos técnicos ----------
-
     def _calculate_atr(self, df: pd.DataFrame, period: int) -> float:
         if df is None or df.empty:
             return 0.0
@@ -425,7 +406,9 @@ class ContextCollector:
             now_ny_iso = self.time_manager.now_ny_iso(timespec="seconds")
             now_ny = datetime.fromisoformat(now_ny_iso)
             dow = now_ny.weekday()
-            is_weekend = dow >= 5
+            # ✅ CORREÇÃO: Cripto opera 24/7 — não há feriados nem fins de semana relevantes
+            is_holiday = False
+
             # Sessões simplificadas
             hour = now_ny.hour
             if 13 <= hour < 17:
@@ -444,6 +427,7 @@ class ContextCollector:
                 session = "EUROPE"
                 phase = "ACTIVE"
                 close_dt = now_ny.replace(hour=13, minute=0, second=0, microsecond=0)
+
             # Tempo até o fechamento da sessão, em segundos
             time_to_close = max(0, int((close_dt - now_ny).total_seconds()))
             context = {
@@ -451,7 +435,7 @@ class ContextCollector:
                 "session_phase": phase,
                 "time_to_session_close": time_to_close,
                 "day_of_week": dow,
-                "is_holiday": is_weekend,
+                "is_holiday": is_holiday,  # ✅ Corrigido: sempre False para cripto
                 "market_hours_type": "EXTENDED"  # Cripto negocia 24/7
             }
             return context
@@ -638,7 +622,6 @@ class ContextCollector:
         return mtf_context
 
     # ---------- Intermarket / Alpha Vantage ----------
-
     def _fetch_intermarket_data(self):
         data = {}
         # symbols Binance (ex.: BTCUSDT, ETHUSDT...) continuam vindo dos klines
@@ -647,10 +630,8 @@ class ContextCollector:
             if not df.empty:
                 last, prev = float(df['close'].iloc[-1]), float(df['close'].iloc[-2])
                 data[sym] = {"preco_atual": last, "movimento": "Alta" if last > prev else "Baixa"}
-
         if not ENABLE_ALPHAVANTAGE:
             return data
-
         # DXY via Alpha Vantage (ECONOMIC_INDICATORS)
         dxy_got = False
         for tkr in self._dxy_candidates:
@@ -669,14 +650,12 @@ class ContextCollector:
                 logging.debug(f"DXY fallback {tkr} falhou: {e}")
         if not dxy_got:
             logging.debug("DXY indisponível em todos os fallbacks.")
-
         return data
 
     def _fetch_external_markets(self):
         ext_data = {}
         if not ENABLE_ALPHAVANTAGE:
             return ext_data
-
         for name, ticker in EXTERNAL_MARKETS.items():
             # Primeiro tenta o ticker fornecido
             if "/" in ticker:  # Pares de moedas (ex: USD/EUR)
@@ -689,7 +668,6 @@ class ContextCollector:
                         "ticker": ticker
                     }
                     continue
-
             # Depois fallbacks (se houver para este nome)
             for alt in self._fallback_map.get(name, []):
                 if "/" in alt:  # Pares de moedas
@@ -706,11 +684,9 @@ class ContextCollector:
                     break
             if name not in ext_data:
                 logging.debug(f"Sem dados para {name} ({ticker}) e fallbacks.")
-
         return ext_data
 
     # ---------- Derivativos (Binance) ----------
-
     def _fetch_liquidations_data(self, symbol, lookback_minutes=5):
         max_retries = 3
         base_delay = 1.0
@@ -723,14 +699,12 @@ class ContextCollector:
                     start_ms = now_ms - 24 * 60 * 60 * 1000
                 if end_ms > now_ms + 5_000:
                     end_ms = now_ms
-
                 params = {"symbol": symbol, "startTime": start_ms, "endTime": end_ms, "limit": 1000}
                 r = requests.get(self.liquidations_api_url, params=params, timeout=5)
                 if r.status_code == 204 or not r.text:
                     return []
                 if r.status_code == 200:
                     return r.json()
-
                 logging.debug(f"ForceOrders {r.status_code}: {r.text[:200]}")
                 if r.status_code == 429 and attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
@@ -776,26 +750,21 @@ class ContextCollector:
             try:
                 fr = requests.get(self.funding_api_url, params={'symbol': sym}, timeout=5).json()
                 funding_rate = float(fr[0]["fundingRate"]) * 100 if fr else 0.0
-
                 oi = requests.get(self.open_interest_api_url, params={'symbol': sym}, timeout=5).json()
                 open_interest = float(oi.get("openInterest", 0))
-
                 ls = requests.get(
                     self.long_short_ratio_api_url,
                     params={'symbol': sym, 'period': '5m', 'limit': 1}, timeout=5
                 ).json()
                 long_short_ratio = float(ls[0]["longShortRatio"]) if ls else 0.0
-
                 liq = self._fetch_liquidations_data(sym, lookback_minutes=int(self.update_interval / 60))
                 heatmap = self._build_liquidation_heatmap(liq)
                 totals = {
                     "longs_usd": sum(v["longs"] for v in heatmap.values()),
                     "shorts_usd": sum(v["shorts"] for v in heatmap.values())
                 }
-
                 price = self._fetch_symbol_price(sym)
                 open_interest_usd = open_interest * price if price else open_interest
-
                 derivatives_data[sym] = {
                     "funding_rate_percent": round(funding_rate, 4),
                     "open_interest": open_interest,
@@ -809,7 +778,6 @@ class ContextCollector:
         return derivatives_data
 
     # ---------- On-chain / Sentimento (placeholders) ----------
-
     def _fetch_onchain_sentiment(self):
         sentiment = {"onchain": {}, "funding_agg": {}}
         try:
@@ -822,7 +790,6 @@ class ContextCollector:
                 }
         except Exception as e:
             logging.debug(f"Dados on-chain indisponíveis: {e}")
-
         try:
             sentiment["funding_agg"] = {
                 "avg_funding": 0.02,
@@ -835,7 +802,6 @@ class ContextCollector:
         return sentiment
 
     # ---------- Consolidação ----------
-
     def _build_full_context(self):
         return {
             "mtf_trends": self._analyze_mtf_trends(),
