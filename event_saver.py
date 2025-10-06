@@ -1,4 +1,4 @@
-# event_saver.py
+# event_saver.py - Ponto central de serialização com formatação limpa
 import json
 from pathlib import Path
 import platform
@@ -10,12 +10,24 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from time_manager import TimeManager
 
+# 🔹 IMPORTA UTILITÁRIOS DE FORMATAÇÃO
+from format_utils import (
+    format_price,
+    format_quantity,
+    format_percent,
+    format_large_number,
+    format_delta,
+    format_time_seconds,
+    format_scientific
+)
+
 NY_TZ = ZoneInfo("America/New_York")
 SP_TZ = ZoneInfo("America/Sao_Paulo")
 UTC_TZ = ZoneInfo("UTC")
 
 DATA_DIR = Path("dados")
 DATA_DIR.mkdir(exist_ok=True)
+
 
 class EventSaver:
     def __init__(self, sound_alert=True):
@@ -46,9 +58,7 @@ class EventSaver:
 
     @staticmethod
     def _parse_iso8601(ts: str) -> datetime:
-        """
-        Aceita ISO-8601 com 'Z' (UTC) e com offset.
-        """
+        """Aceita ISO-8601 com 'Z' (UTC) e com offset."""
         try:
             # Normaliza 'Z' -> +00:00 para compatibilidade ampla
             if ts.endswith("Z"):
@@ -80,6 +90,151 @@ class EventSaver:
             if buffer_copy:
                 self._flush_buffer(buffer_copy)
 
+    # ---------- LIMPEZA E FORMATAÇÃO DE DADOS ----------
+
+    def _clean_numeric_value(self, value, field_type="generic"):
+        """
+        Limpa e formata um valor numérico baseado no tipo de campo.
+        Retorna o valor formatado para serialização JSON (número limpo, não string).
+        """
+        if value is None or value == '' or (isinstance(value, str) and value.lower() in ['n/a', 'none', 'null']):
+            return None
+        
+        try:
+            # Converte para float primeiro
+            if isinstance(value, str):
+                value = float(value.replace(',', ''))
+            else:
+                value = float(value)
+            
+            # Aplica formatação específica por tipo
+            if field_type == "price":
+                # Preços: mantém precisão adequada (2-8 decimais)
+                if abs(value) >= 1000:
+                    return round(value, 2)
+                elif abs(value) >= 100:
+                    return round(value, 3)
+                elif abs(value) >= 1:
+                    return round(value, 4)
+                else:
+                    # Pequenos valores: até 8 decimais significativos
+                    return round(value, 8)
+            
+            elif field_type == "quantity":
+                # Quantidades: remove decimais desnecessários
+                if value == int(value):
+                    return int(value)
+                else:
+                    return round(value, 2)
+            
+            elif field_type == "percent":
+                # Percentuais: sempre 2-4 decimais
+                return round(value, 4)
+            
+            elif field_type == "delta":
+                # Deltas: 2 decimais
+                return round(value, 2)
+            
+            elif field_type == "scientific":
+                # Valores científicos: 6 decimais
+                return round(value, 6)
+            
+            else:
+                # Genérico: 4 decimais
+                return round(value, 4)
+                
+        except (ValueError, TypeError):
+            return value  # Retorna original se não for numérico
+
+    def _clean_event_data(self, event: dict) -> dict:
+        """
+        Limpa todos os campos numéricos do evento antes de salvar.
+        Aplica formatação adequada para cada tipo de campo.
+        """
+        if not isinstance(event, dict):
+            return event
+        
+        cleaned = {}
+        
+        # Definição dos tipos de campos
+        price_fields = {
+            'preco_fechamento', 'preco_abertura', 'preco_maximo', 'preco_minimo',
+            'price', 'close', 'open', 'high', 'low', 'poc', 'val', 'vah',
+            'level', 'nearest_hvn', 'nearest_lvn', 'anchor_price',
+            'bid_price', 'ask_price', 'bid_wall_price', 'ask_wall_price'
+        }
+        
+        quantity_fields = {
+            'volume_total', 'volume', 'quantity', 'total_volume',
+            'buy_volume', 'sell_volume', 'trades_count', 'open_interest',
+            'bid_size', 'ask_size', 'bid_wall_size', 'ask_wall_size'
+        }
+        
+        delta_fields = {
+            'delta', 'delta_fechamento', 'flow_imbalance', 'net_flow',
+            'net_flow_1m', 'net_flow_5m', 'net_flow_15m'
+        }
+        
+        percent_fields = {
+            'imbalance_ratio', 'buy_sell_pressure', 'volume_sma_ratio',
+            'long_prob', 'short_prob', 'neutral_prob', 'spread_percent',
+            'aggressive_buy_pct', 'aggressive_sell_pct', 'passive_buy_pct', 'passive_sell_pct',
+            'funding_rate_percent', 'volume_pct'
+        }
+        
+        scientific_fields = {
+            'volatility_1', 'volatility_5', 'volatility_15',
+            'returns_1', 'returns_5', 'returns_15',
+            'order_book_slope', 'microstructure', 'momentum_score',
+            'tick_rule_sum', 'liquidity_gradient', 'long_short_ratio'
+        }
+        
+        # Processa cada campo
+        for key, value in event.items():
+            # Determina o tipo do campo
+            field_type = "generic"
+            key_lower = key.lower()
+            
+            if key in price_fields or 'price' in key_lower or 'poc' in key_lower or 'val' in key_lower or 'vah' in key_lower:
+                field_type = "price"
+            elif key in quantity_fields or 'volume' in key_lower or 'size' in key_lower or 'count' in key_lower:
+                field_type = "quantity"
+            elif key in delta_fields or 'delta' in key_lower or 'flow' in key_lower:
+                field_type = "delta"
+            elif key in percent_fields or 'pct' in key_lower or 'percent' in key_lower or 'ratio' in key_lower or 'prob' in key_lower:
+                field_type = "percent"
+            elif key in scientific_fields or 'volatility' in key_lower or 'returns' in key_lower or 'slope' in key_lower:
+                field_type = "scientific"
+            
+            # Processa o valor
+            if isinstance(value, (int, float)):
+                cleaned[key] = self._clean_numeric_value(value, field_type)
+            elif isinstance(value, str) and value.replace('.', '').replace('-', '').replace('+', '').isdigit():
+                cleaned[key] = self._clean_numeric_value(value, field_type)
+            elif isinstance(value, dict):
+                # Recursivo para dicionários aninhados
+                cleaned[key] = self._clean_event_data(value)
+            elif isinstance(value, list):
+                # Processa listas
+                cleaned_list = []
+                for item in value:
+                    if isinstance(item, dict):
+                        cleaned_list.append(self._clean_event_data(item))
+                    elif isinstance(item, (int, float)):
+                        # Lista de números (ex: HVNs, LVNs)
+                        if key in ['hvns', 'lvns', 'single_prints'] or 'price' in key_lower:
+                            cleaned_list.append(self._clean_numeric_value(item, "price"))
+                        else:
+                            cleaned_list.append(self._clean_numeric_value(item, field_type))
+                    else:
+                        cleaned_list.append(item)
+                cleaned[key] = cleaned_list
+            else:
+                # Mantém valores não numéricos como estão
+                cleaned[key] = value
+        
+        return cleaned
+
     # ---------- Loop/flush ----------
 
     def _flush_loop(self):
@@ -96,12 +251,15 @@ class EventSaver:
     def _flush_buffer(self, events: list):
         """Escreve eventos em lote."""
         for event in events:
+            # Limpa dados antes de salvar
+            cleaned_event = self._clean_event_data(event)
+            
             # Salva em snapshot
-            self._save_to_json(event)
+            self._save_to_json(cleaned_event)
             # Salva em JSONL
-            self._save_to_jsonl(event)
+            self._save_to_jsonl(cleaned_event)
             # Adiciona ao log visual
-            self._add_visual_log_entry(event)
+            self._add_visual_log_entry(cleaned_event)
 
     # ---------- Persistência JSON/JSONL ----------
 
@@ -298,37 +456,84 @@ class EventSaver:
                     f.write(f"Erro ao adicionar separador: {e}\n")
             except Exception as e2:
                 logging.critical(f"💀 FALHA TOTAL ao salvar separador visual: {e2}")
-    
-    # >>>>> INÍCIO DA CORREÇÃO <<<<<
-    def _compact_json_log(self, data, indent=2):
-        """Função customizada para serializar JSON com listas em uma única linha."""
+
+    def _format_value_for_display(self, value, key=""):
+        """Formata valor para exibição no log visual usando as funções do format_utils."""
+        if value is None:
+            return "null"
+        
+        # Determina o tipo baseado no nome da chave
+        key_lower = key.lower()
+        
+        try:
+            if isinstance(value, (int, float)):
+                # Preços
+                if any(x in key_lower for x in ['price', 'preco', 'poc', 'val', 'vah', 'level']):
+                    return format_price(value)
+                # Quantidades/Volumes
+                elif any(x in key_lower for x in ['volume', 'quantity', 'size', 'count']):
+                    return format_large_number(value)
+                # Deltas
+                elif 'delta' in key_lower or 'flow' in key_lower:
+                    return format_delta(value)
+                # Percentuais
+                elif any(x in key_lower for x in ['pct', 'percent', 'ratio', 'prob']):
+                    return format_percent(value)
+                # Científicos
+                elif any(x in key_lower for x in ['volatility', 'returns', 'slope', 'momentum']):
+                    return format_scientific(value)
+                else:
+                    return str(value)
+            else:
+                return str(value)
+        except:
+            return str(value)
+
+    def _compact_json_log(self, data, indent=2, parent_key=""):
+        """Função customizada para serializar JSON com formatação adequada de números."""
         if isinstance(data, dict):
-            # Formata listas de números (hvns, lvns, etc.) em uma única linha
+            # Formata cada item do dicionário
             formatted_items = []
             for key, value in data.items():
+                # Para listas de números (hvns, lvns, etc.)
                 if isinstance(value, list) and all(isinstance(i, (int, float)) for i in value):
-                    # Formata a lista como uma string de linha única
-                    list_str = json.dumps(value)
+                    # Formata cada número da lista apropriadamente
+                    if any(x in key.lower() for x in ['hvn', 'lvn', 'price', 'level']):
+                        formatted_list = [format_price(v) for v in value]
+                    else:
+                        formatted_list = [str(v) for v in value]
+                    list_str = "[" + ", ".join(formatted_list) + "]"
                     formatted_items.append(f'{" " * (indent + 2)}"{key}": {list_str}')
                 else:
-                    # Recursivamente formata outros dicionários/valores
-                    value_str = self._compact_json_log(value, indent + 2)
+                    # Recursivamente formata outros valores
+                    value_str = self._compact_json_log(value, indent + 2, parent_key=key)
                     formatted_items.append(f'{" " * (indent + 2)}"{key}": {value_str}')
-            return f"{{\n" + ",\n".join(formatted_items) + f"\n{' ' * indent}}}"
+            return "{\n" + ",\n".join(formatted_items) + f"\n{' ' * indent}}}"
+        
         elif isinstance(data, list):
-            # Mantém a formatação padrão para listas de objetos
+            # Para listas de objetos, mantém formatação padrão
             if any(isinstance(i, dict) for i in data):
-                 return json.dumps(data, ensure_ascii=False, default=str, indent=indent)
-            # Para listas simples, usa a formatação compacta
-            return json.dumps(data, ensure_ascii=False, default=str)
+                return json.dumps(data, ensure_ascii=False, default=str, indent=indent)
+            # Para listas simples de números
+            elif all(isinstance(i, (int, float)) for i in data):
+                if any(x in parent_key.lower() for x in ['hvn', 'lvn', 'price', 'level']):
+                    formatted = [format_price(v) for v in data]
+                else:
+                    formatted = [str(v) for v in data]
+                return "[" + ", ".join(formatted) + "]"
+            else:
+                return json.dumps(data, ensure_ascii=False, default=str)
+        
+        elif isinstance(data, (int, float)):
+            # Formata números individuais baseado no contexto (parent_key)
+            return f'"{self._format_value_for_display(data, parent_key)}"'
+        
         else:
             # Para outros tipos, usa a representação padrão
             return json.dumps(data, ensure_ascii=False, default=str)
 
     def _add_visual_log_entry(self, event: dict):
-        """
-        Log visual amigável com formatação customizada para compactar listas.
-        """
+        """Log visual amigável com formatação adequada."""
         try:
             ts = event.get("timestamp")
             minute_block = None
@@ -387,7 +592,6 @@ class EventSaver:
                     f.write(f"Erro ao adicionar entrada: {e}\nEvento: {json.dumps(event, ensure_ascii=False, default=str)}\n")
             except Exception as e2:
                 logging.critical(f"💀 FALHA TOTAL ao salvar entrada visual: {e2}")
-    # >>>>> FIM DA CORREÇÃO <<<<<
 
     # ---------- Alerta sonoro ----------
 

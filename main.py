@@ -1,4 +1,4 @@
-# main.py (corrigido e enxuto)
+# main.py (corrigido com formatação adequada)
 
 from dotenv import load_dotenv; load_dotenv()
 import json
@@ -20,6 +20,17 @@ import atexit
 
 # Importa o arquivo de configurações central
 import config
+
+# 🔹 NOVO: Importa utilitários de formatação
+from format_utils import (
+    format_price,
+    format_quantity,
+    format_percent,
+    format_large_number,
+    format_delta,
+    format_time_seconds,
+    format_scientific
+)
 
 # Importações internas
 from data_handler import (
@@ -614,9 +625,9 @@ class EnhancedMarketBot:
 
                     logging.debug("📊 Dados do evento para IA: %s", {
                         "tipo": event_data.get("tipo_evento"),
-                        "delta": event_data.get("delta"),
-                        "volume": event_data.get("volume_total"),
-                        "preco": event_data.get("preco_fechamento")
+                        "delta": format_delta(event_data.get("delta")),
+                        "volume": format_large_number(event_data.get("volume_total")),
+                        "preco": format_price(event_data.get("preco_fechamento"))
                     })
 
                     analysis_result = self.ai_analyzer.analyze_event(event_data)
@@ -711,17 +722,18 @@ class EnhancedMarketBot:
         print(f"   Símbolo: {self.symbol} | Janela #{self.window_count}")
         print(f"   📝 {descricao}")
         if conf:
-            print(
-                f"   📊 Probabilidades -> Long={conf.get('long_prob')} | Short={conf.get('short_prob')} | Neutro={conf.get('neutral_prob')}"
-            )
+            print(f"   📊 Probabilidades -> Long={conf.get('long_prob')} | Short={conf.get('short_prob')} | Neutro={conf.get('neutral_prob')}")
 
         ultimos = [e for e in obter_memoria_eventos(n=4) if e.get("tipo_evento") != "OrderBook"]
         if ultimos:
             print("   🕒 Últimos sinais:")
             for e in ultimos:
+                # 🔹 FORMATAÇÃO CORRIGIDA
+                delta_fmt = format_delta(e.get('delta', 0))
+                vol_fmt = format_large_number(e.get('volume_total', 0))
                 print(
                     f"      - {e.get('timestamp', 'N/A')} | {e.get('tipo_evento', 'N/A')} {e.get('resultado_da_batalha', 'N/A')} "
-                    f"(Δ={e.get('delta', 0):,.2f}, Vol={e.get('volume_total', 0):,.2f})"
+                    f"(Δ={delta_fmt}, Vol={vol_fmt})"
                 )
 
     def _process_window(self):
@@ -822,7 +834,6 @@ class EnhancedMarketBot:
                 )
 
                 # ======= LIMPEZA DE DUPLICAÇÃO DE ANÁLISE =======
-                # Se houver QUALQUER sinal real na janela, removemos triggers genéricos.
                 has_non_trigger = any(s.get("tipo_evento") not in ("ANALYSIS_TRIGGER",) for s in signals)
                 if not signals:
                     # nada veio do pipeline → cria um único trigger
@@ -853,24 +864,26 @@ class EnhancedMarketBot:
                     signals = tmp
                 # ================================================
 
-                # ---- LOG DO HEATMAP: COM DECIMAIS E SEGUNDOS ----
+                # ---- LOG DO HEATMAP COM FORMATAÇÃO CORRIGIDA ----
                 try:
                     liquidity_data = flow_metrics.get("liquidity_heatmap", {})
                     clusters = liquidity_data.get("clusters", [])
                     if clusters:
                         print(f"\n📊 LIQUIDITY HEATMAP - Janela #{self.window_count}:")
                         for i, cluster in enumerate(clusters[:3]):
-                            age_ms = cluster.get("age_ms", 0)
-                            try:
-                                age_s = float(age_ms) / 1000.0
-                            except Exception:
-                                age_s = 0.0
+                            # 🔹 FORMATAÇÃO CORRIGIDA
+                            center_fmt = format_price(cluster.get('center', 0.0))
+                            vol_fmt = format_large_number(cluster.get('total_volume', 0))
+                            imb_fmt = format_percent(cluster.get('imbalance_ratio', 0.0) * 100)
+                            trades_fmt = format_quantity(cluster.get('trades_count', 0))
+                            age_fmt = format_time_seconds(cluster.get('age_ms', 0))
+                            
                             print(
-                                f"   Cluster {i+1}: ${cluster.get('center', 0.0):,.2f} | "
-                                f"Vol: {cluster.get('total_volume', 0):,.0f} | "
-                                f"Imb: {cluster.get('imbalance_ratio', 0.0):.2f} | "
-                                f"Trades: {cluster.get('trades_count', 0)} | "
-                                f"Age: {age_s:.1f}s"
+                                f"   Cluster {i+1}: ${center_fmt} | "
+                                f"Vol: {vol_fmt} | "
+                                f"Imb: {imb_fmt} | "
+                                f"Trades: {trades_fmt} | "
+                                f"Age: {age_fmt}"
                             )
                     else:
                         print(f"\n📊 LIQUIDITY HEATMAP - Janela #{self.window_count}: Nenhum cluster detectado")
@@ -938,11 +951,16 @@ class EnhancedMarketBot:
                     touched = self.levels.check_price(float(preco_atual))
                     for z in touched:
                         zone_event = signals[0].copy() if signals else {}
+                        # 🔹 FORMATAÇÃO CORRIGIDA
+                        preco_fmt = format_price(preco_atual)
+                        low_fmt = format_price(z.low)
+                        high_fmt = format_price(z.high)
+                        
                         zone_event.update(
                             {
                                 "tipo_evento": "Zona",
                                 "resultado_da_batalha": f"Toque em Zona {z.kind}",
-                                "descricao": f"Preço {preco_atual} tocou {z.kind} {z.timeframe} [{z.low} ~ {z.high}]",
+                                "descricao": f"Preço {preco_fmt} tocou {z.kind} {z.timeframe} [{low_fmt} ~ {high_fmt}]",
                                 "zone_context": z.to_dict(),
                                 "preco_fechamento": preco_atual,
                                 "timestamp": datetime.now(self.ny_tz).isoformat(timespec="seconds"),
@@ -993,19 +1011,27 @@ class EnhancedMarketBot:
             except Exception:
                 pass
 
-            # Log curto de ML features
+            # Log curto de ML features COM FORMATAÇÃO CORRIGIDA
             try:
                 pf = ml_payload.get("price_features", {}) if ml_payload else {}
                 vf = ml_payload.get("volume_features", {}) if ml_payload else {}
                 mf = ml_payload.get("microstructure", {}) if ml_payload else {}
                 if pf or vf or mf:
+                    # 🔹 FORMATAÇÃO CORRIGIDA
+                    ret5_fmt = format_scientific(pf.get('returns_5', 0))
+                    vol5_fmt = format_scientific(pf.get('volatility_5', 0), decimals=5)
+                    vsma_fmt = format_percent(vf.get('volume_sma_ratio', 0) * 100)
+                    bs_fmt = format_delta(vf.get('buy_sell_pressure', 0))
+                    obs_fmt = format_scientific(mf.get('order_book_slope', 0), decimals=3)
+                    flow_fmt = format_scientific(mf.get('flow_imbalance', 0), decimals=3)
+                    
                     print(
-                        f"   ML: ret5={pf.get('returns_5', 0):+.4f} "
-                        f"vol5={pf.get('volatility_5', 0):.5f} "
-                        f"V/SMA={vf.get('volume_sma_ratio', 0):.2f} "
-                        f"BSpress={vf.get('buy_sell_pressure', 0):+.2f} "
-                        f"OBslope={mf.get('order_book_slope', 0):+.3f} "
-                        f"FlowImb={mf.get('flow_imbalance', 0):+.3f}"
+                        f"   ML: ret5={ret5_fmt} "
+                        f"vol5={vol5_fmt} "
+                        f"V/SMA={vsma_fmt} "
+                        f"BSpress={bs_fmt} "
+                        f"OBslope={obs_fmt} "
+                        f"FlowImb={flow_fmt}"
                     )
             except Exception:
                 pass
@@ -1056,11 +1082,16 @@ class EnhancedMarketBot:
                             self._last_alert_ts[atype] = now_s
 
                             desc_parts = [f"Tipo: {alert.get('type')}"]
-                            if 'level' in alert: desc_parts.append(f"Nível: {alert['level']}")
-                            if 'threshold_exceeded' in alert: desc_parts.append(f"Fator: {alert['threshold_exceeded']}")
+                            # 🔹 FORMATAÇÃO CORRIGIDA PARA ALERTAS
+                            if 'level' in alert: 
+                                desc_parts.append(f"Nível: {format_price(alert['level'])}")
+                            if 'threshold_exceeded' in alert: 
+                                desc_parts.append(f"Fator: {format_percent(alert['threshold_exceeded'] * 100)}")
                             if 'level' not in alert and 'threshold_exceeded' not in alert:
                                 for k, v in alert.items():
                                     if k not in ('type', 'severity', 'probability', 'action'):
+                                        if isinstance(v, (int, float)):
+                                            v = format_price(v) if 'price' in k.lower() else format_large_number(v)
                                         desc_parts.append(f"{k}: {v}")
                             descricao_alert = " | ".join(desc_parts)
 
@@ -1088,7 +1119,10 @@ class EnhancedMarketBot:
                 except Exception as e:
                     logging.error(f"Erro ao gerar alertas: {e}")
 
-            print(f"[{datetime.now(self.ny_tz).strftime('%H:%M:%S')} NY] 🟡 Janela #{self.window_count} | Delta: {window_delta:,.2f} | Vol: {window_volume:,.2f}")
+            # 🔹 FORMATAÇÃO CORRIGIDA NO LOG PRINCIPAL
+            delta_fmt = format_delta(window_delta)
+            vol_fmt = format_large_number(window_volume)
+            print(f"[{datetime.now(self.ny_tz).strftime('%H:%M:%S')} NY] 🟡 Janela #{self.window_count} | Delta: {delta_fmt} | Vol: {vol_fmt}")
 
             if macro_context:
                 trends = macro_context.get("mtf_trends", {})
@@ -1104,7 +1138,11 @@ class EnhancedMarketBot:
 
             if historical_profile and historical_profile.get("daily"):
                 vp = historical_profile["daily"]
-                print(f"   VP Diário: POC @ {vp.get('poc', 0):,.2f} | VAL: {vp.get('val', 0):,.2f} | VAH: {vp.get('vah', 0):,.2f}")
+                # 🔹 FORMATAÇÃO CORRIGIDA PARA VP
+                poc_fmt = format_price(vp.get('poc', 0))
+                val_fmt = format_price(vp.get('val', 0))
+                vah_fmt = format_price(vp.get('vah', 0))
+                print(f"   VP Diário: POC @ {poc_fmt} | VAL: {val_fmt} | VAH: {vah_fmt}")
 
             print("─" * 80)
 

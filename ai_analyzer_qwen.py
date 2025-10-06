@@ -1,11 +1,22 @@
-# ai_analyzer_qwen.py
+# ai_analyzer_qwen.py - Analisador de IA com formatação padronizada
 import logging
 import os
 import random
 import time
 from typing import Any, Dict, Optional
 
-from dotenv import load_dotenv # Importa load_dotenv
+from dotenv import load_dotenv
+
+# 🔹 IMPORTA UTILITÁRIOS DE FORMATAÇÃO
+from format_utils import (
+    format_price,
+    format_quantity,
+    format_percent,
+    format_large_number,
+    format_delta,
+    format_time_seconds,
+    format_scientific
+)
 
 # config é opcional (permite pegar tokens e modelo)
 try:
@@ -32,7 +43,8 @@ except Exception:
 
 from time_manager import TimeManager
 
-load_dotenv() # Carrega variáveis de ambiente do arquivo .env, se existir
+load_dotenv()  # Carrega variáveis de ambiente do arquivo .env, se existir
+
 
 def _extract_dashscope_text(resp) -> str:
     """Extrai texto de respostas do DashScope em formatos variados."""
@@ -70,23 +82,6 @@ def _extract_dashscope_text(resp) -> str:
         return ""
     except Exception:
         return ""
-
-
-def _fmt_num(x: Any, dec: int = 2, default: str = "Indisponível") -> str:
-    try:
-        return f"{float(x):,.{dec}f}"
-    except Exception:
-        return default
-
-
-def _fmt_pct(x: Any, dec: int = 2, default: str = "Indisponível") -> str:
-    try:
-        return f"{float(x)*100:.{dec}f}%"
-    except Exception:
-        try:
-            return f"{float(x):.{dec}f}%"
-        except Exception:
-            return default
 
 
 class AIAnalyzer:
@@ -134,14 +129,6 @@ class AIAnalyzer:
         # 2) DashScope (nativo)
         # Lê a chave *exclusivamente* da variável de ambiente
         token = os.getenv("DASHSCOPE_API_KEY")
-
-        # Removido o fallback para config.py
-        # if not token and app_config is not None:
-        #     token = getattr(app_config, "DASHSCOPE_API_KEY", None) or (
-        #         getattr(app_config, "AI_KEYS", {}).get("dashscope")
-        #         if isinstance(getattr(app_config, "AI_KEYS", None), dict)
-        #         else None
-        #     )
 
         if DASHSCOPE_AVAILABLE and token:
             try:
@@ -213,7 +200,7 @@ class AIAnalyzer:
             return False
 
     # ---------------------------
-    # Prompt builder
+    # Prompt builder com formatação padronizada
     # ---------------------------
     def _create_prompt(self, event_data: Dict[str, Any]) -> str:
         # Campos básicos
@@ -244,16 +231,19 @@ class AIAnalyzer:
 
         # Memória de eventos (se vier anexa)
         memoria = event_data.get("event_history", [])
-        memoria_str = (
-            "\n".join(
-                [
-                    f"- {e.get('timestamp')} | {e.get('tipo_evento')} | {e.get('resultado_da_batalha')} Δ={e.get('delta')} Vol={e.get('volume_total')}"
-                    for e in memoria
-                ]
-            )
-            if memoria
-            else "Nenhum evento recente."
-        )
+        memoria_str = ""
+        if memoria:
+            mem_lines = []
+            for e in memoria:
+                mem_delta = format_delta(e.get('delta', 0))
+                mem_vol = format_large_number(e.get('volume_total', 0))
+                mem_lines.append(
+                    f"- {e.get('timestamp')} | {e.get('tipo_evento')} | "
+                    f"{e.get('resultado_da_batalha')} Δ={mem_delta} Vol={mem_vol}"
+                )
+            memoria_str = "\n".join(mem_lines)
+        else:
+            memoria_str = "Nenhum evento recente."
 
         # Probabilidade histórica
         conf = event_data.get("historical_confidence", {})
@@ -268,10 +258,16 @@ class AIAnalyzer:
             conflu = z.get("confluence") or []
             if not isinstance(conflu, list):
                 conflu = [str(conflu)]
+            
+            # 🔹 FORMATAÇÃO CORRIGIDA
+            zone_low = format_price(z.get('low', 0))
+            zone_high = format_price(z.get('high', 0))
+            zone_anchor = format_price(z.get('anchor_price', 0))
+            
             zone_str = f"""
 🟦 Zona Institucional
 - Tipo: {z.get('kind')} | TF: {z.get('timeframe')} | Score: {z.get('score')}
-- Faixa: {z.get('low')} ~ {z.get('high')} (centro: {z.get('anchor_price')})
+- Faixa: {zone_low} ~ {zone_high} (centro: {zone_anchor})
 - Confluências: {", ".join(conflu) if conflu else "Nenhuma"}
 - Toques: {z.get('touch_count')} | Último toque: {z.get('last_touched')}
 """
@@ -289,27 +285,30 @@ class AIAnalyzer:
                 oi_usd_val = float(derivativos.get("open_interest_usd") or 0)
             except Exception:
                 oi_usd_val = 0.0
-            oi_line = (
-                f"{oi_usd_val:,.0f} USD"
-                if oi_usd_val > 0
-                else (
-                    f"{derivativos.get('open_interest', 0):,.0f} contratos"
-                    if derivativos.get("open_interest") is not None
-                    else "Indisponível"
-                )
+            
+            # 🔹 FORMATAÇÃO CORRIGIDA
+            oi_line = format_large_number(oi_usd_val) + " USD" if oi_usd_val > 0 else (
+                format_quantity(derivativos.get('open_interest', 0)) + " contratos"
+                if derivativos.get('open_interest') is not None
+                else "Indisponível"
             )
+            
+            funding_rate = format_percent(derivativos.get('funding_rate_percent', 0))
+            ls_ratio = format_scientific(derivativos.get('long_short_ratio', 0), decimals=2)
+            longs_usd = format_large_number(derivativos.get('longs_usd', 0))
+            shorts_usd = format_large_number(derivativos.get('shorts_usd', 0))
+            
             deriv_str = f"""
 🏦 Derivativos ({ativo})
-- Funding Rate: {_fmt_num(derivativos.get('funding_rate_percent'),4)}%
+- Funding Rate: {funding_rate}
 - OI: {oi_line}
-- Long/Short Ratio: {_fmt_num(derivativos.get('long_short_ratio'),2)}
-- Liquidações (5min): Longs=${_fmt_num(derivativos.get('longs_usd'),0)} | Shorts=${_fmt_num(derivativos.get('shorts_usd'),0)}
+- Long/Short Ratio: {ls_ratio}
+- Liquidações (5min): Longs=${longs_usd} | Shorts=${shorts_usd}
 """
         else:
             deriv_str = "\n🏦 Derivativos: Indisponível."
 
-        # >>>>> INÍCIO DA CORREÇÃO <<<<<
-        # Volume Profile (Diário)
+        # Volume Profile (Diário) - COM FORMATAÇÃO CORRIGIDA
         vp = (
             event_data.get("historical_vp", {}).get("daily", {})
             or event_data.get("contextual_snapshot", {}).get("historical_vp", {}).get("daily", {})
@@ -317,27 +316,30 @@ class AIAnalyzer:
         )
         if vp:
             try:
-                # Ordena HVNs e LVNs pela proximidade ao preço atual para pegar os mais relevantes
+                # 🔹 FORMATAÇÃO CORRIGIDA
                 current_price_for_vp = float(preco)
                 hvns_list = sorted(vp.get("hvns") or [], key=lambda x: abs(x - current_price_for_vp))
                 lvns_list = sorted(vp.get("lvns") or [], key=lambda x: abs(x - current_price_for_vp))
 
-                # Formata as listas de forma compacta e limita a 12 itens
-                hvn_str = ", ".join([f"${x:,.2f}" for x in hvns_list[:12]]) or "Nenhum"
-                lvn_str = ", ".join([f"${x:,.2f}" for x in lvns_list[:12]]) or "Nenhum"
+                # Formata as listas com format_price
+                hvn_str = ", ".join([f"${format_price(x)}" for x in hvns_list[:12]]) or "Nenhum"
+                lvn_str = ", ".join([f"${format_price(x)}" for x in lvns_list[:12]]) or "Nenhum"
+                
+                poc_fmt = format_price(vp.get('poc', 0))
+                val_fmt = format_price(vp.get('val', 0))
+                vah_fmt = format_price(vp.get('vah', 0))
             except Exception:
                 hvn_str = lvn_str = "Indisponível"
+                poc_fmt = val_fmt = vah_fmt = "Indisponível"
             
             vp_str = f"""
 📊 Volume Profile (Diário)
-- POC: ${_fmt_num(vp.get('poc'), 2)} | Value Area: ${_fmt_num(vp.get('val'), 2)} a ${_fmt_num(vp.get('vah'), 2)}
+- POC: ${poc_fmt} | Value Area: ${val_fmt} a ${vah_fmt}
 - HVNs (próximos): {hvn_str}
 - LVNs (próximos): {lvn_str}
 """
         else:
             vp_str = "\n📊 Volume Profile Histórico: Indisponível."
-        # >>>>> FIM DA CORREÇÃO <<<<<
-
 
         # Contexto de mercado
         ctx_snap = event_data.get("contextual_snapshot", {}) or {}
@@ -360,7 +362,7 @@ class AIAnalyzer:
                 sess = market_ctx.get("trading_session", "Indisponível")
                 phase = market_ctx.get("session_phase", "Indisponível")
                 close_sec = market_ctx.get("time_to_session_close", None)
-                close_str = f"{int(close_sec)}s" if isinstance(close_sec, (int, float)) else "Indisponível"
+                close_str = format_time_seconds(close_sec * 1000) if isinstance(close_sec, (int, float)) else "Indisponível"
                 dow = market_ctx.get("day_of_week", "Indisponível")
                 is_holiday = market_ctx.get("is_holiday", None)
                 holiday_str = "Sim" if is_holiday else ("Não" if is_holiday is not None else "Indisponível")
@@ -381,9 +383,10 @@ class AIAnalyzer:
                 liq_env = market_env.get("liquidity_environment", "Indisponível")
                 risk_sent = market_env.get("risk_sentiment", "Indisponível")
 
+                # 🔹 FORMATAÇÃO CORRIGIDA para correlações
                 def fmt_corr(v):
                     try:
-                        return f"{float(v):+0.2f}"
+                        return format_delta(float(v))
                     except Exception:
                         return "Ind"
 
@@ -413,15 +416,14 @@ class AIAnalyzer:
                 for lvl in ("L1", "L5", "L10", "L25"):
                     d = ob_depth.get(lvl)
                     if isinstance(d, dict) and d:
-                        bids = d.get("bids")
-                        asks = d.get("asks")
-                        imb = d.get("imbalance")
-                        lines.append(
-                            f"- {lvl}: Bid {(_fmt_num(bids,0,'Ind'))}, "
-                            f"Ask {(_fmt_num(asks,0,'Ind'))}, Imb {(_fmt_num(imb,2,'Ind'))}"
-                        )
+                        # 🔹 FORMATAÇÃO CORRIGIDA
+                        bids = format_large_number(d.get("bids", 0))
+                        asks = format_large_number(d.get("asks", 0))
+                        imb = format_scientific(d.get("imbalance", 0), decimals=2)
+                        lines.append(f"- {lvl}: Bid {bids}, Ask {asks}, Imb {imb}")
+                
                 total_ratio = ob_depth.get("total_depth_ratio")
-                ratio_str = _fmt_num(total_ratio, 3, "Indisponível")
+                ratio_str = format_scientific(total_ratio, decimals=3) if total_ratio else "Indisponível"
                 if lines:
                     depth_str = "\n📑 Profundidade do Livro (USD)\n" + "\n".join(lines) + f"\n- Desvio total: {ratio_str}\n"
             except Exception:
@@ -436,17 +438,22 @@ class AIAnalyzer:
         spread_str = ""
         if isinstance(spread_ana, dict) and spread_ana:
             try:
+                # 🔹 FORMATAÇÃO CORRIGIDA
                 cs = spread_ana.get("current_spread_bps") or spread_ana.get("spread_bps")
                 avg1 = spread_ana.get("avg_spread_1h")
                 avg24 = spread_ana.get("avg_spread_24h")
                 pct = spread_ana.get("spread_percentile")
                 tdur = spread_ana.get("tight_spread_duration_min")
                 vol_sp = spread_ana.get("spread_volatility")
+                
                 spread_str = (
                     "\n📏 Spread\n"
-                    f"- Atual: {_fmt_num(cs,2)} bps\n"
-                    f"- Médias: 1h {_fmt_num(avg1,2)} bps, 24h {_fmt_num(avg24,2)} bps\n"
-                    f"- Percentil: {_fmt_num(pct,1)}% | Tight Dur: {_fmt_num(tdur,1)} min | Vol: {_fmt_num(vol_sp,3)}\n"
+                    f"- Atual: {format_scientific(cs, decimals=2) if cs else 'Ind'} bps\n"
+                    f"- Médias: 1h {format_scientific(avg1, decimals=2) if avg1 else 'Ind'} bps, "
+                    f"24h {format_scientific(avg24, decimals=2) if avg24 else 'Ind'} bps\n"
+                    f"- Percentil: {format_percent(pct) if pct else 'Ind'} | "
+                    f"Tight Dur: {format_quantity(tdur) if tdur else 'Ind'} min | "
+                    f"Vol: {format_scientific(vol_sp, decimals=3) if vol_sp else 'Ind'}\n"
                 )
             except Exception:
                 spread_str = ""
@@ -469,16 +476,25 @@ class AIAnalyzer:
                     ab, asell, pb, ps = of.get("aggressive_buy_pct"), of.get("aggressive_sell_pct"), of.get("passive_buy_pct"), of.get("passive_sell_pct")
                     bsr = of.get("buy_sell_ratio")
                     of_lines = []
+                    
+                    # 🔹 FORMATAÇÃO CORRIGIDA
                     if any(v is not None for v in (nf1, nf5, nf15)):
-                        of_lines.append(f"- Net Flow: 1m {_fmt_num(nf1,0)}, 5m {_fmt_num(nf5,0)}, 15m {_fmt_num(nf15,0)}")
+                        nf1_fmt = format_delta(nf1) if nf1 else "Ind"
+                        nf5_fmt = format_delta(nf5) if nf5 else "Ind"
+                        nf15_fmt = format_delta(nf15) if nf15 else "Ind"
+                        of_lines.append(f"- Net Flow: 1m {nf1_fmt}, 5m {nf5_fmt}, 15m {nf15_fmt}")
+                    
                     if any(v is not None for v in (ab, asell, pb, ps)):
-                        of_lines.append(f"- Agressivo: Buy {_fmt_pct(ab,1)} | Sell {_fmt_pct(asell,1)} | Passivo: Buy {_fmt_pct(pb,1)} | Sell {_fmt_pct(ps,1)}")
+                        ab_fmt = format_percent(ab) if ab else "Ind"
+                        as_fmt = format_percent(asell) if asell else "Ind"
+                        pb_fmt = format_percent(pb) if pb else "Ind"
+                        ps_fmt = format_percent(ps) if ps else "Ind"
+                        of_lines.append(f"- Agressivo: Buy {ab_fmt} | Sell {as_fmt} | Passivo: Buy {pb_fmt} | Sell {ps_fmt}")
+                    
                     if bsr is not None:
-                        try:
-                            bsr_str = f"{float(bsr):0.2f}"
-                        except Exception:
-                            bsr_str = "Ind"
+                        bsr_str = format_scientific(float(bsr), decimals=2) if bsr else "Ind"
                         of_lines.append(f"- Razão Buy/Sell: {bsr_str}")
+                    
                     if of_lines:
                         order_flow_str = "\n🚰 Fluxo de Ordens\n" + "\n".join(of_lines) + "\n"
                 except Exception:
@@ -493,27 +509,26 @@ class AIAnalyzer:
                         info = pa.get(role)
                         if not isinstance(info, dict):
                             continue
-                        vol_pct = info.get("volume_pct")
+                        
+                        # 🔹 FORMATAÇÃO CORRIGIDA
+                        vol_pct = format_percent(info.get("volume_pct", 0))
                         direction = info.get("direction") or "Ind"
-                        avg_sz = info.get("avg_order_size")
+                        avg_sz = format_quantity(info.get("avg_order_size", 0))
                         sentiment = info.get("sentiment") or info.get("activity_level") or "Ind"
                         act_level = info.get("activity_level")
                         sent_str = f"{sentiment} ({act_level})" if act_level and sentiment and act_level != sentiment else sentiment
+                        
                         lines.append(
-                            f"- {label_map.get(role, role)}: Vol {_fmt_pct(vol_pct,1)}"
-                            f", Dir {direction}, Avg {_fmt_num(avg_sz,2,'Ind')}, Sent. {sent_str}"
+                            f"- {label_map.get(role, role)}: Vol {vol_pct}, "
+                            f"Dir {direction}, Avg {avg_sz}, Sent. {sent_str}"
                         )
                     if lines:
                         participants_str = "\n👥 Participantes\n" + "\n".join(lines) + "\n"
                 except Exception:
                     participants_str = ""
 
-        # ====== ML FEATURES (price/volume/microstructure) ======
-        ml = (
-            event_data.get("ml_features")
-            or event_data.get("ml")
-            or {}
-        )
+        # ML FEATURES (price/volume/microstructure)
+        ml = (event_data.get("ml_features") or event_data.get("ml") or {})
         ml_str = ""
         if isinstance(ml, dict) and ml:
             try:
@@ -521,30 +536,36 @@ class AIAnalyzer:
                 vf = ml.get("volume_features", {}) or {}
                 mf = ml.get("microstructure", {}) or {}
 
-                # Seleciona chaves principais se existirem
                 p_lines = []
                 for k in ("returns_1", "returns_5", "returns_15", "volatility_1", "volatility_5", "volatility_15", "momentum_score"):
                     if k in pf:
                         val = pf[k]
+                        # 🔹 FORMATAÇÃO CORRIGIDA
                         if k.startswith("returns_"):
-                            p_lines.append(f"{k}={_fmt_pct(val,2)}")
+                            p_lines.append(f"{k}={format_percent(val * 100)}")
+                        elif k.startswith("volatility_"):
+                            p_lines.append(f"{k}={format_scientific(val, decimals=5)}")
                         else:
-                            p_lines.append(f"{k}={_fmt_num(val,5)}")
+                            p_lines.append(f"{k}={format_scientific(val, decimals=5)}")
 
                 v_lines = []
                 for k in ("volume_sma_ratio", "volume_momentum", "buy_sell_pressure", "liquidity_gradient"):
                     if k in vf:
                         val = vf[k]
+                        # 🔹 FORMATAÇÃO CORRIGIDA
                         if "pressure" in k:
-                            v_lines.append(f"{k}={_fmt_num(val,2)}")
+                            v_lines.append(f"{k}={format_delta(val)}")
+                        elif "ratio" in k:
+                            v_lines.append(f"{k}={format_percent(val * 100) if val < 10 else format_percent(val)}")
                         else:
-                            v_lines.append(f"{k}={_fmt_num(val,2)}")
+                            v_lines.append(f"{k}={format_scientific(val, decimals=2)}")
 
                 m_lines = []
                 for k in ("order_book_slope", "flow_imbalance", "tick_rule_sum", "trade_intensity"):
                     if k in mf:
                         val = mf[k]
-                        m_lines.append(f"{k}={_fmt_num(val,3)}")
+                        # 🔹 FORMATAÇÃO CORRIGIDA
+                        m_lines.append(f"{k}={format_scientific(val, decimals=3)}")
 
                 blocks = []
                 if p_lines:
@@ -559,20 +580,21 @@ class AIAnalyzer:
             except Exception:
                 ml_str = ""
 
-        # ====== Caso específico: evento de OrderBook ======
+        # Caso específico: evento de OrderBook
         if (event_data.get("tipo_evento") == "OrderBook") or ("imbalance" in event_data):
             sm = (
                 event_data.get("spread_metrics")
                 or ctx_snap.get("orderbook_data", {}).get("spread_metrics")
                 or {}
             )
-            imbalance = event_data.get("imbalance", "Indisponível")
-            ratio = event_data.get("volume_ratio", "Indisponível")
-            pressure = event_data.get("pressure", "Indisponível")
-            spread = sm.get("spread", "Indisponível")
-            spread_pct = sm.get("spread_percent", "Indisponível")
-            bid_usd = sm.get("bid_depth_usd", "Indisponível")
-            ask_usd = sm.get("ask_depth_usd", "Indisponível")
+            # 🔹 FORMATAÇÃO CORRIGIDA
+            imbalance = format_scientific(event_data.get("imbalance", 0), decimals=3)
+            ratio = format_scientific(event_data.get("volume_ratio", 0), decimals=2)
+            pressure = format_delta(event_data.get("pressure", 0))
+            spread = format_price(sm.get("spread", 0))
+            spread_pct = format_percent(sm.get("spread_percent", 0))
+            bid_usd = format_large_number(sm.get("bid_depth_usd", 0))
+            ask_usd = format_large_number(sm.get("ask_depth_usd", 0))
             mi_buy = event_data.get("market_impact_buy", {}) or {}
             mi_sell = event_data.get("market_impact_sell", {}) or {}
             alertas = event_data.get("alertas_liquidez", [])
@@ -588,9 +610,9 @@ class AIAnalyzer:
 
             ob_str = f"""
 📊 Evento OrderBook
-- Preço: {_fmt_num(preco,2)}
+- Preço: {format_price(preco)}
 - Imbalance: {imbalance} | Ratio: {ratio} | Pressure: {pressure}
-- Spread: {spread} ({spread_pct}%)
+- Spread: {spread} ({spread_pct})
 - Profundidade (USD): Bid={bid_usd} | Ask={ask_usd}{mi_lines}
 - Alertas: {", ".join(alertas) if alertas else "Nenhum"}
 """
@@ -621,18 +643,19 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver), cobrindo
 6) Gestão de posição: sizing dinâmico com base em ATR, volume de parede e volatilidade do cluster.
 """
 
-        # ====== Prompt padrão ======
-        vol_line = f"- Vol: {_fmt_num(volume_total,2)}"
+        # Prompt padrão
+        # 🔹 FORMATAÇÃO CORRIGIDA
+        vol_line = f"- Vol: {format_large_number(volume_total)}"
         if (volume_compra > 0) or (volume_venda > 0):
-            vol_line += f" (Buy={_fmt_num(volume_compra,2)} | Sell={_fmt_num(volume_venda,2)})"
+            vol_line += f" (Buy={format_large_number(volume_compra)} | Sell={format_large_number(volume_venda)})"
 
         return f"""
 🧠 **Análise Institucional – {ativo} | {tipo_evento}**
 
 📝 Descrição: {descricao}
 
-- Preço: {_fmt_num(preco,2)}
-- Delta: {_fmt_num(delta,2)}
+- Preço: {format_price(preco)}
+- Delta: {format_delta(delta)}
 {vol_line}
 {ml_str}{zone_str}{deriv_str}{vp_str}{market_ctx_str}{market_env_str}{depth_str}{spread_str}{order_flow_str}{participants_str}
 
@@ -740,8 +763,14 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver), cobrindo
     # ---------------------------
     def _generate_mock_analysis(self, event_data: Dict[str, Any]) -> str:
         timestamp = self.time_manager.now_iso()
+        # 🔹 FORMATAÇÃO CORRIGIDA NO MOCK
+        mock_price = format_price(event_data.get('preco_fechamento', 0))
+        mock_delta = format_delta(event_data.get('delta', 0))
+        
         return (
-            f"**Interpretação (mock):** Detecção de {event_data.get('tipo_evento')} em {event_data.get('ativo') or event_data.get('symbol')} às {timestamp}.\n"
+            f"**Interpretação (mock):** Detecção de {event_data.get('tipo_evento')} em "
+            f"{event_data.get('ativo') or event_data.get('symbol')} às {timestamp}.\n"
+            f"Preço: ${mock_price} | Delta: {mock_delta}\n"
             f"**Força Dominante:** {event_data.get('resultado_da_batalha')}\n"
             f"**Expectativa:** Lateralização com viés conforme delta/fluxo recente (mock).\n"
             f"**Plano:** Operar reação na zona; stop além da borda; alvo no próximo HVN/LVN."

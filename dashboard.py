@@ -258,6 +258,12 @@ if not filtered_df.empty:
         if clusters_list:
             df_clusters = pd.DataFrame(clusters_list)
             
+            # Padroniza casas decimais para exibição no gráfico
+            if "center" in df_clusters.columns:
+                df_clusters["center"] = pd.to_numeric(df_clusters["center"], errors="coerce").round(2)
+            if "total_volume" in df_clusters.columns:
+                df_clusters["total_volume"] = pd.to_numeric(df_clusters["total_volume"], errors="coerce").round(3)
+            
             # Conversão segura dos timestamps dos clusters
             df_clusters["timestamp"] = safe_timezone_convert(df_clusters["timestamp"])
             
@@ -315,7 +321,7 @@ if not filtered_df.empty:
         if "delta" in df_display.columns:
             df_display["delta"] = pd.to_numeric(df_display["delta"], errors='coerce').round(2)
         if "volume_total" in df_display.columns:
-            df_display["volume_total"] = pd.to_numeric(df_display["volume_total"], errors='coerce').round(2)
+            df_display["volume_total"] = pd.to_numeric(df_display["volume_total"], errors='coerce').round(3)
         
         # Renomear colunas para legibilidade
         column_mapping = {
@@ -366,7 +372,7 @@ if not filtered_df.empty:
         if "volume_total" in filtered_df.columns:
             total_volume = pd.to_numeric(filtered_df["volume_total"], errors='coerce').sum()
             if not pd.isna(total_volume):
-                st.metric("Volume Total (BTC)", f"{total_volume:.2f}")
+                st.metric("Volume Total (BTC)", f"{total_volume:.3f}")
 
 # --- RODAPÉ ---
 st.divider()
