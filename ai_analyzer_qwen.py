@@ -207,10 +207,40 @@ class AIAnalyzer:
         tipo_evento = event_data.get("tipo_evento", "N/A")
         ativo = event_data.get("ativo") or event_data.get("symbol") or "N/A"
         descricao = event_data.get("descricao", "Sem descrição.")
-        delta = float(event_data.get("delta") or 0)
-        volume_total = float(event_data.get("volume_total") or 0)
-        volume_compra = float(event_data.get("volume_compra") or 0)
-        volume_venda = float(event_data.get("volume_venda") or 0)
+        
+        # 🔧 VALIDAÇÃO DE CONSISTÊNCIA DELTA vs VOLUMES
+        delta_raw = event_data.get("delta")
+        volume_total_raw = event_data.get("volume_total")
+        volume_compra_raw = event_data.get("volume_compra")
+        volume_venda_raw = event_data.get("volume_venda")
+        
+        # Converte valores, mantendo None se ausente
+        delta = float(delta_raw) if delta_raw is not None else None
+        volume_total = float(volume_total_raw) if volume_total_raw is not None else None
+        volume_compra = float(volume_compra_raw) if volume_compra_raw is not None else None
+        volume_venda = float(volume_venda_raw) if volume_venda_raw is not None else None
+        
+        # Detecta inconsistência: delta significativo mas volumes zerados
+        if delta is not None and abs(delta) > 1.0:
+            if (volume_compra == 0 and volume_venda == 0) or volume_total == 0:
+                logging.warning(
+                    f"⚠️ Inconsistência detectada: delta={delta:.2f} mas volumes zerados. "
+                    f"Marcando volumes como indisponíveis."
+                )
+                volume_compra = None
+                volume_venda = None
+                volume_total = None
+        
+        # Se volumes individuais não batem com total, marca como indisponível
+        if volume_compra is not None and volume_venda is not None and volume_total is not None:
+            calc_total = volume_compra + volume_venda
+            if abs(calc_total - volume_total) > 0.01:
+                logging.warning(
+                    f"⚠️ Volumes inconsistentes: compra({volume_compra}) + venda({volume_venda}) "
+                    f"!= total({volume_total}). Marcando como indisponíveis."
+                )
+                volume_compra = None
+                volume_venda = None
         preco = (
             event_data.get("preco_atual")
             or event_data.get("preco_fechamento")
@@ -644,18 +674,23 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver), cobrindo
 """
 
         # Prompt padrão
-        # 🔹 FORMATAÇÃO CORRIGIDA
-        vol_line = f"- Vol: {format_large_number(volume_total)}"
-        if (volume_compra > 0) or (volume_venda > 0):
-            vol_line += f" (Buy={format_large_number(volume_compra)} | Sell={format_large_number(volume_venda)})"
+# 🔹 FORMATAÇÃO CORRIGIDA
+        vol_line = (
+            "- Vol: Indisponível" if volume_total is None else f"- Vol: {format_large_number(volume_total)}"
+        )
+        if ((volume_compra or 0) > 0) or ((volume_venda or 0) > 0):
+            vol_line += f" (Buy={format_large_number(volume_compra or 0)} | Sell={format_large_number(volume_venda or 0)})"
+
+        # Linha de Delta com fallback
+        delta_line = f"- Delta: {format_delta(delta)}" if delta is not None else "- Delta: Indisponível"
 
         return f"""
 🧠 **Análise Institucional – {ativo} | {tipo_evento}**
 
 📝 Descrição: {descricao}
 
-- Preço: {format_price(preco)}
-- Delta: {format_delta(delta)}
+- Preço: {format_price(preco) if preco else "Indisponível"}
+{delta_line}
 {vol_line}
 {ml_str}{zone_str}{deriv_str}{vp_str}{market_ctx_str}{market_env_str}{depth_str}{spread_str}{order_flow_str}{participants_str}
 

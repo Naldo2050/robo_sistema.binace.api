@@ -1,4 +1,4 @@
-# event_saver.py - Ponto central de serialização com formatação limpa
+# event_saver.py - Ponto central de serialização com formatação limpa (VERSÃO FINAL)
 import json
 from pathlib import Path
 import platform
@@ -53,6 +53,43 @@ class EventSaver:
 
         # Encerra limpo no exit
         atexit.register(self.stop)
+        
+        # 🔹 DEBUG: Verificação inicial de horário
+        self._debug_timezone_check()
+
+    def _debug_timezone_check(self):
+        """Verifica se os timezones estão funcionando corretamente."""
+        try:
+            now_utc = datetime.now(UTC_TZ)
+            now_ny = now_utc.astimezone(NY_TZ)
+            now_sp = now_utc.astimezone(SP_TZ)
+            
+            logging.info("🕐 Verificação de Timezone:")
+            logging.info(f"   UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            logging.info(f"   NY:  {now_ny.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            logging.info(f"   SP:  {now_sp.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            
+            # 🔹 CORREÇÃO: Usa utcoffset() ao invés de diferença de tempo
+            utc_offset_ny = now_ny.utcoffset().total_seconds() / 3600 if now_ny.utcoffset() else 0
+            utc_offset_sp = now_sp.utcoffset().total_seconds() / 3600 if now_sp.utcoffset() else 0
+            
+            logging.info(f"   Offset NY vs UTC: {utc_offset_ny:.1f} horas")
+            logging.info(f"   Offset SP vs UTC: {utc_offset_sp:.1f} horas")
+            
+            # NY deve estar -4 ou -5 horas de UTC (EDT ou EST)
+            # SP deve estar -3 horas de UTC
+            if not (-5.5 < utc_offset_ny < -3.5):
+                logging.warning(f"⚠️ Offset NY incomum: {utc_offset_ny:.1f} horas")
+            else:
+                logging.info(f"✅ Offset NY correto: {utc_offset_ny:.1f} horas")
+                
+            if not (-3.5 < utc_offset_sp < -2.5):
+                logging.warning(f"⚠️ Offset SP incomum: {utc_offset_sp:.1f} horas")
+            else:
+                logging.info(f"✅ Offset SP correto: {utc_offset_sp:.1f} horas")
+                
+        except Exception as e:
+            logging.error(f"Erro ao verificar timezones: {e}")
 
     # ---------- Utilidades internas ----------
 
@@ -63,8 +100,20 @@ class EventSaver:
             # Normaliza 'Z' -> +00:00 para compatibilidade ampla
             if ts.endswith("Z"):
                 ts = ts[:-1] + "+00:00"
-            return datetime.fromisoformat(ts)
-        except Exception:
+            dt = datetime.fromisoformat(ts)
+            
+            # 🔹 DEBUG: Verificação de timestamp
+            now = datetime.now(UTC_TZ)
+            diff = abs((dt - now).total_seconds())
+            
+            if diff > 86400:  # > 24 horas
+                logging.warning(f"⚠️ Timestamp com diferença de {diff/3600:.1f} horas do horário atual")
+                logging.warning(f"   Timestamp: {dt}")
+                logging.warning(f"   Agora:     {now}")
+            
+            return dt
+        except Exception as e:
+            logging.error(f"Erro ao parsear ISO8601 '{ts}': {e}")
             # Último recurso: tenta sem microsegundos
             try:
                 base, _, offset = ts.partition("+")
@@ -379,20 +428,45 @@ class EventSaver:
                 logging.error("Tentativa de salvar evento inválido: não é um dicionário")
                 return
 
-            # Conversão de timestamp + contexto
+            # 🔹 PRIORIZA epoch_ms SE DISPONÍVEL
+            epoch_ms = event.get("epoch_ms")
             ts = event.get("timestamp")
-            if ts:
+            
+            if epoch_ms:
+                # Usa epoch_ms para gerar timestamps consistentes
                 try:
-                    dt = self._parse_iso8601(ts)  # timezone-aware
+                    dt = datetime.fromtimestamp(int(epoch_ms) / 1000, tz=UTC_TZ)
+                    now = datetime.now(UTC_TZ)
+                    
+                    # Critério: se estiver mais de 1 dia à frente do relógio → histórico
+                    if dt > now + timedelta(days=1):
+                        event["data_context"] = "historical"
+                    else:
+                        event["data_context"] = "real_time"
+                    
+                    # Converte para SP/NY
+                    event["time_ny"] = dt.astimezone(NY_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+                    event["time_sp"] = dt.astimezone(SP_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+                    
+                    # Adiciona timestamp_utc se não existir
+                    if "timestamp" not in event:
+                        event["timestamp"] = dt.astimezone(UTC_TZ).isoformat(timespec="milliseconds")
+                        
+                except Exception as e:
+                    logging.error(f"Erro ao processar epoch_ms: {e}")
+                    event["data_context"] = "unknown"
+                    
+            elif ts:
+                # Fallback: usa timestamp string
+                try:
+                    dt = self._parse_iso8601(ts)
                     now = datetime.now(UTC_TZ)
 
-                    # Critério simples: se estiver mais de 1 dia à frente do relógio → histórico
                     if dt > now + timedelta(days=1):
                         event["data_context"] = "historical"
                     else:
                         event["data_context"] = "real_time"
 
-                    # Converte para SP/NY (para salvar nos JSONs)
                     event["time_ny"] = dt.astimezone(NY_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
                     event["time_sp"] = dt.astimezone(SP_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
                 except Exception as e:
@@ -400,6 +474,7 @@ class EventSaver:
                     event["data_context"] = "unknown"
             else:
                 event["data_context"] = "unknown"
+                logging.warning("Evento sem epoch_ms nem timestamp - usando 'unknown'")
 
             # Adiciona separador para nova janela (prioriza window_id; fallback para legado)
             window_id = event.get("window_id") or event.get("candle_id_ms")
@@ -423,7 +498,17 @@ class EventSaver:
     def _add_visual_separator(self, event: dict):
         """Adiciona um separador visual no arquivo de log."""
         try:
-            timestamp_ny = self.time_manager.now_iso(tz=NY_TZ)
+            # 🔹 USA epoch_ms DO EVENTO SE DISPONÍVEL
+            epoch_ms = event.get("epoch_ms") or event.get("window_close_ms")
+            
+            if epoch_ms:
+                try:
+                    dt_utc = datetime.fromtimestamp(int(epoch_ms) / 1000, tz=UTC_TZ)
+                    timestamp_ny = dt_utc.astimezone(NY_TZ).isoformat(timespec="seconds")
+                except Exception:
+                    timestamp_ny = self.time_manager.now_iso(tz=NY_TZ)
+            else:
+                timestamp_ny = self.time_manager.now_iso(tz=NY_TZ)
             
             open_ms = event.get("window_open_ms")
             close_ms = event.get("window_close_ms")
@@ -491,12 +576,36 @@ class EventSaver:
 
     def _compact_json_log(self, data, indent=2, parent_key=""):
         """Função customizada para serializar JSON com formatação adequada de números."""
+        
+        # 🔹 LISTA DE CAMPOS QUE DEVEM PERMANECER COMO NÚMEROS INTEIROS (sem formatação)
+        timestamp_fields = {
+            'epoch_ms', 'window_open_ms', 'window_close_ms', 
+            'window_duration_ms', 'T', 'E', 'tradeTime',
+            'candle_open_time_ms', 'candle_close_time_ms',
+            'last_successful_sync_ms', 'age_ms', 'timestamp_ms'
+        }
+        
         if isinstance(data, dict):
             # Formata cada item do dicionário
             formatted_items = []
             for key, value in data.items():
+                # 🔹 CORREÇÃO: Não formatar campos de timestamp/epoch
+                if key in timestamp_fields or key.endswith('_ms') or key.endswith('_ts'):
+                    # Mantém valores de timestamp como números puros
+                    if isinstance(value, (int, float)):
+                        formatted_items.append(f'{" " * (indent + 2)}"{key}": {int(value)}')
+                    else:
+                        formatted_items.append(f'{" " * (indent + 2)}"{key}": {json.dumps(value)}')
+                
+                # Para campos booleanos especiais
+                elif key in ['is_signal', 'units_check_passed'] or key.startswith('is_'):
+                    if isinstance(value, bool):
+                        formatted_items.append(f'{" " * (indent + 2)}"{key}": {str(value).lower()}')
+                    else:
+                        formatted_items.append(f'{" " * (indent + 2)}"{key}": {json.dumps(value)}')
+                
                 # Para listas de números (hvns, lvns, etc.)
-                if isinstance(value, list) and all(isinstance(i, (int, float)) for i in value):
+                elif isinstance(value, list) and all(isinstance(i, (int, float)) for i in value):
                     # Formata cada número da lista apropriadamente
                     if any(x in key.lower() for x in ['hvn', 'lvn', 'price', 'level']):
                         formatted_list = [format_price(v) for v in value]
@@ -504,10 +613,12 @@ class EventSaver:
                         formatted_list = [str(v) for v in value]
                     list_str = "[" + ", ".join(formatted_list) + "]"
                     formatted_items.append(f'{" " * (indent + 2)}"{key}": {list_str}')
+                
                 else:
                     # Recursivamente formata outros valores
                     value_str = self._compact_json_log(value, indent + 2, parent_key=key)
                     formatted_items.append(f'{" " * (indent + 2)}"{key}": {value_str}')
+            
             return "{\n" + ",\n".join(formatted_items) + f"\n{' ' * indent}}}"
         
         elif isinstance(data, list):
@@ -525,8 +636,24 @@ class EventSaver:
                 return json.dumps(data, ensure_ascii=False, default=str)
         
         elif isinstance(data, (int, float)):
-            # Formata números individuais baseado no contexto (parent_key)
-            return f'"{self._format_value_for_display(data, parent_key)}"'
+            # 🔹 CORREÇÃO PRINCIPAL: Não formatar timestamps
+            if parent_key in timestamp_fields or parent_key.endswith('_ms') or parent_key.endswith('_ts'):
+                return str(int(data))  # Retorna como número puro, sem formatação
+            
+            # Para outros valores booleanos numéricos (0/1)
+            elif parent_key in ['is_signal'] or parent_key.startswith('is_'):
+                return str(bool(data)).lower()
+            
+            # Para outros números, formata para exibição
+            else:
+                return f'"{self._format_value_for_display(data, parent_key)}"'
+        
+        elif isinstance(data, bool):
+            return str(data).lower()
+        
+        elif isinstance(data, str):
+            # Para strings, usa escape JSON padrão
+            return json.dumps(data, ensure_ascii=False)
         
         else:
             # Para outros tipos, usa a representação padrão
@@ -535,14 +662,29 @@ class EventSaver:
     def _add_visual_log_entry(self, event: dict):
         """Log visual amigável com formatação adequada."""
         try:
+            # 🔹 PRIORIZA epoch_ms PARA GERAR HORÁRIOS
+            epoch_ms = event.get("epoch_ms")
             ts = event.get("timestamp")
+            
             minute_block = None
             utc_header = ny_header = sp_header = None
             context = event.get("data_context", "unknown")
 
-            if ts:
+            if epoch_ms:
                 try:
-                    dt = self._parse_iso8601(ts)  # aware
+                    dt = datetime.fromtimestamp(int(epoch_ms) / 1000, tz=UTC_TZ)
+                    minute_key = dt.strftime("%Y-%m-%d %H:%M")
+                    minute_block = f"{minute_key}|{context}"
+
+                    utc_header = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+                    ny_header = dt.astimezone(NY_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+                    sp_header = dt.astimezone(SP_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+                except Exception as e:
+                    logging.error(f"Erro ao processar epoch_ms no log visual: {e}")
+                    
+            elif ts:
+                try:
+                    dt = self._parse_iso8601(ts)
                     minute_key = dt.astimezone(UTC_TZ).strftime("%Y-%m-%d %H:%M")
                     minute_block = f"{minute_key}|{context}"
 
@@ -578,7 +720,7 @@ class EventSaver:
                 if "timestamp" in clean:
                     clean["timestamp_utc"] = clean.pop("timestamp")
 
-                # Usa a função de formatação customizada
+                # Usa a função de formatação customizada CORRIGIDA
                 log_string = self._compact_json_log(clean, indent=0)
                 f.write(log_string + "\n")
 

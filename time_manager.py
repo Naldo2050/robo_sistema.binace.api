@@ -60,8 +60,29 @@ class TimeManager:
 
         self._lock = Lock()
 
+        # 🔹 DEBUG: Log inicial antes da sincronização
+        local_ms_before = int(time.time() * 1000)
+        logging.info(f"🕐 TimeManager inicializando... Local time (ms): {local_ms_before}")
+        
         # Primeira sincronização (não fatal se falhar)
         self._sync_with_binance()
+        
+        # 🔹 DEBUG: Log após sincronização
+        local_ms_after = int(time.time() * 1000)
+        synced_ms = self.now()
+        offset = synced_ms - local_ms_after
+        
+        logging.info(f"🕐 TimeManager sincronizado:")
+        logging.info(f"   Local time (ms):  {local_ms_after}")
+        logging.info(f"   Synced time (ms): {synced_ms}")
+        logging.info(f"   Offset: {offset} ms ({offset/1000:.2f} segundos)")
+        
+        # 🔹 ALERTA: Offset muito grande
+        if abs(offset) > 3600000:  # > 1 hora
+            logging.critical(f"⚠️ OFFSET CRÍTICO DETECTADO: {offset/3600000:.2f} horas!")
+            logging.critical(f"   Isso causará problemas nos timestamps!")
+        elif abs(offset) > 60000:  # > 1 minuto
+            logging.warning(f"⚠️ Offset grande detectado: {offset/1000:.1f} segundos")
 
     # -----------------------------
     # Sincronização com a Binance (múltiplas amostras)
@@ -81,6 +102,10 @@ class TimeManager:
             # Aproximação de NTP: offset = server − (send + rtt/2)
             est_local_at_server = send_ms + (rtt_ms // 2)
             offset_ms = server_ms - est_local_at_server
+            
+            # 🔹 DEBUG: Log da amostra
+            logging.debug(f"   Amostra: server={server_ms}, local={send_ms}, rtt={rtt_ms}ms, offset={offset_ms}ms")
+            
             return {
                 "server_ms": server_ms,
                 "send_ms": send_ms,
@@ -100,6 +125,8 @@ class TimeManager:
         samples = []
         tries = 5
         self.sync_attempts += 1
+        
+        logging.info(f"🔄 Iniciando sincronização com Binance ({tries} tentativas)...")
 
         for i in range(tries):
             sample = self._sample_server_time()
@@ -120,7 +147,12 @@ class TimeManager:
             return
 
         best = min(samples, key=lambda s: s["rtt_ms"])
+        
+        # 🔹 DEBUG: Mostra a melhor amostra
+        logging.info(f"✅ Melhor amostra: RTT={best['rtt_ms']}ms, Offset={best['offset_ms']}ms")
+        
         with self._lock:
+            old_offset = self.server_time_offset_ms
             self.server_time_offset_ms = int(best["offset_ms"])
             self.last_offset_ms = self.server_time_offset_ms
             self.last_rtt_ms = int(best["rtt_ms"])
@@ -128,6 +160,10 @@ class TimeManager:
             self.last_successful_sync_ms = int(best["recv_ms"])
             self.last_sync_mono = time.monotonic()
             self.time_sync_status = "ok"
+            
+            # 🔹 DEBUG: Se offset mudou muito
+            if abs(old_offset - self.server_time_offset_ms) > 1000:
+                logging.warning(f"⚠️ Offset mudou significativamente: {old_offset}ms → {self.server_time_offset_ms}ms")
 
         # Alertas de drift
         if abs(self.server_time_offset_ms) > 5000:
@@ -168,6 +204,13 @@ class TimeManager:
     # Alias mais explícito
     def now_ms(self) -> int:
         return self.now()
+
+    # 🔹 NOVO: Método para forçar sincronização
+    def force_sync(self) -> Dict[str, Any]:
+        """Força uma sincronização imediata com a Binance e retorna estatísticas."""
+        logging.info("🔄 Forçando sincronização com Binance...")
+        self._sync_with_binance()
+        return self.get_sync_stats()
 
     # -----------------------------
     # ISO helpers

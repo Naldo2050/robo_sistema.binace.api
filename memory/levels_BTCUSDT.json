@@ -1,0 +1,1922 @@
+[
+  {
+    "id": "63934fc1-960f-47c0-8a25-54500c2381ca",
+    "kind": "POC",
+    "timeframe": "daily",
+    "anchor_price": 123083.0,
+    "low": 123039.92,
+    "high": 123126.08,
+    "score": 65.0,
+    "confluence": [
+      "DAILY_POC"
+    ],
+    "created_at": "2025-10-08T12:41:00.768+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "9f7099b9-d9de-4ddc-b8db-79c40ec7c123",
+    "kind": "VAH",
+    "timeframe": "daily",
+    "anchor_price": 123192.0,
+    "low": 123142.72,
+    "high": 123241.28,
+    "score": 65.0,
+    "confluence": [
+      "DAILY_VAH"
+    ],
+    "created_at": "2025-10-08T12:41:00.768+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "1b30f57f-204b-4d28-a06b-e952a332d14c",
+    "kind": "VAL",
+    "timeframe": "daily",
+    "anchor_price": 121617.0,
+    "low": 121568.35,
+    "high": 121665.65,
+    "score": 65.0,
+    "confluence": [
+      "DAILY_VAL"
+    ],
+    "created_at": "2025-10-08T12:41:00.781+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "8ccc3bd7-d41f-4880-b360-567da810e8b2",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121095.75,
+    "low": 121050.67,
+    "high": 121137.33,
+    "score": 75.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.783+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "25a9cce0-a87e-4f40-96e9-ac55f3cd8e49",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121335.5,
+    "low": 121291.6,
+    "high": 121376.4,
+    "score": 75.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.785+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "6e4fcbc7-f26f-42ef-ba15-d732f6d09dfe",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121375.25,
+    "low": 121327.59,
+    "high": 121415.41,
+    "score": 85.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.787+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f2bfbd39-6d57-4cb9-afe3-b76507975e82",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121420.0,
+    "low": 121383.57,
+    "high": 121456.43,
+    "score": 65.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.790+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "67f3e012-6421-4987-a524-58af44c58274",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121462.81,
+    "low": 121414.56,
+    "high": 121502.44,
+    "score": 85.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.792+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "15cb7918-b6d4-4dcf-a7aa-7c98ca420234",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121565.45,
+    "low": 121487.54,
+    "high": 121607.47,
+    "score": 105.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.796+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "531b91c3-8087-41ca-a2ef-ea6b7bd37c7b",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121597.5,
+    "low": 121553.52,
+    "high": 121638.48,
+    "score": 75.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.800+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "8538da99-a85b-4c71-be00-b25662c79fb7",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121632.0,
+    "low": 121595.51,
+    "high": 121668.49,
+    "score": 65.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.800+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "bb73c7e6-90d2-4d7a-abd8-85735bab63e1",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121711.25,
+    "low": 121645.5,
+    "high": 121755.52,
+    "score": 90.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.800+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "0e402626-6dc0-4310-9d53-b0e29e39790f",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121751.12,
+    "low": 121701.48,
+    "high": 121795.53,
+    "score": 75.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.814+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "c9095b10-87d7-4690-9078-970ad3da3717",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121825.26,
+    "low": 121760.46,
+    "high": 121865.55,
+    "score": 90.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.815+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "fb1bab79-7c4b-4c63-bc8a-21213c00f39d",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 121303.0,
+    "low": 121272.67,
+    "high": 121333.33,
+    "score": 65.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.821+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "23a72f74-18ce-4e83-b41b-2af87418594a",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 121378.94,
+    "low": 121326.66,
+    "high": 121416.35,
+    "score": 85.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.821+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "8e5e371a-f627-4caf-8e58-32e4d7d011c5",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 121462.98,
+    "low": 121380.65,
+    "high": 121499.37,
+    "score": 110.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.821+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "207473a6-1cbc-49c6-8bbb-a23e62c92e0e",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 121483.12,
+    "low": 121437.63,
+    "high": 121518.37,
+    "score": 75.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.831+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "d3729620-0ab1-4153-8156-3fa21a911fc3",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 121532.0,
+    "low": 121501.62,
+    "high": 121562.38,
+    "score": 65.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.841+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ebbb764e-118f-49e9-a30c-583cfba565b8",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 121621.32,
+    "low": 121570.6,
+    "high": 121658.41,
+    "score": 95.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.841+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "eb814347-69fc-4e72-9c9d-d62e64c15d49",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 121650.25,
+    "low": 121618.59,
+    "high": 121681.41,
+    "score": 75.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.852+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "21addc77-497b-4e4f-b81a-7a9aed2da1f8",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 121688.38,
+    "low": 121648.58,
+    "high": 121724.42,
+    "score": 75.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.852+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e5189e3e-86f2-475c-bd93-223b317e4059",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 121750.48,
+    "low": 121683.57,
+    "high": 121788.44,
+    "score": 100.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.852+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "a5dda918-3c08-4655-a9b0-ddcdc04c2f99",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 121781.75,
+    "low": 121747.56,
+    "high": 121814.45,
+    "score": 75.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.865+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f56ce857-a9c3-41c8-85be-c52b6086c8bc",
+    "kind": "POC",
+    "timeframe": "weekly",
+    "anchor_price": 122103.0,
+    "low": 122060.26,
+    "high": 122145.74,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_POC"
+    ],
+    "created_at": "2025-10-08T12:41:00.872+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "02c68072-78f5-4ac2-a48f-319531d4638b",
+    "kind": "VAH",
+    "timeframe": "weekly",
+    "anchor_price": 122173.0,
+    "low": 122124.13,
+    "high": 122221.87,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_VAH"
+    ],
+    "created_at": "2025-10-08T12:41:00.872+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "3b7a434c-41d6-41ab-b63c-9b6a2d4559c8",
+    "kind": "VAL",
+    "timeframe": "weekly",
+    "anchor_price": 117470.0,
+    "low": 117423.01,
+    "high": 117516.99,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_VAL"
+    ],
+    "created_at": "2025-10-08T12:41:00.872+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "a269f793-b2eb-4fdb-af35-0aac290ea1b8",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 116514.0,
+    "low": 116479.05,
+    "high": 116548.95,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.872+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e1717f05-6347-4e7d-b905-d27f6355c847",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 116550.0,
+    "low": 116515.04,
+    "high": 116584.96,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.872+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "94aa2e39-b3eb-49c1-b478-cfcd825aa799",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 117066.0,
+    "low": 117030.88,
+    "high": 117101.12,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.872+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "baaf802c-1976-4b6c-be56-0cbf080ea7b4",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 117148.0,
+    "low": 117112.86,
+    "high": 117183.14,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.882+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "6741f03e-2440-478b-a0bb-e86a5380af6e",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 117207.0,
+    "low": 117171.84,
+    "high": 117242.16,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.882+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "74bb2978-b127-4834-9220-e80aea1b97b8",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 117280.0,
+    "low": 117244.82,
+    "high": 117315.18,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.882+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "9e1f544b-fced-4f60-960d-b4de1630b998",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 117389.0,
+    "low": 117353.78,
+    "high": 117424.22,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.882+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "fcd0025e-65e3-4e11-b4e4-c736507a3805",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 117500.0,
+    "low": 117464.75,
+    "high": 117535.25,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.882+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "851866cb-ce08-4ea4-8208-d47c52d3d6d0",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 117738.0,
+    "low": 117702.68,
+    "high": 117773.32,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.882+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "8cebb41c-4301-48f1-acbd-98acd2a7e6f2",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 117858.0,
+    "low": 117822.64,
+    "high": 117893.36,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.892+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "624c6244-63be-471a-ac96-9700080369d0",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 117924.0,
+    "low": 117888.62,
+    "high": 117959.38,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.892+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "b1b7bd17-b1bc-4612-86f0-fbf18923cc1f",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 118359.0,
+    "low": 118323.49,
+    "high": 118394.51,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.892+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ff15afd9-35e8-4e91-a0ea-4c3d7dc694fb",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 118595.0,
+    "low": 118559.42,
+    "high": 118630.58,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.898+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "2208919c-6379-49cc-94dd-7fe7a466f768",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 118700.0,
+    "low": 118664.39,
+    "high": 118735.61,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.898+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e1c0faf7-f244-4af9-b1cf-fe0106df49d7",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 118845.0,
+    "low": 118809.35,
+    "high": 118880.65,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.903+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f52029f2-faf9-4e72-99de-8e32fa8c0b34",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 118937.0,
+    "low": 118901.32,
+    "high": 118972.68,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.903+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "19551284-6584-4bfa-b4a2-10266916b2ea",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 119060.0,
+    "low": 119024.28,
+    "high": 119095.72,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.903+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f4de4d0f-d4a2-4707-b49f-845be171c7e0",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 119154.0,
+    "low": 119118.25,
+    "high": 119189.75,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.903+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "264572b3-e153-4050-9973-ed79f77aff21",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 119221.0,
+    "low": 119185.23,
+    "high": 119256.77,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.903+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e397d586-3920-443c-84b0-896a4427f4c1",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 119339.0,
+    "low": 119303.2,
+    "high": 119374.8,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.914+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "12fc6efd-8dca-4ad1-b29f-cfa6c5f06a4d",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 119390.0,
+    "low": 119354.18,
+    "high": 119425.82,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.916+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "8b02e3e1-f6c9-4ec0-8272-11aefaf688d5",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 119542.0,
+    "low": 119506.14,
+    "high": 119577.86,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.918+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "cbb82c12-dc2d-4b70-b73e-589e01b5d68e",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 119585.0,
+    "low": 119549.12,
+    "high": 119620.88,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.921+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "aa370ce2-472c-4385-8021-6545487fec1f",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 119652.25,
+    "low": 119605.11,
+    "high": 119694.9,
+    "score": 93.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.922+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "52100ba0-e9f3-428b-8dca-7c30eccac3ea",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 119753.12,
+    "low": 119704.08,
+    "high": 119796.93,
+    "score": 93.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.928+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "9fd1de2e-8156-4634-a294-287ec01244a4",
+    "kind": "HVN",
+    "timeframe": "weekly",
+    "anchor_price": 119854.6,
+    "low": 119811.05,
+    "high": 119894.96,
+    "score": 103.0,
+    "confluence": [
+      "WEEKLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.932+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "2cf583a9-0c0d-44c5-ab34-a7d153506b54",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 116880.0,
+    "low": 116850.78,
+    "high": 116909.22,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.939+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "8a39d013-bf74-42fb-8726-1602ce7ab258",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 117200.0,
+    "low": 117170.7,
+    "high": 117229.3,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.942+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "3708a01c-33d9-4dfb-bc9c-3c806f2ed926",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 117234.0,
+    "low": 117204.69,
+    "high": 117263.31,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.945+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "0c8b3515-8b27-442d-af6f-642e296bca1b",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 117400.56,
+    "low": 117338.66,
+    "high": 117441.35,
+    "score": 118.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.948+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "cf249f01-fd20-40b4-8676-ae6f73e4bbae",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 117412.0,
+    "low": 117382.65,
+    "high": 117441.35,
+    "score": 78.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.957+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "6232df6d-7641-488f-a44b-c7f0925123a3",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 117488.72,
+    "low": 117441.63,
+    "high": 117522.37,
+    "score": 103.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.960+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "740a3ff5-5e06-45aa-9c9f-4646c8077110",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 118388.5,
+    "low": 118356.4,
+    "high": 118419.6,
+    "score": 93.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.969+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "16308742-6ce0-4004-aeaf-65b77616e68d",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 118421.25,
+    "low": 118385.4,
+    "high": 118454.61,
+    "score": 93.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.975+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "d2e86cc0-eda6-4c6f-b1fe-37e23e546369",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 118523.06,
+    "low": 118470.38,
+    "high": 118559.63,
+    "score": 103.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.981+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f4827904-6a12-410b-956e-f9d26aca28e8",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 118577.0,
+    "low": 118547.36,
+    "high": 118606.64,
+    "score": 83.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.991+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "c911f996-6508-42dd-bfe2-5698b7d649d1",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 118629.64,
+    "low": 118576.35,
+    "high": 118664.66,
+    "score": 113.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.993+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "dd19ec44-4e36-4bf8-82e6-3fed582de863",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 118690.65,
+    "low": 118639.33,
+    "high": 118726.67,
+    "score": 103.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:00.999+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "38b3091d-9e63-4d49-b31d-b2f1fccb50c4",
+    "kind": "LVN",
+    "timeframe": "weekly",
+    "anchor_price": 118752.18,
+    "low": 118717.31,
+    "high": 118783.69,
+    "score": 113.0,
+    "confluence": [
+      "WEEKLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.015+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "02a06d29-4704-40ec-acb5-e07bb53e6e1e",
+    "kind": "POC",
+    "timeframe": "monthly",
+    "anchor_price": 113260.0,
+    "low": 113220.36,
+    "high": 113299.64,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_POC"
+    ],
+    "created_at": "2025-10-08T12:41:01.018+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "015b98ed-e445-4d7a-8606-40fb20c87f16",
+    "kind": "VAH",
+    "timeframe": "monthly",
+    "anchor_price": 115841.0,
+    "low": 115794.66,
+    "high": 115887.34,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_VAH"
+    ],
+    "created_at": "2025-10-08T12:41:01.028+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "2d12ac9f-f074-4a17-996c-9bbc157da8bc",
+    "kind": "VAL",
+    "timeframe": "monthly",
+    "anchor_price": 110802.0,
+    "low": 110757.68,
+    "high": 110846.32,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_VAL"
+    ],
+    "created_at": "2025-10-08T12:41:01.031+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "1238fca4-af71-4c78-9f9a-2e2294e1d03e",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 110802.0,
+    "low": 110768.76,
+    "high": 110835.24,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.031+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "18c73a27-bbd3-402b-9898-dc559cbabc8c",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 110951.0,
+    "low": 110917.71,
+    "high": 110984.29,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.038+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "7b5753d6-c362-45fc-972c-b20e79fda60e",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 111115.0,
+    "low": 111081.67,
+    "high": 111148.33,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.038+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "a71e1aa2-880e-4f66-a95d-f6681b429b5b",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 111304.0,
+    "low": 111270.61,
+    "high": 111337.39,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.038+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "c015826b-b57c-43b3-93a5-12f01fcba905",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 111520.0,
+    "low": 111486.54,
+    "high": 111553.46,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.047+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "81490f05-3f5d-47ae-b868-0b24fca78265",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 111571.0,
+    "low": 111537.53,
+    "high": 111604.47,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.049+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "875f952a-a31e-44d8-aad2-da3b9a301db9",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 111907.0,
+    "low": 111873.43,
+    "high": 111940.57,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.049+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "749acb04-f08c-4481-ad29-d243aeb9a32e",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112232.0,
+    "low": 112198.33,
+    "high": 112265.67,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.049+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "d53f5bbb-b92e-4b38-807d-2495a4bd472e",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112266.0,
+    "low": 112232.32,
+    "high": 112299.68,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.060+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "1c63c6af-8d2a-476b-b3de-ef22d8917a6e",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112325.0,
+    "low": 112286.3,
+    "high": 112361.7,
+    "score": 105.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.063+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "35f774b8-8781-447c-b8fd-bd09838d8857",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112434.0,
+    "low": 112400.27,
+    "high": 112467.73,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.070+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "fea85b9e-23ee-4ae1-83f5-3ec1f41dec40",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112554.0,
+    "low": 112520.23,
+    "high": 112587.77,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.070+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ef3924ef-67cc-4838-816c-a72d30079f40",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112590.0,
+    "low": 112546.23,
+    "high": 112629.78,
+    "score": 105.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.070+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "5ebdc539-9fe6-43c4-8c95-8d428aaf09a3",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112680.0,
+    "low": 112646.2,
+    "high": 112713.8,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.080+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e04b6389-5d96-47e8-91df-bc23f65f98d1",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 112800.0,
+    "low": 112766.16,
+    "high": 112833.84,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.080+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "34ab0641-052e-4501-8c9e-0276c2878d48",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 113015.12,
+    "low": 112968.1,
+    "high": 113056.91,
+    "score": 105.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.090+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "d3e1b861-b1fd-4b5a-8d5a-2bde2a3296a8",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 113232.0,
+    "low": 113198.03,
+    "high": 113265.97,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.096+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "537ec9f2-cf5f-48ce-9396-f71043a16d36",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 113260.0,
+    "low": 113226.02,
+    "high": 113293.98,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.101+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "623c6824-8bd4-429a-8b14-f3e1a758df85",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 113414.0,
+    "low": 113379.98,
+    "high": 113448.02,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.105+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "11294682-ab9c-4f8b-ae1b-a553f44c5408",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 113486.38,
+    "low": 113447.96,
+    "high": 113523.05,
+    "score": 105.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.108+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "eb3c6c82-e7f4-4f4b-94c3-3ee7fe0e6bb5",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 113671.62,
+    "low": 113631.9,
+    "high": 113709.1,
+    "score": 105.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.111+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "ee5fbe64-932c-4938-9730-16ab9ae64594",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 113729.0,
+    "low": 113694.88,
+    "high": 113763.12,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.121+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "a4b0079b-55b8-4d37-8d53-9cb72a10669c",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 113864.0,
+    "low": 113829.84,
+    "high": 113898.16,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.124+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "5c057744-75d8-41f2-bde5-c37e12495b59",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 113900.0,
+    "low": 113865.83,
+    "high": 113934.17,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.131+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "99da850e-68d3-47e9-8265-a7e9d4d7241a",
+    "kind": "HVN",
+    "timeframe": "monthly",
+    "anchor_price": 113952.0,
+    "low": 113917.81,
+    "high": 113986.19,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_HVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.131+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "4b644b59-1350-4532-8f91-cb6d48dac7cd",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 111258.0,
+    "low": 111230.19,
+    "high": 111285.81,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.131+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "c7ea93bf-2dbd-4cd9-9b7b-79af70ddf499",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 111300.0,
+    "low": 111272.18,
+    "high": 111327.82,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.142+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "02ef4ae0-33d7-42ba-9279-6793c83026e6",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 111418.0,
+    "low": 111390.15,
+    "high": 111445.85,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.142+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "1029c3d1-4a58-4b9d-8b99-7791cd427a7b",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 111542.0,
+    "low": 111514.11,
+    "high": 111569.89,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.142+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "6c86052b-42c3-4845-8568-0571b88d7d83",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 111653.0,
+    "low": 111625.09,
+    "high": 111680.91,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.152+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e7582527-f838-46e4-a644-e993985d06b2",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 112212.0,
+    "low": 112183.95,
+    "high": 112240.05,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.155+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "364dcb0c-de01-48f0-86e7-8cf39dcdeac3",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 113704.0,
+    "low": 113675.57,
+    "high": 113732.43,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.155+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "09147546-555c-4aa3-811e-28f8efa647ea",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 113843.0,
+    "low": 113814.54,
+    "high": 113871.46,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.162+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "752d9bc6-ad47-41bb-bc27-a3ed96fffa57",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 114442.0,
+    "low": 114413.39,
+    "high": 114470.61,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.162+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "1e17be8f-bec6-425b-a754-601053607c8f",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 114483.0,
+    "low": 114454.38,
+    "high": 114511.62,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.173+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "455c7d56-1b75-4249-a336-600329c57e29",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 114896.0,
+    "low": 114867.28,
+    "high": 114924.72,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.173+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "050db27f-cecb-47f7-a59f-df9f346f4f93",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 114942.0,
+    "low": 114913.26,
+    "high": 114970.74,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.183+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "faf09954-1db3-4370-8255-80eabc4a859d",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115104.19,
+    "low": 115060.23,
+    "high": 115142.78,
+    "score": 115.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.187+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "7ba2752f-dfde-4546-a2fd-3452405b08b4",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115157.0,
+    "low": 115128.21,
+    "high": 115185.79,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.193+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "5c0cb75a-c0f5-4329-96bd-4c66fa8e3509",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115201.5,
+    "low": 115160.2,
+    "high": 115237.8,
+    "score": 105.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.204+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f854b7a2-8350-4a57-b5d9-1189186c2b30",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115367.35,
+    "low": 115333.16,
+    "high": 115397.84,
+    "score": 115.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.211+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "f080b263-b412-45e6-a89f-fca32820c49a",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115437.9,
+    "low": 115394.14,
+    "high": 115472.86,
+    "score": 115.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.225+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "84876b1a-053f-4bbb-a9eb-825a9d87138e",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115473.0,
+    "low": 115444.13,
+    "high": 115501.87,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.235+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "c018bd5f-d1f2-4980-8bc8-d5e05e6dc5bf",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115522.88,
+    "low": 115469.13,
+    "high": 115557.88,
+    "score": 115.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.235+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "9ed914bf-987e-4f89-ae3d-3c604a9bfd8e",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115528.5,
+    "low": 115499.12,
+    "high": 115557.88,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.248+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "e4676b8c-badc-4f8f-8e60-ed483ba92669",
+    "kind": "LVN",
+    "timeframe": "monthly",
+    "anchor_price": 115569.0,
+    "low": 115540.11,
+    "high": 115597.89,
+    "score": 95.0,
+    "confluence": [
+      "MONTHLY_LVN"
+    ],
+    "created_at": "2025-10-08T12:41:01.256+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "729bc347-b0c7-468b-8866-ef5558a0d605",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121526.5,
+    "low": 121487.54,
+    "high": 121565.46,
+    "score": 65.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:42:01.064+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "a87c951a-e740-4029-af4e-8fb1e48a3ca0",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121682.0,
+    "low": 121645.5,
+    "high": 121718.5,
+    "score": 60.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:42:01.104+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "d15c1cc4-d25d-468b-bd11-643b612780ee",
+    "kind": "HVN",
+    "timeframe": "daily",
+    "anchor_price": 121797.0,
+    "low": 121760.46,
+    "high": 121833.54,
+    "score": 60.0,
+    "confluence": [
+      "DAILY_HVN"
+    ],
+    "created_at": "2025-10-08T12:42:01.128+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "c6ad9d04-bd31-4f09-af22-190ac33778dc",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 121414.5,
+    "low": 121380.65,
+    "high": 121446.35,
+    "score": 70.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-10-08T12:42:01.166+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  },
+  {
+    "id": "72a45dc4-ed75-42ca-8875-6eb442256109",
+    "kind": "LVN",
+    "timeframe": "daily",
+    "anchor_price": 121717.75,
+    "low": 121683.57,
+    "high": 121750.43,
+    "score": 70.0,
+    "confluence": [
+      "DAILY_LVN"
+    ],
+    "created_at": "2025-10-08T12:42:01.246+00:00",
+    "last_touched": null,
+    "touch_count": 0,
+    "notes": ""
+  }
+]

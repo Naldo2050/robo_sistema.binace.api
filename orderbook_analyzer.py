@@ -1,6 +1,8 @@
-# orderbook_analyzer.py
+# orderbook_analyzer.py (VERSÃO CORRIGIDA COMPLETA - v1.3.1)
 import logging
+import time
 from typing import List, Dict, Any, Tuple, Optional
+from datetime import datetime, timedelta
 
 import requests
 import numpy as np
@@ -32,7 +34,7 @@ except Exception:
     ORDERBOOK_MIN_DOMINANT_USD = 2_000_000.0
     ORDERBOOK_MIN_RATIO_DOM = 20.0
 
-SCHEMA_VERSION = "1.3.0"
+SCHEMA_VERSION = "1.3.1"
 
 
 # ------------------------- Utils -------------------------
@@ -122,6 +124,13 @@ class OrderBookAnalyzer:
       - iceberg reload (heurístico)
       - market impact (100k / 1M) determinístico
       - promoção a CRITICAL quando há desequilíbrio extremo
+    
+    🔹 CORREÇÕES v1.3.1:
+      - Retry logic com backoff exponencial
+      - Cache de dados para evitar rate limiting
+      - Logging detalhado de erros
+      - Retorno completo mesmo em caso de falha
+      - Fix de formatação de log
     """
 
     def __init__(
@@ -132,6 +141,7 @@ class OrderBookAnalyzer:
         top_n_levels: int = 20,
         ob_limit_fetch: int = 100,
         time_manager: Optional[TimeManager] = None,
+        cache_ttl_seconds: float = 1.0,
     ):
         self.symbol = symbol.upper()
         self.alert_threshold = float(liquidity_flow_alert_percentage)
@@ -141,12 +151,20 @@ class OrderBookAnalyzer:
         self.tz_ny = ZoneInfo("America/New_York") if ZoneInfo else None
         self.tm = time_manager or TimeManager()
 
+        # Cache de order book
+        self.cache_ttl_seconds = cache_ttl_seconds
+        self._cached_snapshot: Optional[Dict[str, Any]] = None
+        self._cache_timestamp: float = 0.0
+        
+        # Contadores de erro
+        self._fetch_errors = 0
+        self._total_fetches = 0
+        self._last_error_logged = 0.0
+
         # Configurações adicionais
         self.depth_levels: List[int] = list(ORDER_BOOK_DEPTH_LEVELS)
         self.spread_tight_threshold_bps: float = float(SPREAD_TIGHT_THRESHOLD_BPS)
-        # Janela(s) de cálculo de médias de spread (minutos)
         self.spread_avg_windows_min: List[int] = list(SPREAD_AVG_WINDOWS_MIN)
-        # Histórico de spreads (timestamp_ms, spread_bps)
         self.spread_history: List[Tuple[int, float]] = []
 
         # memória leve para heurística de recarga
@@ -154,32 +172,126 @@ class OrderBookAnalyzer:
         self.last_event_ts_ms: Optional[int] = None
 
         logging.info(
-            "✅ OrderBook Analyzer inicializado para %s | Alerta fluxo: %s | Wall STD: %s | Top N: %s",
+            "✅ OrderBook Analyzer inicializado para %s | Alerta fluxo: %s | Wall STD: %s | Top N: %s | Cache TTL: %.1fs",
             self.symbol,
             f"{self.alert_threshold*100:.0f}%",
             f"{self.wall_std:.1f}x",
             self.top_n,
+            self.cache_ttl_seconds,
         )
 
-    # -------- Data --------
+    # -------- Data (COM RETRY E CACHE) --------
 
-    def _fetch_orderbook(self, limit: Optional[int] = None) -> Optional[Dict[str, Any]]:
-        try:
-            lim = limit or self.ob_limit_fetch
-            url = f"https://fapi.binance.com/fapi/v1/depth?symbol={self.symbol}&limit={lim}"
-            r = requests.get(url, timeout=2.5)
-            r.raise_for_status()
-            data = r.json()
-            return {
-                "lastUpdateId": data.get("lastUpdateId"),
-                "E": data.get("E"),
-                "T": data.get("T"),
-                "bids": _to_float_list(data.get("bids", [])),
-                "asks": _to_float_list(data.get("asks", [])),
-            }
-        except Exception as e:
-            logging.error(f"Erro ao buscar orderbook: {e}")
-            return None
+    def _fetch_orderbook(self, limit: Optional[int] = None, use_cache: bool = True) -> Optional[Dict[str, Any]]:
+        """
+        Busca order book da Binance com retry logic e cache.
+        """
+        self._total_fetches += 1
+        
+        # Verifica cache
+        if use_cache and self._cached_snapshot is not None:
+            cache_age = time.time() - self._cache_timestamp
+            if cache_age < self.cache_ttl_seconds:
+                logging.debug(f"📦 Usando cache de order book (age: {cache_age:.2f}s)")
+                return self._cached_snapshot
+        
+        lim = limit or self.ob_limit_fetch
+        url = f"https://fapi.binance.com/fapi/v1/depth?symbol={self.symbol}&limit={lim}"
+        
+        max_retries = 3
+        base_delay = 0.5
+        
+        for attempt in range(max_retries):
+            try:
+                timeout = 5.0 if attempt == 0 else 10.0
+                
+                logging.debug(f"📡 Buscando order book (tentativa {attempt + 1}/{max_retries})...")
+                
+                r = requests.get(url, timeout=timeout)
+                
+                # Detecta rate limiting
+                if r.status_code == 429:
+                    retry_after = int(r.headers.get('Retry-After', 60))
+                    logging.warning(f"⚠️ RATE LIMIT detectado! Retry após {retry_after}s")
+                    self._fetch_errors += 1
+                    
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_after)
+                        continue
+                    else:
+                        return None
+                
+                r.raise_for_status()
+                data = r.json()
+                
+                # Valida estrutura básica
+                if not isinstance(data, dict):
+                    logging.error(f"❌ Resposta inválida da API (não é dict): {type(data)}")
+                    continue
+                
+                if 'bids' not in data or 'asks' not in data:
+                    logging.error(f"❌ Resposta sem bids/asks: {list(data.keys())}")
+                    continue
+                
+                # Parse dos dados
+                parsed = {
+                    "lastUpdateId": data.get("lastUpdateId"),
+                    "E": data.get("E"),
+                    "T": data.get("T"),
+                    "bids": _to_float_list(data.get("bids", [])),
+                    "asks": _to_float_list(data.get("asks", [])),
+                }
+                
+                # Valida que tem dados
+                if not parsed["bids"] or not parsed["asks"]:
+                    logging.warning(f"⚠️ Order book vazio! bids={len(parsed['bids'])}, asks={len(parsed['asks'])}")
+                    if attempt < max_retries - 1:
+                        time.sleep(base_delay * (2 ** attempt))
+                        continue
+                    return None
+                
+                # Sucesso - atualiza cache
+                self._cached_snapshot = parsed
+                self._cache_timestamp = time.time()
+                
+                logging.debug(f"✅ Order book obtido: {len(parsed['bids'])} bids, {len(parsed['asks'])} asks")
+                
+                return parsed
+                
+            except requests.exceptions.Timeout as e:
+                self._fetch_errors += 1
+                logging.warning(f"⏱️ Timeout ao buscar order book (tentativa {attempt + 1}): {e}")
+                
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logging.debug(f"   Aguardando {delay:.1f}s antes de retry...")
+                    time.sleep(delay)
+                    
+            except requests.exceptions.RequestException as e:
+                self._fetch_errors += 1
+                logging.error(f"❌ Erro HTTP ao buscar order book (tentativa {attempt + 1}): {e}")
+                
+                if attempt < max_retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+                    
+            except Exception as e:
+                self._fetch_errors += 1
+                logging.error(f"❌ Erro inesperado ao buscar order book: {e}", exc_info=True)
+                
+                if attempt < max_retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+        
+        # Todas as tentativas falharam
+        now = time.time()
+        if now - self._last_error_logged > 60:
+            logging.error(
+                f"💀 FALHA TOTAL ao buscar order book após {max_retries} tentativas. "
+                f"Taxa de erro: {self._fetch_errors}/{self._total_fetches} "
+                f"({100 * self._fetch_errors / max(1, self._total_fetches):.1f}%)"
+            )
+            self._last_error_logged = now
+        
+        return None
 
     # -------- Métricas --------
 
@@ -234,7 +346,6 @@ class OrderBookAnalyzer:
             if q >= threshold and q > 0:
                 walls.append({"side": side, "price": float(p), "qty": float(q), "limit_threshold": float(threshold)})
 
-        # bids: maior preço primeiro | asks: menor preço primeiro
         walls.sort(key=lambda x: x["price"], reverse=(side == "bid"))
         return walls
 
@@ -264,6 +375,98 @@ class OrderBookAnalyzer:
         except Exception:
             return False, 0.0
 
+    def _create_empty_event(self, error_msg: str, ts_ms: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Cria um evento completo mesmo quando não há dados.
+        """
+        if ts_ms is None:
+            ts_ms = self.tm.now_ms()
+        
+        tindex = self.tm.build_time_index(ts_ms, include_local=True, timespec="seconds")
+        
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "tipo_evento": "OrderBook",
+            "ativo": self.symbol,
+            "erro": error_msg,
+            "descricao": f"Order book indisponível: {error_msg}",
+            "resultado_da_batalha": "INDISPONÍVEL",
+            
+            "imbalance": 0.0,
+            "volume_ratio": 1.0,
+            "pressure": 0.0,
+            
+            "spread_metrics": {
+                "mid": 0.0,
+                "spread": 0.0,
+                "spread_percent": 0.0,
+                "bid_depth_usd": 0.0,
+                "ask_depth_usd": 0.0,
+            },
+            
+            "alertas_liquidez": [f"ERRO: {error_msg}"],
+            "iceberg_reloaded": False,
+            "iceberg_score": 0.0,
+            "walls": {"bids": [], "asks": []},
+            
+            "market_impact_buy": {
+                "100k": {"usd": 100000, "move_usd": 0.0, "bps": 0.0, "levels": 0, "vwap": None},
+                "1M": {"usd": 1000000, "move_usd": 0.0, "bps": 0.0, "levels": 0, "vwap": None},
+            },
+            "market_impact_sell": {
+                "100k": {"usd": 100000, "move_usd": 0.0, "bps": 0.0, "levels": 0, "vwap": None},
+                "1M": {"usd": 1000000, "move_usd": 0.0, "bps": 0.0, "levels": 0, "vwap": None},
+            },
+            
+            "top_n": self.top_n,
+            "ob_limit": self.ob_limit_fetch,
+            
+            "timestamps": {
+                "exchange_ms": ts_ms,
+                "timestamp_ny": tindex.get("timestamp_ny"),
+                "timestamp_utc": tindex.get("timestamp_utc"),
+            },
+            
+            "source": {
+                "exchange": "binance_futures",
+                "endpoint": "fapi/v1/depth",
+                "symbol": self.symbol,
+                "error": error_msg,
+            },
+            
+            "labels": {
+                "dominant_label": "INDISPONÍVEL",
+                "note": "Order book não pôde ser obtido.",
+            },
+            
+            "order_book_depth": {},
+            "spread_analysis": {},
+            
+            "severity": "ERROR",
+            "critical_flags": {
+                "is_critical": False,
+                "abs_imbalance": 0.0,
+                "ratio_dom": 1.0,
+                "dominant_usd": 0.0,
+                "thresholds": {
+                    "ORDERBOOK_CRITICAL_IMBALANCE": ORDERBOOK_CRITICAL_IMBALANCE,
+                    "ORDERBOOK_MIN_DOMINANT_USD": ORDERBOOK_MIN_DOMINANT_USD,
+                    "ORDERBOOK_MIN_RATIO_DOM": ORDERBOOK_MIN_RATIO_DOM,
+                },
+            },
+            
+            "orderbook_data": {
+                "mid": 0.0,
+                "spread": 0.0,
+                "spread_percent": 0.0,
+                "bid_depth_usd": 0.0,
+                "ask_depth_usd": 0.0,
+                "imbalance": 0.0,
+                "volume_ratio": 1.0,
+                "pressure": 0.0,
+            },
+        }
+
     # -------- Pública --------
 
     def analyze(
@@ -277,13 +480,16 @@ class OrderBookAnalyzer:
         Analisa o livro e devolve o evento padronizado.
         """
         snap = current_snapshot or self._fetch_orderbook(limit=self.ob_limit_fetch)
+        
         if not snap or not snap.get("bids") or not snap.get("asks"):
-            return {"tipo_evento": "OrderBook", "ativo": self.symbol, "erro": "snapshot_vazio"}
+            error_msg = "snapshot_vazio" if snap else "fetch_failed"
+            logging.warning(f"⚠️ Order book indisponível: {error_msg}")
+            return self._create_empty_event(error_msg, event_epoch_ms)
 
         bids: List[Tuple[float, float]] = snap["bids"]
         asks: List[Tuple[float, float]] = snap["asks"]
 
-        # timestamp (preferir tempos do exchange)
+        # timestamp
         ts_ms = None
         for key in ("E", "T"):
             v = snap.get(key)
@@ -314,16 +520,16 @@ class OrderBookAnalyzer:
         mi_sell_100k = _simulate_market_impact(bids[: self.top_n][::-1], usd_amount=100_000.0, side="sell", mid=mid)
         mi_sell_1m = _simulate_market_impact(bids[: self.top_n][::-1], usd_amount=1_000_000.0, side="sell", mid=mid)
 
-        # Atualiza histórico de spread (bps)
+        # Atualiza histórico de spread
         if sm.get("spread_percent") is not None and sm["spread_percent"] >= 0:
             try:
-                spread_bps = float(sm["spread_percent"]) * 100.0  # 1% = 100 bps
+                spread_bps = float(sm["spread_percent"]) * 100.0
                 now_ms = ts_ms if ts_ms is not None else self.tm.now_ms()
                 self.spread_history.append((int(now_ms), spread_bps))
             except Exception:
                 pass
 
-        # rótulo claro (estoque de liquidez)
+        # rótulo
         resultado_da_batalha = "Equilíbrio"
         if imbalance is not None:
             if imbalance > self.alert_threshold:
@@ -344,14 +550,14 @@ class OrderBookAnalyzer:
         if sm.get("spread") is not None and sm["spread"] <= 0.5:
             alertas.append("Spread apertado")
 
-        # Remove spreads antigos (~24h)
+        # Remove spreads antigos
         try:
             cutoff_ms = (ts_ms if ts_ms is not None else self.tm.now_ms()) - max(self.spread_avg_windows_min) * 60 * 1000
             self.spread_history = [(t, s) for (t, s) in self.spread_history if t >= cutoff_ms]
         except Exception:
             pass
 
-        # ---------- Depth summary ----------
+        # Depth summary
         depth_summary: Dict[str, Any] = {}
         total_bids_last = 0.0
         total_asks_last = 0.0
@@ -381,7 +587,7 @@ class OrderBookAnalyzer:
             pass
         depth_summary["total_depth_ratio"] = round(total_ratio, 3) if total_ratio is not None else None
 
-        # ---------- Spread analysis ----------
+        # Spread analysis
         spread_analysis: Dict[str, Any] = {
             "current_spread_bps": None,
             "spread_percentile": None,
@@ -425,8 +631,7 @@ class OrderBookAnalyzer:
         except Exception as e:
             logging.debug(f"Erro em spread_analysis: {e}")
 
-        # ----------- PROMOÇÃO A CRITICAL -----------
-        # ratio_dom >= 1.0 (sempre expressa "dominância" >= 1)
+        # PROMOÇÃO A CRITICAL
         ratio_dom = None
         if ratio is not None:
             if ratio > 0:
@@ -438,8 +643,6 @@ class OrderBookAnalyzer:
         is_extreme_imbalance = (imbalance is not None) and (abs(imbalance) >= ORDERBOOK_CRITICAL_IMBALANCE)
         is_extreme_ratio = (ratio_dom is not None) and (ratio_dom >= ORDERBOOK_MIN_RATIO_DOM)
         is_extreme_usd = dominant_usd >= ORDERBOOK_MIN_DOMINANT_USD
-        # Regra: |imbalance| >= 0.95 e (ratio_dom >= 20x OU lado dominante >= 2M)
-        # + proteção para casos de ratio absolutamente absurdo (>=50x) mesmo sem |imbalance| >= 0.95
         is_critical = bool(is_extreme_imbalance and (is_extreme_ratio or is_extreme_usd) or
                            (ratio_dom is not None and ratio_dom >= max(50.0, ORDERBOOK_MIN_RATIO_DOM)))
 
@@ -447,7 +650,7 @@ class OrderBookAnalyzer:
             side_dom = "ASKS" if (imbalance is not None and imbalance < 0) else "BIDS"
             alertas.append(f"DESEQUILÍBRIO CRÍTICO ({side_dom})")
 
-        # Resultado da batalha (texto curto)
+        # Resultado da batalha
         if imbalance is None:
             batalha = "INDISPONÍVEL"
         elif imbalance < -0.05:
@@ -457,13 +660,25 @@ class OrderBookAnalyzer:
         else:
             batalha = "Equilíbrio"
 
-        # Descrição resumida
+        # Descrição
         descricao = (
             f"Livro: Δ={imbalance:+.4f} | ratio={ratio:.4f} | "
             f"bids=${bid_usd:,.2f} vs asks=${ask_usd:,.2f}"
             if imbalance is not None and ratio is not None
             else "Livro: dados insuficientes"
         )
+
+        # 🔹 LOG DE DEBUG (CORRIGIDO)
+        if imbalance is not None and ratio is not None:
+            logging.debug(
+                f"📊 Order Book: bid_usd=${bid_usd:,.2f}, ask_usd=${ask_usd:,.2f}, "
+                f"imbalance={imbalance:.4f}, ratio={ratio:.4f}"
+            )
+        else:
+            logging.debug(
+                f"📊 Order Book: bid_usd=${bid_usd:,.2f}, ask_usd=${ask_usd:,.2f}, "
+                f"imbalance=None, ratio=None"
+            )
 
         # Payload principal
         event: Dict[str, Any] = {
@@ -494,11 +709,8 @@ class OrderBookAnalyzer:
                 "dominant_label": resultado_da_batalha,
                 "note": "Rótulo baseado no livro (estoque de liquidez), não na fita executada (delta).",
             },
-            # Novas análises de profundidade e spread
             "order_book_depth": depth_summary,
             "spread_analysis": spread_analysis,
-
-            # -------- NOVOS CAMPOS DE CRÍTICO --------
             "severity": "CRITICAL" if is_critical else "INFO",
             "critical_flags": {
                 "is_critical": is_critical,
@@ -511,8 +723,6 @@ class OrderBookAnalyzer:
                     "ORDERBOOK_MIN_RATIO_DOM": ORDERBOOK_MIN_RATIO_DOM,
                 },
             },
-
-            # Alias para compatibilidade com consumidores que esperam "orderbook_data"
             "orderbook_data": {
                 "mid": sm["mid"],
                 "spread": sm["spread"],
@@ -523,6 +733,12 @@ class OrderBookAnalyzer:
                 "volume_ratio": round(ratio, 4) if ratio not in (None, float("inf")) else None,
                 "pressure": round(pressure, 4) if pressure is not None else None,
             },
+            "fetch_stats": {
+                "total_fetches": self._total_fetches,
+                "fetch_errors": self._fetch_errors,
+                "error_rate_pct": round(100 * self._fetch_errors / max(1, self._total_fetches), 2),
+                "cache_hit": (current_snapshot is None and self._cached_snapshot is not None),
+            },
         }
 
         # memória
@@ -532,20 +748,39 @@ class OrderBookAnalyzer:
 
     # -------- Shims de compatibilidade --------
     def analyze_order_book(self, *args, **kwargs) -> Dict[str, Any]:
-        """Compat: nome legado usado no pipeline antigo."""
         return self.analyze(*args, **kwargs)
 
     def analyzeOrderBook(self, *args, **kwargs) -> Dict[str, Any]:
-        """Compat camelCase."""
         return self.analyze(*args, **kwargs)
 
     def analyze_orderbook(self, *args, **kwargs) -> Dict[str, Any]:
-        """Compat sem sublinhado."""
         return self.analyze(*args, **kwargs)
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Retorna estatísticas de performance."""
+        return {
+            "total_fetches": self._total_fetches,
+            "fetch_errors": self._fetch_errors,
+            "error_rate_pct": round(100 * self._fetch_errors / max(1, self._total_fetches), 2),
+            "cache_ttl_seconds": self.cache_ttl_seconds,
+            "has_cached_data": self._cached_snapshot is not None,
+        }
 
 
 if __name__ == "__main__":
-    # Smoke test simples
-    oba = OrderBookAnalyzer(symbol="BTCUSDT")
+    # Smoke test
+    logging.basicConfig(level=logging.DEBUG)
+    oba = OrderBookAnalyzer(symbol="BTCUSDT", cache_ttl_seconds=2.0)
     evt = oba.analyze()
-    print(evt.get("severity"), evt.get("resultado_da_batalha"), evt.get("alertas_liquidez"))
+    
+    print("\n" + "="*80)
+    print("📊 TESTE DE ORDER BOOK ANALYZER")
+    print("="*80)
+    print(f"Severity: {evt.get('severity')}")
+    print(f"Resultado: {evt.get('resultado_da_batalha')}")
+    print(f"Bid Depth: ${evt.get('orderbook_data', {}).get('bid_depth_usd', 0):,.2f}")
+    print(f"Ask Depth: ${evt.get('orderbook_data', {}).get('ask_depth_usd', 0):,.2f}")
+    print(f"Imbalance: {evt.get('orderbook_data', {}).get('imbalance', 0):+.4f}")
+    print(f"Alertas: {evt.get('alertas_liquidez')}")
+    print(f"\nFetch Stats: {oba.get_stats()}")
+    print("="*80)

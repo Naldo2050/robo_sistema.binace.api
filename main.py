@@ -907,8 +907,47 @@ class EnhancedMarketBot:
                 if signal.get("is_signal", False):
                     if "derivatives" not in signal:
                         signal["derivatives"] = derivatives_context
+                        
+                    # 🔧 VALIDAÇÃO DE FLOW_METRICS ANTES DE ADICIONAR
                     if "fluxo_continuo" not in signal and flow_metrics:
-                        signal["fluxo_continuo"] = flow_metrics
+                        # Verifica se flow_metrics tem dados válidos (não apenas zeros)
+                        flow_valid = False
+                        try:
+                            # Checa CVD
+                            cvd = flow_metrics.get("cvd", 0)
+                            if abs(cvd) > 0.01:
+                                flow_valid = True
+                            
+                            # Checa net flows
+                            if not flow_valid:
+                                order_flow = flow_metrics.get("order_flow", {})
+                                for key, value in order_flow.items():
+                                    if key.startswith("net_flow_") and value is not None and abs(value) > 0.01:
+                                        flow_valid = True
+                                        break
+                            
+                            # Checa whale volumes
+                            if not flow_valid:
+                                whale_total = abs(flow_metrics.get("whale_buy_volume", 0)) + abs(flow_metrics.get("whale_sell_volume", 0))
+                                if whale_total > 0.01:
+                                    flow_valid = True
+                                    
+                        except Exception as e:
+                            logging.debug(f"Erro ao validar flow_metrics: {e}")
+                            flow_valid = False
+                        
+                        if flow_valid:
+                            signal["fluxo_continuo"] = flow_metrics
+                        else:
+                            # CORREÇÃO: formatação correta do logging
+                            cvd_value = flow_metrics.get('cvd', 0)
+                            logging.debug(
+                                "Flow_metrics zerado/inválido para janela #%d. CVD=%.4f",
+                                self.window_count,
+                                cvd_value
+                            )
+                            # Adiciona flag indicando ausência de dados de fluxo
+                            signal["flow_data_quality"] = "no_flow_data"
 
                     try:
                         if "market_context" not in signal:
