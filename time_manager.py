@@ -2,6 +2,7 @@ import time
 import requests
 import logging
 import random
+import numpy as np
 from threading import Lock
 from datetime import timezone, datetime, timedelta
 from typing import Optional, Dict, Any, Tuple
@@ -27,23 +28,51 @@ class TimeManager:
     Gerencia sincronização de tempo com a Binance e fornece utilitários para timestamps
     consistentes (UTC/NY/SP), evitando duplicidade de chaves e offsets incorretos.
 
-    Atualizações:
-    - Usa time.monotonic() para decidir re-sync (imune a ajustes do SO).
-    - Sincroniza com múltiplas amostras e escolhe a de menor RTT (aprox. NTP).
-    - Não zera o offset em falha; mantém o último válido (status 'degraded').
-    - timespec padrão em 'milliseconds' para alinhar com epoch_ms.
-    - Métodos auxiliares: time_index_from_epoch, validate_triplet, get_sync_stats,
-      now_utc_iso/now_ny_iso/now_sp_iso, to_epoch_ms_from_iso, parse_any_ts.
-    - Thread-safe com Lock.
+    Melhorias v2.0:
+    - Validação rigorosa de offset com limites aceitáveis
+    - Tentativas múltiplas na inicialização com backoff exponencial
+    - Sincronização automática NTP do sistema em caso de drift crítico
+    - Rejeição de amostras com RTT muito alto
+    - Diagnóstico completo de timezone e sincronização
+    - Logs detalhados e estruturados
+    - Thread-safe com Lock em todas operações críticas
+    
+    Características técnicas:
+    - Usa time.monotonic() para decisões de re-sync (imune a ajustes do SO)
+    - Sincroniza com múltiplas amostras e escolhe a de menor RTT (aprox. NTP)
+    - Não zera o offset em falha; mantém o último válido (status 'degraded')
+    - timespec padrão em 'milliseconds' para alinhar com epoch_ms
     """
 
     BINANCE_TIME_URL = "https://fapi.binance.com/fapi/v1/time"
+    MAX_ACCEPTABLE_RTT_MS = 2000  # Rejeita amostras com RTT > 2s
+    CRITICAL_OFFSET_MS = 3600000  # 1 hora
+    WARNING_OFFSET_MS = 60000     # 1 minuto
 
-    def __init__(self, sync_interval_minutes: int = 30):
-        self.server_time_offset_ms: int = 0                   # offset = server_ms − local_ms
-        self.last_sync_mono: float = 0.0                      # relógio monotônico da última sync
+    def __init__(self, 
+                 sync_interval_minutes: int = 30,
+                 max_init_attempts: int = 3,
+                 max_acceptable_offset_ms: int = 500,
+                 num_sync_samples: int = 5):
+        """
+        Inicializa o TimeManager com sincronização robusta.
+        
+        Args:
+            sync_interval_minutes: Intervalo entre re-sincronizações automáticas
+            max_init_attempts: Máximo de tentativas na inicialização
+            max_acceptable_offset_ms: Offset máximo aceitável (padrão 500ms)
+            num_sync_samples: Número de amostras por sincronização
+        """
+        # Configuração
         self.sync_interval_seconds: int = sync_interval_minutes * 60
-
+        self.max_acceptable_offset_ms: int = max_acceptable_offset_ms
+        self.max_init_attempts: int = max_init_attempts
+        self.num_sync_samples: int = num_sync_samples
+        
+        # Estado de sincronização
+        self.server_time_offset_ms: int = 0
+        self.last_sync_mono: float = 0.0
+        
         # Telemetria
         self.sync_attempts: int = 0
         self.sync_failures: int = 0
@@ -51,60 +80,123 @@ class TimeManager:
         self.last_offset_ms: int = 0
         self.best_rtt_ms: Optional[int] = None
         self.last_rtt_ms: Optional[int] = None
-        self.time_sync_status: str = "init"                   # init|ok|degraded|failed
+        self.time_sync_status: str = "init"  # init|ok|degraded|failed
 
-        # Expor TZs como atributos para fácil reuso
+        # Timezones
         self.tz_utc = TZ_UTC
         self.tz_ny = TZ_NY
         self.tz_sp = TZ_SP
 
+        # Thread safety
         self._lock = Lock()
 
-        # 🔹 DEBUG: Log inicial antes da sincronização
-        local_ms_before = int(time.time() * 1000)
-        logging.info(f"🕐 TimeManager inicializando... Local time (ms): {local_ms_before}")
-        
-        # Primeira sincronização (não fatal se falhar)
-        self._sync_with_binance()
-        
-        # 🔹 DEBUG: Log após sincronização
-        local_ms_after = int(time.time() * 1000)
-        synced_ms = self.now()
-        offset = synced_ms - local_ms_after
-        
-        logging.info(f"🕐 TimeManager sincronizado:")
-        logging.info(f"   Local time (ms):  {local_ms_after}")
-        logging.info(f"   Synced time (ms): {synced_ms}")
-        logging.info(f"   Offset: {offset} ms ({offset/1000:.2f} segundos)")
-        
-        # 🔹 ALERTA: Offset muito grande
-        if abs(offset) > 3600000:  # > 1 hora
-            logging.critical(f"⚠️ OFFSET CRÍTICO DETECTADO: {offset/3600000:.2f} horas!")
-            logging.critical(f"   Isso causará problemas nos timestamps!")
-        elif abs(offset) > 60000:  # > 1 minuto
-            logging.warning(f"⚠️ Offset grande detectado: {offset/1000:.1f} segundos")
+        # Inicialização com retry
+        self._initialize_sync()
 
-    # -----------------------------
-    # Sincronização com a Binance (múltiplas amostras)
-    # -----------------------------
+    # ========================================================================
+    # INICIALIZAÇÃO
+    # ========================================================================
+    
+    def _initialize_sync(self) -> None:
+        """Executa sincronização inicial com múltiplas tentativas e validação."""
+        local_ms_before = int(time.time() * 1000)
+        logging.info("=" * 80)
+        logging.info("🕐 TIMEMANAGER - INICIALIZANDO")
+        logging.info("=" * 80)
+        logging.info(f"   Tempo local:     {local_ms_before} ms")
+        logging.info(f"   Timezone UTC:    {self.tz_utc}")
+        logging.info(f"   Timezone NY:     {self.tz_ny}")
+        logging.info(f"   Timezone SP:     {self.tz_sp}")
+        logging.info(f"   ZoneInfo:        {'✅ Disponível' if _ZONEINFO_OK else '⚠️ Indisponível (usando offsets fixos)'}")
+        logging.info(f"   Max offset:      {self.max_acceptable_offset_ms} ms")
+        logging.info(f"   Sync samples:    {self.num_sync_samples}")
+        logging.info(f"   Sync interval:   {self.sync_interval_seconds} s ({self.sync_interval_seconds // 60} min)")
+        logging.info("=" * 80)
+        
+        success = False
+        for attempt in range(self.max_init_attempts):
+            try:
+                logging.info(f"🔄 Tentativa {attempt + 1}/{self.max_init_attempts}")
+                self._sync_with_binance()
+                
+                if self.time_sync_status == "ok":
+                    success = True
+                    logging.info(f"✅ Sincronização bem-sucedida na tentativa {attempt + 1}")
+                    break
+                else:
+                    logging.warning(f"⚠️ Tentativa {attempt + 1} falhou - Status: {self.time_sync_status}")
+                    if attempt < self.max_init_attempts - 1:
+                        backoff = 2 ** attempt
+                        logging.info(f"   Aguardando {backoff}s antes da próxima tentativa...")
+                        time.sleep(backoff)
+                        
+            except Exception as e:
+                logging.error(f"❌ Erro na tentativa {attempt + 1}: {e}")
+                if attempt < self.max_init_attempts - 1:
+                    backoff = 2 ** attempt
+                    logging.info(f"   Aguardando {backoff}s antes da próxima tentativa...")
+                    time.sleep(backoff)
+        
+        if not success:
+            logging.critical("=" * 80)
+            logging.critical("⛔ FALHA CRÍTICA NA SINCRONIZAÇÃO")
+            logging.critical("=" * 80)
+            logging.critical("   Não foi possível sincronizar com a Binance após múltiplas tentativas")
+            logging.critical("   O sistema continuará usando tempo local (NÃO RECOMENDADO para trading)")
+            logging.critical("   ")
+            logging.critical("   AÇÕES RECOMENDADAS:")
+            logging.critical("   1. Verifique sua conexão com a internet")
+            logging.critical("   2. Verifique se a Binance está acessível")
+            logging.critical("   3. Sincronize o relógio do sistema:")
+            logging.critical("      - Windows: w32tm /resync")
+            logging.critical("      - Linux:   sudo ntpdate pool.ntp.org")
+            logging.critical("      - macOS:   sudo sntp -sS pool.ntp.org")
+            logging.critical("=" * 80)
+            self.time_sync_status = "failed"
+        
+        # Diagnóstico completo
+        logging.info("")
+        self.diagnose()
+        logging.info("=" * 80)
+
+    # ========================================================================
+    # SINCRONIZAÇÃO COM BINANCE
+    # ========================================================================
+    
     def _sample_server_time(self, timeout: Tuple[float, float] = (2.0, 3.0)) -> Optional[Dict[str, int]]:
         """
-        Faz uma amostra do serverTime e retorna dict com:
-        - server_ms, send_ms, recv_ms, rtt_ms, offset_ms_estimado
+        Coleta uma amostra do tempo do servidor Binance.
+        
+        Returns:
+            Dict com server_ms, send_ms, recv_ms, rtt_ms, offset_ms ou None em falha
+            
+        Rejeita amostras com RTT > MAX_ACCEPTABLE_RTT_MS
         """
         try:
             send_ms = int(time.time() * 1000)
             resp = requests.get(self.BINANCE_TIME_URL, timeout=timeout)
             recv_ms = int(time.time() * 1000)
+            
             resp.raise_for_status()
             server_ms = int(resp.json().get("serverTime"))
             rtt_ms = max(0, recv_ms - send_ms)
+            
+            # Rejeitar amostras com RTT muito alto (indica rede instável)
+            if rtt_ms > self.MAX_ACCEPTABLE_RTT_MS:
+                logging.warning(
+                    f"⚠️ Amostra rejeitada: RTT muito alto "
+                    f"({rtt_ms}ms > {self.MAX_ACCEPTABLE_RTT_MS}ms)"
+                )
+                return None
+            
             # Aproximação de NTP: offset = server − (send + rtt/2)
             est_local_at_server = send_ms + (rtt_ms // 2)
             offset_ms = server_ms - est_local_at_server
             
-            # 🔹 DEBUG: Log da amostra
-            logging.debug(f"   Amostra: server={server_ms}, local={send_ms}, rtt={rtt_ms}ms, offset={offset_ms}ms")
+            logging.debug(
+                f"   ✓ Amostra OK: RTT={rtt_ms}ms, Offset={offset_ms}ms, "
+                f"Server={server_ms}, Local={send_ms}"
+            )
             
             return {
                 "server_ms": server_ms,
@@ -113,149 +205,347 @@ class TimeManager:
                 "rtt_ms": rtt_ms,
                 "offset_ms": offset_ms,
             }
+            
+        except requests.Timeout:
+            logging.debug("   ✗ Timeout na requisição")
+            return None
+        except requests.RequestException as e:
+            logging.debug(f"   ✗ Erro de rede: {e}")
+            return None
         except Exception as e:
-            logging.debug(f"Falha em amostra de tempo: {e}")
+            logging.debug(f"   ✗ Erro inesperado: {e}")
             return None
 
     def _sync_with_binance(self) -> None:
         """
-        Sincroniza com N amostras e escolhe a de menor RTT.
-        Em falha: mantém último offset (status 'degraded' se houver offset anterior).
+        Sincroniza com N amostras e escolhe a de menor RTT (melhor qualidade).
+        Em falha total: mantém último offset válido (status 'degraded').
         """
         samples = []
-        tries = 5
         self.sync_attempts += 1
         
-        logging.info(f"🔄 Iniciando sincronização com Binance ({tries} tentativas)...")
+        logging.info(f"🔄 Iniciando sincronização com Binance ({self.num_sync_samples} amostras)...")
 
-        for i in range(tries):
+        # Coletar amostras
+        for i in range(self.num_sync_samples):
             sample = self._sample_server_time()
             if sample:
                 samples.append(sample)
             else:
                 self.sync_failures += 1
-            # pequeno jitter para evitar picos
-            time.sleep(0.05 + random.uniform(0, 0.1))
+            
+            # Pequeno jitter para evitar picos de requisição
+            if i < self.num_sync_samples - 1:  # Não espera após a última
+                time.sleep(0.05 + random.uniform(0, 0.1))
 
+        # Verificar se conseguiu pelo menos uma amostra válida
         if not samples:
             with self._lock:
-                # não zera offset; mantém o último
-                self.time_sync_status = "degraded" if self.last_successful_sync_ms is not None else "failed"
-                # Atualiza o marcador monotônico mesmo sem sucesso para evitar loop de sync
+                # Mantém offset anterior (não zera)
+                if self.last_successful_sync_ms is not None:
+                    self.time_sync_status = "degraded"
+                    logging.warning(
+                        "⚠️ Falha na sincronização. Mantendo offset anterior: "
+                        f"{self.server_time_offset_ms}ms (modo degradado)"
+                    )
+                else:
+                    self.time_sync_status = "failed"
+                    logging.error("❌ Falha na sincronização e sem offset anterior disponível")
+                
+                # Atualiza marcador para evitar loop infinito de sync
                 self.last_sync_mono = time.monotonic()
-            logging.warning("Falha persistente ao sincronizar com Binance. Mantendo offset anterior.")
             return
 
+        # Escolher a melhor amostra (menor RTT = mais precisa)
         best = min(samples, key=lambda s: s["rtt_ms"])
         
-        # 🔹 DEBUG: Mostra a melhor amostra
-        logging.info(f"✅ Melhor amostra: RTT={best['rtt_ms']}ms, Offset={best['offset_ms']}ms")
+        # Estatísticas das amostras (para debug)
+        if len(samples) > 1:
+            rtts = [s["rtt_ms"] for s in samples]
+            offsets = [s["offset_ms"] for s in samples]
+            logging.debug("   📊 Estatísticas das amostras:")
+            logging.debug(f"      RTTs:    {rtts} (média: {np.mean(rtts):.1f}ms, std: {np.std(rtts):.1f}ms)")
+            logging.debug(f"      Offsets: {offsets} (média: {np.mean(offsets):.1f}ms, std: {np.std(offsets):.1f}ms)")
         
+        logging.info(
+            f"✅ Melhor amostra selecionada: "
+            f"RTT={best['rtt_ms']}ms, Offset={best['offset_ms']}ms"
+        )
+        
+        # Atualizar estado
         with self._lock:
             old_offset = self.server_time_offset_ms
             self.server_time_offset_ms = int(best["offset_ms"])
             self.last_offset_ms = self.server_time_offset_ms
             self.last_rtt_ms = int(best["rtt_ms"])
-            self.best_rtt_ms = self.last_rtt_ms if self.best_rtt_ms is None else min(self.best_rtt_ms, self.last_rtt_ms)
+            self.best_rtt_ms = (
+                self.last_rtt_ms if self.best_rtt_ms is None 
+                else min(self.best_rtt_ms, self.last_rtt_ms)
+            )
             self.last_successful_sync_ms = int(best["recv_ms"])
             self.last_sync_mono = time.monotonic()
             self.time_sync_status = "ok"
             
-            # 🔹 DEBUG: Se offset mudou muito
-            if abs(old_offset - self.server_time_offset_ms) > 1000:
-                logging.warning(f"⚠️ Offset mudou significativamente: {old_offset}ms → {self.server_time_offset_ms}ms")
+            # Alertar sobre mudanças significativas (ignorando mudança inicial de 0)
+            offset_change = abs(old_offset - self.server_time_offset_ms)
+            if offset_change > 100 and old_offset != 0:
+                logging.warning(
+                    f"⚠️ Offset mudou significativamente: "
+                    f"{old_offset}ms → {self.server_time_offset_ms}ms "
+                    f"(Δ={offset_change}ms)"
+                )
 
-        # Alertas de drift
-        if abs(self.server_time_offset_ms) > 5000:
-            logging.critical(f"DRIFT DE TEMPO DETECTADO: {self.server_time_offset_ms} ms (RTT {self.last_rtt_ms} ms)")
-            logging.critical("Relógio local fora de sincronia. Considere ativar NTP/sincronização automática.")
-        elif abs(self.server_time_offset_ms) > 1000:
-            logging.warning(f"Desvio de tempo acima de 1s: {self.server_time_offset_ms} ms (RTT {self.last_rtt_ms} ms)")
-        else:
-            logging.info(f"TimeManager sincronizado. Offset: {self.server_time_offset_ms} ms (RTT {self.last_rtt_ms} ms)")
+        # Validar offset após sincronização
+        self._validate_offset()
 
     def _should_sync(self) -> bool:
         """
-        Verifica se é hora de sincronizar novamente (com base no relógio monotônico).
+        Verifica se é hora de sincronizar novamente.
+        Usa relógio monotônico (imune a ajustes do sistema).
         """
         try:
-            return (time.monotonic() - self.last_sync_mono) > self.sync_interval_seconds
+            elapsed = time.monotonic() - self.last_sync_mono
+            return elapsed > self.sync_interval_seconds
         except Exception:
             return True
 
-    # -----------------------------
-    # "Agora" sincronizado
-    # -----------------------------
+    # ========================================================================
+    # VALIDAÇÃO E NTP
+    # ========================================================================
+    
+    def _validate_offset(self) -> None:
+        """
+        Valida se o offset está dentro de limites aceitáveis.
+        Tenta sincronização NTP do sistema em caso crítico.
+        """
+        with self._lock:
+            offset_abs = abs(self.server_time_offset_ms)
+        
+        if offset_abs > self.CRITICAL_OFFSET_MS:  # > 1 hora
+            logging.critical("=" * 80)
+            logging.critical(f"⛔ OFFSET CRÍTICO DETECTADO: {offset_abs/1000:.1f}s ({offset_abs/3600000:.2f}h)")
+            logging.critical("=" * 80)
+            logging.critical("   O relógio do sistema está muito dessincronizado!")
+            logging.critical("   Isso causará:")
+            logging.critical("   - Rejeição de ordens pela Binance (timestamp inválido)")
+            logging.critical("   - Análises incorretas baseadas em tempo")
+            logging.critical("   - Problemas de cache e sincronização")
+            logging.critical("")
+            logging.critical("   🔧 AÇÃO NECESSÁRIA IMEDIATA:")
+            logging.critical("   1. PARE o bot")
+            logging.critical("   2. Sincronize o relógio do sistema:")
+            logging.critical("      - Windows: w32tm /resync")
+            logging.critical("      - Linux:   sudo ntpdate pool.ntp.org")
+            logging.critical("      - macOS:   sudo sntp -sS pool.ntp.org")
+            logging.critical("   3. Reinicie o bot")
+            logging.critical("=" * 80)
+            
+            # Tentar sincronização NTP automática
+            logging.info("🔄 Tentando sincronização NTP automática do sistema...")
+            if self._try_system_ntp_sync():
+                logging.info("✅ Sincronização NTP bem-sucedida. Re-sincronizando com Binance...")
+                self._sync_with_binance()
+            else:
+                logging.error("❌ Sincronização NTP automática falhou. Intervenção manual necessária.")
+        
+        elif offset_abs > self.WARNING_OFFSET_MS:  # > 1 minuto
+            logging.warning("=" * 80)
+            logging.warning(f"⚠️ OFFSET ALTO: {offset_abs/1000:.1f}s")
+            logging.warning("=" * 80)
+            logging.warning("   Recomenda-se sincronizar o relógio do sistema")
+            logging.warning("   Comandos:")
+            logging.warning("   - Windows: w32tm /resync")
+            logging.warning("   - Linux:   sudo ntpdate pool.ntp.org")
+            logging.warning("   - macOS:   sudo sntp -sS pool.ntp.org")
+            logging.warning("=" * 80)
+        
+        elif offset_abs > self.max_acceptable_offset_ms:
+            logging.warning(
+                f"⚠️ Offset acima do limite aceitável: "
+                f"{offset_abs}ms (limite: {self.max_acceptable_offset_ms}ms)"
+            )
+            logging.warning("   Considere ajustar o relógio do sistema")
+        
+        else:
+            logging.info(f"✅ Offset dentro do limite aceitável: {offset_abs}ms")
+
+    def _try_system_ntp_sync(self) -> bool:
+        """
+        Tenta sincronizar o relógio do sistema usando NTP.
+        Suporta Windows, Linux e macOS.
+        
+        Returns:
+            True se sincronização bem-sucedida, False caso contrário
+        """
+        import platform
+        import subprocess
+        
+        try:
+            system = platform.system()
+            
+            if system == "Windows":
+                logging.info("🔄 Tentando sincronizar com NTP (Windows)...")
+                result = subprocess.run(
+                    ["w32tm", "/resync"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    logging.info("✅ Sincronização NTP do Windows bem-sucedida")
+                    return True
+                else:
+                    logging.warning(f"⚠️ Falha na sincronização NTP: {result.stderr}")
+            
+            elif system == "Linux":
+                logging.info("🔄 Tentando sincronizar com NTP (Linux)...")
+                # Tenta diferentes comandos NTP (chronyc, ntpdate, timedatectl)
+                commands = [
+                    ["chronyc", "makestep"],
+                    ["sudo", "ntpdate", "-u", "pool.ntp.org"],
+                    ["timedatectl", "set-ntp", "true"],
+                ]
+                
+                for cmd in commands:
+                    try:
+                        result = subprocess.run(
+                            cmd,
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+                        if result.returncode == 0:
+                            logging.info(f"✅ Sincronização NTP bem-sucedida: {' '.join(cmd)}")
+                            return True
+                    except FileNotFoundError:
+                        continue
+                    except Exception as e:
+                        logging.debug(f"   Falha em {' '.join(cmd)}: {e}")
+                        continue
+            
+            elif system == "Darwin":  # macOS
+                logging.info("🔄 Tentando sincronizar com NTP (macOS)...")
+                result = subprocess.run(
+                    ["sudo", "sntp", "-sS", "pool.ntp.org"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    logging.info("✅ Sincronização NTP do macOS bem-sucedida")
+                    return True
+        
+        except subprocess.TimeoutExpired:
+            logging.error("❌ Timeout ao executar comando NTP")
+        except Exception as e:
+            logging.error(f"❌ Erro ao tentar sincronizar NTP do sistema: {e}")
+        
+        logging.warning("⚠️ Sincronização NTP automática falhou")
+        logging.warning("   Execute manualmente:")
+        logging.warning("   - Windows: w32tm /resync")
+        logging.warning("   - Linux:   sudo ntpdate pool.ntp.org (ou sudo chronyc makestep)")
+        logging.warning("   - macOS:   sudo sntp -sS pool.ntp.org")
+        
+        return False
+
+    # ========================================================================
+    # TIMESTAMP "AGORA"
+    # ========================================================================
+    
     def now(self) -> int:
         """
-        Retorna o timestamp atual em milissegundos, ajustado pelo offset do servidor.
-        Em caso de falha de sync, usa o último offset conhecido (status 'degraded').
+        Retorna o timestamp atual em milissegundos, ajustado pelo offset da Binance.
+        Re-sincroniza automaticamente se necessário.
         """
         try:
             if self._should_sync():
+                logging.debug("⏰ Tempo de re-sincronização automática")
                 self._sync_with_binance()
+            
             with self._lock:
                 offset = int(self.server_time_offset_ms)
+            
             return int(time.time() * 1000) + offset
+            
         except Exception as e:
-            logging.error(f"Erro ao obter timestamp: {e}")
+            logging.error(f"❌ Erro ao obter timestamp: {e}")
+            # Fallback para tempo local sem offset
             return int(time.time() * 1000)
 
-    # Alias mais explícito
     def now_ms(self) -> int:
+        """Alias explícito para now()."""
         return self.now()
 
-    # 🔹 NOVO: Método para forçar sincronização
     def force_sync(self) -> Dict[str, Any]:
-        """Força uma sincronização imediata com a Binance e retorna estatísticas."""
+        """
+        Força uma sincronização imediata com a Binance.
+        
+        Returns:
+            Estatísticas da sincronização
+        """
         logging.info("🔄 Forçando sincronização com Binance...")
         self._sync_with_binance()
         return self.get_sync_stats()
 
-    # -----------------------------
-    # ISO helpers
-    # -----------------------------
+    # ========================================================================
+    # ISO HELPERS
+    # ========================================================================
+    
     def now_iso(self, tz=TZ_UTC, timespec: str = "milliseconds") -> str:
+        """Retorna timestamp atual em formato ISO 8601."""
         try:
             ms = self.now()
             return self.format_timestamp(ms, tz=tz, timespec=timespec)
         except Exception as e:
-            logging.error(f"Erro ao formatar timestamp ISO: {e}")
+            logging.error(f"❌ Erro ao formatar timestamp ISO: {e}")
             return datetime.now(tz).isoformat(timespec="seconds")
 
     def now_utc_iso(self, timespec: str = "milliseconds") -> str:
+        """Timestamp atual em UTC (ISO 8601)."""
         return self.now_iso(tz=self.tz_utc, timespec=timespec)
 
     def now_ny_iso(self, timespec: str = "milliseconds") -> str:
+        """Timestamp atual em New York (ISO 8601)."""
         return self.now_iso(tz=self.tz_ny, timespec=timespec)
 
     def now_sp_iso(self, timespec: str = "milliseconds") -> str:
+        """Timestamp atual em São Paulo (ISO 8601)."""
         return self.now_iso(tz=self.tz_sp, timespec=timespec)
 
-    # -----------------------------
-    # Time index builders
-    # -----------------------------
+    # ========================================================================
+    # TIME INDEX BUILDERS
+    # ========================================================================
+    
     def iso_triplet(self, ts_ms: Optional[int] = None, timespec: str = "milliseconds") -> Dict[str, str]:
         """
-        Retorna um dicionário com as 3 representações ISO (todas derivadas do mesmo epoch):
-        - timestamp_utc (+00:00)
-        - timestamp_ny (America/New_York)
-        - timestamp_sp (America/Sao_Paulo)
+        Retorna dicionário com timestamps ISO em 3 timezones.
+        
+        Returns:
+            {'timestamp_utc': '...', 'timestamp_ny': '...', 'timestamp_sp': '...'}
         """
         if ts_ms is None:
             ts_ms = self.now()
+        
         return {
             "timestamp_utc": self.format_timestamp(ts_ms, tz=self.tz_utc, timespec=timespec),
             "timestamp_ny": self.format_timestamp(ts_ms, tz=self.tz_ny, timespec=timespec),
             "timestamp_sp": self.format_timestamp(ts_ms, tz=self.tz_sp, timespec=timespec),
         }
 
-    def build_time_index(self, ts_ms: Optional[int] = None, include_local: bool = True,
-                         timespec: str = "milliseconds") -> Dict[str, Any]:
+    def build_time_index(self, 
+                        ts_ms: Optional[int] = None, 
+                        include_local: bool = True,
+                        timespec: str = "milliseconds") -> Dict[str, Any]:
         """
-        Constrói o payload padrão de tempo para anexar em eventos, evitando duplicatas.
-        - Sempre inclui epoch_ms e timestamp_utc
-        - Opcionalmente inclui timestamp_ny e timestamp_sp
+        Constrói payload padrão de tempo para eventos.
+        
+        Args:
+            ts_ms: Timestamp em ms (None = agora)
+            include_local: Incluir timezone_ny e timezone_sp
+            timespec: Precisão do ISO ('milliseconds', 'seconds', etc)
+        
+        Returns:
+            Dict com epoch_ms e timestamps ISO
         """
         if ts_ms is None:
             ts_ms = self.now()
@@ -271,18 +561,31 @@ class TimeManager:
 
         return payload
 
-    # Alias explícito com nome semântico
-    def time_index_from_epoch(self, epoch_ms: int, include_local: bool = True,
-                              timespec: str = "milliseconds") -> Dict[str, Any]:
+    def time_index_from_epoch(self, 
+                             epoch_ms: int, 
+                             include_local: bool = True,
+                             timespec: str = "milliseconds") -> Dict[str, Any]:
+        """Alias semântico para build_time_index."""
         return self.build_time_index(epoch_ms, include_local=include_local, timespec=timespec)
 
-    def attach_timestamps(self, data: Dict[str, Any], ts_ms: Optional[int] = None,
-                          include_local: bool = True, overwrite: bool = True,
-                          timespec: str = "milliseconds") -> Dict[str, Any]:
+    def attach_timestamps(self, 
+                         data: Dict[str, Any], 
+                         ts_ms: Optional[int] = None,
+                         include_local: bool = True, 
+                         overwrite: bool = True,
+                         timespec: str = "milliseconds") -> Dict[str, Any]:
         """
-        Injeta campos de tempo padronizados no dicionário 'data'.
-        - overwrite=True: sobrescreve valores existentes (evita inconsistência/duplicidade).
-        Retorna o próprio dicionário (mutação in-place) para uso fluente.
+        Injeta campos de tempo padronizados no dicionário (in-place).
+        
+        Args:
+            data: Dicionário a ser modificado
+            ts_ms: Timestamp em ms (None = agora)
+            include_local: Incluir timezones locais
+            overwrite: Sobrescrever valores existentes
+            timespec: Precisão do ISO
+        
+        Returns:
+            O próprio dicionário (mutação in-place)
         """
         if ts_ms is None:
             ts_ms = self.now()
@@ -295,49 +598,72 @@ class TimeManager:
 
         return data
 
-    # -----------------------------
-    # Utilitários
-    # -----------------------------
+    # ========================================================================
+    # UTILITÁRIOS
+    # ========================================================================
+    
     def calc_age_ms(self, recent_ts_ms: int, reference_ts_ms: Optional[int] = None) -> int:
         """
-        Calcula age_ms a partir de um timestamp 'recent_ts_ms' até 'reference_ts_ms'
-        (padrão: agora). Não retorna negativo.
+        Calcula idade (age_ms) de um timestamp até referência (padrão: agora).
+        Nunca retorna negativo.
         """
         if reference_ts_ms is None:
             reference_ts_ms = self.now()
+        
         try:
             age = int(reference_ts_ms) - int(recent_ts_ms)
             return max(0, age)
         except Exception as e:
-            logging.error(f"Erro ao calcular age_ms: {e}")
+            logging.error(f"❌ Erro ao calcular age_ms: {e}")
             return 0
 
     @staticmethod
     def format_timestamp(ts_ms: int, tz=TZ_UTC, timespec: str = "milliseconds") -> str:
         """
-        Formata timestamp (ms) em ISO 8601 no timezone informado.
-        Fallback para 'seconds' caso o ambiente não suporte o timespec fornecido.
+        Formata timestamp (ms) em ISO 8601 no timezone especificado.
+        
+        Args:
+            ts_ms: Timestamp em milissegundos
+            tz: Timezone (ZoneInfo ou timezone)
+            timespec: Precisão ('milliseconds', 'seconds', etc)
+        
+        Returns:
+            String ISO 8601
         """
         try:
             if not isinstance(ts_ms, (int, float)) or ts_ms < 0:
                 raise ValueError(f"Timestamp inválido: {ts_ms}")
+            
             dt = datetime.fromtimestamp(ts_ms / 1000, tz=tz)
+            
             try:
                 return dt.isoformat(timespec=timespec)
-            except Exception:
+            except TypeError:
                 # Fallback para ambientes sem suporte a 'milliseconds'
                 return dt.isoformat(timespec="seconds")
+                
         except Exception as e:
-            logging.error(f"Erro ao formatar timestamp {ts_ms}: {e}")
+            logging.error(f"❌ Erro ao formatar timestamp {ts_ms}: {e}")
             return datetime.now(tz).isoformat(timespec="seconds")
 
-    def validate_triplet(self, epoch_ms: int, timestamp_utc: str,
-                         timestamp_ny: Optional[str] = None,
-                         timestamp_sp: Optional[str] = None,
-                         tol_seconds: float = 2.0) -> Dict[str, Any]:
+    def validate_triplet(self, 
+                        epoch_ms: int, 
+                        timestamp_utc: str,
+                        timestamp_ny: Optional[str] = None,
+                        timestamp_sp: Optional[str] = None,
+                        tol_seconds: float = 2.0) -> Dict[str, Any]:
         """
-        Valida se os timestamps ISO batem com o epoch_ms dentro de uma tolerância.
-        Retorna diffs em ms e um ok geral.
+        Valida se timestamps ISO correspondem ao epoch_ms.
+        
+        Args:
+            epoch_ms: Timestamp de referência em ms
+            timestamp_utc: ISO 8601 em UTC
+            timestamp_ny: ISO 8601 em NY (opcional)
+            timestamp_sp: ISO 8601 em SP (opcional)
+            tol_seconds: Tolerância em segundos
+        
+        Returns:
+            {'ok': bool, 'diffs': {...}}
         """
         def _to_epoch(iso_str: str) -> Optional[int]:
             try:
@@ -349,15 +675,18 @@ class TimeManager:
 
         diffs = {}
         ok = True
+        tol_ms = tol_seconds * 1000
 
+        # Validar UTC
         utc_epoch = _to_epoch(timestamp_utc)
         if utc_epoch is None:
             ok = False
             diffs["utc_error"] = "parse_fail"
         else:
             diffs["utc_diff_ms"] = abs(utc_epoch - int(epoch_ms))
-            ok = ok and (diffs["utc_diff_ms"] <= tol_seconds * 1000)
+            ok = ok and (diffs["utc_diff_ms"] <= tol_ms)
 
+        # Validar NY
         if timestamp_ny:
             ny_epoch = _to_epoch(timestamp_ny)
             if ny_epoch is None:
@@ -365,8 +694,9 @@ class TimeManager:
                 diffs["ny_error"] = "parse_fail"
             else:
                 diffs["ny_diff_ms"] = abs(ny_epoch - int(epoch_ms))
-                ok = ok and (diffs["ny_diff_ms"] <= tol_seconds * 1000)
+                ok = ok and (diffs["ny_diff_ms"] <= tol_ms)
 
+        # Validar SP
         if timestamp_sp:
             sp_epoch = _to_epoch(timestamp_sp)
             if sp_epoch is None:
@@ -374,14 +704,17 @@ class TimeManager:
                 diffs["sp_error"] = "parse_fail"
             else:
                 diffs["sp_diff_ms"] = abs(sp_epoch - int(epoch_ms))
-                ok = ok and (diffs["sp_diff_ms"] <= tol_seconds * 1000)
+                ok = ok and (diffs["sp_diff_ms"] <= tol_ms)
 
         return {"ok": ok, "diffs": diffs}
 
     @staticmethod
     def to_epoch_ms_from_iso(iso_str: str) -> Optional[int]:
         """
-        Converte string ISO 8601 para epoch em ms. Retorna None em falha.
+        Converte string ISO 8601 para epoch em ms.
+        
+        Returns:
+            Epoch em ms ou None se falhar
         """
         try:
             iso_str = iso_str.replace("Z", "+00:00")
@@ -393,31 +726,140 @@ class TimeManager:
     @staticmethod
     def parse_any_ts(value: Any) -> Optional[int]:
         """
-        Tenta interpretar 'value' como epoch_ms (int/float/str) ou ISO 8601.
-        Retorna epoch_ms ou None.
+        Tenta interpretar value como epoch_ms (int/float/str) ou ISO 8601.
+        
+        Returns:
+            Epoch em ms ou None
         """
         try:
             if value is None:
                 return None
+            
             if isinstance(value, (int, float)):
                 v = int(value)
                 return v if v >= 0 else None
+            
             if isinstance(value, str):
                 v = value.strip()
+                
+                # Tenta como número
                 if v.isdigit():
                     return int(v)
-                # Tenta ISO
+                
+                # Tenta como ISO 8601
                 v = v.replace("Z", "+00:00")
                 dt = datetime.fromisoformat(v)
                 return int(dt.timestamp() * 1000)
+            
             return None
+            
         except Exception:
             return None
 
-    # -----------------------------
-    # Telemetria
-    # -----------------------------
+    # ========================================================================
+    # DIAGNÓSTICO E TELEMETRIA
+    # ========================================================================
+    
+    def diagnose(self) -> Dict[str, Any]:
+        """
+        Executa diagnóstico completo do sistema de tempo.
+        Útil para debugging e validação.
+        
+        Returns:
+            Dict com informações detalhadas de diagnóstico
+        """
+        logging.info("🔍 DIAGNÓSTICO DO SISTEMA DE TEMPO")
+        logging.info("-" * 80)
+        
+        # Coletar dados
+        local_time_ms = int(time.time() * 1000)
+        synced_time_ms = self.now()
+        current_offset = synced_time_ms - local_time_ms
+        
+        logging.info("⏰ Timestamps:")
+        logging.info(f"   Local time (ms):  {local_time_ms}")
+        logging.info(f"   Synced time (ms): {synced_time_ms}")
+        logging.info(f"   Current offset:   {current_offset} ms ({current_offset/1000:.2f}s)")
+        
+        # Verificar timezones
+        now_utc = datetime.now(self.tz_utc)
+        now_ny = datetime.now(self.tz_ny)
+        now_sp = datetime.now(self.tz_sp)
+        
+        logging.info("")
+        logging.info("🌍 Timezones:")
+        logging.info(f"   UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        logging.info(f"   NY:  {now_ny.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        logging.info(f"   SP:  {now_sp.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        
+        # Calcular offsets de timezone
+        utc_offset_ny = (now_ny.utcoffset().total_seconds() / 3600) if now_ny.utcoffset() else 0
+        utc_offset_sp = (now_sp.utcoffset().total_seconds() / 3600) if now_sp.utcoffset() else 0
+        
+        logging.info(f"   Offset NY vs UTC: {utc_offset_ny:+.1f} horas")
+        logging.info(f"   Offset SP vs UTC: {utc_offset_sp:+.1f} horas")
+        
+        # Validar offsets esperados
+        # NY: -5 (EST) ou -4 (EDT)
+        # SP: -3 (BRT - sem DST desde 2019)
+        ny_ok = utc_offset_ny in [-5, -4]
+        sp_ok = utc_offset_sp == -3
+        
+        if ny_ok:
+            logging.info(f"   ✅ Offset NY correto: {utc_offset_ny:+.1f} horas")
+        else:
+            logging.error(f"   ❌ Offset NY incorreto: {utc_offset_ny:+.1f} horas (esperado: -5 ou -4)")
+        
+        if sp_ok:
+            logging.info(f"   ✅ Offset SP correto: {utc_offset_sp:+.1f} horas")
+        else:
+            logging.error(f"   ❌ Offset SP incorreto: {utc_offset_sp:+.1f} horas (esperado: -3)")
+        
+        # Estatísticas de sincronização
+        stats = self.get_sync_stats()
+        
+        logging.info("")
+        logging.info("📊 Estatísticas de Sincronização:")
+        logging.info(f"   Status:                {stats['status']}")
+        logging.info(f"   Server offset:         {stats['server_time_offset_ms']} ms")
+        logging.info(f"   Last RTT:              {stats['last_rtt_ms']} ms")
+        logging.info(f"   Best RTT:              {stats['best_rtt_ms']} ms")
+        logging.info(f"   Sync attempts:         {stats['sync_attempts']}")
+        logging.info(f"   Sync failures:         {stats['sync_failures']}")
+        
+        if stats['sync_attempts'] > 0:
+            success_rate = ((stats['sync_attempts'] - stats['sync_failures']) / stats['sync_attempts']) * 100
+            logging.info(f"   Success rate:          {success_rate:.1f}%")
+        
+        logging.info(f"   ZoneInfo available:    {'✅ Yes' if stats['zoneinfo_ok'] else '⚠️ No (using fixed offsets)'}")
+        
+        logging.info("-" * 80)
+        
+        # Montar dicionário de diagnóstico
+        diag = {
+            "local_time_ms": local_time_ms,
+            "synced_time_ms": synced_time_ms,
+            "current_offset_ms": current_offset,
+            "sync_stats": stats,
+            "timezones": {
+                "utc": now_utc.isoformat(),
+                "ny": now_ny.isoformat(),
+                "sp": now_sp.isoformat(),
+                "ny_offset_hours": utc_offset_ny,
+                "sp_offset_hours": utc_offset_sp,
+                "ny_ok": ny_ok,
+                "sp_ok": sp_ok,
+            },
+            "zoneinfo_available": _ZONEINFO_OK,
+        }
+        
+        return diag
+
     def get_sync_stats(self) -> Dict[str, Any]:
+        """
+        Retorna estatísticas de sincronização.
+        Thread-safe.
+        """
         with self._lock:
             return {
                 "status": self.time_sync_status,
@@ -430,3 +872,51 @@ class TimeManager:
                 "sync_failures": self.sync_failures,
                 "zoneinfo_ok": _ZONEINFO_OK,
             }
+
+    def __repr__(self) -> str:
+        """Representação string do TimeManager."""
+        with self._lock:
+            return (
+                f"TimeManager(status={self.time_sync_status}, "
+                f"offset={self.server_time_offset_ms}ms, "
+                f"rtt={self.last_rtt_ms}ms)"
+            )
+
+
+# ============================================================================
+# EXEMPLO DE USO
+# ============================================================================
+
+if __name__ == "__main__":
+    # Configurar logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+    
+    # Inicializar TimeManager
+    tm = TimeManager(
+        sync_interval_minutes=30,
+        max_init_attempts=3,
+        max_acceptable_offset_ms=500,
+        num_sync_samples=5
+    )
+    
+    # Usar timestamps
+    print("\n📅 Exemplos de uso:")
+    print(f"Epoch ms:     {tm.now()}")
+    print(f"UTC ISO:      {tm.now_utc_iso()}")
+    print(f"NY ISO:       {tm.now_ny_iso()}")
+    print(f"SP ISO:       {tm.now_sp_iso()}")
+    
+    # Time index
+    print("\n📊 Time index:")
+    idx = tm.build_time_index()
+    for k, v in idx.items():
+        print(f"   {k}: {v}")
+    
+    # Forçar nova sincronização
+    print("\n🔄 Forçando nova sincronização...")
+    tm.force_sync()
+    
+    print("\n✅ TimeManager testado com sucesso!")

@@ -1,4 +1,17 @@
-# ai_analyzer_qwen.py - Analisador de IA com formatação padronizada
+# ai_analyzer_qwen.py v2.0.0 - Analisador de IA com validação robusta
+"""
+AI Analyzer para eventos de mercado com validação de dados.
+
+🔹 CORREÇÕES v2.0.0:
+  ✅ Valida orderbook zerado (bid/ask = $0)
+  ✅ Detecta contradições em order flow (volumes zero mas ratio existe)
+  ✅ Valida ML features (tick_rule_sum, order_book_slope)
+  ✅ Warnings claros para dados inválidos/quebrados
+  ✅ System prompt corrigido (não inventar dados)
+  ✅ Instruções claras para IA (usar apenas dados válidos)
+  ✅ Formatação padronizada mantida
+"""
+
 import logging
 import os
 import random
@@ -21,7 +34,7 @@ from format_utils import (
 # config é opcional (permite pegar tokens e modelo)
 try:
     import config as app_config
-except Exception:  # pragma: no cover
+except Exception:
     app_config = None
 
 # Tentativa de importar OpenAI (modo compatível)
@@ -35,7 +48,7 @@ except Exception:
 # Tentativa de importar DashScope (modo nativo)
 try:
     from dashscope import Generation
-    import dashscope  # para setar api_key
+    import dashscope
     DASHSCOPE_AVAILABLE = True
 except Exception:
     DASHSCOPE_AVAILABLE = False
@@ -43,7 +56,7 @@ except Exception:
 
 from time_manager import TimeManager
 
-load_dotenv()  # Carrega variáveis de ambiente do arquivo .env, se existir
+load_dotenv()
 
 
 def _extract_dashscope_text(resp) -> str:
@@ -85,6 +98,16 @@ def _extract_dashscope_text(resp) -> str:
 
 
 class AIAnalyzer:
+    """
+    Analisador de IA com validação robusta de dados.
+    
+    🔹 v2.0.0:
+      - Valida dados antes de enviar para IA
+      - Detecta contradições (volumes zero mas ratio existe)
+      - Marca dados inválidos com warnings claros
+      - Instrui IA a NÃO usar dados marcados como inválidos
+    """
+    
     def __init__(self):
         self.client: Optional[OpenAI] = None
         self.enabled = False
@@ -103,19 +126,21 @@ class AIAnalyzer:
         self.connection_failed_count = 0
         self.max_failures_before_mock = 3
 
-        logging.info("🧠 IA Analyzer Qwen inicializada - Análise avançada ativada")
+        logging.info("🧠 IA Analyzer Qwen v2.0.0 inicializada - Validação robusta ativada")
         try:
             self._initialize_api()
         except Exception as e:
             logging.warning(f"Falha ao inicializar provedores de IA: {e}. Usando mock.")
             self.mode = None
-            self.enabled = True  # mock ligado
+            self.enabled = True
 
     # ---------------------------
     # Inicialização de provedores
     # ---------------------------
+    
     def _initialize_api(self):
-        # 1) OpenAI (compatível). Usa env OPENAI_* ou base compatível (ex: DashScope compat-mode)
+        """Inicializa provedores de IA (OpenAI ou DashScope)."""
+        # 1) OpenAI (compatível)
         if OPENAI_AVAILABLE:
             try:
                 self.client = OpenAI()
@@ -127,7 +152,6 @@ class AIAnalyzer:
                 logging.warning(f"OpenAI indisponível: {e}")
 
         # 2) DashScope (nativo)
-        # Lê a chave *exclusivamente* da variável de ambiente
         token = os.getenv("DASHSCOPE_API_KEY")
 
         if DASHSCOPE_AVAILABLE and token:
@@ -140,9 +164,9 @@ class AIAnalyzer:
             except Exception as e:
                 logging.warning(f"DashScope indisponível: {e}")
         elif DASHSCOPE_AVAILABLE and not token:
-            logging.warning("DashScope API key não encontrada (variável DASHSCOPE_API_KEY). Mantendo modo mock.")
+            logging.warning("DashScope API key não encontrada (variável DASHSCOPE_API_KEY).")
 
-        # 3) Mock (sem provedores externos)
+        # 3) Mock
         self.mode = None
         self.enabled = True
         logging.info("🔧 Modo MOCK ativado (sem provedores externos).")
@@ -150,11 +174,14 @@ class AIAnalyzer:
     # ---------------------------
     # Healthcheck de conexão
     # ---------------------------
+    
     def _should_test_connection(self) -> bool:
+        """Verifica se deve testar conexão."""
         now = time.time()
         return (now - self.last_test_time) >= self.test_interval_seconds
 
     def _test_connection(self) -> bool:
+        """Testa conexão com IA."""
         if self.mode is None and not self.client:
             try:
                 self._initialize_api()
@@ -200,38 +227,48 @@ class AIAnalyzer:
             return False
 
     # ---------------------------
-    # Prompt builder com formatação padronizada
+    # 🆕 Prompt builder com validação robusta
     # ---------------------------
+    
     def _create_prompt(self, event_data: Dict[str, Any]) -> str:
+        """
+        Cria prompt para IA com validação de dados.
+        
+        🔹 v2.0.0:
+          - Valida orderbook zerado
+          - Detecta contradições em volumes
+          - Marca dados inválidos com ⚠️
+          - Instrui IA a não usar dados marcados
+        """
         # Campos básicos
         tipo_evento = event_data.get("tipo_evento", "N/A")
         ativo = event_data.get("ativo") or event_data.get("symbol") or "N/A"
         descricao = event_data.get("descricao", "Sem descrição.")
         
-        # 🔧 VALIDAÇÃO DE CONSISTÊNCIA DELTA vs VOLUMES
+        # 🆕 VALIDAÇÃO DE CONSISTÊNCIA DELTA vs VOLUMES
         delta_raw = event_data.get("delta")
         volume_total_raw = event_data.get("volume_total")
         volume_compra_raw = event_data.get("volume_compra")
         volume_venda_raw = event_data.get("volume_venda")
         
-        # Converte valores, mantendo None se ausente
+        # Converte valores
         delta = float(delta_raw) if delta_raw is not None else None
         volume_total = float(volume_total_raw) if volume_total_raw is not None else None
         volume_compra = float(volume_compra_raw) if volume_compra_raw is not None else None
         volume_venda = float(volume_venda_raw) if volume_venda_raw is not None else None
         
-        # Detecta inconsistência: delta significativo mas volumes zerados
+        # 🆕 Detecta inconsistência: delta significativo mas volumes zerados
         if delta is not None and abs(delta) > 1.0:
             if (volume_compra == 0 and volume_venda == 0) or volume_total == 0:
                 logging.warning(
-                    f"⚠️ Inconsistência detectada: delta={delta:.2f} mas volumes zerados. "
+                    f"⚠️ Inconsistência: delta={delta:.2f} mas volumes zerados. "
                     f"Marcando volumes como indisponíveis."
                 )
                 volume_compra = None
                 volume_venda = None
                 volume_total = None
         
-        # Se volumes individuais não batem com total, marca como indisponível
+        # Se volumes individuais não batem com total
         if volume_compra is not None and volume_venda is not None and volume_total is not None:
             calc_total = volume_compra + volume_venda
             if abs(calc_total - volume_total) > 0.01:
@@ -241,6 +278,7 @@ class AIAnalyzer:
                 )
                 volume_compra = None
                 volume_venda = None
+        
         preco = (
             event_data.get("preco_atual")
             or event_data.get("preco_fechamento")
@@ -259,7 +297,7 @@ class AIAnalyzer:
             "\n".join(f"- {tf}: {v}" for tf, v in multi_tf.items()) if multi_tf else "Indisponível."
         )
 
-        # Memória de eventos (se vier anexa)
+        # Memória de eventos
         memoria = event_data.get("event_history", [])
         memoria_str = ""
         if memoria:
@@ -289,7 +327,6 @@ class AIAnalyzer:
             if not isinstance(conflu, list):
                 conflu = [str(conflu)]
             
-            # 🔹 FORMATAÇÃO CORRIGIDA
             zone_low = format_price(z.get('low', 0))
             zone_high = format_price(z.get('high', 0))
             zone_anchor = format_price(z.get('anchor_price', 0))
@@ -316,7 +353,6 @@ class AIAnalyzer:
             except Exception:
                 oi_usd_val = 0.0
             
-            # 🔹 FORMATAÇÃO CORRIGIDA
             oi_line = format_large_number(oi_usd_val) + " USD" if oi_usd_val > 0 else (
                 format_quantity(derivativos.get('open_interest', 0)) + " contratos"
                 if derivativos.get('open_interest') is not None
@@ -338,7 +374,7 @@ class AIAnalyzer:
         else:
             deriv_str = "\n🏦 Derivativos: Indisponível."
 
-        # Volume Profile (Diário) - COM FORMATAÇÃO CORRIGIDA
+        # Volume Profile (Diário)
         vp = (
             event_data.get("historical_vp", {}).get("daily", {})
             or event_data.get("contextual_snapshot", {}).get("historical_vp", {}).get("daily", {})
@@ -346,12 +382,10 @@ class AIAnalyzer:
         )
         if vp:
             try:
-                # 🔹 FORMATAÇÃO CORRIGIDA
                 current_price_for_vp = float(preco)
                 hvns_list = sorted(vp.get("hvns") or [], key=lambda x: abs(x - current_price_for_vp))
                 lvns_list = sorted(vp.get("lvns") or [], key=lambda x: abs(x - current_price_for_vp))
 
-                # Formata as listas com format_price
                 hvn_str = ", ".join([f"${format_price(x)}" for x in hvns_list[:12]]) or "Nenhum"
                 lvn_str = ", ".join([f"${format_price(x)}" for x in lvns_list[:12]]) or "Nenhum"
                 
@@ -413,7 +447,6 @@ class AIAnalyzer:
                 liq_env = market_env.get("liquidity_environment", "Indisponível")
                 risk_sent = market_env.get("risk_sentiment", "Indisponível")
 
-                # 🔹 FORMATAÇÃO CORRIGIDA para correlações
                 def fmt_corr(v):
                     try:
                         return format_delta(float(v))
@@ -446,7 +479,6 @@ class AIAnalyzer:
                 for lvl in ("L1", "L5", "L10", "L25"):
                     d = ob_depth.get(lvl)
                     if isinstance(d, dict) and d:
-                        # 🔹 FORMATAÇÃO CORRIGIDA
                         bids = format_large_number(d.get("bids", 0))
                         asks = format_large_number(d.get("asks", 0))
                         imb = format_scientific(d.get("imbalance", 0), decimals=2)
@@ -468,7 +500,6 @@ class AIAnalyzer:
         spread_str = ""
         if isinstance(spread_ana, dict) and spread_ana:
             try:
-                # 🔹 FORMATAÇÃO CORRIGIDA
                 cs = spread_ana.get("current_spread_bps") or spread_ana.get("spread_bps")
                 avg1 = spread_ana.get("avg_spread_1h")
                 avg24 = spread_ana.get("avg_spread_24h")
@@ -488,7 +519,7 @@ class AIAnalyzer:
             except Exception:
                 spread_str = ""
 
-        # Fluxo contínuo (order flow + participantes)
+        # 🆕 FLUXO CONTÍNUO COM VALIDAÇÃO
         flow = (
             event_data.get("fluxo_continuo")
             or event_data.get("flow_metrics")
@@ -498,36 +529,81 @@ class AIAnalyzer:
         )
         order_flow_str = ""
         participants_str = ""
+        
         if isinstance(flow, dict) and flow:
             of = flow.get("order_flow", {})
             if isinstance(of, dict) and of:
                 try:
                     nf1, nf5, nf15 = of.get("net_flow_1m"), of.get("net_flow_5m"), of.get("net_flow_15m")
-                    ab, asell, pb, ps = of.get("aggressive_buy_pct"), of.get("aggressive_sell_pct"), of.get("passive_buy_pct"), of.get("passive_sell_pct")
+                    ab, asell = of.get("aggressive_buy_pct"), of.get("aggressive_sell_pct")
+                    pb, ps = of.get("passive_buy_pct"), of.get("passive_sell_pct")
                     bsr = of.get("buy_sell_ratio")
+                    
+                    # 🆕 VALIDA VOLUMES vs RATIO
+                    buy_vol = of.get("buy_volume", 0)
+                    sell_vol = of.get("sell_volume", 0)
+                    
+                    has_valid_volumes = (buy_vol > 0 or sell_vol > 0)
+                    has_valid_ratio = (bsr is not None and bsr > 0)
+                    
+                    # 🆕 DETECTA CONTRADIÇÃO
+                    if not has_valid_volumes and has_valid_ratio:
+                        logging.warning(
+                            f"⚠️ CONTRADIÇÃO: buy/sell volumes zero mas ratio={bsr}. "
+                            f"Marcando ratio como indisponível."
+                        )
+                        bsr = None
+                    
+                    # 🆕 VALIDA PERCENTUAIS
+                    if ab is not None and asell is not None:
+                        total_pct = ab + asell
+                        if abs(total_pct - 100) > 1.0:
+                            logging.warning(
+                                f"⚠️ Percentuais agressivos não somam 100%: "
+                                f"buy={ab}% + sell={asell}% = {total_pct}%"
+                            )
+                    
                     of_lines = []
                     
-                    # 🔹 FORMATAÇÃO CORRIGIDA
+                    # Net flows
                     if any(v is not None for v in (nf1, nf5, nf15)):
                         nf1_fmt = format_delta(nf1) if nf1 else "Ind"
                         nf5_fmt = format_delta(nf5) if nf5 else "Ind"
                         nf15_fmt = format_delta(nf15) if nf15 else "Ind"
                         of_lines.append(f"- Net Flow: 1m {nf1_fmt}, 5m {nf5_fmt}, 15m {nf15_fmt}")
                     
+                    # Agressivo/Passivo
                     if any(v is not None for v in (ab, asell, pb, ps)):
                         ab_fmt = format_percent(ab) if ab else "Ind"
                         as_fmt = format_percent(asell) if asell else "Ind"
                         pb_fmt = format_percent(pb) if pb else "Ind"
                         ps_fmt = format_percent(ps) if ps else "Ind"
-                        of_lines.append(f"- Agressivo: Buy {ab_fmt} | Sell {as_fmt} | Passivo: Buy {pb_fmt} | Sell {ps_fmt}")
+                        of_lines.append(
+                            f"- Agressivo: Buy {ab_fmt} | Sell {as_fmt} | "
+                            f"Passivo: Buy {pb_fmt} | Sell {ps_fmt}"
+                        )
                     
+                    # 🆕 RATIO COM VALIDAÇÃO
                     if bsr is not None:
-                        bsr_str = format_scientific(float(bsr), decimals=2) if bsr else "Ind"
-                        of_lines.append(f"- Razão Buy/Sell: {bsr_str}")
+                        bsr_str = format_scientific(float(bsr), decimals=2)
+                        
+                        if not has_valid_volumes:
+                            of_lines.append(
+                                f"- Razão Buy/Sell: {bsr_str} "
+                                f"⚠️ (calculado via net flow, volumes individuais indisponíveis)"
+                            )
+                        else:
+                            of_lines.append(f"- Razão Buy/Sell: {bsr_str}")
+                    elif has_valid_volumes:
+                        of_lines.append(
+                            f"- Razão Buy/Sell: Indisponível "
+                            f"(buy={buy_vol}, sell={sell_vol})"
+                        )
                     
                     if of_lines:
                         order_flow_str = "\n🚰 Fluxo de Ordens\n" + "\n".join(of_lines) + "\n"
-                except Exception:
+                except Exception as e:
+                    logging.error(f"Erro ao processar order_flow: {e}")
                     order_flow_str = ""
 
             pa = flow.get("participant_analysis", {})
@@ -540,7 +616,6 @@ class AIAnalyzer:
                         if not isinstance(info, dict):
                             continue
                         
-                        # 🔹 FORMATAÇÃO CORRIGIDA
                         vol_pct = format_percent(info.get("volume_pct", 0))
                         direction = info.get("direction") or "Ind"
                         avg_sz = format_quantity(info.get("avg_order_size", 0))
@@ -557,46 +632,77 @@ class AIAnalyzer:
                 except Exception:
                     participants_str = ""
 
-        # ML FEATURES (price/volume/microstructure)
+        # 🆕 ML FEATURES COM VALIDAÇÃO
         ml = (event_data.get("ml_features") or event_data.get("ml") or {})
         ml_str = ""
+        
+        # 🆕 Flag para validação de orderbook (usado abaixo)
+        is_orderbook_valid = False
+        
         if isinstance(ml, dict) and ml:
             try:
                 pf = ml.get("price_features", {}) or {}
                 vf = ml.get("volume_features", {}) or {}
                 mf = ml.get("microstructure", {}) or {}
-
+                
+                # 🆕 VALIDA MICROSTRUCTURE
+                tick_rule = mf.get("tick_rule_sum")
+                flow_imb = mf.get("flow_imbalance")
+                ob_slope = mf.get("order_book_slope")
+                
+                # 🆕 DETECTA PROBLEMAS
+                warnings_ml = []
+                
+                # Delta existe mas tick_rule sempre zero
+                delta_val = delta or of.get("net_flow_1m", 0) if isinstance(of, dict) else 0
+                if tick_rule == 0 and abs(delta_val) > 100:
+                    warnings_ml.append("⚠️ tick_rule_sum=0 (pode estar quebrado)")
+                
+                # Orderbook tem dados mas slope zero (validação vem abaixo)
+                # Placeholder aqui, verificamos depois
+                
+                # Price features
                 p_lines = []
-                for k in ("returns_1", "returns_5", "returns_15", "volatility_1", "volatility_5", "volatility_15", "momentum_score"):
+                for k in ("returns_1", "returns_5", "returns_15", "volatility_1", 
+                          "volatility_5", "volatility_15", "momentum_score"):
                     if k in pf:
                         val = pf[k]
-                        # 🔹 FORMATAÇÃO CORRIGIDA
                         if k.startswith("returns_"):
                             p_lines.append(f"{k}={format_percent(val * 100)}")
                         elif k.startswith("volatility_"):
                             p_lines.append(f"{k}={format_scientific(val, decimals=5)}")
                         else:
                             p_lines.append(f"{k}={format_scientific(val, decimals=5)}")
-
+                
+                # Volume features
                 v_lines = []
-                for k in ("volume_sma_ratio", "volume_momentum", "buy_sell_pressure", "liquidity_gradient"):
+                for k in ("volume_sma_ratio", "volume_momentum", 
+                          "buy_sell_pressure", "liquidity_gradient"):
                     if k in vf:
                         val = vf[k]
-                        # 🔹 FORMATAÇÃO CORRIGIDA
                         if "pressure" in k:
                             v_lines.append(f"{k}={format_delta(val)}")
                         elif "ratio" in k:
-                            v_lines.append(f"{k}={format_percent(val * 100) if val < 10 else format_percent(val)}")
+                            ratio_str = format_percent(val * 100) if val < 10 else format_percent(val)
+                            if val > 5.0:
+                                ratio_str += " ⚠️ (extremo!)"
+                            v_lines.append(f"{k}={ratio_str}")
                         else:
                             v_lines.append(f"{k}={format_scientific(val, decimals=2)}")
-
+                
+                # 🆕 MICROSTRUCTURE COM WARNINGS (validação de ob_slope vem depois)
                 m_lines = []
                 for k in ("order_book_slope", "flow_imbalance", "tick_rule_sum", "trade_intensity"):
                     if k in mf:
                         val = mf[k]
-                        # 🔹 FORMATAÇÃO CORRIGIDA
-                        m_lines.append(f"{k}={format_scientific(val, decimals=3)}")
-
+                        val_str = format_scientific(val, decimals=3)
+                        
+                        if k == "tick_rule_sum" and val == 0 and abs(delta_val) > 100:
+                            val_str += " ⚠️"
+                        # ob_slope warning adicionado depois
+                        
+                        m_lines.append(f"{k}={val_str}")
+                
                 blocks = []
                 if p_lines:
                     blocks.append("• Price: " + ", ".join(p_lines))
@@ -604,42 +710,80 @@ class AIAnalyzer:
                     blocks.append("• Volume: " + ", ".join(v_lines))
                 if m_lines:
                     blocks.append("• Microstructure: " + ", ".join(m_lines))
-
+                
+                # Warnings adicionados depois da validação de orderbook
+                
                 if blocks:
                     ml_str = "\n📐 ML Features\n" + "\n".join(blocks) + "\n"
-            except Exception:
+            except Exception as e:
+                logging.error(f"Erro ao processar ML features: {e}")
                 ml_str = ""
 
-        # Caso específico: evento de OrderBook
+        # 🆕 VALIDAÇÃO DE ORDERBOOK (CRÍTICO!)
         if (event_data.get("tipo_evento") == "OrderBook") or ("imbalance" in event_data):
             sm = (
                 event_data.get("spread_metrics")
                 or ctx_snap.get("orderbook_data", {}).get("spread_metrics")
                 or {}
             )
-            # 🔹 FORMATAÇÃO CORRIGIDA
-            imbalance = format_scientific(event_data.get("imbalance", 0), decimals=3)
-            ratio = format_scientific(event_data.get("volume_ratio", 0), decimals=2)
-            pressure = format_delta(event_data.get("pressure", 0))
-            spread = format_price(sm.get("spread", 0))
-            spread_pct = format_percent(sm.get("spread_percent", 0))
-            bid_usd = format_large_number(sm.get("bid_depth_usd", 0))
-            ask_usd = format_large_number(sm.get("ask_depth_usd", 0))
-            mi_buy = event_data.get("market_impact_buy", {}) or {}
-            mi_sell = event_data.get("market_impact_sell", {}) or {}
-            alertas = event_data.get("alertas_liquidez", [])
+            
+            # 🆕 VALIDA ORDERBOOK ANTES DE FORMATAR
+            bid_usd_raw = sm.get("bid_depth_usd", 0)
+            ask_usd_raw = sm.get("ask_depth_usd", 0)
+            
+            is_orderbook_valid = (bid_usd_raw > 0 and ask_usd_raw > 0)
+            
+            # 🆕 ADICIONA WARNING PARA order_book_slope SE ORDERBOOK VÁLIDO
+            if ml_str and isinstance(ml, dict):
+                mf = ml.get("microstructure", {}) or {}
+                ob_slope = mf.get("order_book_slope")
+                
+                if ob_slope == 0 and is_orderbook_valid:
+                    # Atualiza ml_str adicionando warning
+                    ml_str = ml_str.replace(
+                        f"order_book_slope={format_scientific(ob_slope, decimals=3)}",
+                        f"order_book_slope={format_scientific(ob_slope, decimals=3)} ⚠️"
+                    )
+                    if "• ⚠️ Avisos:" not in ml_str:
+                        ml_str = ml_str.rstrip() + "\n• ⚠️ Avisos: order_book_slope=0 mas orderbook tem dados\n"
+            
+            if not is_orderbook_valid:
+                # 🆕 ORDERBOOK INVÁLIDO
+                ob_str = f"""
+📊 Evento OrderBook - ⚠️ DADOS INDISPONÍVEIS
 
-            mi_lines = ""
-            try:
-                if mi_buy:
-                    mi_lines += f"\n- Market Impact (Buy): {mi_buy}"
-                if mi_sell:
-                    mi_lines += f"\n- Market Impact (Sell): {mi_sell}"
-            except Exception:
+🔴 ATENÇÃO: Orderbook zerado (bid=${bid_usd_raw}, ask=${ask_usd_raw})
+- Análise de livro INDISPONÍVEL
+- Dados podem estar em falha de API ou rate limiting
+- Use APENAS métricas de fluxo (delta, flow_imbalance, tick_rule) se disponíveis
+
+⚠️ NÃO analise profundidade, spread ou imbalance do livro!
+"""
+            else:
+                # ✅ ORDERBOOK VÁLIDO
+                imbalance = format_scientific(event_data.get("imbalance", 0), decimals=3)
+                ratio = format_scientific(event_data.get("volume_ratio", 0), decimals=2)
+                pressure = format_delta(event_data.get("pressure", 0))
+                spread = format_price(sm.get("spread", 0))
+                spread_pct = format_percent(sm.get("spread_percent", 0))
+                bid_usd = format_large_number(bid_usd_raw)
+                ask_usd = format_large_number(ask_usd_raw)
+                mi_buy = event_data.get("market_impact_buy", {}) or {}
+                mi_sell = event_data.get("market_impact_sell", {}) or {}
+                alertas = event_data.get("alertas_liquidez", [])
+
                 mi_lines = ""
+                try:
+                    if mi_buy:
+                        mi_lines += f"\n- Market Impact (Buy): {mi_buy}"
+                    if mi_sell:
+                        mi_lines += f"\n- Market Impact (Sell): {mi_sell}"
+                except Exception:
+                    mi_lines = ""
 
-            ob_str = f"""
-📊 Evento OrderBook
+                ob_str = f"""
+📊 Evento OrderBook ✅
+
 - Preço: {format_price(preco)}
 - Imbalance: {imbalance} | Ratio: {ratio} | Pressure: {pressure}
 - Spread: {spread} ({spread_pct})
@@ -647,6 +791,7 @@ class AIAnalyzer:
 - Alertas: {", ".join(alertas) if alertas else "Nenhum"}
 """
 
+            # 🆕 RETORNA PROMPT ESPECÍFICO PARA ORDERBOOK
             return f"""
 🧠 **Análise Institucional – {ativo} | {tipo_evento}**
 
@@ -663,25 +808,32 @@ class AIAnalyzer:
 Long={prob_long} | Short={prob_short} | Neutro={prob_neutral}
 
 🎯 Tarefa
-NÃO INVENTE números. Se um campo acima estiver 'Indisponível' ou ausente, responda explicitamente 'Indisponível' e não estime.
-Forneça parecer institucional e um PLANO ancorado na zona (se houver), cobrindo:
-1) Interpretação (order flow, liquidez, zona, microestrutura/ML).
-2) Força dominante.
-3) Expectativa (curto/médio prazo).
-4) Probabilidade mais provável (considere os valores acima).
-5) Plano de trade: direção, condição de entrada (gatilho), invalidação (fora da zona), alvos 1/2 (próximas zonas), riscos.
-6) Gestão de posição: sizing dinâmico com base em ATR, volume de parede e volatilidade do cluster.
+IMPORTANTE: Se algum campo estiver marcado com ⚠️ ou 'Indisponível', NÃO use na análise.
+
+{"🔴 ORDERBOOK INDISPONÍVEL - Use APENAS métricas de fluxo (net_flow, flow_imbalance, tick_rule)" if not is_orderbook_valid else ""}
+
+Se houver contradições (ex: volumes zero mas ratio existe):
+- Ignore a métrica contraditória
+- Mencione a contradição detectada
+
+Forneça parecer institucional cobrindo:
+1) Interpretação (use APENAS dados disponíveis e válidos)
+2) Força dominante (baseado em net_flow se orderbook indisponível)
+3) Expectativa (curto/médio prazo)
+4) Probabilidade mais provável (considere valores históricos)
+5) Plano de trade SE houver dados suficientes (caso contrário, mencione limitações)
+6) Gestão de posição (se dados disponíveis)
+
+Se dados críticos faltarem, seja explícito: "Análise limitada - orderbook indisponível"
 """
 
-        # Prompt padrão
-# 🔹 FORMATAÇÃO CORRIGIDA
+        # 🆕 PROMPT PADRÃO COM VALIDAÇÃO
         vol_line = (
             "- Vol: Indisponível" if volume_total is None else f"- Vol: {format_large_number(volume_total)}"
         )
         if ((volume_compra or 0) > 0) or ((volume_venda or 0) > 0):
             vol_line += f" (Buy={format_large_number(volume_compra or 0)} | Sell={format_large_number(volume_venda or 0)})"
 
-        # Linha de Delta com fallback
         delta_line = f"- Delta: {format_delta(delta)}" if delta is not None else "- Delta: Indisponível"
 
         return f"""
@@ -704,20 +856,25 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver), cobrindo
 Long={prob_long} | Short={prob_short} | Neutro={prob_neutral}
 
 🎯 Tarefa
-NÃO INVENTE números. Se um campo acima estiver 'Indisponível' ou ausente, responda explicitamente 'Indisponível' e não estime.
-Forneça parecer institucional e um PLANO ancorado na zona (se houver), cobrindo:
-1) Interpretação (order flow, liquidez, zona, microestrutura/ML).
-2) Força dominante.
-3) Expectativa (curto/médio prazo).
-4) Probabilidade mais provável (considere os valores acima).
-5) Plano de trade: direção, condição de entrada (gatilho), invalidação (fora da zona), alvos 1/2 (próximas zonas), riscos.
-6) Gestão de posição: sizing dinâmico com base em ATR, volume de parede e volatilidade do cluster.
+IMPORTANTE: Se algum campo estiver marcado com ⚠️ ou 'Indisponível', NÃO use na análise.
+
+Forneça parecer institucional cobrindo:
+1) Interpretação (use APENAS dados disponíveis e válidos)
+2) Força dominante
+3) Expectativa (curto/médio prazo)
+4) Probabilidade mais provável (considere valores históricos)
+5) Plano de trade SE houver dados suficientes
+6) Gestão de posição (se dados disponíveis)
+
+Se dados críticos faltarem, seja explícito sobre as limitações.
 """
 
     # ---------------------------
-    # Callers de provedores
+    # 🆕 Callers de provedores com system prompt corrigido
     # ---------------------------
+    
     def _call_openai_compatible(self, prompt: str, max_retries: int = 3) -> str:
+        """Chama OpenAI API com retry."""
         base_delay = 1.0
         for attempt in range(max_retries):
             try:
@@ -728,11 +885,17 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver), cobrindo
                             "role": "system",
                             "content": (
                                 "Você é um analista institucional de trading e order flow. "
-                                "REGRAS: 1) Use SOMENTE números e métricas explicitamente fornecidos; "
-                                "2) Se um dado não for fornecido, escreva 'Indisponível' e NÃO estime; "
-                                "3) Não invente bps, market impact, spread ou volumes; "
-                                "4) Se livro e fita (delta) divergirem, explique; "
-                                "5) Seja sucinto e objetivo; 6) Não é conselho financeiro."
+                                "REGRAS ESTRITAS:\n"
+                                "1) Use SOMENTE números e métricas explicitamente fornecidos\n"
+                                "2) Se um dado estiver marcado como 'Indisponível', 'Ind', ou com ⚠️, "
+                                "   NÃO o use na análise - escreva explicitamente 'Indisponível'\n"
+                                "3) Se orderbook estiver zerado ($0), NÃO analise profundidade/spread/imbalance do livro\n"
+                                "4) Se volumes são zero mas ratio existe, é CONTRADIÇÃO - ignore o ratio\n"
+                                "5) Se tick_rule_sum=0.000 com ⚠️, mencione que dado pode estar quebrado\n"
+                                "6) Quando livro e fita divergirem, explique a divergência\n"
+                                "7) Priorize net_flow e flow_imbalance quando orderbook indisponível\n"
+                                "8) Seja sucinto e objetivo\n"
+                                "9) Não é conselho financeiro"
                             ),
                         },
                         {"role": "user", "content": prompt},
@@ -756,6 +919,7 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver), cobrindo
         return ""
 
     def _call_dashscope(self, prompt: str, max_retries: int = 3) -> str:
+        """Chama DashScope API com retry."""
         base_delay = 1.0
         for attempt in range(max_retries):
             try:
@@ -766,11 +930,17 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver), cobrindo
                             "role": "system",
                             "content": (
                                 "Você é um analista institucional de trading e order flow. "
-                                "REGRAS: 1) Use SOMENTE números e métricas explicitamente fornecidos; "
-                                "2) Se um dado não for fornecido, escreva 'Indisponível' e NÃO estime; "
-                                "3) Não invente bps, market impact, spread ou volumes; "
-                                "4) Se livro e fita (delta) divergirem, explique; "
-                                "5) Seja sucinto e objetivo; 6) Não é conselho financeiro."
+                                "REGRAS ESTRITAS:\n"
+                                "1) Use SOMENTE números e métricas explicitamente fornecidos\n"
+                                "2) Se um dado estiver marcado como 'Indisponível', 'Ind', ou com ⚠️, "
+                                "   NÃO o use na análise - escreva explicitamente 'Indisponível'\n"
+                                "3) Se orderbook estiver zerado ($0), NÃO analise profundidade/spread/imbalance do livro\n"
+                                "4) Se volumes são zero mas ratio existe, é CONTRADIÇÃO - ignore o ratio\n"
+                                "5) Se tick_rule_sum=0.000 com ⚠️, mencione que dado pode estar quebrado\n"
+                                "6) Quando livro e fita divergirem, explique a divergência\n"
+                                "7) Priorize net_flow e flow_imbalance quando orderbook indisponível\n"
+                                "8) Seja sucinto e objetivo\n"
+                                "9) Não é conselho financeiro"
                             ),
                         },
                         {"role": "user", "content": prompt},
@@ -796,9 +966,10 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver), cobrindo
     # ---------------------------
     # Fallback mock
     # ---------------------------
+    
     def _generate_mock_analysis(self, event_data: Dict[str, Any]) -> str:
+        """Gera análise mock quando IA indisponível."""
         timestamp = self.time_manager.now_iso()
-        # 🔹 FORMATAÇÃO CORRIGIDA NO MOCK
         mock_price = format_price(event_data.get('preco_fechamento', 0))
         mock_delta = format_delta(event_data.get('delta', 0))
         
@@ -814,12 +985,23 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver), cobrindo
     # ---------------------------
     # Interface pública
     # ---------------------------
+    
     def analyze_event(self, event_data: Dict[str, Any]) -> str:
+        """
+        Analisa evento e retorna análise da IA.
+        
+        Args:
+            event_data: Dict com dados do evento
+        
+        Returns:
+            String com análise formatada
+        """
         if not self.enabled:
             try:
                 self._initialize_api()
             except Exception:
                 pass
+        
         if not self.enabled:
             logging.warning("IA não inicializada; retornando análise mock.")
             return self._generate_mock_analysis(event_data)
@@ -850,9 +1032,11 @@ Forneça parecer institucional e um PLANO ancorado na zona (se houver), cobrindo
 
         if not analysis:
             analysis = self._generate_mock_analysis(event_data)
+        
         return analysis
 
     def close(self):
+        """Fecha conexão com IA."""
         self.client = None
 
     def __del__(self):

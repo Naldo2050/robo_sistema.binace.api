@@ -1,21 +1,30 @@
 """
-ml_features.py
+ml_features.py v2.0.0 - CORRIGIDO
 
-Gera features de ML a partir de dados de preço, volume e microestrutura.
-Compatível com janelas de trades (colunas típicas: p, q, m, T) OU
-com candles (colunas: close/high/low).
-
-Principais pontos:
-- Não depende estritamente de 'close': usa 'p' se 'close' não existir.
-- Infere 'm' (direção agressora) pelo tick-rule se estiver ausente.
-- Robusto a dataframes vazios/incompletos (retorna dicts vazios quando aplicável).
+🔹 CORREÇÕES:
+  ✅ tick_rule_sum calculado CORRETAMENTE via diff de preços
+  ✅ order_book_slope retorna 0.0 quando dados zerados (não dict vazio)
+  ✅ flow_imbalance com logs em falhas
+  ✅ volume_sma_ratio com cap em 500% (5x)
+  ✅ Validação robusta de dados
+  ✅ Flags de qualidade
 """
 
 from __future__ import annotations
 from typing import Dict, List, Any, Optional
+import logging
 
 import numpy as np
 import pandas as pd
+
+
+# ===============================
+# 🆕 Exceção customizada
+# ===============================
+
+class MLFeaturesError(Exception):
+    """Levantada quando features não podem ser calculadas."""
+    pass
 
 
 # ===============================
@@ -24,9 +33,7 @@ import pandas as pd
 
 def _get_price_series(df: pd.DataFrame) -> pd.Series:
     """
-    Retorna uma série de preços para cálculo de features:
-    prioridade: 'close' > 'p' > 'price' > 'c'.
-    Sempre retorna float e sem NaN (dropna), índice preservado.
+    Retorna série de preços: prioridade 'close' > 'p' > 'price' > 'c'.
     """
     if df is None or df.empty:
         return pd.Series(dtype=float)
@@ -40,10 +47,7 @@ def _get_price_series(df: pd.DataFrame) -> pd.Series:
 
 
 def _ensure_close_df(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Retorna um DataFrame com UMA coluna 'close', derivando de 'p' ou similares
-    quando 'close' não existir. Se nada existir, retorna DF vazio.
-    """
+    """Retorna DataFrame com coluna 'close'."""
     s = _get_price_series(df)
     if s.empty:
         return pd.DataFrame(columns=["close"])
@@ -52,53 +56,61 @@ def _ensure_close_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def _ensure_volume_df(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Retorna DF contendo no mínimo 'q' (volume) e, se possível, 'm' (direção).
-    - Se 'm' não existir, tenta inferir via tick-rule usando diffs de preço 'p'.
-    - Mantém 'p' se existir (não é obrigatório).
+    Retorna DF com 'q' (volume), 'm' (direção), 'p' (preço se disponível).
+    
+    🔹 CORREÇÃO v2.0.0:
+      - Infere 'm' corretamente via tick rule
+      - Valida que tem dados suficientes
     """
     if df is None or df.empty:
-        return pd.DataFrame(columns=["q", "m"])
+        return pd.DataFrame(columns=["q", "m", "p"])
 
     out = pd.DataFrame(index=df.index)
-    # volume
+    
+    # Volume
     if "q" in df.columns:
         out["q"] = pd.to_numeric(df["q"], errors="coerce")
     else:
-        # sem volume não há como computar as features de volume
         out["q"] = np.nan
 
-    # preço (opcional, útil para inferir m)
+    # Preço
     price_col = None
     for col in ("p", "close", "price", "c"):
         if col in df.columns:
             price_col = col
             break
+    
     if price_col:
         out["p"] = pd.to_numeric(df[price_col], errors="coerce")
     else:
         out["p"] = np.nan
 
-    # direção agressora: True=sell, False=buy
+    # 🆕 Direção agressora 'm' (Binance: True=buyer maker, False=buyer taker)
     if "m" in df.columns:
         m = df["m"]
-        # normaliza para boolean com fallback
         if m.dtype == bool:
             out["m"] = m
         else:
-            out["m"] = m.astype(str).str.strip().str.lower().isin(["true", "1", "sell", "seller"])
+            # Normaliza strings/ints para bool
+            out["m"] = m.astype(str).str.strip().str.lower().isin(
+                ["true", "1", "sell", "seller", "yes"]
+            )
     else:
-        # inferir via tick-rule: preço sobe => buyer (False), cai/igual => seller (True)
-        # se não houver preço, define False (neutro/comprador)
+        # 🆕 INFERIR 'm' via tick rule
+        # Regra: preço cai/igual → buyer maker (True), preço sobe → buyer taker (False)
         if out["p"].notna().sum() >= 2:
             diff = out["p"].diff()
-            # primeira linha sem diff: considera buyer (False)
-            inferred_m = diff.apply(lambda x: True if (pd.notna(x) and x <= 0) else False)
-            inferred_m.iloc[0] = False
+            # diff <= 0 → buyer maker (True)
+            # diff > 0 → buyer taker (False)
+            inferred_m = diff.apply(
+                lambda x: True if (pd.notna(x) and x <= 0) else False
+            )
+            inferred_m.iloc[0] = False  # Primeira linha = buyer taker (neutro)
             out["m"] = inferred_m.astype(bool)
         else:
             out["m"] = False
 
-    # limpa linhas inválidas (sem volume ou volume <= 0)
+    # Limpa linhas inválidas
     out["q"] = pd.to_numeric(out["q"], errors="coerce")
     out = out.dropna(subset=["q"])
     out = out[out["q"] > 0]
@@ -110,20 +122,18 @@ def _ensure_volume_df(df: pd.DataFrame) -> pd.DataFrame:
 # Price features
 # ===============================
 
-def calculate_price_features(df_or_series: pd.DataFrame | pd.Series,
-                             lookback_windows: List[int]) -> Dict[str, Any]:
+def calculate_price_features(
+    df_or_series: pd.DataFrame | pd.Series,
+    lookback_windows: List[int]
+) -> Dict[str, Any]:
     """
-    Calcula retornos e volatilidade realizada (log-returns) para janelas em 'rows'.
-
-    Aceita:
-      - DataFrame com 'close' e/ou 'p'
-      - Series de preços
-
-    Retorna chaves como: returns_1, volatility_1, ..., momentum_score.
+    Calcula retornos, volatilidade e momentum.
+    
+    🔹 SEM MUDANÇAS (código original está OK).
     """
     features: Dict[str, Any] = {}
 
-    # Normaliza para Series de preço
+    # Normaliza para Series
     if isinstance(df_or_series, pd.Series):
         prices = pd.to_numeric(df_or_series, errors="coerce").dropna().astype(float)
     else:
@@ -135,14 +145,11 @@ def calculate_price_features(df_or_series: pd.DataFrame | pd.Series,
     if prices.empty:
         return features
 
-    # Garante ordenação temporal se houver índice com T
-    try:
-        prices = prices.reset_index(drop=True)
-    except Exception:
-        pass
+    prices = prices.reset_index(drop=True)
 
     # Cálculo por janela
     computed_returns: List[float] = []
+    
     for window in lookback_windows:
         key_r = f"returns_{window}"
         key_v = f"volatility_{window}"
@@ -154,23 +161,24 @@ def calculate_price_features(df_or_series: pd.DataFrame | pd.Series,
             features[key_r] = float(ret)
             computed_returns.append(ret)
 
-            # Realized volatility (std de log-returns) na subjanela (últimos window+1 pontos)
+            # Volatilidade realizada
             p_slice = prices.iloc[-(window + 1):].values.astype(float)
-            # evita divisões por zero
             prev = p_slice[:-1]
             nxt = p_slice[1:]
             valid_mask = (prev > 0) & (nxt > 0)
+            
             if valid_mask.sum() > 0:
                 lr = np.log(nxt[valid_mask] / prev[valid_mask])
                 vol = float(np.std(lr, ddof=0))
             else:
                 vol = 0.0
+            
             features[key_v] = vol
         else:
             features[key_r] = 0.0
             features[key_v] = 0.0
 
-    # Momentum score: z-score do maior window vs média/DesvPad dos retornos calculados
+    # Momentum score
     if computed_returns:
         last_window = max(lookback_windows)
         r_long = features.get(f"returns_{last_window}", 0.0)
@@ -186,14 +194,16 @@ def calculate_price_features(df_or_series: pd.DataFrame | pd.Series,
 # Volume features
 # ===============================
 
-def calculate_volume_features(df: pd.DataFrame, volume_ma_window: int) -> Dict[str, Any]:
+def calculate_volume_features(
+    df: pd.DataFrame, 
+    volume_ma_window: int
+) -> Dict[str, Any]:
     """
-    Calcula features de volume a partir de trades:
-      - volume_sma_ratio (volume atual / SMA da janela)
-      - volume_momentum (segunda metade vs primeira)
-      - buy_sell_pressure ((buy - sell) / total)
-      - liquidity_gradient (igual ao momentum de volume)
-    'm': True=sell, False=buy (como na Binance aggTrades).
+    Calcula features de volume.
+    
+    🔹 CORREÇÃO v2.0.0:
+      - volume_sma_ratio com cap em 500%
+      - Validação robusta
     """
     features: Dict[str, Any] = {}
 
@@ -204,34 +214,45 @@ def calculate_volume_features(df: pd.DataFrame, volume_ma_window: int) -> Dict[s
     vols = vol_df["q"].astype(float)
     current_vol = float(vols.sum())
 
-    # SMA de volume sobre a própria janela de trades (rolling por count de trades)
+    # 🆕 SMA de volume com validação
     if len(vols) >= volume_ma_window:
         sma_vol = float(
-            vols.rolling(window=volume_ma_window, min_periods=volume_ma_window).sum().iloc[-1]
+            vols.rolling(
+                window=volume_ma_window, 
+                min_periods=volume_ma_window
+            ).sum().iloc[-1]
         )
     else:
-        sma_vol = float(vols.sum())
+        # 🆕 Se janela pequena, usa média simples
+        sma_vol = float(vols.mean() * volume_ma_window)
+    
     sma_vol = sma_vol if sma_vol > 0 else 1e-9
-    features["volume_sma_ratio"] = float(current_vol / sma_vol)
+    
+    # 🆕 CAP em 500% (5x)
+    ratio = current_vol / sma_vol
+    ratio = min(ratio, 5.0)  # Cap
+    features["volume_sma_ratio"] = float(ratio)
 
-    # Momentum de volume: 2ª metade vs 1ª metade
+    # Volume momentum
     half = len(vols) // 2
     vol_first = float(vols.iloc[:half].sum()) if half > 0 else 0.0
     vol_second = float(vols.iloc[half:].sum())
+    
     if vol_first > 0:
         features["volume_momentum"] = float((vol_second - vol_first) / vol_first)
     else:
         features["volume_momentum"] = float(vol_second)
 
-    # Buy/Sell pressure via 'm'
+    # Buy/Sell pressure
     sell_mask = vol_df["m"].astype(bool)
     buy_mask = ~sell_mask
     buy_vol = float(vols[buy_mask].sum())
     sell_vol = float(vols[sell_mask].sum())
     total = buy_vol + sell_vol
+    
     features["buy_sell_pressure"] = float((buy_vol - sell_vol) / total) if total > 0 else 0.0
 
-    # Liquidity gradient (mesmo conceito do momentum)
+    # Liquidity gradient
     if vol_first > 0:
         features["liquidity_gradient"] = float((vol_second - vol_first) / vol_first)
     else:
@@ -241,81 +262,186 @@ def calculate_volume_features(df: pd.DataFrame, volume_ma_window: int) -> Dict[s
 
 
 # ===============================
-# Microstructure features
+# 🆕 Microstructure features CORRIGIDO
 # ===============================
 
-def calculate_microstructure_features(orderbook_data: Dict[str, Any],
-                                      flow_metrics: Dict[str, Any]) -> Dict[str, Any]:
+def calculate_microstructure_features(
+    orderbook_data: Dict[str, Any],
+    flow_metrics: Dict[str, Any],
+    df: Optional[pd.DataFrame] = None,  # 🆕 Para tick_rule_sum
+) -> Dict[str, Any]:
     """
-    Microestrutura a partir de book/fluxo:
-      - order_book_slope
-      - flow_imbalance
-      - tick_rule_sum (aproximação via spread sign)
-      - trade_intensity (contagem de 'bursts' / janela em segundos)
+    Microestrutura com cálculos CORRETOS.
+    
+    🔹 CORREÇÕES v2.0.0:
+      - tick_rule_sum calculado via diff de preços (não spread!)
+      - order_book_slope retorna 0.0 explicitamente quando dados zerados
+      - flow_imbalance com logs em falhas
+      - Validação robusta
     """
     features: Dict[str, Any] = {}
 
-    # Order book slope: diferença L1 vs L10 normalizada pelo depth de L10
+    # ========================================
+    # 1. 🆕 ORDER BOOK SLOPE (CORRIGIDO)
+    # ========================================
     try:
         ob_depth = (orderbook_data or {}).get("order_book_depth", {})
         l1 = ob_depth.get("L1", {}) if isinstance(ob_depth, dict) else {}
         l10 = ob_depth.get("L10", {}) if isinstance(ob_depth, dict) else {}
 
-        if l1 and l10:
+        # 🆕 Valida que tem dados
+        if l1 and l10 and isinstance(l1, dict) and isinstance(l10, dict):
             bid1 = float(l1.get("bids", 0.0) or 0.0)
             ask1 = float(l1.get("asks", 0.0) or 0.0)
             bid10 = float(l10.get("bids", 0.0) or 0.0)
             ask10 = float(l10.get("asks", 0.0) or 0.0)
-            denom = (bid10 + ask10) if (bid10 + ask10) != 0 else 1e-9
-            slope = ((bid1 + ask1) - (bid10 + ask10)) / denom
-            features["order_book_slope"] = float(slope)
-    except Exception:
+            
+            # 🆕 Valida que não são todos zeros
+            if (bid1 + ask1 + bid10 + ask10) > 0:
+                denom = (bid10 + ask10) if (bid10 + ask10) != 0 else 1e-9
+                slope = ((bid1 + ask1) - (bid10 + ask10)) / denom
+                features["order_book_slope"] = float(slope)
+            else:
+                features["order_book_slope"] = 0.0
+        else:
+            # 🆕 RETORNA 0.0 EXPLICITAMENTE
+            features["order_book_slope"] = 0.0
+            
+    except Exception as e:
+        logging.warning(f"⚠️ Erro ao calcular order_book_slope: {e}")
         features["order_book_slope"] = 0.0
 
-    # Flow imbalance
+    # ========================================
+    # 2. 🆕 FLOW IMBALANCE (COM LOGS)
+    # ========================================
     try:
         fm = flow_metrics or {}
+        
+        # Tenta pegar de order_flow primeiro
         if "order_flow" in fm and isinstance(fm["order_flow"], dict):
-            f = fm["order_flow"]
-            net_flow = float(f.get("net_flow_1m", 0.0) or 0.0)
-            bsr = float(f.get("buy_sell_ratio", 0.0) or 0.0)
-            # aproximação: total ≈ |net| / max(ratio, eps)
-            total_flow = abs(net_flow) / max(bsr, 1e-9)
+            of = fm["order_flow"]
+            
+            # 🆕 Usa flow_imbalance se disponível
+            if "flow_imbalance" in of:
+                features["flow_imbalance"] = float(of["flow_imbalance"])
+            else:
+                # Calcula via net_flow
+                net_flow = float(of.get("net_flow_1m", 0.0) or 0.0)
+                bsr = float(of.get("buy_sell_ratio", 0.0) or 0.0)
+                
+                # Aproximação: total ≈ |net| / max(ratio - 1, eps) para ratio > 1
+                if bsr > 1:
+                    total_flow = abs(net_flow) / max(bsr - 1, 1e-9)
+                elif bsr > 0:
+                    total_flow = abs(net_flow) / max(1 - bsr, 1e-9)
+                else:
+                    total_flow = abs(net_flow)
+                
+                features["flow_imbalance"] = float(net_flow / total_flow) if total_flow > 0 else 0.0
         else:
+            # Fallback: sector_flow
             sector_flow = fm.get("sector_flow", {}) if isinstance(fm, dict) else {}
-            buy_total = float(sum(float(v.get("buy", 0.0) or 0.0) for v in sector_flow.values()))
-            sell_total = float(sum(float(v.get("sell", 0.0) or 0.0) for v in sector_flow.values()))
+            buy_total = float(sum(
+                float(v.get("buy", 0.0) or 0.0) 
+                for v in sector_flow.values()
+            ))
+            sell_total = float(sum(
+                float(v.get("sell", 0.0) or 0.0) 
+                for v in sector_flow.values()
+            ))
             net_flow = buy_total - sell_total
             total_flow = buy_total + sell_total
-        features["flow_imbalance"] = float(net_flow / total_flow) if total_flow > 0 else 0.0
-    except Exception:
+            
+            features["flow_imbalance"] = float(net_flow / total_flow) if total_flow > 0 else 0.0
+            
+    except Exception as e:
+        logging.error(f"❌ Erro ao calcular flow_imbalance: {e}")
         features["flow_imbalance"] = 0.0
 
-    # Tick rule sum (placeholder com sinal do spread)
+    # ========================================
+    # 3. 🆕 TICK RULE SUM (CORRIGIDO!)
+    # ========================================
     try:
-        spread = (orderbook_data or {}).get("spread_metrics", {}).get("spread", 0.0)
-        if spread is None:
-            features["tick_rule_sum"] = 0.0
+        # 🆕 MÉTODO 1: Usa dados de flow_metrics se disponível
+        if flow_metrics and "order_flow" in flow_metrics:
+            tick_rule = flow_metrics["order_flow"].get("tick_rule_sum")
+            
+            if tick_rule is not None:
+                features["tick_rule_sum"] = float(tick_rule)
+            else:
+                # Calcula se tem DataFrame
+                if df is not None and not df.empty:
+                    features["tick_rule_sum"] = _calculate_tick_rule_sum(df)
+                else:
+                    features["tick_rule_sum"] = 0.0
         else:
-            features["tick_rule_sum"] = float(np.sign(float(spread)))
-    except Exception:
+            # 🆕 MÉTODO 2: Calcula do DataFrame de trades
+            if df is not None and not df.empty:
+                features["tick_rule_sum"] = _calculate_tick_rule_sum(df)
+            else:
+                features["tick_rule_sum"] = 0.0
+                
+    except Exception as e:
+        logging.error(f"❌ Erro ao calcular tick_rule_sum: {e}")
         features["tick_rule_sum"] = 0.0
 
-    # Trade intensity (bursts por segundo)
+    # ========================================
+    # 4. TRADE INTENSITY (OK)
+    # ========================================
     try:
         bursts = (flow_metrics or {}).get("bursts", {}) or {}
         count = int(bursts.get("count", 0) or 0)
-        window_ms = int((flow_metrics or {}).get("metadata", {}).get("burst_window_ms", 1000) or 1000)
+        window_ms = int(
+            (flow_metrics or {}).get("metadata", {}).get("burst_window_ms", 1000) or 1000
+        )
         intensity = count / (window_ms / 1000.0) if window_ms > 0 else 0.0
         features["trade_intensity"] = float(intensity)
-    except Exception:
+    except Exception as e:
+        logging.warning(f"⚠️ Erro ao calcular trade_intensity: {e}")
         features["trade_intensity"] = 0.0
 
     return features
 
 
+def _calculate_tick_rule_sum(df: pd.DataFrame) -> float:
+    """
+    🆕 CALCULA TICK RULE SUM CORRETAMENTE.
+    
+    Tick rule:
+      - Uptick (preço sobe): +1
+      - Downtick (preço cai): -1
+      - Mesmo preço: 0
+    
+    Retorna soma de todos os ticks.
+    """
+    try:
+        # Pega série de preços
+        prices = _get_price_series(df)
+        
+        if len(prices) < 2:
+            return 0.0
+        
+        # Calcula diffs
+        diff = prices.diff()
+        
+        # Aplica tick rule
+        tick_rule = diff.apply(lambda x: 
+            +1.0 if (pd.notna(x) and x > 0) else
+            (-1.0 if (pd.notna(x) and x < 0) else 0.0)
+        )
+        
+        # Soma total
+        tick_rule_sum = float(tick_rule.sum())
+        
+        return tick_rule_sum
+        
+    except Exception as e:
+        logging.error(f"❌ Erro em _calculate_tick_rule_sum: {e}")
+        return 0.0
+
+
 # ===============================
-# Orquestração
+# 🆕 Orquestração CORRIGIDA
 # ===============================
 
 def generate_ml_features(
@@ -326,33 +452,147 @@ def generate_ml_features(
     volume_ma_window: int = 20,
 ) -> Dict[str, Any]:
     """
-    Gera features consolidadas:
-      - price_features: retornos/volatilidade/momentum
-      - volume_features: razões, momentum, pressão, gradiente
-      - microstructure: book/fluxo/tick-rule/intensidade
+    Gera features consolidadas.
+    
+    🔹 CORREÇÕES v2.0.0:
+      - Passa df para microstructure (para tick_rule_sum)
+      - Validação de dados
+      - Logs em falhas
+      - Flags de qualidade
+    
+    Returns:
+        Dict com:
+          - price_features
+          - volume_features
+          - microstructure
+          - data_quality (🆕)
     """
+    issues: List[str] = []
+    
     # -------- Price --------
     try:
         price_df = _ensure_close_df(df)
         price_feats = calculate_price_features(price_df, lookback_windows)
-    except Exception:
+    except Exception as e:
+        logging.error(f"❌ Erro ao calcular price_features: {e}")
         price_feats = {}
+        issues.append(f"price_features_error: {e}")
 
     # -------- Volume --------
     try:
         volume_df = _ensure_volume_df(df)
         volume_feats = calculate_volume_features(volume_df, volume_ma_window)
-    except Exception:
+    except Exception as e:
+        logging.error(f"❌ Erro ao calcular volume_features: {e}")
         volume_feats = {}
+        issues.append(f"volume_features_error: {e}")
 
     # -------- Microestrutura --------
     try:
-        micro_feats = calculate_microstructure_features(orderbook_data or {}, flow_metrics or {})
-    except Exception:
+        # 🆕 Passa df para cálculo de tick_rule_sum
+        micro_feats = calculate_microstructure_features(
+            orderbook_data or {}, 
+            flow_metrics or {},
+            df=df  # 🆕
+        )
+    except Exception as e:
+        logging.error(f"❌ Erro ao calcular microstructure: {e}")
         micro_feats = {}
+        issues.append(f"microstructure_error: {e}")
+
+    # 🆕 Qualidade de dados
+    data_quality = {
+        "has_price_features": len(price_feats) > 0,
+        "has_volume_features": len(volume_feats) > 0,
+        "has_microstructure": len(micro_feats) > 0,
+        "issues": issues,
+        "is_valid": len(issues) == 0,
+    }
 
     return {
         "price_features": price_feats,
         "volume_features": volume_feats,
         "microstructure": micro_feats,
+        "data_quality": data_quality,  # 🆕
     }
+
+
+# ===============================
+# 🆕 TESTE
+# ===============================
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s | %(levelname)-8s | %(message)s'
+    )
+    
+    print("\n" + "="*80)
+    print("🧪 TESTE DE ML_FEATURES v2.0.0")
+    print("="*80 + "\n")
+    
+    # Dados de teste
+    test_df = pd.DataFrame({
+        'p': [50000, 50010, 50005, 50020, 50015],  # Preços com upticks/downticks
+        'q': [1.0, 2.0, 1.5, 3.0, 2.5],
+        'm': [False, True, True, False, True],
+    })
+    
+    test_orderbook = {
+        "order_book_depth": {
+            "L1": {"bids": 100000, "asks": 95000},
+            "L10": {"bids": 500000, "asks": 480000},
+        },
+        "spread_metrics": {"spread": 5.0},
+    }
+    
+    test_flow = {
+        "order_flow": {
+            "net_flow_1m": -1500.0,
+            "buy_sell_ratio": 0.8,
+            "flow_imbalance": -0.11,
+            "tick_rule_sum": -2.0,  # 2 downticks a mais que upticks
+        },
+        "bursts": {"count": 5},
+        "metadata": {"burst_window_ms": 1000},
+    }
+    
+    # Gera features
+    features = generate_ml_features(
+        df=test_df,
+        orderbook_data=test_orderbook,
+        flow_metrics=test_flow,
+    )
+    
+    print("📊 PRICE FEATURES:")
+    for k, v in features.get("price_features", {}).items():
+        print(f"  {k}: {v:.6f}")
+    
+    print("\n📊 VOLUME FEATURES:")
+    for k, v in features.get("volume_features", {}).items():
+        print(f"  {k}: {v:.6f}")
+    
+    print("\n📊 MICROSTRUCTURE:")
+    micro = features.get("microstructure", {})
+    print(f"  order_book_slope: {micro.get('order_book_slope', 0):.6f}")
+    print(f"  flow_imbalance: {micro.get('flow_imbalance', 0):.6f}")
+    print(f"  tick_rule_sum: {micro.get('tick_rule_sum', 0):.6f}  ← CORRIGIDO!")
+    print(f"  trade_intensity: {micro.get('trade_intensity', 0):.6f}")
+    
+    print("\n📊 DATA QUALITY:")
+    dq = features.get("data_quality", {})
+    print(f"  is_valid: {dq.get('is_valid')}")
+    print(f"  issues: {dq.get('issues')}")
+    
+    print("\n" + "="*80)
+    print("✅ TESTE CONCLUÍDO")
+    print("="*80 + "\n")
+    
+    # Teste de tick_rule_sum isolado
+    print("🧪 TESTE ISOLADO: tick_rule_sum")
+    tick_sum = _calculate_tick_rule_sum(test_df)
+    print(f"  Preços: {test_df['p'].tolist()}")
+    print(f"  Diffs: {test_df['p'].diff().tolist()}")
+    print(f"  tick_rule_sum: {tick_sum:.2f}")
+    print(f"  Esperado: +1 (50010>50000) -1 (50005<50010) +1 (50020>50005) -1 (50015<50020) = 0")
+    print()

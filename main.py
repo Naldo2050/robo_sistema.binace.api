@@ -1,4 +1,4 @@
-# main.py (corrigido com formatação adequada)
+# main.py v2.0.0 (CORRIGIDO COMPLETO - PARTE 1/2)
 
 from dotenv import load_dotenv; load_dotenv()
 import json
@@ -90,9 +90,10 @@ logging.getLogger().addFilter(_DedupFilter(window=1.0))
 
 
 # ===============================
-# GESTOR DE CONEXÃO WEBSOCKET (COM MITIGAÇÃO DE FALHAS)
+# GESTOR DE CONEXÃO WEBSOCKET (MANTIDO IGUAL)
 # ===============================
 class RobustConnectionManager:
+    # ... (código mantido igual ao original) ...
     def __init__(self, stream_url, symbol, max_reconnect_attempts=10, initial_delay=1, max_delay=60, backoff_factor=1.5):
         self.stream_url = stream_url
         self.symbol = symbol
@@ -114,7 +115,7 @@ class RobustConnectionManager:
         self.on_error_callback = None
         self.total_messages_received = 0
         self.total_reconnects = 0
-        self.external_heartbeat_cb = None  # <- novo
+        self.external_heartbeat_cb = None
 
     def set_callbacks(self, on_message=None, on_open=None, on_close=None, on_error=None):
         self.on_message_callback = on_message
@@ -123,16 +124,14 @@ class RobustConnectionManager:
         self.on_error_callback = on_error
 
     def set_heartbeat_cb(self, cb):
-        """Permite injetar um heartbeat externo (ex.: HealthMonitor.heartbeat('main'))."""
         self.external_heartbeat_cb = cb
 
     def _test_connection(self):
-        """Teste rápido: DNS + TCP connect (sem TLS)."""
         try:
             parsed = urlparse(self.stream_url)
             host = parsed.hostname
             port = parsed.port or (443 if parsed.scheme == "wss" else 80)
-            socket.getaddrinfo(host, port)  # DNS
+            socket.getaddrinfo(host, port)
             with socket.create_connection((host, port), timeout=3):
                 return True
         except Exception as e:
@@ -262,7 +261,7 @@ class RobustConnectionManager:
 
 
 # ===============================
-# ANALISADOR DE TRADE FLOW
+# ANALISADOR DE TRADE FLOW (MANTIDO)
 # ===============================
 class TradeFlowAnalyzer:
     def __init__(self, vol_factor_exh, tz_output: ZoneInfo):
@@ -318,10 +317,10 @@ def get_current_price(symbol: str) -> float:
                 time.sleep(base_delay * (2**attempt))
     logging.critical("💀 FALHA CRÍTICA: Não foi possível obter preço via REST após todas as tentativas")
     return 0.0
-
+    # main.py v2.0.0 (CORRIGIDO COMPLETO - PARTE 2/2)
 
 # ===============================
-# BOT PRINCIPAL
+# BOT PRINCIPAL - COM TODAS AS CORREÇÕES
 # ===============================
 class EnhancedMarketBot:
     def __init__(self, stream_url, symbol, window_size_minutes, vol_factor_exh, history_size, delta_std_dev_factor, context_sma_period, liquidity_flow_alert_percentage, wall_std_dev_factor):
@@ -340,19 +339,33 @@ class EnhancedMarketBot:
         self.health_monitor = HealthMonitor()
         self.event_bus = EventBus()
         self.feature_store = FeatureStore()
-        self.levels = LevelRegistry(self.symbol)  # ✅ Correção: inicializado aqui
+        self.levels = LevelRegistry(self.symbol)
 
         # 🔹 HEARTBEAT
         self.health_monitor.heartbeat("main")
 
         # Módulos existentes (com TimeManager injetado)
         self.trade_flow_analyzer = TradeFlowAnalyzer(vol_factor_exh, tz_output=self.ny_tz)
+        
+        # 🆕 ORDERBOOK COM CACHE AUMENTADO
         self.orderbook_analyzer = OrderBookAnalyzer(
             symbol=self.symbol,
             liquidity_flow_alert_percentage=liquidity_flow_alert_percentage,
             wall_std_dev_factor=wall_std_dev_factor,
             time_manager=self.time_manager,
+            cache_ttl_seconds=10.0,      # 🆕 Aumentado para 10s
+            max_stale_seconds=60.0,       # 🆕 Permite dados de até 60s
         )
+        
+        # 🆕 CACHE PERSISTENTE PARA ORDERBOOK
+        self.last_valid_orderbook = None
+        self.last_valid_orderbook_time = 0
+        self.orderbook_fetch_failures = 0
+        
+        # 🆕 CACHE PARA VALUE AREA
+        self.last_valid_vp = None
+        self.last_valid_vp_time = 0
+        
         self.event_saver = EventSaver(sound_alert=True)
         self.context_collector = ContextCollector(symbol=self.symbol)
         self.flow_analyzer = FlowAnalyzer(time_manager=self.time_manager)
@@ -372,7 +385,6 @@ class EnhancedMarketBot:
 
         self.connection_manager = RobustConnectionManager(stream_url, symbol, max_reconnect_attempts=15)
         self.connection_manager.set_callbacks(on_message=self.on_message, on_open=self.on_open, on_close=self.on_close)
-        # Heartbeat durante reconexões
         self.connection_manager.set_heartbeat_cb(lambda: self.health_monitor.heartbeat("main"))
 
         self.window_end_ms = None
@@ -385,25 +397,19 @@ class EnhancedMarketBot:
         self.close_price_history = deque(maxlen=context_sma_period)
         self.delta_std_dev_factor = delta_std_dev_factor
 
-        # Histórico de volatilidade (usado em alertas)
         self.volatility_history = deque(maxlen=history_size)
 
         # 🔹 CONTADORES DE CAMPOS AUSENTES
         self._missing_field_counts = {"q": 0, "m": 0, "p": 0, "T": 0}
         try:
-            import config as cfg  # leitura dinâmica de config
+            import config as cfg
             self._missing_field_log_step = getattr(cfg, "MISSING_FIELD_LOG_STEP", None)
         except Exception:
             self._missing_field_log_step = None
 
-        # 🔹 PARA INFERÊNCIA DO 'm'
         self._last_price = None
-
-        # 🔹 Cooldown simples para alertas
         self._last_alert_ts = {}
-
-        # 🔹 Dedup de ANALYSIS_TRIGGER por janela
-        self._sent_triggers = set()  # armazena tuplas (tipo_evento, features_window_id)
+        self._sent_triggers = set()
 
         try:
             self._alert_cooldown_sec = getattr(config, "ALERT_COOLDOWN_SEC", 30)
@@ -506,22 +512,19 @@ class EnhancedMarketBot:
             return
         try:
             raw = json.loads(message)
-            trade = raw.get("data", raw)  # combined stream ou direto
+            trade = raw.get("data", raw)
 
-            # 🔹 Aceita chaves alternativas / maiúsculas
             p = trade.get("p") or trade.get("P") or trade.get("price")
             q = trade.get("q") or trade.get("Q") or trade.get("quantity")
             T = trade.get("T") or trade.get("E") or trade.get("tradeTime")
-            m = trade.get("m")  # True => agressor vendedor; False => agressor comprador
+            m = trade.get("m")
 
-            # 🔹 Se vier KLINE, sintetiza p/q/T a partir de k.c/k.v/k.T
             if (p is None or q is None or T is None) and isinstance(trade.get("k"), dict):
                 k = trade["k"]
                 p = p if p is not None else k.get("c")
                 q = q if q is not None else k.get("v")
                 T = T if T is not None else k.get("T") or raw.get("E")
 
-            # 🔹 Verifica campos obrigatórios
             missing = []
             if p is None:
                 missing.append("p"); self._missing_field_counts["p"] += 1
@@ -544,16 +547,14 @@ class EnhancedMarketBot:
                             self._missing_field_counts["q"],
                             self._missing_field_counts["T"],
                         )
-                return  # ignora trade incompleto
+                return
 
-            # 🔹 Coerção de tipos
             try:
                 p = float(p); q = float(q); T = int(T)
             except (TypeError, ValueError):
                 logging.error("Trade inválido (tipos): %s", trade)
                 return
 
-            # 🔹 Inferência de 'm' via tick-direction quando ausente
             if m is None:
                 last_price = self._last_price
                 m = (p <= last_price) if last_price is not None else False
@@ -561,13 +562,11 @@ class EnhancedMarketBot:
 
             norm = {"p": p, "q": q, "T": T, "m": bool(m)}
 
-            # 🔹 Heartbeat do módulo principal
             try:
                 self.health_monitor.heartbeat("main")
             except Exception as hb_err:
                 logging.debug("Falha ao enviar heartbeat: %s", hb_err)
 
-            # 🔹 Fluxo normal
             self.flow_analyzer.process_trade(norm)
 
             if self.window_end_ms is None:
@@ -585,15 +584,12 @@ class EnhancedMarketBot:
         except Exception as e:
             logging.error(f"Erro ao processar mensagem: {e}")
 
-    # 🔹 HANDLERS PARA EVENT BUS
     def _handle_signal_event(self, event_data):
-        """Processa eventos de sinal (Absorção, Exaustão, OrderBook)"""
         if not self.ai_analyzer or not self.ai_test_passed:
             return
         self._run_ai_analysis_threaded(event_data.copy())
 
     def _handle_zone_touch_event(self, event_data):
-        """Processa eventos de toque em zona"""
         if not self.ai_analyzer or not self.ai_test_passed:
             return
         self._run_ai_analysis_threaded(event_data.copy())
@@ -606,7 +602,6 @@ class EnhancedMarketBot:
 
         logging.debug("🔍 Evento recebido para análise da IA: %s", event_data.get("tipo_evento", "N/A"))
 
-        # --- helper: imprime relatório sem cabeçalho duplicado
         def _print_ai_report_clean(report_text: str):
             header = "ANÁLISE PROFISSIONAL DA IA"
             start = (report_text or "")[:200].upper()
@@ -653,7 +648,7 @@ class EnhancedMarketBot:
                                 multi_tf
                             )
 
-                            _print_ai_report_clean(ai_report)  # <<< evita cabeçalho duplicado
+                            _print_ai_report_clean(ai_report)
                             logging.info("✅ Análise da IA concluída com sucesso")
                         except Exception as e:
                             logging.error(f"❌ Erro ao gerar relatório com generate_ai_analysis_report: {e}", exc_info=True)
@@ -728,7 +723,6 @@ class EnhancedMarketBot:
         if ultimos:
             print("   🕒 Últimos sinais:")
             for e in ultimos:
-                # 🔹 FORMATAÇÃO CORRIGIDA
                 delta_fmt = format_delta(e.get('delta', 0))
                 vol_fmt = format_large_number(e.get('volume_total', 0))
                 print(
@@ -736,6 +730,9 @@ class EnhancedMarketBot:
                     f"(Δ={delta_fmt}, Vol={vol_fmt})"
                 )
 
+    # ========================================
+    # 🆕 _process_window COM TODAS AS CORREÇÕES
+    # ========================================
     def _process_window(self):
         if not self.window_data or self.should_stop:
             self.window_data = []
@@ -764,23 +761,61 @@ class EnhancedMarketBot:
             return
 
         self.window_count += 1
+        
+        # 🆕 VALIDAÇÃO MÍNIMA DE TRADES
+        min_trades_for_analysis = 10
+        if len(valid_window_data) < min_trades_for_analysis:
+            logging.warning(
+                f"⚠️ Janela #{self.window_count} com poucos trades ({len(valid_window_data)}), "
+                f"análise pode ser imprecisa"
+            )
+        
+        # 🆕 CALCULA VOLUMES BUY/SELL LOCALMENTE (BACKUP)
+        total_buy_volume = 0
+        total_sell_volume = 0
+        
+        for trade in valid_window_data:
+            if trade.get("m"):  # True = seller maker (buyer taker)
+                total_sell_volume += trade.get("q", 0)
+            else:
+                total_buy_volume += trade.get("q", 0)
+
         try:
             self.health_monitor.heartbeat("main")
 
-            # limiar dinâmico de delta
+            # Limiar dinâmico de delta
             dynamic_delta_threshold = 0
             if len(self.delta_history) > 10:
                 mean_delta = np.mean(self.delta_history)
                 std_delta = np.std(self.delta_history)
                 dynamic_delta_threshold = abs(mean_delta + self.delta_std_dev_factor * std_delta)
 
-            # contexto macro
+            # Contexto macro
             macro_context = self.context_collector.get_context()
             historical_profile = macro_context.get("historical_vp", {})
 
+            # 🆕 VALIDA E USA CACHE SE VALUE AREA ZERADA
+            vp_daily = historical_profile.get("daily", {})
+            val = vp_daily.get("val", 0)
+            vah = vp_daily.get("vah", 0)
+            poc = vp_daily.get("poc", 0)
+
+            if val == 0 or vah == 0 or poc == 0:
+                # Tenta usar cache
+                if self.last_valid_vp and (time.time() - self.last_valid_vp_time < 3600):  # 1 hora
+                    age = time.time() - self.last_valid_vp_time
+                    logging.warning(f"⚠️ Value Area zerada, usando cache (age={age:.0f}s)")
+                    historical_profile = self.last_valid_vp.copy()
+                else:
+                    logging.warning("⚠️ Value Area indisponível e sem cache válido")
+            else:
+                # Salva no cache
+                self.last_valid_vp = historical_profile.copy()
+                self.last_valid_vp_time = time.time()
+
             open_ms, close_ms = self.window_end_ms - self.window_ms, self.window_end_ms
 
-            # atualiza níveis
+            # Atualiza níveis
             self.levels.update_from_vp(historical_profile)
 
             try:
@@ -789,15 +824,98 @@ class EnhancedMarketBot:
                     self.symbol,
                     time_manager=self.time_manager,
                 )
+                
                 flow_metrics = self.flow_analyzer.get_flow_metrics(reference_epoch_ms=close_ms)
 
-                ob_event = self.orderbook_analyzer.analyze_order_book(
-                    event_epoch_ms=close_ms, window_id=str(close_ms)
-                )
+                # ========================================
+                # 🆕 ORDERBOOK COM RETRY E CACHE
+                # ========================================
+                ob_event = None
+                max_retries = 3
+
+                for attempt in range(max_retries):
+                    try:
+                        ob_event = self.orderbook_analyzer.analyze(
+                            current_snapshot=None,
+                            event_epoch_ms=close_ms,
+                            window_id=f"W{self.window_count:04d}"
+                        )
+                        
+                        # Valida se tem dados reais
+                        if ob_event and ob_event.get('is_valid', False):
+                            ob_data = ob_event.get('orderbook_data', {})
+                            bid_depth = ob_data.get('bid_depth_usd', 0)
+                            ask_depth = ob_data.get('ask_depth_usd', 0)
+                            
+                            if bid_depth > 0 and ask_depth > 0:
+                                # ✅ Sucesso
+                                self.last_valid_orderbook = ob_event
+                                self.last_valid_orderbook_time = time.time()
+                                self.orderbook_fetch_failures = 0
+                                
+                                logging.info(
+                                    f"✅ Orderbook OK - Janela #{self.window_count}: "
+                                    f"bid=${bid_depth:,.0f}, ask=${ask_depth:,.0f}"
+                                )
+                                break
+                            else:
+                                logging.warning(
+                                    f"⚠️ Orderbook zerado (tentativa {attempt + 1}/{max_retries}): "
+                                    f"bid=${bid_depth}, ask=${ask_depth}"
+                                )
+                        else:
+                            logging.warning(f"⚠️ Orderbook inválido (tentativa {attempt + 1}/{max_retries})")
+                        
+                        if attempt < max_retries - 1:
+                            time.sleep(2.0 * (attempt + 1))
+                            
+                    except Exception as e:
+                        logging.error(f"❌ Erro ao buscar orderbook (tentativa {attempt + 1}): {e}")
+                        if attempt < max_retries - 1:
+                            time.sleep(2.0)
+
+                # 🆕 FALLBACK: USA CACHE OU CRIA VAZIO
+                if not ob_event or not ob_event.get('is_valid', False):
+                    self.orderbook_fetch_failures += 1
+                    
+                    if self.last_valid_orderbook and (time.time() - self.last_valid_orderbook_time < 300):
+                        age = time.time() - self.last_valid_orderbook_time
+                        logging.warning(
+                            f"⚠️ Usando orderbook em cache (age={age:.0f}s) após {self.orderbook_fetch_failures} falhas"
+                        )
+                        ob_event = self.last_valid_orderbook.copy()
+                        ob_event['data_quality'] = {
+                            'is_valid': True,
+                            'data_source': 'cache',
+                            'age_seconds': age,
+                        }
+                    else:
+                        logging.error(
+                            f"❌ Orderbook indisponível (falhas consecutivas: {self.orderbook_fetch_failures})"
+                        )
+                        ob_event = {
+                            'is_valid': False,
+                            'should_skip': True,
+                            'orderbook_data': {
+                                'bid_depth_usd': 0,
+                                'ask_depth_usd': 0,
+                                'imbalance': 0,
+                                'mid': 0,
+                                'spread': 0,
+                            },
+                            'spread_metrics': {
+                                'bid_depth_usd': 0,
+                                'ask_depth_usd': 0,
+                            },
+                            'data_quality': {
+                                'is_valid': False,
+                                'data_source': 'error',
+                                'error': f'Failed after {max_retries} attempts',
+                            },
+                        }
 
                 enriched = pipeline.enrich()
 
-                # inclui contexto de mercado no pipeline
                 pipeline.add_context(
                     flow_metrics=flow_metrics,
                     historical_vp=historical_profile,
@@ -833,10 +951,9 @@ class EnhancedMarketBot:
                     orderbook_data=ob_event,
                 )
 
-                # ======= LIMPEZA DE DUPLICAÇÃO DE ANÁLISE =======
+                # Limpeza de duplicação
                 has_non_trigger = any(s.get("tipo_evento") not in ("ANALYSIS_TRIGGER",) for s in signals)
                 if not signals:
-                    # nada veio do pipeline → cria um único trigger
                     signals.append({
                         "is_signal": True,
                         "tipo_evento": "ANALYSIS_TRIGGER",
@@ -853,7 +970,6 @@ class EnhancedMarketBot:
                 elif has_non_trigger:
                     signals = [s for s in signals if s.get("tipo_evento") != "ANALYSIS_TRIGGER"]
                 else:
-                    # só havia triggers → garante exatamente um
                     first = True
                     tmp = []
                     for s in signals:
@@ -862,16 +978,14 @@ class EnhancedMarketBot:
                         else:
                             tmp.append(s)
                     signals = tmp
-                # ================================================
 
-                # ---- LOG DO HEATMAP COM FORMATAÇÃO CORRIGIDA ----
+                # LOG DO HEATMAP
                 try:
                     liquidity_data = flow_metrics.get("liquidity_heatmap", {})
                     clusters = liquidity_data.get("clusters", [])
                     if clusters:
                         print(f"\n📊 LIQUIDITY HEATMAP - Janela #{self.window_count}:")
                         for i, cluster in enumerate(clusters[:3]):
-                            # 🔹 FORMATAÇÃO CORRIGIDA
                             center_fmt = format_price(cluster.get('center', 0.0))
                             vol_fmt = format_large_number(cluster.get('total_volume', 0))
                             imb_fmt = format_percent(cluster.get('imbalance_ratio', 0.0) * 100)
@@ -907,47 +1021,72 @@ class EnhancedMarketBot:
                 if signal.get("is_signal", False):
                     if "derivatives" not in signal:
                         signal["derivatives"] = derivatives_context
-                        
-                    # 🔧 VALIDAÇÃO DE FLOW_METRICS ANTES DE ADICIONAR
+                    
+                    # 🆕 VALIDAÇÃO CORRIGIDA DE FLOW_METRICS
                     if "fluxo_continuo" not in signal and flow_metrics:
-                        # Verifica se flow_metrics tem dados válidos (não apenas zeros)
                         flow_valid = False
+                        
                         try:
-                            # Checa CVD
-                            cvd = flow_metrics.get("cvd", 0)
-                            if abs(cvd) > 0.01:
+                            # Método 1: Verifica se processou trades
+                            trades_processed = 0
+                            if "data_quality" in flow_metrics:
+                                trades_processed = flow_metrics["data_quality"].get("flow_trades_count", 0)
+                            
+                            if trades_processed > 0:
                                 flow_valid = True
                             
-                            # Checa net flows
+                            # Método 2: Verifica sector flow
                             if not flow_valid:
-                                order_flow = flow_metrics.get("order_flow", {})
-                                for key, value in order_flow.items():
-                                    if key.startswith("net_flow_") and value is not None and abs(value) > 0.01:
+                                sector_flow = flow_metrics.get("sector_flow", {})
+                                for sector, data in sector_flow.items():
+                                    total_vol = abs(data.get("buy", 0)) + abs(data.get("sell", 0))
+                                    if total_vol > 0.001:
                                         flow_valid = True
                                         break
                             
-                            # Checa whale volumes
+                            # Método 3: Verifica order flow
                             if not flow_valid:
-                                whale_total = abs(flow_metrics.get("whale_buy_volume", 0)) + abs(flow_metrics.get("whale_sell_volume", 0))
-                                if whale_total > 0.01:
+                                order_flow = flow_metrics.get("order_flow", {})
+                                
+                                for key in ["net_flow_1m", "net_flow_5m", "net_flow_15m"]:
+                                    val = order_flow.get(key)
+                                    if val is not None and val != 0:
+                                        flow_valid = True
+                                        break
+                                
+                                if not flow_valid:
+                                    buy_pct = order_flow.get("aggressive_buy_pct", 0)
+                                    sell_pct = order_flow.get("aggressive_sell_pct", 0)
+                                    if buy_pct > 0 or sell_pct > 0:
+                                        flow_valid = True
+                            
+                            # Método 4: Verifica whale
+                            if not flow_valid:
+                                whale_total = abs(flow_metrics.get("whale_buy_volume", 0)) + \
+                                             abs(flow_metrics.get("whale_sell_volume", 0))
+                                if whale_total > 0.001:
                                     flow_valid = True
                                     
                         except Exception as e:
-                            logging.debug(f"Erro ao validar flow_metrics: {e}")
+                            logging.error(f"Erro ao validar flow_metrics: {e}")
                             flow_valid = False
                         
                         if flow_valid:
                             signal["fluxo_continuo"] = flow_metrics
+                            logging.debug(f"✅ Flow metrics adicionado (janela #{self.window_count})")
                         else:
-                            # CORREÇÃO: formatação correta do logging
-                            cvd_value = flow_metrics.get('cvd', 0)
-                            logging.debug(
-                                "Flow_metrics zerado/inválido para janela #%d. CVD=%.4f",
-                                self.window_count,
-                                cvd_value
-                            )
-                            # Adiciona flag indicando ausência de dados de fluxo
-                            signal["flow_data_quality"] = "no_flow_data"
+                            signal["fluxo_continuo"] = flow_metrics
+                            signal["flow_data_quality"] = "incomplete"
+                            logging.warning(f"⚠️ Flow metrics possivelmente incompleto")
+                    
+                    # 🆕 ADICIONA VOLUMES CALCULADOS LOCALMENTE SE FALTAREM
+                    if signal.get("volume_compra", 0) == 0 and signal.get("volume_venda", 0) == 0:
+                        signal["volume_compra"] = total_buy_volume
+                        signal["volume_venda"] = total_sell_volume
+                        logging.debug(
+                            f"📊 Volumes calculados localmente: buy={total_buy_volume:.2f}, "
+                            f"sell={total_sell_volume:.2f}"
+                        )
 
                     try:
                         if "market_context" not in signal:
@@ -962,7 +1101,6 @@ class EnhancedMarketBot:
                     signal["enriched_snapshot"] = enriched_snapshot
                     signal["contextual_snapshot"] = contextual_snapshot
 
-                    # 🔒 Dedup antes de publicar (especial para ANALYSIS_TRIGGER)
                     if signal.get("tipo_evento") == "ANALYSIS_TRIGGER":
                         key = (signal.get("tipo_evento"), signal.get("features_window_id"))
                         if key in self._sent_triggers:
@@ -990,40 +1128,36 @@ class EnhancedMarketBot:
                     touched = self.levels.check_price(float(preco_atual))
                     for z in touched:
                         zone_event = signals[0].copy() if signals else {}
-                        # 🔹 FORMATAÇÃO CORRIGIDA
                         preco_fmt = format_price(preco_atual)
                         low_fmt = format_price(z.low)
                         high_fmt = format_price(z.high)
                         
-                        zone_event.update(
-                            {
-                                "tipo_evento": "Zona",
-                                "resultado_da_batalha": f"Toque em Zona {z.kind}",
-                                "descricao": f"Preço {preco_fmt} tocou {z.kind} {z.timeframe} [{low_fmt} ~ {high_fmt}]",
-                                "zone_context": z.to_dict(),
-                                "preco_fechamento": preco_atual,
-                                "timestamp": datetime.now(self.ny_tz).isoformat(timespec="seconds"),
-                            }
-                        )
+                        zone_event.update({
+                            "tipo_evento": "Zona",
+                            "resultado_da_batalha": f"Toque em Zona {z.kind}",
+                            "descricao": f"Preço {preco_fmt} tocou {z.kind} {z.timeframe} [{low_fmt} ~ {high_fmt}]",
+                            "zone_context": z.to_dict(),
+                            "preco_fechamento": preco_atual,
+                            "timestamp": datetime.now(self.ny_tz).isoformat(timespec="seconds"),
+                        })
+                        
                         if "historical_confidence" not in zone_event:
                             zone_event["historical_confidence"] = calcular_probabilidade_historica(zone_event)
 
                         self.event_bus.publish("zone_touch", zone_event)
                         self.event_saver.save_event(zone_event)
 
-                        adicionar_memoria_evento(
-                            {
-                                "timestamp": z.last_touched or datetime.now(self.ny_tz).isoformat(timespec="seconds"),
-                                "tipo_evento": "Zona",
-                                "resultado_da_batalha": f"Toque {z.kind}",
-                                "delta": zone_event.get("delta", 0),
-                                "volume_total": zone_event.get("volume_total", 0),
-                            }
-                        )
+                        adicionar_memoria_evento({
+                            "timestamp": z.last_touched or datetime.now(self.ny_tz).isoformat(timespec="seconds"),
+                            "tipo_evento": "Zona",
+                            "resultado_da_batalha": f"Toque {z.kind}",
+                            "delta": zone_event.get("delta", 0),
+                            "volume_total": zone_event.get("volume_total", 0),
+                        })
                 except Exception as e:
                     logging.error(f"Erro ao verificar toques em zonas: {e}")
 
-            # atualiza históricos
+            # Atualiza históricos
             window_volume = enriched.get("volume_total", 0)
             window_delta = enriched.get("delta_fechamento", 0)
             window_close = enriched.get("ohlc", {}).get("close", 0)
@@ -1033,7 +1167,7 @@ class EnhancedMarketBot:
             if window_close > 0:
                 self.close_price_history.append(window_close)
 
-            # Atualiza histórico de volatilidade
+            # Volatilidade
             try:
                 price_feats = (ml_payload.get('price_features') or {})
                 current_volatility = None
@@ -1041,22 +1175,17 @@ class EnhancedMarketBot:
                     current_volatility = price_feats['volatility_5']
                 elif 'volatility_1' in price_feats:
                     current_volatility = price_feats['volatility_1']
-                else:
-                    for k, v in price_feats.items():
-                        if k.startswith('volatility_'):
-                            current_volatility = v; break
                 if current_volatility is not None:
                     self.volatility_history.append(float(current_volatility))
             except Exception:
                 pass
 
-            # Log curto de ML features COM FORMATAÇÃO CORRIGIDA
+            # Log ML features
             try:
                 pf = ml_payload.get("price_features", {}) if ml_payload else {}
                 vf = ml_payload.get("volume_features", {}) if ml_payload else {}
                 mf = ml_payload.get("microstructure", {}) if ml_payload else {}
                 if pf or vf or mf:
-                    # 🔹 FORMATAÇÃO CORRIGIDA
                     ret5_fmt = format_scientific(pf.get('returns_5', 0))
                     vol5_fmt = format_scientific(pf.get('volatility_5', 0), decimals=5)
                     vsma_fmt = format_percent(vf.get('volume_sma_ratio', 0) * 100)
@@ -1065,12 +1194,8 @@ class EnhancedMarketBot:
                     flow_fmt = format_scientific(mf.get('flow_imbalance', 0), decimals=3)
                     
                     print(
-                        f"   ML: ret5={ret5_fmt} "
-                        f"vol5={vol5_fmt} "
-                        f"V/SMA={vsma_fmt} "
-                        f"BSpress={bs_fmt} "
-                        f"OBslope={obs_fmt} "
-                        f"FlowImb={flow_fmt}"
+                        f"   ML: ret5={ret5_fmt} vol5={vol5_fmt} V/SMA={vsma_fmt} "
+                        f"BSpress={bs_fmt} OBslope={obs_fmt} FlowImb={flow_fmt}"
                     )
             except Exception:
                 pass
@@ -1121,17 +1246,10 @@ class EnhancedMarketBot:
                             self._last_alert_ts[atype] = now_s
 
                             desc_parts = [f"Tipo: {alert.get('type')}"]
-                            # 🔹 FORMATAÇÃO CORRIGIDA PARA ALERTAS
                             if 'level' in alert: 
                                 desc_parts.append(f"Nível: {format_price(alert['level'])}")
                             if 'threshold_exceeded' in alert: 
                                 desc_parts.append(f"Fator: {format_percent(alert['threshold_exceeded'] * 100)}")
-                            if 'level' not in alert and 'threshold_exceeded' not in alert:
-                                for k, v in alert.items():
-                                    if k not in ('type', 'severity', 'probability', 'action'):
-                                        if isinstance(v, (int, float)):
-                                            v = format_price(v) if 'price' in k.lower() else format_large_number(v)
-                                        desc_parts.append(f"{k}: {v}")
                             descricao_alert = " | ".join(desc_parts)
 
                             print(f"🔔 ALERTA: {descricao_alert}")
@@ -1158,7 +1276,19 @@ class EnhancedMarketBot:
                 except Exception as e:
                     logging.error(f"Erro ao gerar alertas: {e}")
 
-            # 🔹 FORMATAÇÃO CORRIGIDA NO LOG PRINCIPAL
+            # 🆕 LOG CONSOLIDADO DE QUALIDADE (A CADA 10 JANELAS)
+            if self.window_count % 10 == 0:
+                logging.info(
+                    f"\n📊 HEALTH CHECK - Janela #{self.window_count}:\n"
+                    f"  Orderbook: failures={self.orderbook_fetch_failures}, "
+                    f"last_valid={time.time() - self.last_valid_orderbook_time:.0f}s ago\n"
+                    f"  Value Area: last_valid={time.time() - self.last_valid_vp_time:.0f}s ago\n"
+                    f"  Flow: trades_in_window={len(valid_window_data)}, "
+                    f"cvd={flow_metrics.get('cvd', 0):.4f}\n"
+                    f"  Volumes: buy={total_buy_volume:.2f}, sell={total_sell_volume:.2f}"
+                )
+
+            # Log principal
             delta_fmt = format_delta(window_delta)
             vol_fmt = format_large_number(window_volume)
             print(f"[{datetime.now(self.ny_tz).strftime('%H:%M:%S')} NY] 🟡 Janela #{self.window_count} | Delta: {delta_fmt} | Vol: {vol_fmt}")
@@ -1177,7 +1307,6 @@ class EnhancedMarketBot:
 
             if historical_profile and historical_profile.get("daily"):
                 vp = historical_profile["daily"]
-                # 🔹 FORMATAÇÃO CORRIGIDA PARA VP
                 poc_fmt = format_price(vp.get('poc', 0))
                 val_fmt = format_price(vp.get('val', 0))
                 vah_fmt = format_price(vp.get('vah', 0))
@@ -1204,7 +1333,7 @@ class EnhancedMarketBot:
     def run(self):
         try:
             self.context_collector.start()
-            logging.info("🎯 Iniciando Enhanced Market Bot...")
+            logging.info("🎯 Iniciando Enhanced Market Bot v2.0.0...")
             print("=" * 80)
             self.connection_manager.connect()
         except KeyboardInterrupt:
@@ -1215,6 +1344,9 @@ class EnhancedMarketBot:
             self._cleanup_handler()
 
 
+# ===============================
+# EXECUÇÃO
+# ===============================
 if __name__ == "__main__":
     try:
         bot = EnhancedMarketBot(
