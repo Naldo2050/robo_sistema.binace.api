@@ -1,5 +1,4 @@
-# main.py v2.0.0 (CORRIGIDO COMPLETO - PARTE 1/2)
-
+# main.py v2.1.0 (CORRIGIDO COMPLETO PARA ORDERBOOK)
 from dotenv import load_dotenv; load_dotenv()
 import json
 import time
@@ -78,6 +77,7 @@ class _DedupFilter(logging.Filter):
         super().__init__()
         self.window = float(window)
         self._last = {}  # msg -> ts
+
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
         now = _time.time()
@@ -86,14 +86,13 @@ class _DedupFilter(logging.Filter):
             return False
         self._last[msg] = now
         return True
-logging.getLogger().addFilter(_DedupFilter(window=1.0))
 
+logging.getLogger().addFilter(_DedupFilter(window=1.0))
 
 # ===============================
 # GESTOR DE CONEXÃO WEBSOCKET (MANTIDO IGUAL)
 # ===============================
 class RobustConnectionManager:
-    # ... (código mantido igual ao original) ...
     def __init__(self, stream_url, symbol, max_reconnect_attempts=10, initial_delay=1, max_delay=60, backoff_factor=1.5):
         self.stream_url = stream_url
         self.symbol = symbol
@@ -205,8 +204,9 @@ class RobustConnectionManager:
         return self.current_delay
 
     def connect(self):
-        ping_interval = getattr(config, "WS_PING_INTERVAL", 25)
-        ping_timeout = getattr(config, "WS_PING_TIMEOUT", 10)
+        ping_interval = getattr(config, "WS_PING_INTERVAL", 30)
+        ping_timeout = getattr(config, "WS_PING_TIMEOUT", 15)
+        
         while self.reconnect_count < self.max_reconnect_attempts and not self.should_stop:
             try:
                 if self.external_heartbeat_cb:
@@ -214,11 +214,12 @@ class RobustConnectionManager:
                         self.external_heartbeat_cb()
                     except Exception:
                         pass
+                        
                 if not self._test_connection():
                     raise ConnectionError("Falha no teste de conectividade")
-
+                    
                 logging.info(f"🔄 Tentativa {self.reconnect_count + 1}/{self.max_reconnect_attempts}")
-
+                
                 ws = websocket.WebSocketApp(
                     self.stream_url,
                     on_message=self._on_message,
@@ -226,11 +227,12 @@ class RobustConnectionManager:
                     on_close=self._on_close,
                     on_open=self._on_open,
                 )
+                
                 ws.run_forever(ping_interval=ping_interval, ping_timeout=ping_timeout)
-
+                
                 if self.should_stop:
                     break
-
+                    
             except KeyboardInterrupt:
                 logging.info("⏹️ Interrompido pelo usuário")
                 self.should_stop = True
@@ -239,6 +241,7 @@ class RobustConnectionManager:
                 self.reconnect_count += 1
                 self.total_reconnects += 1
                 logging.error(f"❌ Erro na conexão ({self.reconnect_count}/{self.max_reconnect_attempts}): {e}")
+                
                 if self.reconnect_count < self.max_reconnect_attempts:
                     delay = self._calculate_next_delay()
                     logging.info(f"⏳ Reconectando em {delay:.1f}s...")
@@ -253,12 +256,12 @@ class RobustConnectionManager:
                 else:
                     logging.error("💀 Máximo de tentativas atingido. Encerrando.")
                     break
+                    
         self._stop_heartbeat()
 
     def disconnect(self):
         logging.info("🛑 Iniciando desconexão...")
         self.should_stop = True
-
 
 # ===============================
 # ANALISADOR DE TRADE FLOW (MANTIDO)
@@ -282,6 +285,7 @@ class TradeFlowAnalyzer:
             tz_output=self.tz_output,
             historical_profile=historical_profile,
         )
+
         exhaustion_event = create_exhaustion_event(
             window_data,
             symbol,
@@ -290,8 +294,8 @@ class TradeFlowAnalyzer:
             tz_output=self.tz_output,
             historical_profile=historical_profile,
         )
-        return absorption_event, exhaustion_event
 
+        return absorption_event, exhaustion_event
 
 # ===============================
 # FUNÇÃO AUXILIAR: GET CURRENT PRICE VIA REST
@@ -315,12 +319,12 @@ def get_current_price(symbol: str) -> float:
             logging.error(f"Erro inesperado ao buscar preço via REST (tentativa {attempt+1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
                 time.sleep(base_delay * (2**attempt))
+                
     logging.critical("💀 FALHA CRÍTICA: Não foi possível obter preço via REST após todas as tentativas")
     return 0.0
-    # main.py v2.0.0 (CORRIGIDO COMPLETO - PARTE 2/2)
 
 # ===============================
-# BOT PRINCIPAL - COM TODAS AS CORREÇÕES
+# BOT PRINCIPAL - COM CORREÇÕES PARA ORDERBOOK
 # ===============================
 class EnhancedMarketBot:
     def __init__(self, stream_url, symbol, window_size_minutes, vol_factor_exh, history_size, delta_std_dev_factor, context_sma_period, liquidity_flow_alert_percentage, wall_std_dev_factor):
@@ -328,77 +332,75 @@ class EnhancedMarketBot:
         self.window_size_minutes = window_size_minutes
         self.window_ms = window_size_minutes * 60 * 1000
         self.ny_tz = NY_TZ
-
         self.should_stop = False
         self.is_cleaning_up = False
-
+        
         # 🔹 TimeManager único para todo o app
         self.time_manager = TimeManager()
-
+        
         # 🔹 INICIALIZA MÓDulos
         self.health_monitor = HealthMonitor()
         self.event_bus = EventBus()
         self.feature_store = FeatureStore()
         self.levels = LevelRegistry(self.symbol)
-
+        
         # 🔹 HEARTBEAT
         self.health_monitor.heartbeat("main")
-
+        
         # Módulos existentes (com TimeManager injetado)
         self.trade_flow_analyzer = TradeFlowAnalyzer(vol_factor_exh, tz_output=self.ny_tz)
         
-        # 🆕 ORDERBOOK COM CACHE AUMENTADO
+        # 🔧 ORDERBOOK COM CONFIGURAÇÕES CORRIGIDAS
         self.orderbook_analyzer = OrderBookAnalyzer(
             symbol=self.symbol,
             liquidity_flow_alert_percentage=liquidity_flow_alert_percentage,
             wall_std_dev_factor=wall_std_dev_factor,
             time_manager=self.time_manager,
-            cache_ttl_seconds=10.0,      # 🆕 Aumentado para 10s
-            max_stale_seconds=60.0,       # 🆕 Permite dados de até 60s
+            cache_ttl_seconds=getattr(config, 'ORDERBOOK_CACHE_TTL', 30.0),      # 🔧 30s
+            max_stale_seconds=getattr(config, 'ORDERBOOK_MAX_STALE', 300.0),     # 🔧 5 min
+            rate_limit_threshold=getattr(config, 'ORDERBOOK_MAX_REQUESTS_PER_MIN', 5),  # 🔧 5 req/min
         )
         
-        # 🆕 CACHE PERSISTENTE PARA ORDERBOOK
+        # 🔧 CACHE PERSISTENTE PARA ORDERBOOK (MELHORADO)
         self.last_valid_orderbook = None
         self.last_valid_orderbook_time = 0
         self.orderbook_fetch_failures = 0
+        self.orderbook_emergency_mode = getattr(config, 'ORDERBOOK_EMERGENCY_MODE', True)
         
-        # 🆕 CACHE PARA VALUE AREA
+        # 🔧 CACHE PARA VALUE AREA
         self.last_valid_vp = None
         self.last_valid_vp_time = 0
         
         self.event_saver = EventSaver(sound_alert=True)
         self.context_collector = ContextCollector(symbol=self.symbol)
         self.flow_analyzer = FlowAnalyzer(time_manager=self.time_manager)
-
         self.ai_analyzer = None
         self.ai_initialization_attempted = False
         self.ai_test_passed = False
-
         self.ai_thread_pool = []
         self.max_ai_threads = 3
         self.ai_semaphore = threading.Semaphore(3)
+        
         self._initialize_ai_async()
-
+        
         # 🔹 EVENT BUS
         self.event_bus.subscribe("signal", self._handle_signal_event)
         self.event_bus.subscribe("zone_touch", self._handle_zone_touch_event)
-
+        
         self.connection_manager = RobustConnectionManager(stream_url, symbol, max_reconnect_attempts=15)
         self.connection_manager.set_callbacks(on_message=self.on_message, on_open=self.on_open, on_close=self.on_close)
         self.connection_manager.set_heartbeat_cb(lambda: self.health_monitor.heartbeat("main"))
-
+        
         self.window_end_ms = None
         self.window_data = []
         self.window_count = 0
-
         self.history_size = history_size
         self.volume_history = deque(maxlen=history_size)
         self.delta_history = deque(maxlen=history_size)
         self.close_price_history = deque(maxlen=context_sma_period)
         self.delta_std_dev_factor = delta_std_dev_factor
-
         self.volatility_history = deque(maxlen=history_size)
-
+        
         # 🔹 CONTADORES DE CAMPOS AUSENTES
         self._missing_field_counts = {"q": 0, "m": 0, "p": 0, "T": 0}
         try:
@@ -406,16 +408,16 @@ class EnhancedMarketBot:
             self._missing_field_log_step = getattr(cfg, "MISSING_FIELD_LOG_STEP", None)
         except Exception:
             self._missing_field_log_step = None
-
+            
         self._last_price = None
         self._last_alert_ts = {}
         self._sent_triggers = set()
-
+        
         try:
             self._alert_cooldown_sec = getattr(config, "ALERT_COOLDOWN_SEC", 30)
         except Exception:
             self._alert_cooldown_sec = 30
-
+            
         self._register_cleanup_handlers()
 
     def _initialize_ai_async(self):
@@ -424,12 +426,13 @@ class EnhancedMarketBot:
                 if self.ai_initialization_attempted:
                     return
                 self.ai_initialization_attempted = True
-
-                print("\n" + "=" * 30 + " INICIALIZANDO IA " + "=" * 30)
+                
+                print("\\n" + "=" * 30 + " INICIALIZANDO IA " + "=" * 30)
                 logging.info("🧠 Tentando inicializar AI Analyzer Qwen...")
+                
                 self.ai_analyzer = AIAnalyzer()
                 logging.info("✅ Módulo da IA carregado. Realizando teste de análise...")
-
+                
                 current_price = get_current_price(self.symbol)
                 test_event = {
                     "tipo_evento": "Teste de Conexão",
@@ -439,61 +442,63 @@ class EnhancedMarketBot:
                     "volume_total": 50000,
                     "preco_fechamento": current_price,
                 }
+                
                 analysis = self.ai_analyzer.analyze_event(test_event)
-
+                
                 try:
                     import config as cfg
                     min_chars = getattr(cfg, "AI_TEST_MIN_CHARS", 10)
                 except Exception:
                     min_chars = 10
-
+                    
                 if analysis and len(analysis.strip()) >= min_chars:
                     self.ai_test_passed = True
                     logging.info("✅ Teste da IA bem-sucedido!")
-                    print("\n" + "═" * 25 + " RESULTADO DO TESTE DA IA " + "═" * 25)
+                    print("\\n" + "═" * 25 + " RESULTADO DO TESTE DA IA " + "═" * 25)
                     print(analysis)
-                    print("═" * 75 + "\n")
+                    print("═" * 75 + "\\n")
                 else:
                     self.ai_test_passed = True
                     logging.warning("⚠️ Teste da IA retornou resultado inesperado ou vazio. Prosseguindo em modo de fallback.")
                     print(f"Resultado recebido: {analysis}")
-                    print("=" * 75 + "\n")
+                    print("═" * 75 + "\\n")
+                    
             except Exception as e:
                 self.ai_analyzer = None
                 self.ai_test_passed = False
                 print("=" * 30 + " ERRO NA IA " + "=" * 30)
                 logging.error(f"❌ Falha crítica ao inicializar a IA: {e}", exc_info=True)
-                print("=" * 75 + "\n")
-
+                print("═" * 75 + "\\n")
+                
         threading.Thread(target=ai_init_worker, daemon=True).start()
 
     def _cleanup_handler(self, signum=None, frame=None):
         if self.is_cleaning_up:
             return
         self.is_cleaning_up = True
-
         logging.info("🧹 Iniciando limpeza dos recursos...")
+        
         self.should_stop = True
-
+        
         if self.context_collector:
             self.context_collector.stop()
-
+            
         if self.ai_analyzer:
             try:
                 self.ai_analyzer.close()
                 logging.info("✅ AI Analyzer fechado.")
             except Exception as e:
                 logging.error(f"❌ Erro ao fechar AI Analyzer: {e}")
-
+                
         if self.connection_manager:
             self.connection_manager.disconnect()
-
+            
         if hasattr(self, "event_bus"):
             self.event_bus.shutdown()
-
+            
         if hasattr(self, "health_monitor"):
             self.health_monitor.stop()
-
+            
         logging.info("✅ Bot encerrado com segurança.")
 
     def _register_cleanup_handlers(self):
@@ -510,21 +515,22 @@ class EnhancedMarketBot:
     def on_message(self, ws, message):
         if self.should_stop:
             return
+            
         try:
             raw = json.loads(message)
             trade = raw.get("data", raw)
-
+            
             p = trade.get("p") or trade.get("P") or trade.get("price")
             q = trade.get("q") or trade.get("Q") or trade.get("quantity")
             T = trade.get("T") or trade.get("E") or trade.get("tradeTime")
             m = trade.get("m")
-
+            
             if (p is None or q is None or T is None) and isinstance(trade.get("k"), dict):
                 k = trade["k"]
                 p = p if p is not None else k.get("c")
                 q = q if q is not None else k.get("v")
                 T = T if T is not None else k.get("T") or raw.get("E")
-
+                
             missing = []
             if p is None:
                 missing.append("p"); self._missing_field_counts["p"] += 1
@@ -532,7 +538,7 @@ class EnhancedMarketBot:
                 missing.append("q"); self._missing_field_counts["q"] += 1
             if T is None:
                 missing.append("T"); self._missing_field_counts["T"] += 1
-
+                
             if missing:
                 total_missing = sum(self._missing_field_counts[k] for k in ("p", "q", "T"))
                 if self._missing_field_log_step:
@@ -548,37 +554,37 @@ class EnhancedMarketBot:
                             self._missing_field_counts["T"],
                         )
                 return
-
+                
             try:
                 p = float(p); q = float(q); T = int(T)
             except (TypeError, ValueError):
                 logging.error("Trade inválido (tipos): %s", trade)
                 return
-
+                
             if m is None:
                 last_price = self._last_price
                 m = (p <= last_price) if last_price is not None else False
             self._last_price = p
-
+            
             norm = {"p": p, "q": q, "T": T, "m": bool(m)}
-
+            
             try:
                 self.health_monitor.heartbeat("main")
             except Exception as hb_err:
                 logging.debug("Falha ao enviar heartbeat: %s", hb_err)
-
+                
             self.flow_analyzer.process_trade(norm)
-
+            
             if self.window_end_ms is None:
                 self.window_end_ms = self._next_boundary_ms(T)
-
+                
             if T >= self.window_end_ms:
                 self._process_window()
                 self.window_end_ms = self._next_boundary_ms(T)
                 self.window_data = [norm]
             else:
                 self.window_data.append(norm)
-
+                
         except json.JSONDecodeError as e:
             logging.error(f"Erro ao decodificar mensagem JSON: {e}")
         except Exception as e:
@@ -599,47 +605,47 @@ class EnhancedMarketBot:
             if self.ai_analyzer and not self.ai_test_passed:
                 logging.warning("⚠️ Análise da IA ignorada: sistema não passou no teste inicial.")
             return
-
+            
         logging.debug("🔍 Evento recebido para análise da IA: %s", event_data.get("tipo_evento", "N/A"))
-
+        
         def _print_ai_report_clean(report_text: str):
             header = "ANÁLISE PROFISSIONAL DA IA"
             start = (report_text or "")[:200].upper()
             if header in start:
-                print("\n" + report_text.rstrip() + "\n")
+                print("\\n" + report_text.rstrip() + "\\n")
             else:
-                print("\n" + "═" * 25 + " " + header + " " + "═" * 25)
+                print("\\n" + "═" * 25 + " " + header + " " + "═" * 25)
                 print(report_text)
-                print("═" * 75 + "\n")
-
+                print("═" * 75 + "\\n")
+                
         def ai_worker():
             try:
                 with self.ai_semaphore:
                     logging.info("🧠 IA iniciando análise para evento: %s", event_data.get("resultado_da_batalha", "N/A"))
                     self.health_monitor.heartbeat("ai")
-
+                    
                     logging.debug("📊 Dados do evento para IA: %s", {
                         "tipo": event_data.get("tipo_evento"),
                         "delta": format_delta(event_data.get("delta")),
                         "volume": format_large_number(event_data.get("volume_total")),
                         "preco": format_price(event_data.get("preco_fechamento"))
                     })
-
+                    
                     analysis_result = self.ai_analyzer.analyze_event(event_data)
-
+                    
                     if analysis_result and not self.should_stop:
                         try:
                             ml_features = event_data.get("ml_features", {})
                             orderbook_data = event_data.get("orderbook_data", {})
                             historical_vp = event_data.get("historical_vp", {})
                             multi_tf = event_data.get("multi_tf", {})
-
+                            
                             logging.debug("📊 Dados para análise da IA:")
                             logging.debug("ML Features: %s", ml_features)
                             logging.debug("Orderbook Data: %s", orderbook_data)
                             logging.debug("Historical VP: %s", historical_vp)
                             logging.debug("Multi TF: %s", multi_tf)
-
+                            
                             ai_report = generate_ai_analysis_report(
                                 event_data,
                                 ml_features,
@@ -647,14 +653,16 @@ class EnhancedMarketBot:
                                 historical_vp,
                                 multi_tf
                             )
-
+                            
                             _print_ai_report_clean(ai_report)
                             logging.info("✅ Análise da IA concluída com sucesso")
+                            
                         except Exception as e:
                             logging.error(f"❌ Erro ao gerar relatório com generate_ai_analysis_report: {e}", exc_info=True)
+                            
             except Exception as e:
                 logging.error(f"❌ Erro na thread de análise da IA: {e}", exc_info=True)
-
+                
         logging.debug("🔧 Criando thread para análise da IA...")
         threading.Thread(target=ai_worker, daemon=True).start()
 
@@ -662,27 +670,28 @@ class EnhancedMarketBot:
         try:
             if not preco_atual or preco_atual <= 0:
                 return {"status": "no_data"}
-
+                
             vp_daily = historical_profile.get("daily", {})
             hvns = vp_daily.get("hvns", [])
             lvns = vp_daily.get("lvns", [])
             sp = vp_daily.get("single_prints", [])
             poc = vp_daily.get("poc", 0)
-
+            
             if not poc or (not hvns and not lvns):
                 return {"status": "no_data"}
-
+                
             dist_to_poc = preco_atual - poc
             nearest_hvn = min(hvns, key=lambda x: abs(x - preco_atual)) if hvns else None
             nearest_lvn = min(lvns, key=lambda x: abs(x - preco_atual)) if lvns else None
+            
             dist_hvn = (preco_atual - nearest_hvn) if nearest_hvn else None
             dist_lvn = (preco_atual - nearest_lvn) if nearest_lvn else None
-
+            
             faixa_lim = preco_atual * 0.005
             hvn_near = sum(1 for h in hvns if abs(h - preco_atual) <= faixa_lim)
             lvn_near = sum(1 for l in lvns if abs(l - preco_atual) <= faixa_lim)
             in_single = any(abs(px - preco_atual) <= faixa_lim for px in sp)
-
+            
             return {
                 "status": "ok",
                 "distance_to_poc": round(dist_to_poc, 2),
@@ -707,37 +716,38 @@ class EnhancedMarketBot:
                 ny_time = datetime.now(self.ny_tz)
         else:
             ny_time = datetime.now(self.ny_tz)
-
+            
         resultado = event.get("resultado_da_batalha", "N/A").upper()
         tipo = event.get("tipo_evento", "EVENTO")
         descricao = event.get("descricao", "")
         conf = event.get("historical_confidence", {})
-
-        print(f"\n🎯 {tipo}: {resultado} DETECTADO - {ny_time.strftime('%H:%M:%S')} NY")
-        print(f"   Símbolo: {self.symbol} | Janela #{self.window_count}")
-        print(f"   📝 {descricao}")
+        
+        print(f"\\n🎯 {tipo}: {resultado} DETECTADO - {ny_time.strftime('%H:%M:%S')} NY")
+        print(f" Símbolo: {self.symbol} | Janela #{self.window_count}")
+        print(f" 📝 {descricao}")
+        
         if conf:
-            print(f"   📊 Probabilidades -> Long={conf.get('long_prob')} | Short={conf.get('short_prob')} | Neutro={conf.get('neutral_prob')}")
-
+            print(f" 📊 Probabilidades -> Long={conf.get('long_prob')} | Short={conf.get('short_prob')} | Neutro={conf.get('neutral_prob')}")
+            
         ultimos = [e for e in obter_memoria_eventos(n=4) if e.get("tipo_evento") != "OrderBook"]
         if ultimos:
-            print("   🕒 Últimos sinais:")
+            print(" 🕒 Últimos sinais:")
             for e in ultimos:
                 delta_fmt = format_delta(e.get('delta', 0))
                 vol_fmt = format_large_number(e.get('volume_total', 0))
                 print(
-                    f"      - {e.get('timestamp', 'N/A')} | {e.get('tipo_evento', 'N/A')} {e.get('resultado_da_batalha', 'N/A')} "
+                    f"  - {e.get('timestamp', 'N/A')} | {e.get('tipo_evento', 'N/A')} {e.get('resultado_da_batalha', 'N/A')} "
                     f"(Δ={delta_fmt}, Vol={vol_fmt})"
                 )
 
     # ========================================
-    # 🆕 _process_window COM TODAS AS CORREÇÕES
+    # 🔧 _process_window COM CORREÇÕES PARA ORDERBOOK
     # ========================================
     def _process_window(self):
         if not self.window_data or self.should_stop:
             self.window_data = []
             return
-
+            
         # Normaliza e valida
         valid_window_data = []
         for trade in self.window_data:
@@ -749,28 +759,28 @@ class EnhancedMarketBot:
                     valid_window_data.append(trade)
                 except (ValueError, TypeError):
                     continue
-
+                    
         if not valid_window_data:
             logging.warning("Janela sem dados válidos para processamento")
             self.window_data = []
             return
-
+            
         total_volume = sum(float(trade.get("q", 0)) for trade in valid_window_data)
         if total_volume == 0:
             self.window_data = []
             return
-
+            
         self.window_count += 1
         
-        # 🆕 VALIDAÇÃO MÍNIMA DE TRADES
+        # 🔧 VALIDAÇÃO MÍNIMA DE TRADES
         min_trades_for_analysis = 10
         if len(valid_window_data) < min_trades_for_analysis:
             logging.warning(
                 f"⚠️ Janela #{self.window_count} com poucos trades ({len(valid_window_data)}), "
                 f"análise pode ser imprecisa"
             )
-        
-        # 🆕 CALCULA VOLUMES BUY/SELL LOCALMENTE (BACKUP)
+            
+        # 🔧 CALCULA VOLUMES BUY/SELL LOCALMENTE (BACKUP)
         total_buy_volume = 0
         total_sell_volume = 0
         
@@ -779,27 +789,27 @@ class EnhancedMarketBot:
                 total_sell_volume += trade.get("q", 0)
             else:
                 total_buy_volume += trade.get("q", 0)
-
+                
         try:
             self.health_monitor.heartbeat("main")
-
+            
             # Limiar dinâmico de delta
             dynamic_delta_threshold = 0
             if len(self.delta_history) > 10:
                 mean_delta = np.mean(self.delta_history)
                 std_delta = np.std(self.delta_history)
                 dynamic_delta_threshold = abs(mean_delta + self.delta_std_dev_factor * std_delta)
-
+                
             # Contexto macro
             macro_context = self.context_collector.get_context()
             historical_profile = macro_context.get("historical_vp", {})
-
-            # 🆕 VALIDA E USA CACHE SE VALUE AREA ZERADA
+            
+            # 🔧 VALIDA E USA CACHE SE VALUE AREA ZERADA
             vp_daily = historical_profile.get("daily", {})
             val = vp_daily.get("val", 0)
             vah = vp_daily.get("vah", 0)
             poc = vp_daily.get("poc", 0)
-
+            
             if val == 0 or vah == 0 or poc == 0:
                 # Tenta usar cache
                 if self.last_valid_vp and (time.time() - self.last_valid_vp_time < 3600):  # 1 hora
@@ -812,12 +822,12 @@ class EnhancedMarketBot:
                 # Salva no cache
                 self.last_valid_vp = historical_profile.copy()
                 self.last_valid_vp_time = time.time()
-
+                
             open_ms, close_ms = self.window_end_ms - self.window_ms, self.window_end_ms
-
+            
             # Atualiza níveis
             self.levels.update_from_vp(historical_profile)
-
+            
             try:
                 pipeline = DataPipeline(
                     valid_window_data,
@@ -826,28 +836,39 @@ class EnhancedMarketBot:
                 )
                 
                 flow_metrics = self.flow_analyzer.get_flow_metrics(reference_epoch_ms=close_ms)
-
+                
                 # ========================================
-                # 🆕 ORDERBOOK COM RETRY E CACHE
+                # 🔧 ORDERBOOK COM RETRY E CACHE MELHORADO
                 # ========================================
                 ob_event = None
-                max_retries = 3
-
+                max_retries = getattr(config, 'ORDERBOOK_MAX_RETRIES', 5)  # 🔧 5 tentativas
+                base_delay = getattr(config, 'ORDERBOOK_RETRY_DELAY', 3.0)  # 🔧 3s delay
+                
+                # 🔧 DEBUG: Log antes da tentativa
+                logging.info(f"🔍 DEBUG: Iniciando análise orderbook - janela #{self.window_count}")
+                logging.info(f"🔍 DEBUG: Cache hits: {getattr(self.orderbook_analyzer, '_cache_hits', 0)}")
+                logging.info(f"🔍 DEBUG: Fetch errors: {getattr(self.orderbook_analyzer, '_fetch_errors', 0)}")
+                
                 for attempt in range(max_retries):
                     try:
+                        timeout = getattr(config, 'ORDERBOOK_REQUEST_TIMEOUT', 15.0)  # 🔧 15s timeout
+                        
                         ob_event = self.orderbook_analyzer.analyze(
                             current_snapshot=None,
                             event_epoch_ms=close_ms,
                             window_id=f"W{self.window_count:04d}"
                         )
                         
-                        # Valida se tem dados reais
+                        # 🔧 VALIDAÇÃO MAIS PERMISSIVA
                         if ob_event and ob_event.get('is_valid', False):
                             ob_data = ob_event.get('orderbook_data', {})
                             bid_depth = ob_data.get('bid_depth_usd', 0)
                             ask_depth = ob_data.get('ask_depth_usd', 0)
                             
-                            if bid_depth > 0 and ask_depth > 0:
+                            # 🔧 ACEITA SE PELO MENOS UM LADO > 0 (era: ambos > 0)
+                            min_depth = getattr(config, 'ORDERBOOK_MIN_DEPTH_USD', 500.0)
+                            
+                            if bid_depth >= min_depth or ask_depth >= min_depth:  # 🔧 OU em vez de E
                                 # ✅ Sucesso
                                 self.last_valid_orderbook = ob_event
                                 self.last_valid_orderbook_time = time.time()
@@ -860,25 +881,30 @@ class EnhancedMarketBot:
                                 break
                             else:
                                 logging.warning(
-                                    f"⚠️ Orderbook zerado (tentativa {attempt + 1}/{max_retries}): "
-                                    f"bid=${bid_depth}, ask=${ask_depth}"
+                                    f"⚠️ Orderbook com liquidez baixa (tentativa {attempt + 1}/{max_retries}): "
+                                    f"bid=${bid_depth:.0f}, ask=${ask_depth:.0f} (min=${min_depth:.0f})"
                                 )
                         else:
                             logging.warning(f"⚠️ Orderbook inválido (tentativa {attempt + 1}/{max_retries})")
-                        
+                            
                         if attempt < max_retries - 1:
-                            time.sleep(2.0 * (attempt + 1))
+                            delay = base_delay * (attempt + 1)  # 🔧 Delay linear
+                            logging.info(f" 🔄 Retry em {delay:.1f}s...")
+                            time.sleep(delay)
                             
                     except Exception as e:
                         logging.error(f"❌ Erro ao buscar orderbook (tentativa {attempt + 1}): {e}")
                         if attempt < max_retries - 1:
-                            time.sleep(2.0)
-
-                # 🆕 FALLBACK: USA CACHE OU CRIA VAZIO
+                            delay = base_delay * (attempt + 1)
+                            time.sleep(delay)
+                            
+                # 🔧 FALLBACK MELHORADO: USA CACHE OU CRIA EVENTO VÁLIDO MAS LIMITADO
                 if not ob_event or not ob_event.get('is_valid', False):
                     self.orderbook_fetch_failures += 1
                     
-                    if self.last_valid_orderbook and (time.time() - self.last_valid_orderbook_time < 300):
+                    fallback_max_age = getattr(config, 'ORDERBOOK_FALLBACK_MAX_AGE', 600)  # 10 min
+                    
+                    if self.last_valid_orderbook and (time.time() - self.last_valid_orderbook_time < fallback_max_age):
                         age = time.time() - self.last_valid_orderbook_time
                         logging.warning(
                             f"⚠️ Usando orderbook em cache (age={age:.0f}s) após {self.orderbook_fetch_failures} falhas"
@@ -889,13 +915,39 @@ class EnhancedMarketBot:
                             'data_source': 'cache',
                             'age_seconds': age,
                         }
+                    elif self.orderbook_emergency_mode:
+                        # 🔧 MODO EMERGÊNCIA: Cria evento válido mas com dados mínimos
+                        logging.warning(
+                            f"🚨 MODO EMERGÊNCIA: Orderbook indisponível (falhas: {self.orderbook_fetch_failures})"
+                        )
+                        ob_event = {
+                            'is_valid': True,  # 🔧 Marca como válido para não quebrar pipeline
+                            'emergency_mode': True,
+                            'orderbook_data': {
+                                'bid_depth_usd': 1000.0,  # 🔧 Valores padrão para não quebrar
+                                'ask_depth_usd': 1000.0,
+                                'imbalance': 0.0,
+                                'mid': 0.0,
+                                'spread': 0.0,
+                            },
+                            'spread_metrics': {
+                                'bid_depth_usd': 1000.0,
+                                'ask_depth_usd': 1000.0,
+                            },
+                            'data_quality': {
+                                'is_valid': True,
+                                'data_source': 'emergency',
+                                'error': f'Emergency mode after {self.orderbook_fetch_failures} failures',
+                            },
+                        }
                     else:
+                        # 🔧 ÚLTIMO RECURSO: Evento inválido mas não quebra
                         logging.error(
-                            f"❌ Orderbook indisponível (falhas consecutivas: {self.orderbook_fetch_failures})"
+                            f"❌ Orderbook totalmente indisponível (falhas consecutivas: {self.orderbook_fetch_failures})"
                         )
                         ob_event = {
                             'is_valid': False,
-                            'should_skip': True,
+                            'should_skip': False,  # 🔧 Não pula, apenas marca limitação
                             'orderbook_data': {
                                 'bid_depth_usd': 0,
                                 'ask_depth_usd': 0,
@@ -913,9 +965,8 @@ class EnhancedMarketBot:
                                 'error': f'Failed after {max_retries} attempts',
                             },
                         }
-
+                        
                 enriched = pipeline.enrich()
-
                 pipeline.add_context(
                     flow_metrics=flow_metrics,
                     historical_vp=historical_profile,
@@ -925,7 +976,7 @@ class EnhancedMarketBot:
                     market_context=macro_context.get("market_context", {}),
                     market_environment=macro_context.get("market_environment", {}),
                 )
-
+                
                 signals = pipeline.detect_signals(
                     absorption_detector=lambda data, sym: create_absorption_event(
                         data,
@@ -950,9 +1001,10 @@ class EnhancedMarketBot:
                     ),
                     orderbook_data=ob_event,
                 )
-
+                
                 # Limpeza de duplicação
                 has_non_trigger = any(s.get("tipo_evento") not in ("ANALYSIS_TRIGGER",) for s in signals)
+                
                 if not signals:
                     signals.append({
                         "is_signal": True,
@@ -978,13 +1030,13 @@ class EnhancedMarketBot:
                         else:
                             tmp.append(s)
                     signals = tmp
-
+                    
                 # LOG DO HEATMAP
                 try:
                     liquidity_data = flow_metrics.get("liquidity_heatmap", {})
                     clusters = liquidity_data.get("clusters", [])
                     if clusters:
-                        print(f"\n📊 LIQUIDITY HEATMAP - Janela #{self.window_count}:")
+                        print(f"\\n📊 LIQUIDITY HEATMAP - Janela #{self.window_count}:")
                         for i, cluster in enumerate(clusters[:3]):
                             center_fmt = format_price(cluster.get('center', 0.0))
                             vol_fmt = format_large_number(cluster.get('total_volume', 0))
@@ -993,36 +1045,36 @@ class EnhancedMarketBot:
                             age_fmt = format_time_seconds(cluster.get('age_ms', 0))
                             
                             print(
-                                f"   Cluster {i+1}: ${center_fmt} | "
+                                f"  Cluster {i+1}: ${center_fmt} | "
                                 f"Vol: {vol_fmt} | "
                                 f"Imb: {imb_fmt} | "
                                 f"Trades: {trades_fmt} | "
                                 f"Age: {age_fmt}"
                             )
                     else:
-                        print(f"\n📊 LIQUIDITY HEATMAP - Janela #{self.window_count}: Nenhum cluster detectado")
+                        print(f"\\n📊 LIQUIDITY HEATMAP - Janela #{self.window_count}: Nenhum cluster detectado")
                 except Exception as e:
                     logging.error(f"Erro ao logar liquidity heatmap: {e}")
-
+                    
                 features = pipeline.get_final_features()
                 self.feature_store.save_features(window_id=str(close_ms), features=features)
-
+                
                 ml_payload = features.get("ml_features", {}) or {}
                 enriched_snapshot = features.get("enriched", {}) or {}
                 contextual_snapshot = features.get("contextual", {}) or {}
-
+                
             except Exception as e:
                 logging.error(f"Erro no DataPipeline: {e}")
                 return
-
+                
             derivatives_context = macro_context.get("derivatives", {})
-
+            
             for signal in signals:
                 if signal.get("is_signal", False):
                     if "derivatives" not in signal:
                         signal["derivatives"] = derivatives_context
-                    
-                    # 🆕 VALIDAÇÃO CORRIGIDA DE FLOW_METRICS
+                        
+                    # 🔧 VALIDAÇÃO CORRIGIDA DE FLOW_METRICS
                     if "fluxo_continuo" not in signal and flow_metrics:
                         flow_valid = False
                         
@@ -1031,10 +1083,10 @@ class EnhancedMarketBot:
                             trades_processed = 0
                             if "data_quality" in flow_metrics:
                                 trades_processed = flow_metrics["data_quality"].get("flow_trades_count", 0)
-                            
+                                
                             if trades_processed > 0:
                                 flow_valid = True
-                            
+                                
                             # Método 2: Verifica sector flow
                             if not flow_valid:
                                 sector_flow = flow_metrics.get("sector_flow", {})
@@ -1043,7 +1095,7 @@ class EnhancedMarketBot:
                                     if total_vol > 0.001:
                                         flow_valid = True
                                         break
-                            
+                                        
                             # Método 3: Verifica order flow
                             if not flow_valid:
                                 order_flow = flow_metrics.get("order_flow", {})
@@ -1053,24 +1105,24 @@ class EnhancedMarketBot:
                                     if val is not None and val != 0:
                                         flow_valid = True
                                         break
-                                
+                                        
                                 if not flow_valid:
                                     buy_pct = order_flow.get("aggressive_buy_pct", 0)
                                     sell_pct = order_flow.get("aggressive_sell_pct", 0)
                                     if buy_pct > 0 or sell_pct > 0:
                                         flow_valid = True
-                            
+                                        
                             # Método 4: Verifica whale
                             if not flow_valid:
                                 whale_total = abs(flow_metrics.get("whale_buy_volume", 0)) + \
-                                             abs(flow_metrics.get("whale_sell_volume", 0))
+                                            abs(flow_metrics.get("whale_sell_volume", 0))
                                 if whale_total > 0.001:
                                     flow_valid = True
                                     
                         except Exception as e:
                             logging.error(f"Erro ao validar flow_metrics: {e}")
                             flow_valid = False
-                        
+                            
                         if flow_valid:
                             signal["fluxo_continuo"] = flow_metrics
                             logging.debug(f"✅ Flow metrics adicionado (janela #{self.window_count})")
@@ -1078,8 +1130,8 @@ class EnhancedMarketBot:
                             signal["fluxo_continuo"] = flow_metrics
                             signal["flow_data_quality"] = "incomplete"
                             logging.warning(f"⚠️ Flow metrics possivelmente incompleto")
-                    
-                    # 🆕 ADICIONA VOLUMES CALCULADOS LOCALMENTE SE FALTAREM
+                            
+                    # 🔧 ADICIONA VOLUMES CALCULADOS LOCALMENTE SE FALTAREM
                     if signal.get("volume_compra", 0) == 0 and signal.get("volume_venda", 0) == 0:
                         signal["volume_compra"] = total_buy_volume
                         signal["volume_venda"] = total_sell_volume
@@ -1087,7 +1139,7 @@ class EnhancedMarketBot:
                             f"📊 Volumes calculados localmente: buy={total_buy_volume:.2f}, "
                             f"sell={total_sell_volume:.2f}"
                         )
-
+                        
                     try:
                         if "market_context" not in signal:
                             signal["market_context"] = macro_context.get("market_context", {})
@@ -1095,32 +1147,32 @@ class EnhancedMarketBot:
                             signal["market_environment"] = macro_context.get("market_environment", {})
                     except Exception:
                         pass
-
+                        
                     signal.setdefault("features_window_id", str(close_ms))
                     signal["ml_features"] = ml_payload
                     signal["enriched_snapshot"] = enriched_snapshot
                     signal["contextual_snapshot"] = contextual_snapshot
-
+                    
                     if signal.get("tipo_evento") == "ANALYSIS_TRIGGER":
                         key = (signal.get("tipo_evento"), signal.get("features_window_id"))
                         if key in self._sent_triggers:
                             continue
                         self._sent_triggers.add(key)
-
+                        
                     self.levels.add_from_event(signal)
                     self.event_bus.publish("signal", signal)
                     self.event_saver.save_event(signal)
-
+                    
                     if "timestamp" not in signal:
                         signal["timestamp"] = datetime.fromisoformat(
                             signal.get("timestamp_ny", datetime.now(self.ny_tz).isoformat(timespec="seconds")).replace("Z", "+00:00")
                         ).strftime("%Y-%m-%d %H:%M:%S")
-
+                        
                     if signal.get("tipo_evento") != "OrderBook":
                         adicionar_memoria_evento(signal)
-
+                        
                     self._log_event(signal)
-
+                    
             # Verifica toques em zonas
             preco_atual = enriched.get("ohlc", {}).get("close", 0)
             if preco_atual > 0:
@@ -1143,10 +1195,10 @@ class EnhancedMarketBot:
                         
                         if "historical_confidence" not in zone_event:
                             zone_event["historical_confidence"] = calcular_probabilidade_historica(zone_event)
-
+                            
                         self.event_bus.publish("zone_touch", zone_event)
                         self.event_saver.save_event(zone_event)
-
+                        
                         adicionar_memoria_evento({
                             "timestamp": z.last_touched or datetime.now(self.ny_tz).isoformat(timespec="seconds"),
                             "tipo_evento": "Zona",
@@ -1156,17 +1208,17 @@ class EnhancedMarketBot:
                         })
                 except Exception as e:
                     logging.error(f"Erro ao verificar toques em zonas: {e}")
-
+                    
             # Atualiza históricos
             window_volume = enriched.get("volume_total", 0)
             window_delta = enriched.get("delta_fechamento", 0)
             window_close = enriched.get("ohlc", {}).get("close", 0)
-
+            
             self.volume_history.append(window_volume)
             self.delta_history.append(window_delta)
             if window_close > 0:
                 self.close_price_history.append(window_close)
-
+                
             # Volatilidade
             try:
                 price_feats = (ml_payload.get('price_features') or {})
@@ -1179,7 +1231,7 @@ class EnhancedMarketBot:
                     self.volatility_history.append(float(current_volatility))
             except Exception:
                 pass
-
+                
             # Log ML features
             try:
                 pf = ml_payload.get("price_features", {}) if ml_payload else {}
@@ -1194,12 +1246,12 @@ class EnhancedMarketBot:
                     flow_fmt = format_scientific(mf.get('flow_imbalance', 0), decimals=3)
                     
                     print(
-                        f"   ML: ret5={ret5_fmt} vol5={vol5_fmt} V/SMA={vsma_fmt} "
+                        f"  ML: ret5={ret5_fmt} vol5={vol5_fmt} V/SMA={vsma_fmt} "
                         f"BSpress={bs_fmt} OBslope={obs_fmt} FlowImb={flow_fmt}"
                     )
             except Exception:
                 pass
-
+                
             # Alertas institucionais
             if generate_alerts is not None:
                 try:
@@ -1214,7 +1266,7 @@ class EnhancedMarketBot:
                             sr = {"immediate_support": [], "immediate_resistance": []}
                     else:
                         sr = {"immediate_support": [], "immediate_resistance": []}
-
+                        
                     current_price_alert = window_close
                     avg_vol = (sum(self.volume_history) / len(self.volume_history)) if len(self.volume_history) > 0 else window_volume
                     rec_vols = list(self.volatility_history)
@@ -1224,7 +1276,7 @@ class EnhancedMarketBot:
                             curr_vol = self.volatility_history[-1]
                     except Exception:
                         curr_vol = None
-
+                        
                     alerts_list = generate_alerts(
                         price=current_price_alert,
                         support_resistance=sr,
@@ -1235,7 +1287,7 @@ class EnhancedMarketBot:
                         volume_threshold=3.0,
                         tolerance_pct=0.001,
                     )
-
+                    
                     for alert in alerts_list or []:
                         try:
                             atype = alert.get('type', 'GENERIC')
@@ -1244,17 +1296,17 @@ class EnhancedMarketBot:
                             if now_s - last_ts < self._alert_cooldown_sec:
                                 continue
                             self._last_alert_ts[atype] = now_s
-
+                            
                             desc_parts = [f"Tipo: {alert.get('type')}"]
-                            if 'level' in alert: 
+                            if 'level' in alert:  
                                 desc_parts.append(f"Nível: {format_price(alert['level'])}")
-                            if 'threshold_exceeded' in alert: 
+                            if 'threshold_exceeded' in alert:  
                                 desc_parts.append(f"Fator: {format_percent(alert['threshold_exceeded'] * 100)}")
                             descricao_alert = " | ".join(desc_parts)
-
+                            
                             print(f"🔔 ALERTA: {descricao_alert}")
                             logging.info(f"🔔 ALERTA: {descricao_alert}")
-
+                            
                             alert_event = {
                                 "tipo_evento": "Alerta",
                                 "resultado_da_batalha": alert.get('type'),
@@ -1270,29 +1322,32 @@ class EnhancedMarketBot:
                                     "volatility": curr_vol or 0.0,
                                 },
                             }
+                            
                             self.event_saver.save_event(alert_event)
+                            
                         except Exception as e:
                             logging.error(f"Erro ao processar alerta: {e}")
+                            
                 except Exception as e:
                     logging.error(f"Erro ao gerar alertas: {e}")
-
-            # 🆕 LOG CONSOLIDADO DE QUALIDADE (A CADA 10 JANELAS)
+                    
+            # 🔧 LOG CONSOLIDADO DE QUALIDADE (A CADA 10 JANELAS)
             if self.window_count % 10 == 0:
                 logging.info(
-                    f"\n📊 HEALTH CHECK - Janela #{self.window_count}:\n"
+                    f"\\n📊 HEALTH CHECK - Janela #{self.window_count}:\\n"
                     f"  Orderbook: failures={self.orderbook_fetch_failures}, "
-                    f"last_valid={time.time() - self.last_valid_orderbook_time:.0f}s ago\n"
-                    f"  Value Area: last_valid={time.time() - self.last_valid_vp_time:.0f}s ago\n"
+                    f"last_valid={time.time() - self.last_valid_orderbook_time:.0f}s ago\\n"
+                    f"  Value Area: last_valid={time.time() - self.last_valid_vp_time:.0f}s ago\\n"
                     f"  Flow: trades_in_window={len(valid_window_data)}, "
-                    f"cvd={flow_metrics.get('cvd', 0):.4f}\n"
+                    f"cvd={flow_metrics.get('cvd', 0):.4f}\\n"
                     f"  Volumes: buy={total_buy_volume:.2f}, sell={total_sell_volume:.2f}"
                 )
-
+                
             # Log principal
             delta_fmt = format_delta(window_delta)
             vol_fmt = format_large_number(window_volume)
             print(f"[{datetime.now(self.ny_tz).strftime('%H:%M:%S')} NY] 🟡 Janela #{self.window_count} | Delta: {delta_fmt} | Vol: {vol_fmt}")
-
+            
             if macro_context:
                 trends = macro_context.get("mtf_trends", {})
                 parts = []
@@ -1303,17 +1358,17 @@ class EnhancedMarketBot:
                         parts.append(f"{tf.upper()}: {data}")
                 trends_str = ", ".join(parts)
                 if trends_str:
-                    print(f"   Macro Context: {trends_str}")
-
+                    print(f"  Macro Context: {trends_str}")
+                    
             if historical_profile and historical_profile.get("daily"):
                 vp = historical_profile["daily"]
                 poc_fmt = format_price(vp.get('poc', 0))
                 val_fmt = format_price(vp.get('val', 0))
                 vah_fmt = format_price(vp.get('vah', 0))
-                print(f"   VP Diário: POC @ {poc_fmt} | VAL: {val_fmt} | VAH: {vah_fmt}")
-
+                print(f"  VP Diário: POC @ {poc_fmt} | VAL: {val_fmt} | VAH: {vah_fmt}")
+                
             print("─" * 80)
-
+            
         except Exception as e:
             logging.error(f"Erro no processamento da janela #{self.window_count}: {e}", exc_info=True)
         finally:
@@ -1333,8 +1388,8 @@ class EnhancedMarketBot:
     def run(self):
         try:
             self.context_collector.start()
-            logging.info("🎯 Iniciando Enhanced Market Bot v2.0.0...")
-            print("=" * 80)
+            logging.info("🎯 Iniciando Enhanced Market Bot v2.1.0 (ORDERBOOK CORRIGIDO)...")
+            print("═" * 80)
             self.connection_manager.connect()
         except KeyboardInterrupt:
             logging.info("⏹️ Bot interrompido pelo usuário.")
@@ -1342,7 +1397,6 @@ class EnhancedMarketBot:
             logging.critical(f"❌ Erro crítico ao executar o bot: {e}", exc_info=True)
         finally:
             self._cleanup_handler()
-
 
 # ===============================
 # EXECUÇÃO

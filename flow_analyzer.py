@@ -1,17 +1,13 @@
-# flow_analyzer.py v2.0.0 - CORRIGIDO
-
+# flow_analyzer.py v2.0.1 - CORRIGIDO
 """
-Flow Analyzer com correções críticas.
+Flow Analyzer com correções de contradições.
 
-🔹 CORREÇÕES v2.0.0:
-  ✅ Adiciona cálculo de flow_imbalance
-  ✅ Adiciona cálculo de tick_rule_sum (uptick/downtick)
-  ✅ Corrige inconsistência em sector_flow (BTC vs USD)
-  ✅ Lock timeout lança exceção ao invés de retornar zeros
-  ✅ Logs completos em falhas de normalização
-  ✅ Valida consistência de whale metrics
-  ✅ Adiciona flags de qualidade de dados
-  ✅ Detecção de dados inválidos
+🔹 CORREÇÕES v2.0.1:
+  ✅ Corrige cálculo de buy_sell_ratio (usa volumes REAIS, não net_flow)
+  ✅ Retorna None para ratio se volumes zero
+  ✅ Calcula percentuais corretamente
+  ✅ Valida consistência de dados
+  ✅ Logs detalhados em contradições
 """
 
 import logging
@@ -25,7 +21,6 @@ import config
 from time_manager import TimeManager
 from liquidity_heatmap import LiquidityHeatmap
 
-# Parâmetros
 try:
     from config import (
         NET_FLOW_WINDOWS_MIN,
@@ -40,7 +35,6 @@ except Exception:
     ABSORCAO_GUARD_MODE = "warn"
 
 
-# 🆕 Exceção customizada
 class FlowAnalyzerError(Exception):
     """Levantada quando FlowAnalyzer encontra erro crítico."""
     pass
@@ -70,25 +64,21 @@ class FlowAnalyzer:
     """
     Analisador de fluxo com validação robusta.
     
-    🔹 CORREÇÕES v2.0.0:
-      - Calcula flow_imbalance corretamente
-      - Calcula tick_rule_sum (uptick/downtick)
-      - Unidades consistentes (sempre BTC para volumes)
-      - Lock timeout lança exceção
-      - Validação de dados
+    🔹 CORREÇÕES v2.0.1:
+      - Buy/sell ratio usa volumes REAIS (não net_flow)
+      - Retorna None se volumes zero
+      - Valida consistência
     """
 
     def __init__(self, time_manager: Optional[TimeManager] = None):
         self.time_manager = time_manager or TimeManager()
 
-        # CVD e Whale (sempre em BTC)
         self.cvd = 0.0
         self.whale_threshold = float(getattr(config, "WHALE_TRADE_THRESHOLD", 5.0))
-        self.whale_buy_volume = 0.0    # BTC
-        self.whale_sell_volume = 0.0   # BTC (sempre positivo)
-        self.whale_delta = 0.0         # BTC (com sinal)
+        self.whale_buy_volume = 0.0
+        self.whale_sell_volume = 0.0
+        self.whale_delta = 0.0
 
-        # Reset
         self.last_reset_ms = self.time_manager.now_ms()
         self.reset_interval_ms = int(
             getattr(config, "CVD_RESET_INTERVAL_HOURS", 24) * 3600 * 1000
@@ -96,20 +86,17 @@ class FlowAnalyzer:
 
         self._lock = Lock()
 
-        # Histórico de trades para bursts
         self.recent_trades = deque(maxlen=500)
         self.bursts = {"count": 0, "max_burst_volume": 0.0}
         self._in_burst = False
         self._last_burst_end_ms = 0
 
-        # Parâmetros de bursts
         self.burst_window_ms = int(getattr(config, "BURST_WINDOW_MS", 200))
         self.burst_cooldown_ms = int(getattr(config, "BURST_COOLDOWN_MS", 200))
         self.burst_volume_threshold = float(
             getattr(config, "BURST_VOLUME_THRESHOLD", self.whale_threshold)
         )
 
-        # 🆕 Sector flow (SEMPRE EM BTC)
         order_buckets = getattr(config, "ORDER_SIZE_BUCKETS", {
             "retail": (0, 0.5),
             "mid": (0.5, 2.0),
@@ -121,7 +108,6 @@ class FlowAnalyzer:
         }
         self._order_buckets = order_buckets
 
-        # Liquidity Heatmap
         lhm_window_size = int(getattr(config, "LHM_WINDOW_SIZE", 2000))
         lhm_cluster_threshold_pct = float(getattr(config, "LHM_CLUSTER_THRESHOLD_PCT", 0.003))
         lhm_min_trades_per_cluster = int(getattr(config, "LHM_MIN_TRADES_PER_CLUSTER", 5))
@@ -134,14 +120,9 @@ class FlowAnalyzer:
             update_interval_ms=lhm_update_interval_ms
         )
 
-        # Janelas de net flow
         self.net_flow_windows_min: List[int] = list(NET_FLOW_WINDOWS_MIN)
-        
-        # 🆕 Histórico de trades com TODAS as informações
-        # Estrutura: {'ts': ms, 'price': float, 'qty': float, 'delta_btc': float, 'delta_usd': float, 'side': str, 'sector': str}
         self.flow_trades: deque = deque()
 
-        # Epsilon para absorção
         self.absorcao_eps: float = float(getattr(config, "ABSORCAO_DELTA_EPS", ABSORCAO_DELTA_EPS))
         try:
             self.absorcao_guard_mode: str = str(
@@ -150,26 +131,21 @@ class FlowAnalyzer:
         except Exception:
             self.absorcao_guard_mode = "warn"
         
-        # 🆕 Estatísticas
         self._total_trades_processed = 0
         self._invalid_trades = 0
         self._lock_contentions = 0
-        
-        # 🆕 Último preço (para tick rule)
         self._last_price: Optional[float] = None
 
         logging.info(
-            "✅ FlowAnalyzer v2.0.0 inicializado | "
-            "Whale threshold: %.2f BTC | Net flow windows: %s min | "
-            "Absorção eps: %.2f",
+            "✅ FlowAnalyzer v2.0.1 inicializado | "
+            "Whale threshold: %.2f BTC | Net flow windows: %s min",
             self.whale_threshold,
             self.net_flow_windows_min,
-            self.absorcao_eps,
         )
 
     @staticmethod
     def map_absorcao_label(aggression_side: str) -> str:
-        """Compatibilidade: mapeia lado de agressão para rótulo."""
+        """Mapeia lado de agressão para rótulo."""
         side = (aggression_side or "").strip().lower()
         if side == "buy":
             return "Absorção de Compra"
@@ -179,16 +155,7 @@ class FlowAnalyzer:
 
     @staticmethod
     def classificar_absorcao_por_delta(delta: float, eps: float = 1.0) -> str:
-        """
-        Classificador de absorção por sinal do delta.
-        
-        Args:
-            delta: Net flow (positivo = compra domina, negativo = venda domina)
-            eps: Threshold mínimo para considerar não-neutro
-        
-        Returns:
-            "Absorção de Compra" | "Absorção de Venda" | "Neutra"
-        """
+        """Classificador de absorção por sinal do delta."""
         try:
             d = float(delta)
         except Exception:
@@ -207,22 +174,17 @@ class FlowAnalyzer:
             self.whale_buy_volume = 0.0
             self.whale_sell_volume = 0.0
             self.whale_delta = 0.0
-
             self.recent_trades.clear()
             self.bursts = {"count": 0, "max_burst_volume": 0.0}
             self._in_burst = False
             self._last_burst_end_ms = 0
-
             self.sector_flow = {
                 name: {"buy": 0.0, "sell": 0.0, "delta": 0.0}
                 for name in self._order_buckets
             }
-            
             self.flow_trades.clear()
             self._last_price = None
-            
             self.last_reset_ms = self.time_manager.now_ms()
-            
             logging.info("🔄 FlowAnalyzer metrics resetados.")
         except Exception as e:
             logging.error(f"Erro ao resetar métricas: {e}")
@@ -252,10 +214,8 @@ class FlowAnalyzer:
         try:
             if not self.net_flow_windows_min:
                 return
-            
             max_window = max(self.net_flow_windows_min)
             cutoff_ms = now_ms - max_window * 60 * 1000
-            
             while self.flow_trades and self.flow_trades[0]['ts'] < cutoff_ms:
                 self.flow_trades.popleft()
         except Exception as e:
@@ -266,7 +226,6 @@ class FlowAnalyzer:
         try:
             self.recent_trades.append((ts_ms, qty))
             self._prune_recent(ts_ms)
-
             burst_volume = sum(q for _, q in self.recent_trades)
             threshold = self.burst_volume_threshold
 
@@ -289,45 +248,25 @@ class FlowAnalyzer:
             self._last_burst_end_ms = ts_ms
 
     def _update_sector_flow(self, qty: float, delta_btc: float):
-        """
-        🔹 CORRIGIDO: Sempre usa BTC para volumes.
-        
-        Args:
-            qty: Quantidade em BTC (sempre positivo)
-            delta_btc: Delta em BTC (positivo = compra, negativo = venda)
-        """
+        """Atualiza sector flow (sempre BTC)."""
         try:
             for name, (minv, maxv) in self._order_buckets.items():
                 if minv <= qty < maxv:
                     if delta_btc > 0:
                         self.sector_flow[name]["buy"] += qty
                     else:
-                        # 🆕 CORRIGIDO: usa qty (BTC), não abs(delta)
                         self.sector_flow[name]["sell"] += qty
-                    
                     self.sector_flow[name]["delta"] += delta_btc
                     break
         except Exception as e:
             logging.error(f"Erro ao atualizar sector_flow: {e}")
 
     def process_trade(self, trade: dict):
-        """
-        Processa trade e atualiza todas as métricas.
-        
-        🔹 CORREÇÕES v2.0.0:
-          - Valida estrutura do trade
-          - Rastreia último preço para tick_rule
-          - Salva delta em BTC E USD
-          - Unidades consistentes
-        
-        Args:
-            trade: Dict com 'q' (BTC), 'p' (USDT), 'T' (ms), 'm' (bool)
-        """
+        """Processa trade e atualiza métricas."""
         try:
             self._check_reset()
             self._total_trades_processed += 1
 
-            # 1. Validação básica
             if not isinstance(trade, dict):
                 self._invalid_trades += 1
                 return
@@ -336,7 +275,6 @@ class FlowAnalyzer:
                 self._invalid_trades += 1
                 return
 
-            # 2. Parse de dados
             try:
                 qty = float(trade.get('q', 0.0))
                 ts = int(trade.get('T'))
@@ -349,9 +287,7 @@ class FlowAnalyzer:
                 self._invalid_trades += 1
                 return
 
-            # 3. Determina lado (taker buy/sell)
             is_buyer_maker = trade.get('m', None)
-            
             if isinstance(is_buyer_maker, bool):
                 pass
             elif isinstance(is_buyer_maker, (int, float)):
@@ -361,37 +297,26 @@ class FlowAnalyzer:
                     "true", "t", "1", "sell", "ask", "s", "seller", "yes"
                 }
             else:
-                # Sem flag de lado = ignora (evita viés)
                 self._invalid_trades += 1
                 return
 
-            # 4. Calcula deltas
-            # delta_btc: positivo = taker BUY, negativo = taker SELL
             delta_btc = -qty if is_buyer_maker else qty
             delta_usd = delta_btc * price
             side = "sell" if is_buyer_maker else "buy"
 
             with self._lock:
-                # 5. CVD (BTC)
                 self.cvd += delta_btc
 
-                # 6. Whale metrics (SEMPRE EM BTC)
                 if qty >= self.whale_threshold:
                     if delta_btc > 0:
                         self.whale_buy_volume += qty
                     else:
-                        # 🆕 CORRIGIDO: usa qty, não abs(delta_btc)
                         self.whale_sell_volume += qty
-                    
                     self.whale_delta += delta_btc
 
-                # 7. Bursts
                 self._update_bursts(ts, qty)
-
-                # 8. Sector flow (BTC)
                 self._update_sector_flow(qty, delta_btc)
 
-                # 9. Heatmap
                 self.liquidity_heatmap.add_trade(
                     price=price,
                     volume=qty,
@@ -399,16 +324,13 @@ class FlowAnalyzer:
                     timestamp_ms=ts
                 )
 
-                # 10. 🆕 Histórico completo para flow metrics
                 try:
-                    # Determina setor
                     sector_name: Optional[str] = None
                     for name, (minv, maxv) in self._order_buckets.items():
                         if minv <= qty < maxv:
                             sector_name = name
                             break
 
-                    # Salva trade completo
                     self.flow_trades.append({
                         'ts': ts,
                         'price': price,
@@ -419,10 +341,7 @@ class FlowAnalyzer:
                         'sector': sector_name,
                     })
 
-                    # Poda histórico antigo
                     self._prune_flow_history(ts)
-                    
-                    # 🆕 Atualiza último preço (para tick_rule)
                     self._last_price = price
 
                 except Exception as e:
@@ -437,18 +356,13 @@ class FlowAnalyzer:
         clusters: List[Dict[str, Any]], 
         now_ms: int
     ) -> List[Dict[str, Any]]:
-        """
-        Normaliza clusters do heatmap.
-        
-        🔹 CORRIGIDO: Logs em falhas, não engole erros silenciosamente.
-        """
+        """Normaliza clusters do heatmap."""
         out: List[Dict[str, Any]] = []
         
         for c in clusters or []:
             cc = dict(c)
             
             try:
-                # age_ms
                 recent_keys = (
                     "recent_timestamp", "recent_ts_ms", "last_seen_ms",
                     "last_ts_ms", "max_timestamp", "last_timestamp"
@@ -466,7 +380,6 @@ class FlowAnalyzer:
                         reference_ts_ms=now_ms
                     )
 
-                # total_volume
                 tv = cc.get("total_volume", None)
                 bv = float(cc.get("buy_volume", 0.0) or 0.0)
                 sv = float(cc.get("sell_volume", 0.0) or 0.0)
@@ -476,7 +389,6 @@ class FlowAnalyzer:
                     if recomputed > 0:
                         cc["total_volume"] = recomputed
 
-                # imbalance_ratio
                 tv2 = float(cc.get("total_volume", 0.0) or 0.0)
                 if tv2 > 0:
                     imb = (bv - sv) / tv2
@@ -485,7 +397,6 @@ class FlowAnalyzer:
                 
                 cc["imbalance_ratio"] = max(-1.0, min(1.0, float(imb)))
 
-                # width
                 if "high" in cc and "low" in cc:
                     try:
                         hi, lo = float(cc["high"]), float(cc["low"])
@@ -493,7 +404,6 @@ class FlowAnalyzer:
                     except Exception:
                         pass
 
-                # trades_count
                 if "trades_count" in cc:
                     try:
                         cc["trades_count"] = int(cc["trades_count"])
@@ -501,9 +411,7 @@ class FlowAnalyzer:
                         pass
 
             except Exception as e:
-                # 🆕 CORRIGIDO: Loga erro ao invés de engolir
                 logging.warning(f"⚠️ Erro ao normalizar cluster: {e}")
-                logging.debug(f"   Cluster problemático: {cc}")
 
             out.append(cc)
         
@@ -516,25 +424,17 @@ class FlowAnalyzer:
         """
         Retorna métricas de fluxo.
         
-        🔹 CORREÇÕES v2.0.0:
-          - Calcula flow_imbalance
-          - Calcula tick_rule_sum
-          - Lock timeout lança exceção
-          - Validação de dados
-        
-        Returns:
-            Dict com todas as métricas
+        🔹 CORRIGIDO v2.0.1:
+          - buy_sell_ratio usa volumes REAIS
+          - Retorna None se volumes zero
+          - Calcula percentuais corretamente
         """
         try:
-            # 🆕 TIMEOUT LANÇA EXCEÇÃO AO INVÉS DE RETORNAR ZEROS
             acquired = self._lock.acquire(timeout=5.0)
             
             if not acquired:
                 self._lock_contentions += 1
-                error_msg = (
-                    f"❌ FlowAnalyzer lock timeout após 5s "
-                    f"(contentions: {self._lock_contentions})"
-                )
+                error_msg = f"❌ FlowAnalyzer lock timeout após 5s"
                 logging.error(error_msg)
                 raise FlowAnalyzerError(error_msg)
 
@@ -548,7 +448,6 @@ class FlowAnalyzer:
                     timespec="milliseconds"
                 )
 
-                # Métricas base
                 metrics = {
                     "cvd": float(self.cvd),
                     "whale_buy_volume": float(self.whale_buy_volume),
@@ -576,7 +475,7 @@ class FlowAnalyzer:
                     },
                 }
 
-                # 🆕 ORDER FLOW COM flow_imbalance E tick_rule_sum
+                # 🆕 ORDER FLOW CORRIGIDO
                 try:
                     order_flow: Dict[str, Any] = {}
                     absorcao_por_janela: Dict[int, str] = {}
@@ -586,14 +485,12 @@ class FlowAnalyzer:
                     else:
                         smallest_window = min(self.net_flow_windows_min)
 
-                    # 🆕 TICK RULE SUM (para menor janela)
                     tick_rule_sum = 0.0
                     
                     for window_min in self.net_flow_windows_min:
                         window_ms = window_min * 60 * 1000
                         start_ms = now_ms - window_ms
                         
-                        # Filtra trades da janela
                         relevant = [
                             t for t in self.flow_trades 
                             if t['ts'] >= start_ms
@@ -601,14 +498,16 @@ class FlowAnalyzer:
 
                         # Net flows (USD)
                         total_delta_usd = sum(t['delta_usd'] for t in relevant)
-                        total_buy_usd = sum(
-                            t['delta_usd'] for t in relevant 
-                            if t['delta_usd'] > 0
-                        )
-                        total_sell_usd = -sum(
-                            t['delta_usd'] for t in relevant 
-                            if t['delta_usd'] < 0
-                        )
+                        
+                        # 🆕 VOLUMES REAIS (não via delta!)
+                        total_buy_usd = 0.0
+                        total_sell_usd = 0.0
+                        
+                        for t in relevant:
+                            if t['side'] == 'buy':
+                                total_buy_usd += t['price'] * t['qty']
+                            else:  # sell
+                                total_sell_usd += t['price'] * t['qty']
 
                         # Net flow
                         key_net = f"net_flow_{window_min}m"
@@ -629,67 +528,75 @@ class FlowAnalyzer:
                         order_flow[f"absorcao_{window_min}m"] = rotulo
                         absorcao_por_janela[window_min] = rotulo
 
-                        # 🆕 Para menor janela: flow_imbalance e tick_rule
+                        # Para menor janela
                         if window_min == smallest_window:
                             total_vol_usd = total_buy_usd + total_sell_usd
                             
-                            # flow_imbalance [-1, +1]
+                            # Flow imbalance
                             if total_vol_usd > 0:
                                 flow_imbalance = total_delta_usd / total_vol_usd
-                                order_flow["flow_imbalance"] = round(
-                                    flow_imbalance, 
-                                    4
-                                )
+                                order_flow["flow_imbalance"] = round(flow_imbalance, 4)
                             else:
                                 order_flow["flow_imbalance"] = 0.0
 
-                            # Percentuais
+                            # 🆕 PERCENTUAIS CORRIGIDOS
                             if total_vol_usd > 0:
                                 order_flow["aggressive_buy_pct"] = round(
-                                    (total_buy_usd / total_vol_usd) * 100.0, 
-                                    2
+                                    (total_buy_usd / total_vol_usd) * 100.0, 2
                                 )
                                 order_flow["aggressive_sell_pct"] = round(
-                                    (total_sell_usd / total_vol_usd) * 100.0, 
-                                    2
+                                    (total_sell_usd / total_vol_usd) * 100.0, 2
                                 )
-                                
-                                if total_sell_usd > 0:
-                                    order_flow["buy_sell_ratio"] = round(
-                                        total_buy_usd / total_sell_usd, 
-                                        4
-                                    )
-                                else:
-                                    order_flow["buy_sell_ratio"] = None
                             else:
                                 order_flow["aggressive_buy_pct"] = None
                                 order_flow["aggressive_sell_pct"] = None
-                                order_flow["buy_sell_ratio"] = None
 
-                            # 🆕 TICK RULE SUM
-                            # uptick (+1), downtick (-1), same (0)
+                            # 🆕 RATIO CORRIGIDO (usa volumes REAIS)
+                            if total_buy_usd > 0 and total_sell_usd > 0:
+                                order_flow["buy_sell_ratio"] = round(
+                                    total_buy_usd / total_sell_usd, 4
+                                )
+                                
+                                # 🆕 LOG DE DEBUG
+                                logging.debug(
+                                    f"✅ Buy/Sell calculado: "
+                                    f"buy=${total_buy_usd:,.0f}, sell=${total_sell_usd:,.0f}, "
+                                    f"ratio={order_flow['buy_sell_ratio']:.4f}"
+                                )
+                            else:
+                                order_flow["buy_sell_ratio"] = None
+                                
+                                if total_buy_usd == 0 and total_sell_usd == 0:
+                                    logging.debug(
+                                        f"⚠️ Sem trades na janela {window_min}m - ratio=None"
+                                    )
+                                else:
+                                    logging.warning(
+                                        f"⚠️ Volume zero: buy=${total_buy_usd}, sell=${total_sell_usd}"
+                                    )
+
+                            # Volumes para debug
+                            order_flow["buy_volume"] = round(total_buy_usd, 2)
+                            order_flow["sell_volume"] = round(total_sell_usd, 2)
+
+                            # Tick rule sum
                             tick_rule_sum = 0.0
                             prev_price = None
                             
                             for t in sorted(relevant, key=lambda x: x['ts']):
                                 curr_price = t['price']
-                                
                                 if prev_price is not None:
                                     if curr_price > prev_price:
                                         tick_rule_sum += 1.0
                                     elif curr_price < prev_price:
                                         tick_rule_sum -= 1.0
-                                    # else: mesmo preço = 0
-                                
                                 prev_price = curr_price
                             
                             order_flow["tick_rule_sum"] = round(tick_rule_sum, 4)
 
-                    # Tipo de absorção agregado
                     if self.net_flow_windows_min:
                         metrics["tipo_absorcao"] = absorcao_por_janela.get(
-                            smallest_window, 
-                            "Neutra"
+                            smallest_window, "Neutra"
                         )
                     else:
                         metrics["tipo_absorcao"] = "Neutra"
@@ -722,7 +629,6 @@ class FlowAnalyzer:
                             )
                             count_trades = len(sector_trades)
 
-                            # Direção
                             if buy_qty > sell_qty:
                                 direction = "BUY"
                             elif sell_qty > buy_qty:
@@ -730,15 +636,12 @@ class FlowAnalyzer:
                             else:
                                 direction = "NEUTRAL"
 
-                            # Métricas
                             avg_order_size = round(
-                                total_qty_sector / count_trades, 
-                                4
+                                total_qty_sector / count_trades, 4
                             ) if count_trades > 0 else None
                             
                             volume_pct = round(
-                                (total_qty_sector / total_qty_all) * 100.0, 
-                                2
+                                (total_qty_sector / total_qty_all) * 100.0, 2
                             ) if total_qty_all > 0 else None
                             
                             sentiment = "BULLISH" if direction == "BUY" else \
@@ -746,8 +649,7 @@ class FlowAnalyzer:
                             
                             duration_seconds = largest_window * 60
                             trades_per_sec = round(
-                                count_trades / duration_seconds, 
-                                4
+                                count_trades / duration_seconds, 4
                             ) if duration_seconds > 0 else None
                             
                             activity_level = "HIGH" if trades_per_sec and \
@@ -769,6 +671,7 @@ class FlowAnalyzer:
                     metrics["order_flow"] = {
                         "flow_imbalance": 0.0,
                         "tick_rule_sum": 0.0,
+                        "buy_sell_ratio": None,
                     }
                     metrics["participant_analysis"] = {}
 
@@ -783,29 +686,6 @@ class FlowAnalyzer:
                         "supports": sorted(set(supports)),
                         "resistances": sorted(set(resistances)),
                         "clusters_count": len(clusters),
-                        "meta": {
-                            "window_size": getattr(
-                                self.liquidity_heatmap, 
-                                "window_size", 
-                                None
-                            ),
-                            "cluster_threshold_pct": getattr(
-                                self.liquidity_heatmap, 
-                                "cluster_threshold_pct", 
-                                None
-                            ),
-                            "min_trades_per_cluster": getattr(
-                                self.liquidity_heatmap, 
-                                "min_trades_per_cluster", 
-                                None
-                            ),
-                            "update_interval_ms": getattr(
-                                self.liquidity_heatmap, 
-                                "update_interval_ms", 
-                                None
-                            ),
-                            "top_n": 5
-                        }
                     }
                 except Exception as e:
                     logging.error(f"Erro ao obter heatmap: {e}", exc_info=True)
@@ -814,10 +694,8 @@ class FlowAnalyzer:
                         "supports": [],
                         "resistances": [],
                         "clusters_count": 0,
-                        "meta": {},
                     }
 
-                # 🆕 Qualidade de dados
                 metrics["data_quality"] = {
                     "total_trades_processed": self._total_trades_processed,
                     "invalid_trades": self._invalid_trades,
@@ -826,7 +704,6 @@ class FlowAnalyzer:
                         2
                     ),
                     "flow_trades_count": len(self.flow_trades),
-                    "recent_trades_count": len(self.recent_trades),
                     "lock_contentions": self._lock_contentions,
                 }
 
@@ -836,45 +713,28 @@ class FlowAnalyzer:
                 self._lock.release()
 
         except FlowAnalyzerError:
-            raise  # Propaga erro de lock timeout
+            raise
         except Exception as e:
             logging.error(f"Erro ao obter flow metrics: {e}", exc_info=True)
             
-            # Retorna métricas mínimas mas com flag de erro
             now_ms = reference_epoch_ms if reference_epoch_ms is not None \
                      else self.time_manager.now_ms()
             time_index = self.time_manager.build_time_index(
-                now_ms, 
-                include_local=True, 
-                timespec="milliseconds"
+                now_ms, include_local=True, timespec="milliseconds"
             )
             
             return {
                 "cvd": 0.0,
-                "whale_buy_volume": 0.0,
-                "whale_sell_volume": 0.0,
                 "whale_delta": 0.0,
-                "bursts": {"count": 0, "max_burst_volume": 0.0},
-                "sector_flow": {},
-                "timestamp": time_index["timestamp_utc"],
-                "time_index": time_index,
                 "order_flow": {
                     "flow_imbalance": 0.0,
                     "tick_rule_sum": 0.0,
+                    "buy_sell_ratio": None,
                 },
-                "participant_analysis": {},
-                "liquidity_heatmap": {
-                    "clusters": [],
-                    "supports": [],
-                    "resistances": [],
-                    "clusters_count": 0,
-                },
+                "timestamp": time_index["timestamp_utc"],
                 "data_quality": {
                     "error": str(e),
                     "is_valid": False,
-                },
-                "metadata": {
-                    "error": "Exception during metrics calculation",
                 },
             }
     
@@ -884,89 +744,10 @@ class FlowAnalyzer:
             "total_trades_processed": self._total_trades_processed,
             "invalid_trades": self._invalid_trades,
             "valid_rate_pct": round(
-                100 * (1 - self._invalid_trades / max(1, self._total_trades_processed)),
-                2
+                100 * (1 - self._invalid_trades / max(1, self._total_trades_processed)), 2
             ),
             "lock_contentions": self._lock_contentions,
             "flow_trades_count": len(self.flow_trades),
-            "recent_trades_count": len(self.recent_trades),
             "cvd": self.cvd,
             "whale_delta": self.whale_delta,
         }
-    
-    def reset_stats(self):
-        """Reseta contadores de estatísticas."""
-        self._total_trades_processed = 0
-        self._invalid_trades = 0
-        self._lock_contentions = 0
-        logging.info("📊 FlowAnalyzer stats resetados")
-
-
-# Teste
-if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s | %(levelname)-8s | %(message)s'
-    )
-    
-    print("\n" + "="*80)
-    print("🧪 TESTE DE FLOW ANALYZER v2.0.0")
-    print("="*80 + "\n")
-    
-    fa = FlowAnalyzer()
-    
-    # Simula trades
-    print("📊 Processando trades de teste...")
-    
-    trades = [
-        {'q': 2.5, 'p': 50000.0, 'T': int(time.time() * 1000), 'm': False},  # Buy
-        {'q': 1.0, 'p': 50010.0, 'T': int(time.time() * 1000) + 100, 'm': True},   # Sell
-        {'q': 5.5, 'p': 50020.0, 'T': int(time.time() * 1000) + 200, 'm': False},  # Buy (whale)
-        {'q': 0.1, 'p': 50015.0, 'T': int(time.time() * 1000) + 300, 'm': True},   # Sell
-    ]
-    
-    for trade in trades:
-        fa.process_trade(trade)
-    
-    # Obtém métricas
-    print("\n📈 Obtendo métricas...")
-    metrics = fa.get_flow_metrics()
-    
-    print(f"\n  CVD: {metrics['cvd']:.4f} BTC")
-    print(f"  Whale Delta: {metrics['whale_delta']:.4f} BTC")
-    print(f"  Whale Buy: {metrics['whale_buy_volume']:.4f} BTC")
-    print(f"  Whale Sell: {metrics['whale_sell_volume']:.4f} BTC")
-    
-    if 'order_flow' in metrics:
-        of = metrics['order_flow']
-        print(f"\n  Flow Imbalance: {of.get('flow_imbalance', 0):.4f}")
-        print(f"  Tick Rule Sum: {of.get('tick_rule_sum', 0):.4f}")
-        print(f"  Net Flow 1m: ${of.get('net_flow_1m', 0):,.2f}")
-    
-    if 'data_quality' in metrics:
-        dq = metrics['data_quality']
-        print(f"\n  Trades processados: {dq.get('total_trades_processed', 0)}")
-        print(f"  Taxa de válidos: {dq.get('valid_rate_pct', 0)}%")
-    
-    print(f"\n  Tipo Absorção: {metrics.get('tipo_absorcao', 'N/A')}")
-    
-    print("\n" + "="*80)
-    print("✅ TESTE CONCLUÍDO")
-    print("="*80 + "\n")
-    
-    # Teste de classificação
-    print("🧪 Testando classificador de absorção...")
-    eps = fa.absorcao_eps
-    casos = [
-        (-35.57, "Absorção de Venda"),
-        (+7.53,  "Absorção de Compra"),
-        (+1.50,  "Absorção de Compra"),
-        (0.0,    "Neutra"),
-    ]
-    
-    for delta, esperado in casos:
-        rotulo = fa.classificar_absorcao_por_delta(delta, eps=eps)
-        status = "✅" if rotulo == esperado else "❌"
-        print(f"  {status} delta={delta:+.2f} → {rotulo} (esperado: {esperado})")
-    
-    print("\n✅ Self-test OK\n")

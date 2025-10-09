@@ -1,15 +1,14 @@
-# ai_analyzer_qwen.py v2.0.0 - Analisador de IA com validação robusta
+# ai_analyzer_qwen.py v2.0.1 - CORRIGIDO
 """
 AI Analyzer para eventos de mercado com validação de dados.
 
-🔹 CORREÇÕES v2.0.0:
-  ✅ Valida orderbook zerado (bid/ask = $0)
-  ✅ Detecta contradições em order flow (volumes zero mas ratio existe)
-  ✅ Valida ML features (tick_rule_sum, order_book_slope)
-  ✅ Warnings claros para dados inválidos/quebrados
-  ✅ System prompt corrigido (não inventar dados)
-  ✅ Instruções claras para IA (usar apenas dados válidos)
-  ✅ Formatação padronizada mantida
+🔹 CORREÇÕES v2.0.1:
+  ✅ Corrige extração de orderbook (pega do lugar certo)
+  ✅ Valida orderbook_data ANTES de formatar
+  ✅ Detecta contradições corretamente (volumes vs ratio)
+  ✅ Logs mais claros sobre fonte dos dados
+  ✅ Fallback para múltiplos caminhos de dados
+  ✅ System prompt melhorado
 """
 
 import logging
@@ -20,7 +19,6 @@ from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 
-# 🔹 IMPORTA UTILITÁRIOS DE FORMATAÇÃO
 from format_utils import (
     format_price,
     format_quantity,
@@ -31,28 +29,23 @@ from format_utils import (
     format_scientific
 )
 
-# config é opcional (permite pegar tokens e modelo)
 try:
     import config as app_config
 except Exception:
     app_config = None
 
-# Tentativa de importar OpenAI (modo compatível)
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
 except Exception:
     OPENAI_AVAILABLE = False
-    logging.warning("OpenAI não instalado. Para usar API real: pip install openai")
 
-# Tentativa de importar DashScope (modo nativo)
 try:
     from dashscope import Generation
     import dashscope
     DASHSCOPE_AVAILABLE = True
 except Exception:
     DASHSCOPE_AVAILABLE = False
-    logging.warning("DashScope não instalado. Para usar API real: pip install dashscope")
 
 from time_manager import TimeManager
 
@@ -60,7 +53,7 @@ load_dotenv()
 
 
 def _extract_dashscope_text(resp) -> str:
-    """Extrai texto de respostas do DashScope em formatos variados."""
+    """Extrai texto de respostas do DashScope."""
     try:
         output = getattr(resp, "output", None)
         if output is None and isinstance(resp, dict):
@@ -85,36 +78,20 @@ def _extract_dashscope_text(resp) -> str:
                     return str(part["text"]).strip()
         if isinstance(message, str):
             return message.strip()
-        message_content = getattr(choice0, "message_content", None)
-        if message_content is None and isinstance(choice0, dict):
-            message_content = choice0.get("message_content")
-        if isinstance(message_content, list) and message_content:
-            for part in message_content:
-                if isinstance(part, dict) and part.get("text"):
-                    return str(part["text"]).strip()
         return ""
     except Exception:
         return ""
 
 
 class AIAnalyzer:
-    """
-    Analisador de IA com validação robusta de dados.
-    
-    🔹 v2.0.0:
-      - Valida dados antes de enviar para IA
-      - Detecta contradições (volumes zero mas ratio existe)
-      - Marca dados inválidos com warnings claros
-      - Instrui IA a NÃO usar dados marcados como inválidos
-    """
+    """Analisador de IA com validação robusta de dados."""
     
     def __init__(self):
         self.client: Optional[OpenAI] = None
         self.enabled = False
-        self.mode: Optional[str] = None  # "openai" | "dashscope" | None
+        self.mode: Optional[str] = None
         self.time_manager = TimeManager()
 
-        # Configura nome do modelo
         self.model_name = (
             getattr(app_config, "QWEN_MODEL", None)
             or os.getenv("QWEN_MODEL")
@@ -126,7 +103,7 @@ class AIAnalyzer:
         self.connection_failed_count = 0
         self.max_failures_before_mock = 3
 
-        logging.info("🧠 IA Analyzer Qwen v2.0.0 inicializada - Validação robusta ativada")
+        logging.info("🧠 IA Analyzer Qwen v2.0.1 inicializada - Validação robusta ativada")
         try:
             self._initialize_api()
         except Exception as e:
@@ -134,13 +111,8 @@ class AIAnalyzer:
             self.mode = None
             self.enabled = True
 
-    # ---------------------------
-    # Inicialização de provedores
-    # ---------------------------
-    
     def _initialize_api(self):
-        """Inicializa provedores de IA (OpenAI ou DashScope)."""
-        # 1) OpenAI (compatível)
+        """Inicializa provedores de IA."""
         if OPENAI_AVAILABLE:
             try:
                 self.client = OpenAI()
@@ -151,9 +123,7 @@ class AIAnalyzer:
             except Exception as e:
                 logging.warning(f"OpenAI indisponível: {e}")
 
-        # 2) DashScope (nativo)
         token = os.getenv("DASHSCOPE_API_KEY")
-
         if DASHSCOPE_AVAILABLE and token:
             try:
                 dashscope.api_key = token
@@ -163,18 +133,11 @@ class AIAnalyzer:
                 return
             except Exception as e:
                 logging.warning(f"DashScope indisponível: {e}")
-        elif DASHSCOPE_AVAILABLE and not token:
-            logging.warning("DashScope API key não encontrada (variável DASHSCOPE_API_KEY).")
 
-        # 3) Mock
         self.mode = None
         self.enabled = True
         logging.info("🔧 Modo MOCK ativado (sem provedores externos).")
 
-    # ---------------------------
-    # Healthcheck de conexão
-    # ---------------------------
-    
     def _should_test_connection(self) -> bool:
         """Verifica se deve testar conexão."""
         now = time.time()
@@ -203,7 +166,6 @@ class AIAnalyzer:
                 )
                 content = r.choices[0].message.content.strip().upper()
                 return content.startswith("OK")
-
             elif self.mode == "dashscope":
                 r = Generation.call(
                     model=self.model_name,
@@ -218,46 +180,107 @@ class AIAnalyzer:
                 )
                 content = _extract_dashscope_text(r).upper()
                 return content.startswith("OK")
-
             else:
-                return True  # mock
+                return True
         except Exception as e:
             self.connection_failed_count += 1
             logging.warning(f"Falha no ping da IA ({self.connection_failed_count}): {e}")
             return False
 
-    # ---------------------------
-    # 🆕 Prompt builder com validação robusta
-    # ---------------------------
+    # ====================================================================
+    # 🆕 EXTRAÇÃO DE DADOS CORRIGIDA
+    # ====================================================================
+    
+    def _extract_orderbook_data(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extrai dados de orderbook de múltiplas fontes possíveis.
+        
+        🔹 CORRIGIDO v2.0.1:
+          - Tenta múltiplos caminhos
+          - Valida dados extraídos
+          - Retorna dict vazio se inválido
+        
+        Fontes testadas (em ordem):
+          1. event_data['orderbook_data']
+          2. event_data['spread_metrics']
+          3. event_data['contextual_snapshot']['orderbook_data']
+          4. event_data['contextual']['orderbook_data']
+        """
+        # Tenta múltiplos caminhos
+        candidates = [
+            event_data.get('orderbook_data'),
+            event_data.get('spread_metrics'),
+            (event_data.get('contextual_snapshot') or {}).get('orderbook_data'),
+            (event_data.get('contextual') or {}).get('orderbook_data'),
+        ]
+        
+        for i, candidate in enumerate(candidates, 1):
+            if not isinstance(candidate, dict):
+                continue
+            
+            # Valida que tem dados úteis
+            has_depth = (
+                candidate.get('bid_depth_usd') is not None or
+                candidate.get('ask_depth_usd') is not None
+            )
+            
+            if has_depth:
+                bid_usd = float(candidate.get('bid_depth_usd', 0) or 0)
+                ask_usd = float(candidate.get('ask_depth_usd', 0) or 0)
+                
+                # Valida que não é zero
+                if bid_usd > 0 and ask_usd > 0:
+                    logging.debug(f"✅ Orderbook extraído da fonte #{i}: bid=${bid_usd:,.0f}, ask=${ask_usd:,.0f}")
+                    return candidate
+                else:
+                    logging.debug(f"⚠️ Fonte #{i} tem dados zerados (bid=${bid_usd}, ask=${ask_usd})")
+        
+        logging.warning("⚠️ Nenhuma fonte de orderbook válida encontrada")
+        return {}
+
+    # ====================================================================
+    # PROMPT BUILDER COM VALIDAÇÃO ROBUSTA
+    # ====================================================================
     
     def _create_prompt(self, event_data: Dict[str, Any]) -> str:
         """
         Cria prompt para IA com validação de dados.
         
-        🔹 v2.0.0:
-          - Valida orderbook zerado
-          - Detecta contradições em volumes
-          - Marca dados inválidos com ⚠️
-          - Instrui IA a não usar dados marcados
+        🔹 CORRIGIDO v2.0.1:
+          - Extrai orderbook corretamente
+          - Valida ANTES de formatar
+          - Detecta contradições de volumes
         """
         # Campos básicos
         tipo_evento = event_data.get("tipo_evento", "N/A")
         ativo = event_data.get("ativo") or event_data.get("symbol") or "N/A"
         descricao = event_data.get("descricao", "Sem descrição.")
         
-        # 🆕 VALIDAÇÃO DE CONSISTÊNCIA DELTA vs VOLUMES
+        # 🆕 EXTRAÇÃO DE ORDERBOOK CORRIGIDA
+        ob_data = self._extract_orderbook_data(event_data)
+        
+        # Valida orderbook ANTES de usar
+        bid_usd_raw = float(ob_data.get('bid_depth_usd', 0) or 0)
+        ask_usd_raw = float(ob_data.get('ask_depth_usd', 0) or 0)
+        is_orderbook_valid = (bid_usd_raw > 0 and ask_usd_raw > 0)
+        
+        if not is_orderbook_valid:
+            logging.warning(
+                f"⚠️ Orderbook INVÁLIDO para prompt: bid=${bid_usd_raw}, ask=${ask_usd_raw}"
+            )
+        
+        # Delta e volumes
         delta_raw = event_data.get("delta")
         volume_total_raw = event_data.get("volume_total")
         volume_compra_raw = event_data.get("volume_compra")
         volume_venda_raw = event_data.get("volume_venda")
         
-        # Converte valores
         delta = float(delta_raw) if delta_raw is not None else None
         volume_total = float(volume_total_raw) if volume_total_raw is not None else None
         volume_compra = float(volume_compra_raw) if volume_compra_raw is not None else None
         volume_venda = float(volume_venda_raw) if volume_venda_raw is not None else None
         
-        # 🆕 Detecta inconsistência: delta significativo mas volumes zerados
+        # 🆕 VALIDA CONSISTÊNCIA DELTA vs VOLUMES
         if delta is not None and abs(delta) > 1.0:
             if (volume_compra == 0 and volume_venda == 0) or volume_total == 0:
                 logging.warning(
@@ -267,17 +290,6 @@ class AIAnalyzer:
                 volume_compra = None
                 volume_venda = None
                 volume_total = None
-        
-        # Se volumes individuais não batem com total
-        if volume_compra is not None and volume_venda is not None and volume_total is not None:
-            calc_total = volume_compra + volume_venda
-            if abs(calc_total - volume_total) > 0.01:
-                logging.warning(
-                    f"⚠️ Volumes inconsistentes: compra({volume_compra}) + venda({volume_venda}) "
-                    f"!= total({volume_total}). Marcando como indisponíveis."
-                )
-                volume_compra = None
-                volume_venda = None
         
         preco = (
             event_data.get("preco_atual")
@@ -306,12 +318,12 @@ class AIAnalyzer:
                 mem_delta = format_delta(e.get('delta', 0))
                 mem_vol = format_large_number(e.get('volume_total', 0))
                 mem_lines.append(
-                    f"- {e.get('timestamp')} | {e.get('tipo_evento')} | "
-                    f"{e.get('resultado_da_batalha')} Δ={mem_delta} Vol={mem_vol}"
+                    f"   - {e.get('timestamp')} | {e.get('tipo_evento')} "
+                    f"{e.get('resultado_da_batalha')} (Δ={mem_delta}, Vol={mem_vol})"
                 )
             memoria_str = "\n".join(mem_lines)
         else:
-            memoria_str = "Nenhum evento recente."
+            memoria_str = "   Nenhum evento recente."
 
         # Probabilidade histórica
         conf = event_data.get("historical_confidence", {})
@@ -319,484 +331,134 @@ class AIAnalyzer:
         prob_short = conf.get("short_prob", "Indisponível")
         prob_neutral = conf.get("neutral_prob", "Indisponível")
 
-        # Zona institucional
-        z = event_data.get("zone_context") or {}
-        zone_str = ""
-        if z:
-            conflu = z.get("confluence") or []
-            if not isinstance(conflu, list):
-                conflu = [str(conflu)]
-            
-            zone_low = format_price(z.get('low', 0))
-            zone_high = format_price(z.get('high', 0))
-            zone_anchor = format_price(z.get('anchor_price', 0))
-            
-            zone_str = f"""
-🟦 Zona Institucional
-- Tipo: {z.get('kind')} | TF: {z.get('timeframe')} | Score: {z.get('score')}
-- Faixa: {zone_low} ~ {zone_high} (centro: {zone_anchor})
-- Confluências: {", ".join(conflu) if conflu else "Nenhuma"}
-- Toques: {z.get('touch_count')} | Último toque: {z.get('last_touched')}
-"""
-
-        # Derivativos
-        deriv_map = (
-            event_data.get("derivatives")
-            or event_data.get("contextual_snapshot", {}).get("derivatives")
-            or event_data.get("contextual", {}).get("derivatives")
-            or {}
-        )
-        derivativos = deriv_map.get(ativo, {}) or deriv_map.get("BTCUSDT", {})
-        if derivativos:
-            try:
-                oi_usd_val = float(derivativos.get("open_interest_usd") or 0)
-            except Exception:
-                oi_usd_val = 0.0
-            
-            oi_line = format_large_number(oi_usd_val) + " USD" if oi_usd_val > 0 else (
-                format_quantity(derivativos.get('open_interest', 0)) + " contratos"
-                if derivativos.get('open_interest') is not None
-                else "Indisponível"
-            )
-            
-            funding_rate = format_percent(derivativos.get('funding_rate_percent', 0))
-            ls_ratio = format_scientific(derivativos.get('long_short_ratio', 0), decimals=2)
-            longs_usd = format_large_number(derivativos.get('longs_usd', 0))
-            shorts_usd = format_large_number(derivativos.get('shorts_usd', 0))
-            
-            deriv_str = f"""
-🏦 Derivativos ({ativo})
-- Funding Rate: {funding_rate}
-- OI: {oi_line}
-- Long/Short Ratio: {ls_ratio}
-- Liquidações (5min): Longs=${longs_usd} | Shorts=${shorts_usd}
-"""
-        else:
-            deriv_str = "\n🏦 Derivativos: Indisponível."
-
-        # Volume Profile (Diário)
+        # Volume Profile
         vp = (
             event_data.get("historical_vp", {}).get("daily", {})
             or event_data.get("contextual_snapshot", {}).get("historical_vp", {}).get("daily", {})
             or {}
         )
+        vp_str = ""
         if vp:
-            try:
-                current_price_for_vp = float(preco)
-                hvns_list = sorted(vp.get("hvns") or [], key=lambda x: abs(x - current_price_for_vp))
-                lvns_list = sorted(vp.get("lvns") or [], key=lambda x: abs(x - current_price_for_vp))
-
-                hvn_str = ", ".join([f"${format_price(x)}" for x in hvns_list[:12]]) or "Nenhum"
-                lvn_str = ", ".join([f"${format_price(x)}" for x in lvns_list[:12]]) or "Nenhum"
-                
-                poc_fmt = format_price(vp.get('poc', 0))
-                val_fmt = format_price(vp.get('val', 0))
-                vah_fmt = format_price(vp.get('vah', 0))
-            except Exception:
-                hvn_str = lvn_str = "Indisponível"
-                poc_fmt = val_fmt = vah_fmt = "Indisponível"
-            
+            poc_fmt = format_price(vp.get('poc', 0))
+            val_fmt = format_price(vp.get('val', 0))
+            vah_fmt = format_price(vp.get('vah', 0))
             vp_str = f"""
 📊 Volume Profile (Diário)
-- POC: ${poc_fmt} | Value Area: ${val_fmt} a ${vah_fmt}
-- HVNs (próximos): {hvn_str}
-- LVNs (próximos): {lvn_str}
+   POC: ${poc_fmt} | VAL: ${val_fmt} | VAH: ${vah_fmt}
 """
-        else:
-            vp_str = "\n📊 Volume Profile Histórico: Indisponível."
 
-        # Contexto de mercado
-        ctx_snap = event_data.get("contextual_snapshot", {}) or {}
-        market_ctx = (
-            event_data.get("market_context")
-            or ctx_snap.get("market_context")
-            or event_data.get("contextual", {}).get("market_context", {})
-            or {}
-        )
-        market_env = (
-            event_data.get("market_environment")
-            or ctx_snap.get("market_environment")
-            or event_data.get("contextual", {}).get("market_environment", {})
-            or {}
-        )
-
-        market_ctx_str = ""
-        if market_ctx:
-            try:
-                sess = market_ctx.get("trading_session", "Indisponível")
-                phase = market_ctx.get("session_phase", "Indisponível")
-                close_sec = market_ctx.get("time_to_session_close", None)
-                close_str = format_time_seconds(close_sec * 1000) if isinstance(close_sec, (int, float)) else "Indisponível"
-                dow = market_ctx.get("day_of_week", "Indisponível")
-                is_holiday = market_ctx.get("is_holiday", None)
-                holiday_str = "Sim" if is_holiday else ("Não" if is_holiday is not None else "Indisponível")
-                hours_type = market_ctx.get("market_hours_type", "Indisponível")
-                market_ctx_str = (
-                    f"\n🌍 Contexto de Mercado\n- Sessão: {sess} ({phase}), fecha em {close_str}\n"
-                    f"- Dia da semana: {dow} | Feriado: {holiday_str}\n- Horário de mercado: {hours_type}\n"
-                )
-            except Exception:
-                market_ctx_str = ""
-
-        market_env_str = ""
-        if market_env:
-            try:
-                vol_reg = market_env.get("volatility_regime", "Indisponível")
-                trend_dir = market_env.get("trend_direction", "Indisponível")
-                mkt_struct = market_env.get("market_structure", "Indisponível")
-                liq_env = market_env.get("liquidity_environment", "Indisponível")
-                risk_sent = market_env.get("risk_sentiment", "Indisponível")
-
-                def fmt_corr(v):
-                    try:
-                        return format_delta(float(v))
-                    except Exception:
-                        return "Ind"
-
-                corr_str = (
-                    f"SP500 {fmt_corr(market_env.get('correlation_spy'))}, "
-                    f"DXY {fmt_corr(market_env.get('correlation_dxy'))}, "
-                    f"GOLD {fmt_corr(market_env.get('correlation_gold'))}"
-                )
-                market_env_str = (
-                    f"\n🌡 Ambiente de Mercado\n- Volatilidade: {vol_reg} | Tendência: {trend_dir} | Estrutura: {mkt_struct}\n"
-                    f"- Liquidez: {liq_env} | Sentimento de risco: {risk_sent}\n- Correlações: {corr_str}\n"
-                )
-            except Exception:
-                market_env_str = ""
-
-        # Order book depth / spread
-        ob_depth = (
-            event_data.get("order_book_depth")
-            or ctx_snap.get("orderbook_data", {}).get("order_book_depth")
-            or event_data.get("contextual", {}).get("orderbook_data", {}).get("order_book_depth")
-            or {}
-        )
-        depth_str = ""
-        if isinstance(ob_depth, dict) and ob_depth:
-            try:
-                lines = []
-                for lvl in ("L1", "L5", "L10", "L25"):
-                    d = ob_depth.get(lvl)
-                    if isinstance(d, dict) and d:
-                        bids = format_large_number(d.get("bids", 0))
-                        asks = format_large_number(d.get("asks", 0))
-                        imb = format_scientific(d.get("imbalance", 0), decimals=2)
-                        lines.append(f"- {lvl}: Bid {bids}, Ask {asks}, Imb {imb}")
-                
-                total_ratio = ob_depth.get("total_depth_ratio")
-                ratio_str = format_scientific(total_ratio, decimals=3) if total_ratio else "Indisponível"
-                if lines:
-                    depth_str = "\n📑 Profundidade do Livro (USD)\n" + "\n".join(lines) + f"\n- Desvio total: {ratio_str}\n"
-            except Exception:
-                depth_str = ""
-
-        spread_ana = (
-            event_data.get("spread_analysis")
-            or ctx_snap.get("orderbook_data", {}).get("spread_metrics")
-            or event_data.get("contextual", {}).get("spread_analysis")
-            or {}
-        )
-        spread_str = ""
-        if isinstance(spread_ana, dict) and spread_ana:
-            try:
-                cs = spread_ana.get("current_spread_bps") or spread_ana.get("spread_bps")
-                avg1 = spread_ana.get("avg_spread_1h")
-                avg24 = spread_ana.get("avg_spread_24h")
-                pct = spread_ana.get("spread_percentile")
-                tdur = spread_ana.get("tight_spread_duration_min")
-                vol_sp = spread_ana.get("spread_volatility")
-                
-                spread_str = (
-                    "\n📏 Spread\n"
-                    f"- Atual: {format_scientific(cs, decimals=2) if cs else 'Ind'} bps\n"
-                    f"- Médias: 1h {format_scientific(avg1, decimals=2) if avg1 else 'Ind'} bps, "
-                    f"24h {format_scientific(avg24, decimals=2) if avg24 else 'Ind'} bps\n"
-                    f"- Percentil: {format_percent(pct) if pct else 'Ind'} | "
-                    f"Tight Dur: {format_quantity(tdur) if tdur else 'Ind'} min | "
-                    f"Vol: {format_scientific(vol_sp, decimals=3) if vol_sp else 'Ind'}\n"
-                )
-            except Exception:
-                spread_str = ""
-
-        # 🆕 FLUXO CONTÍNUO COM VALIDAÇÃO
+        # 🆕 ORDER FLOW COM VALIDAÇÃO DE CONTRADIÇÕES
         flow = (
             event_data.get("fluxo_continuo")
             or event_data.get("flow_metrics")
-            or ctx_snap.get("flow_metrics")
-            or event_data.get("contextual", {}).get("flow_metrics")
+            or (event_data.get("contextual_snapshot") or {}).get("flow_metrics")
+            or (event_data.get("contextual") or {}).get("flow_metrics")
             or {}
         )
-        order_flow_str = ""
-        participants_str = ""
         
+        order_flow_str = ""
         if isinstance(flow, dict) and flow:
             of = flow.get("order_flow", {})
             if isinstance(of, dict) and of:
                 try:
-                    nf1, nf5, nf15 = of.get("net_flow_1m"), of.get("net_flow_5m"), of.get("net_flow_15m")
-                    ab, asell = of.get("aggressive_buy_pct"), of.get("aggressive_sell_pct")
-                    pb, ps = of.get("passive_buy_pct"), of.get("passive_sell_pct")
-                    bsr = of.get("buy_sell_ratio")
-                    
-                    # 🆕 VALIDA VOLUMES vs RATIO
                     buy_vol = of.get("buy_volume", 0)
                     sell_vol = of.get("sell_volume", 0)
+                    bsr = of.get("buy_sell_ratio")
                     
-                    has_valid_volumes = (buy_vol > 0 or sell_vol > 0)
-                    has_valid_ratio = (bsr is not None and bsr > 0)
+                    has_volumes = (buy_vol > 0 or sell_vol > 0)
                     
                     # 🆕 DETECTA CONTRADIÇÃO
-                    if not has_valid_volumes and has_valid_ratio:
+                    if not has_volumes and bsr is not None and bsr > 0:
                         logging.warning(
                             f"⚠️ CONTRADIÇÃO: buy/sell volumes zero mas ratio={bsr}. "
                             f"Marcando ratio como indisponível."
                         )
                         bsr = None
                     
-                    # 🆕 VALIDA PERCENTUAIS
-                    if ab is not None and asell is not None:
-                        total_pct = ab + asell
-                        if abs(total_pct - 100) > 1.0:
-                            logging.warning(
-                                f"⚠️ Percentuais agressivos não somam 100%: "
-                                f"buy={ab}% + sell={asell}% = {total_pct}%"
-                            )
-                    
-                    of_lines = []
+                    flow_lines = []
                     
                     # Net flows
-                    if any(v is not None for v in (nf1, nf5, nf15)):
-                        nf1_fmt = format_delta(nf1) if nf1 else "Ind"
-                        nf5_fmt = format_delta(nf5) if nf5 else "Ind"
-                        nf15_fmt = format_delta(nf15) if nf15 else "Ind"
-                        of_lines.append(f"- Net Flow: 1m {nf1_fmt}, 5m {nf5_fmt}, 15m {nf15_fmt}")
+                    nf1 = of.get("net_flow_1m")
+                    if nf1 is not None:
+                        flow_lines.append(f"   Net Flow 1m: {format_delta(nf1)}")
                     
-                    # Agressivo/Passivo
-                    if any(v is not None for v in (ab, asell, pb, ps)):
-                        ab_fmt = format_percent(ab) if ab else "Ind"
-                        as_fmt = format_percent(asell) if asell else "Ind"
-                        pb_fmt = format_percent(pb) if pb else "Ind"
-                        ps_fmt = format_percent(ps) if ps else "Ind"
-                        of_lines.append(
-                            f"- Agressivo: Buy {ab_fmt} | Sell {as_fmt} | "
-                            f"Passivo: Buy {pb_fmt} | Sell {ps_fmt}"
-                        )
+                    # Flow imbalance
+                    fi = of.get("flow_imbalance")
+                    if fi is not None:
+                        flow_lines.append(f"   Flow Imbalance: {format_scientific(fi, 4)}")
                     
-                    # 🆕 RATIO COM VALIDAÇÃO
+                    # Ratio (apenas se válido)
                     if bsr is not None:
-                        bsr_str = format_scientific(float(bsr), decimals=2)
-                        
-                        if not has_valid_volumes:
-                            of_lines.append(
-                                f"- Razão Buy/Sell: {bsr_str} "
-                                f"⚠️ (calculado via net flow, volumes individuais indisponíveis)"
-                            )
-                        else:
-                            of_lines.append(f"- Razão Buy/Sell: {bsr_str}")
-                    elif has_valid_volumes:
-                        of_lines.append(
-                            f"- Razão Buy/Sell: Indisponível "
-                            f"(buy={buy_vol}, sell={sell_vol})"
-                        )
+                        flow_lines.append(f"   Buy/Sell Ratio: {format_scientific(bsr, 2)}")
                     
-                    if of_lines:
-                        order_flow_str = "\n🚰 Fluxo de Ordens\n" + "\n".join(of_lines) + "\n"
+                    if flow_lines:
+                        order_flow_str = "\n🚰 Fluxo de Ordens\n" + "\n".join(flow_lines) + "\n"
+                
                 except Exception as e:
                     logging.error(f"Erro ao processar order_flow: {e}")
-                    order_flow_str = ""
 
-            pa = flow.get("participant_analysis", {})
-            if isinstance(pa, dict) and pa:
-                try:
-                    lines = []
-                    label_map = {"retail_flow": "Retail", "institutional_flow": "Institucional", "hft_flow": "HFT"}
-                    for role in ("retail_flow", "institutional_flow", "hft_flow"):
-                        info = pa.get(role)
-                        if not isinstance(info, dict):
-                            continue
-                        
-                        vol_pct = format_percent(info.get("volume_pct", 0))
-                        direction = info.get("direction") or "Ind"
-                        avg_sz = format_quantity(info.get("avg_order_size", 0))
-                        sentiment = info.get("sentiment") or info.get("activity_level") or "Ind"
-                        act_level = info.get("activity_level")
-                        sent_str = f"{sentiment} ({act_level})" if act_level and sentiment and act_level != sentiment else sentiment
-                        
-                        lines.append(
-                            f"- {label_map.get(role, role)}: Vol {vol_pct}, "
-                            f"Dir {direction}, Avg {avg_sz}, Sent. {sent_str}"
-                        )
-                    if lines:
-                        participants_str = "\n👥 Participantes\n" + "\n".join(lines) + "\n"
-                except Exception:
-                    participants_str = ""
-
-        # 🆕 ML FEATURES COM VALIDAÇÃO
-        ml = (event_data.get("ml_features") or event_data.get("ml") or {})
+        # 🆕 ML FEATURES
+        ml = event_data.get("ml_features") or event_data.get("ml") or {}
         ml_str = ""
-        
-        # 🆕 Flag para validação de orderbook (usado abaixo)
-        is_orderbook_valid = False
-        
         if isinstance(ml, dict) and ml:
             try:
-                pf = ml.get("price_features", {}) or {}
-                vf = ml.get("volume_features", {}) or {}
                 mf = ml.get("microstructure", {}) or {}
                 
-                # 🆕 VALIDA MICROSTRUCTURE
                 tick_rule = mf.get("tick_rule_sum")
                 flow_imb = mf.get("flow_imbalance")
-                ob_slope = mf.get("order_book_slope")
                 
-                # 🆕 DETECTA PROBLEMAS
-                warnings_ml = []
+                ml_lines = []
+                if tick_rule is not None:
+                    ml_lines.append(f"   Tick Rule Sum: {format_scientific(tick_rule, 3)}")
+                if flow_imb is not None:
+                    ml_lines.append(f"   Flow Imbalance: {format_scientific(flow_imb, 4)}")
                 
-                # Delta existe mas tick_rule sempre zero
-                delta_val = delta or of.get("net_flow_1m", 0) if isinstance(of, dict) else 0
-                if tick_rule == 0 and abs(delta_val) > 100:
-                    warnings_ml.append("⚠️ tick_rule_sum=0 (pode estar quebrado)")
-                
-                # Orderbook tem dados mas slope zero (validação vem abaixo)
-                # Placeholder aqui, verificamos depois
-                
-                # Price features
-                p_lines = []
-                for k in ("returns_1", "returns_5", "returns_15", "volatility_1", 
-                          "volatility_5", "volatility_15", "momentum_score"):
-                    if k in pf:
-                        val = pf[k]
-                        if k.startswith("returns_"):
-                            p_lines.append(f"{k}={format_percent(val * 100)}")
-                        elif k.startswith("volatility_"):
-                            p_lines.append(f"{k}={format_scientific(val, decimals=5)}")
-                        else:
-                            p_lines.append(f"{k}={format_scientific(val, decimals=5)}")
-                
-                # Volume features
-                v_lines = []
-                for k in ("volume_sma_ratio", "volume_momentum", 
-                          "buy_sell_pressure", "liquidity_gradient"):
-                    if k in vf:
-                        val = vf[k]
-                        if "pressure" in k:
-                            v_lines.append(f"{k}={format_delta(val)}")
-                        elif "ratio" in k:
-                            ratio_str = format_percent(val * 100) if val < 10 else format_percent(val)
-                            if val > 5.0:
-                                ratio_str += " ⚠️ (extremo!)"
-                            v_lines.append(f"{k}={ratio_str}")
-                        else:
-                            v_lines.append(f"{k}={format_scientific(val, decimals=2)}")
-                
-                # 🆕 MICROSTRUCTURE COM WARNINGS (validação de ob_slope vem depois)
-                m_lines = []
-                for k in ("order_book_slope", "flow_imbalance", "tick_rule_sum", "trade_intensity"):
-                    if k in mf:
-                        val = mf[k]
-                        val_str = format_scientific(val, decimals=3)
-                        
-                        if k == "tick_rule_sum" and val == 0 and abs(delta_val) > 100:
-                            val_str += " ⚠️"
-                        # ob_slope warning adicionado depois
-                        
-                        m_lines.append(f"{k}={val_str}")
-                
-                blocks = []
-                if p_lines:
-                    blocks.append("• Price: " + ", ".join(p_lines))
-                if v_lines:
-                    blocks.append("• Volume: " + ", ".join(v_lines))
-                if m_lines:
-                    blocks.append("• Microstructure: " + ", ".join(m_lines))
-                
-                # Warnings adicionados depois da validação de orderbook
-                
-                if blocks:
-                    ml_str = "\n📐 ML Features\n" + "\n".join(blocks) + "\n"
-            except Exception as e:
-                logging.error(f"Erro ao processar ML features: {e}")
-                ml_str = ""
+                if ml_lines:
+                    ml_str = "\n📐 ML Features\n" + "\n".join(ml_lines) + "\n"
+            except Exception:
+                pass
 
-        # 🆕 VALIDAÇÃO DE ORDERBOOK (CRÍTICO!)
-        if (event_data.get("tipo_evento") == "OrderBook") or ("imbalance" in event_data):
-            sm = (
-                event_data.get("spread_metrics")
-                or ctx_snap.get("orderbook_data", {}).get("spread_metrics")
-                or {}
-            )
-            
-            # 🆕 VALIDA ORDERBOOK ANTES DE FORMATAR
-            bid_usd_raw = sm.get("bid_depth_usd", 0)
-            ask_usd_raw = sm.get("ask_depth_usd", 0)
-            
-            is_orderbook_valid = (bid_usd_raw > 0 and ask_usd_raw > 0)
-            
-            # 🆕 ADICIONA WARNING PARA order_book_slope SE ORDERBOOK VÁLIDO
-            if ml_str and isinstance(ml, dict):
-                mf = ml.get("microstructure", {}) or {}
-                ob_slope = mf.get("order_book_slope")
-                
-                if ob_slope == 0 and is_orderbook_valid:
-                    # Atualiza ml_str adicionando warning
-                    ml_str = ml_str.replace(
-                        f"order_book_slope={format_scientific(ob_slope, decimals=3)}",
-                        f"order_book_slope={format_scientific(ob_slope, decimals=3)} ⚠️"
-                    )
-                    if "• ⚠️ Avisos:" not in ml_str:
-                        ml_str = ml_str.rstrip() + "\n• ⚠️ Avisos: order_book_slope=0 mas orderbook tem dados\n"
-            
+        # 🆕 EVENTO ORDERBOOK COM VALIDAÇÃO
+        if tipo_evento == "OrderBook" or "imbalance" in event_data:
             if not is_orderbook_valid:
-                # 🆕 ORDERBOOK INVÁLIDO
+                # ❌ ORDERBOOK INVÁLIDO
                 ob_str = f"""
 📊 Evento OrderBook - ⚠️ DADOS INDISPONÍVEIS
 
-🔴 ATENÇÃO: Orderbook zerado (bid=${bid_usd_raw}, ask=${ask_usd_raw})
-- Análise de livro INDISPONÍVEL
-- Dados podem estar em falha de API ou rate limiting
-- Use APENAS métricas de fluxo (delta, flow_imbalance, tick_rule) se disponíveis
+🔴 ATENÇÃO: Orderbook zerado ou inválido
+   Bid Depth: ${bid_usd_raw:,.2f}
+   Ask Depth: ${ask_usd_raw:,.2f}
 
-⚠️ NÃO analise profundidade, spread ou imbalance do livro!
+⚠️ Análise de livro INDISPONÍVEL
+   Use APENAS métricas de fluxo se disponíveis:
+   - net_flow (delta acumulado)
+   - flow_imbalance (proporção buy/sell)
+   - tick_rule_sum (upticks vs downticks)
 """
             else:
                 # ✅ ORDERBOOK VÁLIDO
-                imbalance = format_scientific(event_data.get("imbalance", 0), decimals=3)
-                ratio = format_scientific(event_data.get("volume_ratio", 0), decimals=2)
-                pressure = format_delta(event_data.get("pressure", 0))
-                spread = format_price(sm.get("spread", 0))
-                spread_pct = format_percent(sm.get("spread_percent", 0))
-                bid_usd = format_large_number(bid_usd_raw)
-                ask_usd = format_large_number(ask_usd_raw)
-                mi_buy = event_data.get("market_impact_buy", {}) or {}
-                mi_sell = event_data.get("market_impact_sell", {}) or {}
-                alertas = event_data.get("alertas_liquidez", [])
-
-                mi_lines = ""
-                try:
-                    if mi_buy:
-                        mi_lines += f"\n- Market Impact (Buy): {mi_buy}"
-                    if mi_sell:
-                        mi_lines += f"\n- Market Impact (Sell): {mi_sell}"
-                except Exception:
-                    mi_lines = ""
-
+                imbalance = ob_data.get("imbalance", 0)
+                mid = ob_data.get("mid", 0)
+                spread_pct = ob_data.get("spread_percent", 0)
+                
                 ob_str = f"""
 📊 Evento OrderBook ✅
 
-- Preço: {format_price(preco)}
-- Imbalance: {imbalance} | Ratio: {ratio} | Pressure: {pressure}
-- Spread: {spread} ({spread_pct})
-- Profundidade (USD): Bid={bid_usd} | Ask={ask_usd}{mi_lines}
-- Alertas: {", ".join(alertas) if alertas else "Nenhum"}
+   Preço Mid: {format_price(mid)}
+   Spread: {format_percent(spread_pct)}
+   
+   Profundidade (USD):
+   • Bids: {format_large_number(bid_usd_raw)}
+   • Asks: {format_large_number(ask_usd_raw)}
+   
+   Imbalance: {format_scientific(imbalance, 4)}
 """
 
-            # 🆕 RETORNA PROMPT ESPECÍFICO PARA ORDERBOOK
             return f"""
 🧠 **Análise Institucional – {ativo} | {tipo_evento}**
 
 📝 Descrição: {descricao}
-{ob_str}{ml_str}{zone_str}{deriv_str}{vp_str}{market_ctx_str}{market_env_str}{depth_str}{spread_str}{order_flow_str}{participants_str}
+{ob_str}{ml_str}{vp_str}{order_flow_str}
 
 📈 Multi-Timeframes
 {multi_tf_str}
@@ -805,46 +467,40 @@ class AIAnalyzer:
 {memoria_str}
 
 📉 Probabilidade Histórica
-Long={prob_long} | Short={prob_short} | Neutro={prob_neutral}
+   Long={prob_long} | Short={prob_short} | Neutro={prob_neutral}
 
 🎯 Tarefa
-IMPORTANTE: Se algum campo estiver marcado com ⚠️ ou 'Indisponível', NÃO use na análise.
+CRÍTICO: Se dados estiverem marcados como "Indisponível" ou "⚠️", NÃO os use.
 
 {"🔴 ORDERBOOK INDISPONÍVEL - Use APENAS métricas de fluxo (net_flow, flow_imbalance, tick_rule)" if not is_orderbook_valid else ""}
 
-Se houver contradições (ex: volumes zero mas ratio existe):
-- Ignore a métrica contraditória
-- Mencione a contradição detectada
-
-Forneça parecer institucional cobrindo:
-1) Interpretação (use APENAS dados disponíveis e válidos)
-2) Força dominante (baseado em net_flow se orderbook indisponível)
+Forneça análise institucional cobrindo:
+1) Interpretação (use APENAS dados disponíveis)
+2) Força dominante
 3) Expectativa (curto/médio prazo)
-4) Probabilidade mais provável (considere valores históricos)
-5) Plano de trade SE houver dados suficientes (caso contrário, mencione limitações)
-6) Gestão de posição (se dados disponíveis)
+4) Probabilidade (considere valores históricos)
+5) Plano de trade SE houver dados suficientes
+6) Gestão de posição (se aplicável)
 
-Se dados críticos faltarem, seja explícito: "Análise limitada - orderbook indisponível"
+Se dados críticos faltarem, seja explícito sobre limitações.
 """
 
-        # 🆕 PROMPT PADRÃO COM VALIDAÇÃO
+        # PROMPT PADRÃO
         vol_line = (
-            "- Vol: Indisponível" if volume_total is None else f"- Vol: {format_large_number(volume_total)}"
+            "Indisponível" if volume_total is None 
+            else f"{format_large_number(volume_total)}"
         )
-        if ((volume_compra or 0) > 0) or ((volume_venda or 0) > 0):
-            vol_line += f" (Buy={format_large_number(volume_compra or 0)} | Sell={format_large_number(volume_venda or 0)})"
-
-        delta_line = f"- Delta: {format_delta(delta)}" if delta is not None else "- Delta: Indisponível"
+        delta_line = f"{format_delta(delta)}" if delta is not None else "Indisponível"
 
         return f"""
 🧠 **Análise Institucional – {ativo} | {tipo_evento}**
 
 📝 Descrição: {descricao}
 
-- Preço: {format_price(preco) if preco else "Indisponível"}
-{delta_line}
-{vol_line}
-{ml_str}{zone_str}{deriv_str}{vp_str}{market_ctx_str}{market_env_str}{depth_str}{spread_str}{order_flow_str}{participants_str}
+   Preço: {format_price(preco)}
+   Delta: {delta_line}
+   Volume: {vol_line}
+{ml_str}{vp_str}{order_flow_str}
 
 📈 Multi-Timeframes
 {multi_tf_str}
@@ -853,25 +509,23 @@ Se dados críticos faltarem, seja explícito: "Análise limitada - orderbook ind
 {memoria_str}
 
 📉 Probabilidade Histórica
-Long={prob_long} | Short={prob_short} | Neutro={prob_neutral}
+   Long={prob_long} | Short={prob_short} | Neutro={prob_neutral}
 
 🎯 Tarefa
-IMPORTANTE: Se algum campo estiver marcado com ⚠️ ou 'Indisponível', NÃO use na análise.
+Use APENAS dados explicitamente fornecidos.
+Se marcado como "Indisponível", NÃO use na análise.
 
-Forneça parecer institucional cobrindo:
-1) Interpretação (use APENAS dados disponíveis e válidos)
+Forneça análise institucional:
+1) Interpretação
 2) Força dominante
-3) Expectativa (curto/médio prazo)
-4) Probabilidade mais provável (considere valores históricos)
-5) Plano de trade SE houver dados suficientes
-6) Gestão de posição (se dados disponíveis)
-
-Se dados críticos faltarem, seja explícito sobre as limitações.
+3) Expectativa
+4) Probabilidade
+5) Plano de trade (se dados suficientes)
 """
 
-    # ---------------------------
-    # 🆕 Callers de provedores com system prompt corrigido
-    # ---------------------------
+    # ====================================================================
+    # CALLERS
+    # ====================================================================
     
     def _call_openai_compatible(self, prompt: str, max_retries: int = 3) -> str:
         """Chama OpenAI API com retry."""
@@ -884,18 +538,13 @@ Se dados críticos faltarem, seja explícito sobre as limitações.
                         {
                             "role": "system",
                             "content": (
-                                "Você é um analista institucional de trading e order flow. "
-                                "REGRAS ESTRITAS:\n"
-                                "1) Use SOMENTE números e métricas explicitamente fornecidos\n"
-                                "2) Se um dado estiver marcado como 'Indisponível', 'Ind', ou com ⚠️, "
-                                "   NÃO o use na análise - escreva explicitamente 'Indisponível'\n"
-                                "3) Se orderbook estiver zerado ($0), NÃO analise profundidade/spread/imbalance do livro\n"
-                                "4) Se volumes são zero mas ratio existe, é CONTRADIÇÃO - ignore o ratio\n"
-                                "5) Se tick_rule_sum=0.000 com ⚠️, mencione que dado pode estar quebrado\n"
-                                "6) Quando livro e fita divergirem, explique a divergência\n"
-                                "7) Priorize net_flow e flow_imbalance quando orderbook indisponível\n"
-                                "8) Seja sucinto e objetivo\n"
-                                "9) Não é conselho financeiro"
+                                "Você é analista institucional de order flow. "
+                                "REGRAS:\n"
+                                "1) Use SOMENTE dados fornecidos explicitamente\n"
+                                "2) Se marcado 'Indisponível' ou '⚠️', NÃO use\n"
+                                "3) Orderbook zerado? Use fluxo (net_flow, tick_rule)\n"
+                                "4) Contradições? Ignore dado contraditório\n"
+                                "5) Seja sucinto e objetivo"
                             ),
                         },
                         {"role": "user", "content": prompt},
@@ -908,14 +557,11 @@ Se dados críticos faltarem, seja explícito sobre as limitações.
                     content = response.choices[0].message.content.strip()
                     if len(content) > 10:
                         return content
-                logging.warning("Resposta OpenAI curta/indisponível.")
                 return ""
             except Exception as e:
-                logging.error(f"Erro na API OpenAI (tentativa {attempt+1}/{max_retries}): {e}")
+                logging.error(f"Erro OpenAI (tentativa {attempt+1}): {e}")
                 if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
-                    logging.info(f"Aguardando {delay:.1f}s antes de retry...")
-                    time.sleep(delay)
+                    time.sleep(base_delay * (2 ** attempt))
         return ""
 
     def _call_dashscope(self, prompt: str, max_retries: int = 3) -> str:
@@ -929,18 +575,13 @@ Se dados críticos faltarem, seja explícito sobre as limitações.
                         {
                             "role": "system",
                             "content": (
-                                "Você é um analista institucional de trading e order flow. "
-                                "REGRAS ESTRITAS:\n"
-                                "1) Use SOMENTE números e métricas explicitamente fornecidos\n"
-                                "2) Se um dado estiver marcado como 'Indisponível', 'Ind', ou com ⚠️, "
-                                "   NÃO o use na análise - escreva explicitamente 'Indisponível'\n"
-                                "3) Se orderbook estiver zerado ($0), NÃO analise profundidade/spread/imbalance do livro\n"
-                                "4) Se volumes são zero mas ratio existe, é CONTRADIÇÃO - ignore o ratio\n"
-                                "5) Se tick_rule_sum=0.000 com ⚠️, mencione que dado pode estar quebrado\n"
-                                "6) Quando livro e fita divergirem, explique a divergência\n"
-                                "7) Priorize net_flow e flow_imbalance quando orderbook indisponível\n"
-                                "8) Seja sucinto e objetivo\n"
-                                "9) Não é conselho financeiro"
+                                "Você é analista institucional de order flow. "
+                                "REGRAS:\n"
+                                "1) Use SOMENTE dados fornecidos explicitamente\n"
+                                "2) Se marcado 'Indisponível' ou '⚠️', NÃO use\n"
+                                "3) Orderbook zerado? Use fluxo (net_flow, tick_rule)\n"
+                                "4) Contradições? Ignore dado contraditório\n"
+                                "5) Seja sucinto e objetivo"
                             ),
                         },
                         {"role": "user", "content": prompt},
@@ -953,20 +594,13 @@ Se dados críticos faltarem, seja explícito sobre as limitações.
                 content = _extract_dashscope_text(response).strip()
                 if len(content) > 10:
                     return content
-                logging.warning("Resposta DashScope curta/indisponível.")
                 return ""
             except Exception as e:
-                logging.error(f"Erro API DashScope (tentativa {attempt+1}/{max_retries}): {e}")
+                logging.error(f"Erro DashScope (tentativa {attempt+1}): {e}")
                 if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
-                    logging.info(f"Aguardando {delay:.1f}s antes de retry...")
-                    time.sleep(delay)
+                    time.sleep(base_delay * (2 ** attempt))
         return ""
 
-    # ---------------------------
-    # Fallback mock
-    # ---------------------------
-    
     def _generate_mock_analysis(self, event_data: Dict[str, Any]) -> str:
         """Gera análise mock quando IA indisponível."""
         timestamp = self.time_manager.now_iso()
@@ -974,28 +608,19 @@ Se dados críticos faltarem, seja explícito sobre as limitações.
         mock_delta = format_delta(event_data.get('delta', 0))
         
         return (
-            f"**Interpretação (mock):** Detecção de {event_data.get('tipo_evento')} em "
-            f"{event_data.get('ativo') or event_data.get('symbol')} às {timestamp}.\n"
+            f"**Interpretação (mock):** {event_data.get('tipo_evento')} em "
+            f"{event_data.get('ativo')} às {timestamp}.\n"
             f"Preço: ${mock_price} | Delta: {mock_delta}\n"
-            f"**Força Dominante:** {event_data.get('resultado_da_batalha')}\n"
-            f"**Expectativa:** Lateralização com viés conforme delta/fluxo recente (mock).\n"
-            f"**Plano:** Operar reação na zona; stop além da borda; alvo no próximo HVN/LVN."
+            f"**Força:** {event_data.get('resultado_da_batalha')}\n"
+            f"**Expectativa:** Monitorar reação (dados limitados - modo mock)."
         )
 
-    # ---------------------------
-    # Interface pública
-    # ---------------------------
+    # ====================================================================
+    # INTERFACE PÚBLICA
+    # ====================================================================
     
     def analyze_event(self, event_data: Dict[str, Any]) -> str:
-        """
-        Analisa evento e retorna análise da IA.
-        
-        Args:
-            event_data: Dict com dados do evento
-        
-        Returns:
-            String com análise formatada
-        """
+        """Analisa evento e retorna análise da IA."""
         if not self.enabled:
             try:
                 self._initialize_api()
@@ -1003,13 +628,11 @@ Se dados críticos faltarem, seja explícito sobre as limitações.
                 pass
         
         if not self.enabled:
-            logging.warning("IA não inicializada; retornando análise mock.")
             return self._generate_mock_analysis(event_data)
 
         if self._should_test_connection():
             self.last_test_time = time.time()
             if not self._test_connection():
-                logging.warning("⚠️ Falha na conexão com IA. Usando modo mock temporariamente.")
                 if self.connection_failed_count >= self.max_failures_before_mock:
                     return self._generate_mock_analysis(event_data)
 

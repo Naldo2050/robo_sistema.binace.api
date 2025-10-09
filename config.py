@@ -1,4 +1,4 @@
-# CONFIG.PY
+# CONFIG.PY - VERSÃO CORRIGIDA PARA ORDERBOOK
 # ==============================================================================
 # CONFIGURAÇÕES GERAIS DO BOT
 # ==============================================================================
@@ -15,6 +15,7 @@ DASHSCOPE_API_KEY = "sk-6f40dca1f07b492d8ee6fa6b724dd4dc"
 AI_KEYS = {
     "dashscope": DASHSCOPE_API_KEY,
 }
+
 # (Opcional) Se algum dia usar OpenAI, pode definir aqui também:
 OPENAI_API_KEY = None
 
@@ -40,16 +41,15 @@ DELTA_STD_DEV_FACTOR = 2.5
 CONTEXT_SMA_PERIOD = 10
 
 # ==============================================================================
-# PARÂMETROS DO LIVRO DE OFERTAS (orderbook_analyzer.py)
+# PARÂMETROS DO LIVRO DE OFERTAS (orderbook_analyzer.py) - CORRIGIDOS
 # ==============================================================================
 
 # -- Fluxo de Liquidez --
 # Alerta se a liquidez no topo do book mudar mais que X% entre as checagens.
 LIQUIDITY_FLOW_ALERT_PERCENTAGE = 0.4  # 40%
 
-# Mínimo absoluto de variação (USD) na profundidade do book para disparar alerta de fluxo.
-# (Se o analisador não importar esta chave, ele usa fallback interno de 500_000.)
-MIN_OB_ABS_CHANGE_USD = 500_000  # aumente para 1_000_000 para reduzir ruído de alertas
+# 🔧 CORRIGIDO: Mínimo reduzido para ser mais permissivo
+MIN_OB_ABS_CHANGE_USD = 250_000  # REDUZIDO de 500_000 para 250_000
 
 # -- Paredes de Liquidez (Walls) --
 # Uma ordem é considerada uma "parede" se for X desvios padrão maior que a média das ordens.
@@ -60,8 +60,40 @@ WALL_STD_DEV_FACTOR = 3.0
 # 1) |imbalance| >= 0.95 e (ratio_dom >= 20x OU lado dominante >= 2M USD)
 # 2) ratio_dom >= 50x (independente do imbalance) — proteção para assimetrias extremas
 ORDERBOOK_CRITICAL_IMBALANCE = 0.95
-ORDERBOOK_MIN_DOMINANT_USD   = 2_000_000.0
-ORDERBOOK_MIN_RATIO_DOM      = 20.0
+ORDERBOOK_MIN_DOMINANT_USD = 2_000_000.0
+ORDERBOOK_MIN_RATIO_DOM = 20.0
+
+# ==============================================================================
+# 🔧 CORREÇÕES ESPECÍFICAS PARA ORDERBOOK
+# ==============================================================================
+
+# Timeouts aumentados para evitar falhas de conexão
+ORDERBOOK_REQUEST_TIMEOUT = 15.0        # segundos (era 10.0)
+ORDERBOOK_RETRY_DELAY = 3.0            # segundos entre tentativas
+ORDERBOOK_MAX_RETRIES = 5              # tentativas máximas (era 3)
+
+# Rate limiting mais conservador para evitar erro 429
+ORDERBOOK_MAX_REQUESTS_PER_MIN = 5     # máximo 5 req/min (era 10)
+ORDERBOOK_RATE_LIMIT_BUFFER = 2.0      # buffer de segurança
+
+# Cache mais permissivo para usar dados válidos por mais tempo
+ORDERBOOK_CACHE_TTL = 30.0             # 30 segundos (era 10.0)
+ORDERBOOK_MAX_STALE = 300.0            # 5 minutos (era 60.0)
+
+# Validação mais flexível para aceitar dados parciais
+ORDERBOOK_MIN_DEPTH_USD = 500.0        # mínimo $500 (era $1000)
+ORDERBOOK_ALLOW_PARTIAL = True         # aceita bid OU ask válido
+ORDERBOOK_MIN_LEVELS = 3               # mínimo 3 níveis por lado
+
+# Fallback inteligente para manter sistema funcionando
+ORDERBOOK_USE_FALLBACK = True          # sempre usar fallback quando possível
+ORDERBOOK_FALLBACK_MAX_AGE = 600       # 10 minutos máximo para dados antigos
+ORDERBOOK_EMERGENCY_MODE = True        # modo emergência com validações mínimas
+
+# WebSocket específicos para orderbook
+WS_PING_INTERVAL = 30                  # ping a cada 30s (era 25)
+WS_PING_TIMEOUT = 15                   # timeout de 15s (era 10)
+WS_RECONNECT_DELAY = 5.0               # delay entre reconexões
 
 # ==============================================================================
 # PARÂMETROS DO FLUXO CONTÍNUO (flow_analyzer.py)
@@ -69,7 +101,6 @@ ORDERBOOK_MIN_RATIO_DOM      = 20.0
 
 # -- CVD & Whale Flow --
 CVD_RESET_INTERVAL_HOURS = 24  # Reseta métricas de CVD/Whale a cada X horas
-
 # Sensibilidade de trades "whale" (em BTC) para o cálculo de Whale Flow (não afeta buckets)
 WHALE_TRADE_THRESHOLD = 5.0
 
@@ -100,11 +131,11 @@ INTERMARKET_SYMBOLS = ["ETHUSDT"]  # Outros criptoativos para correlação rápi
 
 # -- Análise Intermarket Global (via yfinance) --
 EXTERNAL_MARKETS = {
-    "GOLD": "GC=F",      # Ouro (Future)
-    "SP500": "^GSPC",    # S&P 500
-    "NASDAQ": "^IXIC",   # Nasdaq
-    "US10Y": "^TNX",     # Rend. Treasury 10 anos
-    "OIL": "CL=F"        # Petróleo WTI
+    "GOLD": "GC=F",     # Ouro (Future)
+    "SP500": "^GSPC",   # S&P 500
+    "NASDAQ": "^IXIC",  # Nasdaq
+    "US10Y": "^TNX",    # Rend. Treasury 10 anos
+    "OIL": "CL=F"       # Petróleo WTI
 }
 
 # -- Análise de Derivativos --
@@ -146,50 +177,50 @@ STABLECOIN_FLOW_TRACKING = True
 # ==============================================================================
 
 # Gating para não marcar sinal em janelas "magras" ou irrelevantes
-MIN_SIGNAL_VOLUME_BTC = 1.0       # Volume mínimo na janela para validar sinal
-MIN_SIGNAL_TPS = 2.0              # Trades por segundo mínimo para validar sinal
-MIN_ABS_DELTA_BTC = 0.5           # Piso de |delta| para validar absorção (além do delta_threshold dinâmico)
-MIN_REVERSAL_RATIO = 0.2          # Reversão mínima relativa ao |delta| para caracterizar absorção (20%)
-INDEX_ATR_FLOOR_PCT = 0.001       # Piso de ATR como % do preço para cálculo robusto do índice de absorção
+MIN_SIGNAL_VOLUME_BTC = 1.0    # Volume mínimo na janela para validar sinal
+MIN_SIGNAL_TPS = 2.0           # Trades por segundo mínimo para validar sinal
+MIN_ABS_DELTA_BTC = 0.5        # Piso de |delta| para validar absorção (além do delta_threshold dinâmico)
+MIN_REVERSAL_RATIO = 0.2       # Reversão mínima relativa ao |delta| para caracterizar absorção (20%)
+INDEX_ATR_FLOOR_PCT = 0.001    # Piso de ATR como % do preço para cálculo robusto do índice de absorção
 
 # ==============================================================================
-# PARÂMETROS DE VALIDAÇÃO E SEGURANÇA (NOVOS)
+# PARÂMETROS DE VALIDAÇÃO E SEGURANÇA
 # ==============================================================================
 
 # -- Limite de volume para trades considerados válidos
-MAX_TRADE_VOLUME_BTC = 100.0      # Volume máximo considerado válido (evita outliers)
-MIN_TRADE_VOLUME_BTC = 0.001      # Volume mínimo considerado válido
+MAX_TRADE_VOLUME_BTC = 100.0   # Volume máximo considerado válido (evita outliers)
+MIN_TRADE_VOLUME_BTC = 0.001   # Volume mínimo considerado válido
 
 # -- Limite de preço para trades considerados válidos
-MAX_PRICE_DEVIATION_PCT = 0.05    # 5% de desvio máximo em relação ao preço médio recente
+MAX_PRICE_DEVIATION_PCT = 0.05  # 5% de desvio máximo em relação ao preço médio recente
 
 # -- Intervalo de tempo entre atualizações de segurança
-HEALTH_CHECK_INTERVAL = 30        # Segundos entre verificações de saúde do sistema
+HEALTH_CHECK_INTERVAL = 30      # Segundos entre verificações de saúde do sistema
 
 # -- Parâmetros de fallback para dados ausentes
-FALLBACK_DELTA_THRESHOLD = 1.0    # Threshold de delta para fallback quando dados são inconsistentes
-FALLBACK_VOLUME_THRESHOLD = 5.0   # Volume mínimo para fallback
+FALLBACK_DELTA_THRESHOLD = 1.0  # Threshold de delta para fallback quando dados são inconsistentes
+FALLBACK_VOLUME_THRESHOLD = 5.0 # Volume mínimo para fallback
 
 # -- Parâmetros de tolerância para dados incompletos
-MAX_MISSING_FIELDS_RATIO = 0.1    # Máximo de 10% de campos ausentes permitidos
-TRADE_VALIDATION_WINDOW = 60      # Janela de tempo para validação de trades (em segundos)
+MAX_MISSING_FIELDS_RATIO = 0.1  # Máximo de 10% de campos ausentes permitidos
+TRADE_VALIDATION_WINDOW = 60    # Janela de tempo para validação de trades (em segundos)
 
 # -- Configurações de log e monitoramento
-LOG_LEVEL = "INFO"                # Nível de log (DEBUG, INFO, WARNING, ERROR)
-LOG_TO_FILE = True                # Se deve logar para arquivo
+LOG_LEVEL = "INFO"              # Nível de log (DEBUG, INFO, WARNING, ERROR)
+LOG_TO_FILE = True              # Se deve logar para arquivo
 LOG_FILE_MAX_SIZE = 10 * 1024 * 1024  # 10MB
-LOG_FILE_BACKUP_COUNT = 5         # Número de arquivos de backup
+LOG_FILE_BACKUP_COUNT = 5       # Número de arquivos de backup
 
 # Log de campos ausentes: defina o passo de amostragem ou None para desativar
-MISSING_FIELD_LOG_STEP = None  # None = desativa logs de campos ausentes; ex: 100 para logar a cada 100 eventos
+MISSING_FIELD_LOG_STEP = None   # None = desativa logs de campos ausentes; ex: 100 para logar a cada 100 eventos
 
 # Tamanho mínimo de caracteres para considerar a análise de IA válida durante o teste inicial
 AI_TEST_MIN_CHARS = 10
 
 # -- Configurações de performance
-MAX_PIPELINE_CACHE_SIZE = 100     # Tamanho máximo do cache do pipeline
-PIPELINE_TIMEOUT_SECONDS = 10     # Timeout para operações do pipeline
-MAX_CONCURRENT_ANALYSES = 5       # Número máximo de análises concorrentes
+MAX_PIPELINE_CACHE_SIZE = 100   # Tamanho máximo do cache do pipeline
+PIPELINE_TIMEOUT_SECONDS = 10   # Timeout para operações do pipeline
+MAX_CONCURRENT_ANALYSES = 5     # Número máximo de análises concorrentes
 
 # ==============================================================================
 # PARÂMETROS PARA CONTEXTO DE MERCADO E DETECÇÃO DE REGIME
@@ -208,8 +239,7 @@ VOLATILITY_PERCENTILES = (0.35, 0.65)
 
 # Parâmetros para o cálculo dos indicadores ADX, RSI e MACD. Essas métricas são
 # empregadas por traders institucionais para avaliar força de tendência e
-# momentum. Ajuste os
-# períodos conforme a sensibilidade desejada.
+# momentum. Ajuste os períodos conforme a sensibilidade desejada.
 ADX_PERIOD = 14
 RSI_PERIODS = {
     "short": 14,
@@ -333,3 +363,13 @@ PRICE_TARGET_CONFIDENCE_LEVELS = {
     "low": 0.5,
     "high": 0.7,
 }
+
+# ==============================================================================
+# 🔧 CONFIGURAÇÕES DE ALERTA PARA DEBUG
+# ==============================================================================
+
+# Cooldown entre alertas do mesmo tipo (em segundos)
+ALERT_COOLDOWN_SEC = 30
+
+# Configurações específicas para supressão de logs duplicados
+DEDUP_FILTER_WINDOW = 1.0  # segundos para considerar logs duplicados

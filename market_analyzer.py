@@ -1,320 +1,412 @@
-# market_analyzer.py v2.0.0 - INTEGRAÇÃO COMPLETA
-
+# market_analyzer.py v2.2.0 — COMPLETO e CORRIGIDO
 """
-Market Analyzer com integração COMPLETA de todos os componentes.
+Market Analyzer com integração COMPLETA e validação robusta.
 
-🔹 CORREÇÕES v2.0.0:
-  ✅ Integra FlowAnalyzer (CVD, whale, flow_imbalance, tick_rule_sum)
-  ✅ Integra ML Features (momentum, volume_sma_ratio, etc.)
-  ✅ Integra OrderBookAnalyzer corrigido
-  ✅ Integra IntegrationValidator (rejeita dados ruins)
-  ✅ Timestamps consistentes via TimeManager
-  ✅ Event completo com TODAS as features
-  ✅ Logs detalhados de qualidade
+📌 O que há aqui (tudo em um arquivo, por pedido):
+  • RobustConnectionManager  — WebSocket com backoff e anti-stale (fecha socket e reconecta)
+  • EnhancedMarketAnalyzer   — apenas análise e validação do evento integrado
+  • EnhancedMarketBot        — orquestra janelas, persiste eventos, logs e healthcheck
+  • __main__                 — ponto de execução
+
+Principais melhorias (v2.2.0):
+  ✅ Reconexão por “stale connection” fecha o socket (força saída do run_forever)
+  ✅ Parser de mensagens tolerante a payloads combinados: {"stream": "...", "data": {...}}
+  ✅ Remoção de duplicação: usa IntegrationValidator do módulo oficial
+  ✅ Sanitização de trades (tipos/valores) antes de alimentar o FlowAnalyzer
+  ✅ Logs nomeados e mensagem de sucesso padronizada
+  ✅ Encerramento gracioso (disconnect fecha socket; join das threads)
+  ✅ Código coeso e pronto para rodar sem arquivos extras além dos módulos já existentes
+
+Requisitos do projeto: time_manager.py, orderbook_analyzer.py, flow_analyzer.py,
+ml_features.py, event_saver.py, health_monitor.py, integration_validator.py, config.py
+
+Autor: Sistema de Trading Institucional
+Data: 2025-10-08
 """
 
-import websocket
+from __future__ import annotations
+
 import json
-import time
 import logging
-import threading
-from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse
-import ssl
-import socket
 import random
+import socket
+import ssl
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
-from collections import deque
+
 import pandas as pd
-from typing import Dict, Any, Optional, List
 
-# Importações dos módulos do projeto
+# Config e componentes do projeto
 import config
-
-# 🆕 IMPORTS DOS COMPONENTES CORRIGIDOS
+from integration_validator import IntegrationValidator
 from orderbook_analyzer import OrderBookAnalyzer
 from flow_analyzer import FlowAnalyzer
 from ml_features import generate_ml_features
 from time_manager import TimeManager
-from integration_validator import IntegrationValidator  # Criar este!
 from event_saver import EventSaver
+from health_monitor import HealthMonitor
 
-# Imports antigos (mantidos para compatibilidade)
-from data_handler import create_absorption_event, create_exhaustion_event
+try:
+    import websocket  # type: ignore
+except Exception as e:
+    raise RuntimeError("O pacote 'websocket-client' é obrigatório. pip install websocket-client") from e
 
-# Configuração de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+SCHEMA_VERSION = "2.2.0"
+
+logger = logging.getLogger("market_analyzer")
 
 
-# ===============================
-# CONNECTION MANAGER (MANTIDO)
-# ===============================
+# ========================================================================
+# ROBUST CONNECTION MANAGER (COM RECONEXÃO MELHORADA)
+# ========================================================================
 
 class RobustConnectionManager:
-    """Gerenciador robusto de conexão WebSocket."""
-    # ... (Código mantido igual ao original) ...
-    
-    def __init__(self, stream_url, symbol, max_reconnect_attempts=10, 
-                 initial_delay=1, max_delay=60, backoff_factor=1.5):
+    """
+    Gerenciador robusto de conexão WebSocket com reconexão automática.
+
+    Recursos:
+      - Backoff exponencial com jitter
+      - Detecção de stale connection (sem mensagens) e FECHAMENTO do socket
+      - Heartbeat/uptime/contadores
+      - Callbacks de integração com o bot
+    """
+
+    def __init__(
+        self,
+        stream_url: str,
+        symbol: str,
+        max_reconnect_attempts: int = 15,
+        initial_delay: float = 1.0,
+        max_delay: float = 120.0,
+        backoff_factor: float = 2.0,
+        heartbeat_interval: int = 30,
+        heartbeat_timeout: int = 120,
+    ) -> None:
         self.stream_url = stream_url
         self.symbol = symbol
         self.max_reconnect_attempts = max_reconnect_attempts
         self.initial_delay = initial_delay
         self.max_delay = max_delay
         self.backoff_factor = backoff_factor
-        
+        self.heartbeat_interval = heartbeat_interval
+        self.heartbeat_timeout = heartbeat_timeout
+
         self.current_delay = initial_delay
         self.reconnect_count = 0
         self.is_connected = False
-        self.last_message_time = None
-        self.connection_start_time = None
-        
-        self.heartbeat_thread = None
+        self.last_message_time: Optional[datetime] = None
+        self.connection_start_time: Optional[datetime] = None
+
+        self.heartbeat_thread: Optional[threading.Thread] = None
         self.should_stop = False
-        
+
         self.on_message_callback = None
         self.on_open_callback = None
         self.on_close_callback = None
         self.on_error_callback = None
-        
+
         self.total_messages_received = 0
         self.total_reconnects = 0
-        
-    def set_callbacks(self, on_message=None, on_open=None, on_close=None, on_error=None):
+        self.total_errors = 0
+
+        self.ws: Optional[websocket.WebSocketApp] = None
+
+        logger.info(
+            "🔌 ConnectionManager inicializado: %s | max_reconnects=%d | backoff %.1f..%.1fs",
+            symbol, max_reconnect_attempts, initial_delay, max_delay
+        )
+
+    def set_callbacks(self, on_message=None, on_open=None, on_close=None, on_error=None) -> None:
         self.on_message_callback = on_message
         self.on_open_callback = on_open
         self.on_close_callback = on_close
         self.on_error_callback = on_error
-    
-    def _test_connection(self):
+
+    # ---------------- internal ----------------
+
+    def _test_connection(self) -> bool:
+        """Testa host/porta antes de abrir o WebSocket."""
         try:
             parsed_url = urlparse(self.stream_url)
             host = parsed_url.hostname
-            port = parsed_url.port or (443 if parsed_url.scheme == 'wss' else 80)
-            
+            port = parsed_url.port or (443 if parsed_url.scheme == "wss" else 80)
+            if not host:
+                return False
+
+            logger.debug("🔍 Testando conectividade: %s:%s", host, port)
+
             with socket.create_connection((host, port), timeout=5) as sock:
-                if parsed_url.scheme == 'wss':
+                if parsed_url.scheme == "wss":
                     context = ssl.create_default_context()
                     with context.wrap_socket(sock, server_hostname=host):
                         return True
                 return True
-        except Exception as e:
-            logging.error(f"Erro ao testar conexão: {e}")
+
+        except socket.timeout:
+            logger.error("❌ Timeout ao testar conexão")
             return False
-    
+        except OSError as e:
+            logger.error("❌ Erro de socket: %s", e)
+            return False
+        except Exception as e:
+            logger.error("❌ Erro ao testar conexão: %s", e)
+            return False
+
     def _on_message(self, ws, message):
+        """Handler interno para delegar ao callback e atualizar heartbeat."""
         try:
             self.last_message_time = datetime.now(timezone.utc)
             self.total_messages_received += 1
-            
             if self.on_message_callback:
                 self.on_message_callback(ws, message)
         except Exception as e:
-            logging.error(f"Erro no processamento da mensagem: {e}")
-    
+            logger.error("❌ Erro no processamento da mensagem: %s", e, exc_info=True)
+
     def _on_open(self, ws):
         self.is_connected = True
         self.reconnect_count = 0
+        self.current_delay = self.initial_delay
         self.connection_start_time = datetime.now(timezone.utc)
         self.last_message_time = self.connection_start_time
-        
-        logging.info(f"✅ Conexão estabelecida com {self.symbol}")
+
+        logger.info("✅ Conexão estabelecida com %s (tentativa=%d)", self.symbol, self.total_reconnects + 1)
         self._start_monitoring_threads()
-        
         if self.on_open_callback:
             self.on_open_callback(ws)
-    
+
     def _on_close(self, ws, close_status_code, close_msg):
         self.is_connected = False
-        logging.warning(f"🔌 Conexão fechada - Código: {close_status_code}")
+        logger.warning("🔌 Conexão fechada: code=%s, msg=%s", close_status_code, close_msg)
         self._stop_monitoring_threads()
-        
         if self.on_close_callback:
             self.on_close_callback(ws, close_status_code, close_msg)
-    
+
     def _on_error(self, ws, error):
-        logging.error(f"❌ Erro WebSocket: {error}")
+        self.total_errors += 1
+        logger.error("❌ Erro WebSocket: %s", error)
         if self.on_error_callback:
             self.on_error_callback(ws, error)
-    
-    def _start_monitoring_threads(self):
+
+    def _start_monitoring_threads(self) -> None:
         self.should_stop = False
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_monitor, daemon=True)
         self.heartbeat_thread.start()
-    
-    def _stop_monitoring_threads(self):
+
+    def _stop_monitoring_threads(self) -> None:
         self.should_stop = True
-        if self.heartbeat_thread:
-            self.heartbeat_thread.join(timeout=1)
-    
-    def _heartbeat_monitor(self):
+        if self.heartbeat_thread and self.heartbeat_thread.is_alive():
+            self.heartbeat_thread.join(timeout=1.0)
+
+    def _heartbeat_monitor(self) -> None:
         while not self.should_stop and self.is_connected:
-            time.sleep(30)
-            if self.last_message_time:
-                time_since_last = (datetime.now(timezone.utc) - self.last_message_time).total_seconds()
-                if time_since_last > 120:
-                    logging.warning(f"⚠️ Sem mensagens há {time_since_last:.0f}s. Forçando reconexão.")
-                    self.is_connected = False
-                    break
-    
-    def connect(self):
+            time.sleep(self.heartbeat_interval)
+            if not self.last_message_time:
+                continue
+            time_since_last = (datetime.now(timezone.utc) - self.last_message_time).total_seconds()
+            if time_since_last > self.heartbeat_timeout:
+                logger.warning("⚠️ Stale connection: %.0fs sem mensagens — fechando socket p/ reconectar", time_since_last)
+                try:
+                    if self.ws:
+                        self.ws.close()
+                except Exception:
+                    pass
+                self.is_connected = False
+                break
+
+    # ---------------- public ----------------
+
+    def connect(self) -> None:
+        """Tenta conectar com retry/backoff até should_stop ou atingir o limite."""
         while self.reconnect_count < self.max_reconnect_attempts and not self.should_stop:
             try:
                 if not self._test_connection():
                     raise ConnectionError("Falha no teste de conectividade")
-                
-                logging.info(f"🔄 Tentativa {self.reconnect_count + 1}/{self.max_reconnect_attempts}")
-                ws = websocket.WebSocketApp(
+
+                logger.info(
+                    "🔄 Tentativa %d/%d | delay atual: %.1fs",
+                    self.reconnect_count + 1, self.max_reconnect_attempts, self.current_delay
+                )
+
+                self.ws = websocket.WebSocketApp(
                     self.stream_url,
                     on_message=self._on_message,
                     on_error=self._on_error,
                     on_close=self._on_close,
-                    on_open=self._on_open
+                    on_open=self._on_open,
                 )
-                ws.run_forever(ping_interval=30, ping_timeout=10)
-                
+
+                # run_forever bloqueia até fechar; ao fechar, voltamos e decidimos reconectar
+                self.ws.run_forever(ping_interval=self.heartbeat_interval, ping_timeout=10)
+
                 if self.should_stop:
                     break
-                
+
             except KeyboardInterrupt:
-                logging.info("⏹️ Interrompido pelo usuário")
+                logger.info("⏹️ Interrompido pelo usuário")
                 self.should_stop = True
                 break
+
             except Exception as e:
                 self.reconnect_count += 1
                 self.total_reconnects += 1
-                logging.error(f"❌ Erro ({self.reconnect_count}/{self.max_reconnect_attempts}): {e}")
-                if self.reconnect_count < self.max_reconnect_attempts:
-                    time.sleep(self.initial_delay * (self.backoff_factor ** self.reconnect_count))
-        
+                logger.error("❌ Erro na conexão (%d/%d): %s", self.reconnect_count, self.max_reconnect_attempts, e)
+
+                if self.reconnect_count < self.max_reconnect_attempts and not self.should_stop:
+                    jitter = random.uniform(0, 0.1 * self.current_delay)
+                    sleep_time = min(self.current_delay + jitter, self.max_delay)
+                    logger.info("⏳ Aguardando %.1fs antes de reconectar...", sleep_time)
+                    time.sleep(sleep_time)
+                    self.current_delay = min(self.current_delay * self.backoff_factor, self.max_delay)
+
+        if self.reconnect_count >= self.max_reconnect_attempts:
+            logger.critical("💀 Falha após %d tentativas. Verifique a rede/stream.", self.max_reconnect_attempts)
+
         self._stop_monitoring_threads()
-    
-    def disconnect(self):
-        logging.info("🛑 Desconectando...")
+
+    def disconnect(self) -> None:
+        """Sinaliza parada e fecha o socket para destravar o run_forever."""
+        logger.info("🛑 Desconectando...")
         self.should_stop = True
+        try:
+            if self.ws:
+                self.ws.close()
+        except Exception:
+            pass
+
+    def get_stats(self) -> Dict[str, Any]:
+        uptime = None
+        if self.connection_start_time:
+            uptime = (datetime.now(timezone.utc) - self.connection_start_time).total_seconds()
+        return {
+            "is_connected": self.is_connected,
+            "total_messages": self.total_messages_received,
+            "total_reconnects": self.total_reconnects,
+            "total_errors": self.total_errors,
+            "uptime_seconds": uptime,
+            "reconnect_count": self.reconnect_count,
+            "current_delay": self.current_delay,
+        }
 
 
-# ===============================
-# 🆕 MARKET ANALYZER COMPLETO
-# ===============================
+# ========================================================================
+# ENHANCED MARKET ANALYZER
+# ========================================================================
+
+@dataclass
+class AnalyzerStats:
+    total_windows: int = 0
+    valid_events: int = 0
+    invalid_events: int = 0
+
 
 class EnhancedMarketAnalyzer:
     """
-    Analisador de mercado COMPLETO integrando TODOS os componentes.
-    
-    🔹 v2.0.0:
-      - FlowAnalyzer (CVD, whale, flow_imbalance, tick_rule_sum)
-      - ML Features (momentum, volume_sma_ratio, order_book_slope)
-      - OrderBookAnalyzer (validado)
-      - IntegrationValidator (rejeita dados ruins)
-      - TimeManager (timestamps consistentes)
+    Analisador de mercado COMPLETO com validação robusta.
+    Integra FlowAnalyzer, OrderBookAnalyzer, ML features e IntegrationValidator.
     """
-    
-    def __init__(self, symbol: str):
+
+    def __init__(
+        self,
+        symbol: str,
+        time_manager: Optional[TimeManager] = None,
+        flow_analyzer: Optional[FlowAnalyzer] = None,
+        orderbook_analyzer: Optional[OrderBookAnalyzer] = None,
+        validator: Optional[IntegrationValidator] = None,
+    ) -> None:
         self.symbol = symbol
-        
-        # 🆕 TimeManager compartilhado
-        self.time_manager = TimeManager()
-        
-        # 🆕 Componentes principais
-        self.flow_analyzer = FlowAnalyzer(time_manager=self.time_manager)
-        self.orderbook_analyzer = OrderBookAnalyzer(
+        self.time_manager = time_manager or TimeManager()
+        self.flow_analyzer = flow_analyzer or FlowAnalyzer(time_manager=self.time_manager)
+        self.orderbook_analyzer = orderbook_analyzer or OrderBookAnalyzer(
             symbol=symbol,
             time_manager=self.time_manager,
             cache_ttl_seconds=1.0,
             max_stale_seconds=30.0,
+            rate_limit_threshold=10,
         )
-        
-        # 🆕 Validador de integração
-        self.validator = IntegrationValidator()
-        
-        # Estatísticas
-        self.total_windows_processed = 0
-        self.valid_events_count = 0
-        self.invalid_events_count = 0
-        
-        logging.info(f"✅ EnhancedMarketAnalyzer inicializado para {symbol}")
-    
-    def process_trades(self, trades: List[Dict[str, Any]]):
-        """
-        Processa lista de trades e atualiza FlowAnalyzer.
-        
-        Args:
-            trades: Lista de trades com 'p', 'q', 'T', 'm'
-        """
-        for trade in trades:
+        self.validator = validator or IntegrationValidator()
+
+        self.stats = AnalyzerStats()
+        self.last_event: Optional[Dict[str, Any]] = None
+
+        logger.info("=" * 72)
+        logger.info("✅ EnhancedMarketAnalyzer inicializado")
+        logger.info("   Symbol:           %s", symbol)
+        logger.info("   Schema Version:   %s", SCHEMA_VERSION)
+        logger.info("   Components:       FlowAnalyzer, OrderBook, ML, Validator")
+        logger.info("=" * 72)
+
+    # ---------------- helpers ----------------
+
+    @staticmethod
+    def _sanitize_trades(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Normaliza e filtra trades inválidos; aceita payload bruto ou {'data': {...}}."""
+        clean: List[Dict[str, Any]] = []
+        for t in trades or []:
+            try:
+                if "T" not in t and "data" in t and isinstance(t["data"], dict):
+                    t = t["data"]
+
+                T = int(t.get("T", 0))
+                p = float(t.get("p", 0) or 0)
+                q = float(t.get("q", 0) or 0)
+                if T <= 0 or p <= 0 or q <= 0:
+                    continue
+
+                m = t.get("m", None)
+                if isinstance(m, str):
+                    m = m.strip().lower() in {"true", "t", "1", "sell", "ask", "s"}
+
+                clean.append({"T": T, "p": p, "q": q, "m": m})
+            except Exception:
+                continue
+        return clean
+
+    def process_trades(self, trades: List[Dict[str, Any]]) -> None:
+        for trade in self._sanitize_trades(trades):
             try:
                 self.flow_analyzer.process_trade(trade)
             except Exception as e:
-                logging.debug(f"Erro ao processar trade: {e}")
-    
-    def analyze_window(
-        self, 
-        window_data: List[Dict[str, Any]], 
-        window_id: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+                logger.debug("Erro ao processar trade no FlowAnalyzer: %s", e)
+
+    # ---------------- API principal ----------------
+
+    def analyze_window(self, window_data: List[Dict[str, Any]], window_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Analisa janela COMPLETA de dados.
-        
-        Args:
-            window_data: Lista de trades da janela
-            window_id: ID da janela (para logs)
-        
-        Returns:
-            Dict com evento completo OU None se inválido
+        Analisa uma janela de trades e retorna um evento integrado.
+        Retorna None quando inválido/descartado.
         """
-        self.total_windows_processed += 1
-        
-        if not window_data or len(window_data) < 2:
-            logging.warning(f"⚠️ Janela {window_id} vazia ou muito pequena")
+        self.stats.total_windows += 1
+
+        clean_window = self._sanitize_trades(window_data)
+        if len(clean_window) < 2:
+            logger.warning("⚠️ Janela %s inválida: %d trades válidos", window_id, len(clean_window))
+            self.stats.invalid_events += 1
             return None
-        
+
         try:
-            # Timestamp de referência (último trade da janela)
-            last_trade_ts = int(window_data[-1].get('T', 0))
-            
-            if last_trade_ts == 0:
-                last_trade_ts = self.time_manager.now_ms()
-            
-            # ========================================
-            # 1. PROCESSA TRADES (Flow Analyzer)
-            # ========================================
-            self.process_trades(window_data)
-            
-            # ========================================
-            # 2. OBTÉM MÉTRICAS DE FLOW
-            # ========================================
-            flow_metrics = self.flow_analyzer.get_flow_metrics(
-                reference_epoch_ms=last_trade_ts
-            )
-            
-            # ========================================
-            # 3. OBTÉM ORDERBOOK
-            # ========================================
-            orderbook_event = self.orderbook_analyzer.analyze(
-                event_epoch_ms=last_trade_ts,
-                window_id=window_id,
-            )
-            
-            # Valida orderbook
-            if not orderbook_event.get('is_valid', False):
-                logging.error(
-                    f"❌ Orderbook inválido na janela {window_id}: "
-                    f"{orderbook_event.get('erro', 'unknown')}"
-                )
-                self.invalid_events_count += 1
+            last_trade_ts = clean_window[-1]["T"]
+
+            # Atualiza estado do fluxo
+            self.process_trades(clean_window)
+
+            # Métricas de fluxo
+            flow_metrics = self.flow_analyzer.get_flow_metrics(reference_epoch_ms=last_trade_ts)
+
+            # Orderbook validado
+            orderbook_event = self.orderbook_analyzer.analyze(event_epoch_ms=last_trade_ts, window_id=window_id)
+            if not orderbook_event.get("is_valid", False):
+                logger.error("❌ Orderbook inválido (janela %s): %s", window_id, orderbook_event.get("erro", "unknown"))
+                self.stats.invalid_events += 1
                 return None
-            
-            orderbook_data = orderbook_event.get('orderbook_data', {})
-            
-            # ========================================
-            # 4. GERA ML FEATURES
-            # ========================================
-            df_window = pd.DataFrame(window_data)
-            
+            orderbook_data = orderbook_event.get("orderbook_data", {})
+
+            # ML features a partir da janela
+            df_window = pd.DataFrame(clean_window)
             ml_features = generate_ml_features(
                 df=df_window,
                 orderbook_data=orderbook_data,
@@ -322,193 +414,183 @@ class EnhancedMarketAnalyzer:
                 lookback_windows=[1, 5, 15],
                 volume_ma_window=20,
             )
-            
-            # ========================================
-            # 5. MONTA EVENTO INTEGRADO
-            # ========================================
-            event = {
-                "schema_version": "2.0.0",
+
+            window_duration_ms = clean_window[-1]["T"] - clean_window[0]["T"]
+            event: Dict[str, Any] = {
+                "schema_version": SCHEMA_VERSION,
                 "tipo_evento": "MarketAnalysis",
                 "ativo": self.symbol,
                 "window_id": window_id,
-                
-                # Time index
-                "time_index": self.time_manager.build_time_index(
-                    last_trade_ts,
-                    include_local=True,
-                    timespec="milliseconds"
-                ),
-                
-                # Flow metrics
-                "cvd": flow_metrics.get('cvd', 0),
-                "whale_buy_volume": flow_metrics.get('whale_buy_volume', 0),
-                "whale_sell_volume": flow_metrics.get('whale_sell_volume', 0),
-                "whale_delta": flow_metrics.get('whale_delta', 0),
-                
-                # Order flow
-                "order_flow": flow_metrics.get('order_flow', {}),
-                "tipo_absorcao": flow_metrics.get('tipo_absorcao', 'Neutra'),
-                
-                # Participant analysis
-                "participant_analysis": flow_metrics.get('participant_analysis', {}),
-                
-                # Bursts
-                "bursts": flow_metrics.get('bursts', {}),
-                
-                # Sector flow
-                "sector_flow": flow_metrics.get('sector_flow', {}),
-                
-                # Orderbook
+                # tempo padronizado
+                "time_index": self.time_manager.build_time_index(last_trade_ts, include_local=True, timespec="milliseconds"),
+                # fluxo principal
+                "cvd": flow_metrics.get("cvd", 0.0),
+                "whale_buy_volume": flow_metrics.get("whale_buy_volume", 0.0),
+                "whale_sell_volume": flow_metrics.get("whale_sell_volume", 0.0),
+                "whale_delta": flow_metrics.get("whale_delta", 0.0),
+                "order_flow": flow_metrics.get("order_flow", {}),
+                "tipo_absorcao": flow_metrics.get("tipo_absorcao", "Neutra"),
+                "participant_analysis": flow_metrics.get("participant_analysis", {}),
+                "bursts": flow_metrics.get("bursts", {}),
+                "sector_flow": flow_metrics.get("sector_flow", {}),
+                # orderbook
                 "orderbook_data": orderbook_data,
                 "orderbook_event": orderbook_event,
-                
-                # ML Features
+                # ML
                 "ml_features": ml_features,
-                
-                # Liquidity heatmap
-                "liquidity_heatmap": flow_metrics.get('liquidity_heatmap', {}),
-                
-                # Stats
-                "trades_count": len(window_data),
-                "window_duration_ms": window_data[-1]['T'] - window_data[0]['T'] if len(window_data) > 1 else 0,
+                # stats simples
+                "trades_count": len(clean_window),
+                "window_duration_ms": int(window_duration_ms) if window_duration_ms > 0 else 0,
             }
-            
-            # ========================================
-            # 6. 🆕 VALIDA EVENTO INTEGRADO
-            # ========================================
+
+            # Validação integrada
             validation = self.validator.validate_event(event)
-            
             event["validation"] = validation
-            event["is_valid"] = validation["is_valid"]
-            event["should_skip"] = validation["should_skip"]
-            
-            # ========================================
-            # 7. DECIDE SE PROCESSA
-            # ========================================
-            if validation["should_skip"]:
-                self.invalid_events_count += 1
-                
-                logging.error(
-                    f"❌ EVENTO INVÁLIDO (janela {window_id}): "
-                    f"{validation['validation_summary']}"
-                )
-                
-                for issue in validation["critical_issues"]:
-                    logging.error(f"   🔴 {issue}")
-                
-                for issue in validation["issues"]:
-                    logging.warning(f"   ⚠️ {issue}")
-                
+            event["is_valid"] = bool(validation.get("is_valid", False))
+            event["should_skip"] = bool(validation.get("should_skip", False))
+
+            if event["should_skip"]:
+                self.stats.invalid_events += 1
+                logger.error("❌ EVENTO INVÁLIDO (janela %s): %s", window_id, validation.get("validation_summary"))
+                for issue in validation.get("critical_issues", []):
+                    logger.error("   🔴 %s", issue)
+                for issue in validation.get("issues", []):
+                    logger.warning("   ⚠️ %s", issue)
                 return None
-            
-            # ========================================
-            # 8. EVENTO VÁLIDO
-            # ========================================
-            self.valid_events_count += 1
-            
-            if validation["warnings"]:
-                for warning in validation["warnings"]:
-                    logging.warning(f"⚡ {warning}")
-            
-            logging.info(
-                f"✅ Janela {window_id} processada: "
-                f"{len(window_data)} trades, "
-                f"delta={event.get('order_flow', {}).get('net_flow_1m', 0):.2f}, "
-                f"cvd={event.get('cvd', 0):.2f}"
+
+            self.stats.valid_events += 1
+            self.last_event = event
+
+            for warning in validation.get("warnings", []):
+                logger.warning("⚡ %s", warning)
+
+            of = event.get("order_flow", {})
+            logger.info(
+                "✅ Janela %s válida: %d trades, delta=%.2f, cvd=%.2f",
+                window_id, len(clean_window), of.get("net_flow_1m", 0.0), event.get("cvd", 0.0)
             )
-            
             return event
-            
+
         except Exception as e:
-            logging.error(f"❌ Erro ao processar janela {window_id}: {e}", exc_info=True)
-            self.invalid_events_count += 1
+            logger.exception("❌ Erro ao processar janela %s: %s", window_id, e)
+            self.stats.invalid_events += 1
             return None
-    
+
+    # ---------------- métricas/diagnóstico ----------------
+
     def get_stats(self) -> Dict[str, Any]:
-        """Retorna estatísticas do analisador."""
+        valid_rate = 100.0 * self.stats.valid_events / max(1, self.stats.total_windows)
         return {
-            "total_windows": self.total_windows_processed,
-            "valid_events": self.valid_events_count,
-            "invalid_events": self.invalid_events_count,
-            "valid_rate_pct": round(
-                100 * self.valid_events_count / max(1, self.total_windows_processed),
-                2
-            ),
+            "total_windows": self.stats.total_windows,
+            "valid_events": self.stats.valid_events,
+            "invalid_events": self.stats.invalid_events,
+            "valid_rate_pct": round(valid_rate, 2),
             "flow_analyzer_stats": self.flow_analyzer.get_stats(),
             "orderbook_analyzer_stats": self.orderbook_analyzer.get_stats(),
             "validator_stats": self.validator.get_stats(),
         }
 
+    def diagnose(self) -> Dict[str, Any]:
+        stats = self.get_stats()
+        logger.info("🔍 DIAGNÓSTICO DO MARKET ANALYZER")
+        logger.info("-" * 72)
+        logger.info("📊 Janelas: total=%d | válidas=%d (%.2f%%) | inválidas=%d",
+                    stats["total_windows"], stats["valid_events"], stats["valid_rate_pct"], stats["invalid_events"])
+        logger.info("🌊 Flow Analyzer: %s", stats["flow_analyzer_stats"])
+        logger.info("📚 OrderBook Analyzer: %s", stats["orderbook_analyzer_stats"])
+        logger.info("✅ Validator: %s", stats["validator_stats"])
+        logger.info("-" * 72)
+        return stats
 
-# ===============================
-# 🆕 BOT PRINCIPAL CORRIGIDO
-# ===============================
+
+# ========================================================================
+# ENHANCED MARKET BOT (orquestra)
+# ========================================================================
 
 class EnhancedMarketBot:
     """
-    Bot principal com integração COMPLETA.
-    
-    🔹 v2.0.0:
-      - Usa EnhancedMarketAnalyzer
-      - Valida eventos antes de salvar
-      - Logs detalhados de qualidade
+    Bot principal que:
+      - recebe mensagens do stream,
+      - fecha janelas por relógio de NY,
+      - analisa com EnhancedMarketAnalyzer,
+      - valida, salva e loga.
     """
-    
+
     def __init__(
-        self, 
-        stream_url: str, 
-        symbol: str, 
-        window_size_minutes: int = 5
-    ):
+        self,
+        stream_url: str,
+        symbol: str,
+        window_size_minutes: int = 5,
+        time_manager: Optional[TimeManager] = None,
+    ) -> None:
         self.symbol = symbol
-        self.window_size_minutes = window_size_minutes
+        self.window_size_minutes = max(1, int(window_size_minutes))
         self.ny_tz = ZoneInfo("America/New_York")
 
-        # 🆕 Analisador completo
-        self.market_analyzer = EnhancedMarketAnalyzer(symbol=symbol)
-        
-        # Event saver
-        self.event_saver = EventSaver(sound_alert=True)
+        self.time_manager = time_manager or TimeManager()
 
-        # Gerenciador de conexão
+        # componentes principais
+        self.market_analyzer = EnhancedMarketAnalyzer(symbol=symbol, time_manager=self.time_manager)
+        self.event_saver = EventSaver(sound_alert=True)
+        self.health_monitor = HealthMonitor(alert_after_seconds=60)
+
+        # conexão
         self.connection_manager = RobustConnectionManager(
-            stream_url, 
-            symbol, 
-            max_reconnect_attempts=15
+            stream_url=stream_url,
+            symbol=symbol,
+            max_reconnect_attempts=15,
+            initial_delay=1.0,
+            max_delay=120.0,
+            backoff_factor=2.0,
         )
         self.connection_manager.set_callbacks(
             on_message=self.on_message,
-            on_open=self.on_open
+            on_open=self.on_open,
+            on_close=self.on_close,
+            on_error=self.on_error,
         )
 
-        # Estado da janela
-        self.window_data = []
-        self.window_end_time = None
+        # estado da janela
+        self.window_data: List[Dict[str, Any]] = []
+        self.window_end_time: Optional[datetime] = None
         self.window_count = 0
 
-    def _update_window_end_time(self):
-        """Calcula próximo timestamp de fechamento de janela."""
+        logger.info("🎯 Enhanced Market Bot v%s | %s | janela=%d min (NY)", SCHEMA_VERSION, symbol, self.window_size_minutes)
+
+    # ---------------- janelas ----------------
+
+    def _update_window_end_time(self) -> None:
         now_ny = datetime.now(self.ny_tz)
         minutes_into_hour = now_ny.minute
-        next_window_minute = ((minutes_into_hour // self.window_size_minutes) + 1) * self.window_size_minutes
-        
+        next_window_minute = (minutes_into_hour // self.window_size_minutes + 1) * self.window_size_minutes
         end_time_ny = now_ny.replace(second=0, microsecond=0)
         if next_window_minute >= 60:
             end_time_ny += timedelta(hours=1)
             end_time_ny = end_time_ny.replace(minute=(next_window_minute % 60))
         else:
             end_time_ny = end_time_ny.replace(minute=next_window_minute)
-            
-        self.window_end_time = end_time_ny
-        logging.info(f"🕐 Próximo fechamento: {self.window_end_time.strftime('%H:%M:%S')} NY")
 
-    def on_message(self, ws, message):
+        self.window_end_time = end_time_ny
+        logger.info("🕐 Próximo fechamento: %s NY", self.window_end_time.strftime("%H:%M:%S"))
+
+    # ---------------- callbacks websocket ----------------
+
+    def on_message(self, ws, message) -> None:
+        """Aceita JSON bruto ou bytes e suporta payloads do tipo {'data': {...}}."""
         try:
-            trade = json.loads(message)
+            self.health_monitor.heartbeat()
+
+            if isinstance(message, (bytes, bytearray)):
+                message = message.decode("utf-8", errors="ignore")
+
+            raw = json.loads(message)
+            trade = raw.get("data", raw)  # compat: combinado ou trade direto
+
+            # precisa de T para janelar
             if "T" not in trade:
                 return
-            
-            trade_time = datetime.fromtimestamp(trade["T"] / 1000, tz=self.ny_tz)
+
+            trade_time = datetime.fromtimestamp(int(trade["T"]) / 1000, tz=self.ny_tz)
 
             if self.window_end_time is None:
                 self._update_window_end_time()
@@ -519,115 +601,144 @@ class EnhancedMarketBot:
                 self.window_data = [trade]
             else:
                 self.window_data.append(trade)
-                
-        except Exception as e:
-            logging.error(f"Erro ao processar mensagem: {e}")
 
-    def _process_window(self):
-        """Processa janela usando analisador completo."""
+        except json.JSONDecodeError as e:
+            logger.error("❌ Erro JSON: %s", e)
+        except Exception as e:
+            logger.error("❌ Erro on_message: %s", e, exc_info=True)
+
+    def _process_window(self) -> None:
         if not self.window_data:
+            logger.warning("⚠️ Janela vazia — pulando")
             return
-        
+
         self.window_count += 1
         window_id = f"W{self.window_count:04d}"
-        
+
         try:
-            # 🆕 ANÁLISE COMPLETA
-            event = self.market_analyzer.analyze_window(
-                window_data=self.window_data,
-                window_id=window_id
-            )
-            
-            # ========================================
-            # SALVA EVENTO SE VÁLIDO
-            # ========================================
+            event = self.market_analyzer.analyze_window(window_data=self.window_data, window_id=window_id)
+
             if event is None:
-                logging.warning(f"⚠️ Janela {window_id} retornou None (inválida)")
+                logger.warning("⚠️ Janela %s retornou None (inválida)", window_id)
                 return
-            
-            if event.get('should_skip', False):
-                logging.warning(
-                    f"⚠️ Janela {window_id} marcada para skip: "
-                    f"{event.get('validation', {}).get('validation_summary')}"
-                )
+
+            if event.get("should_skip", False):
+                logger.warning("⚠️ Janela %s marcada para skip: %s",
+                               window_id, event.get("validation", {}).get("validation_summary"))
                 return
-            
-            # 🆕 Salva evento completo
-            self.event_saver.save_event(event)
+
+            try:
+                self.event_saver.save_event(event)
+            except Exception as e:
+                logger.error("❌ Falha ao salvar evento: %s", e)
+
             self._log_event(event, window_id)
-            
-            # Log de conclusão
+
             ny_time = datetime.now(self.ny_tz)
             print(f"[{ny_time.strftime('%H:%M:%S')} NY] ✅ Janela {window_id} salva")
             print("─" * 80)
 
         except Exception as e:
-            logging.error(f"❌ Erro ao processar janela {window_id}: {e}", exc_info=True)
+            logger.error("❌ Erro ao processar janela %s: %s", window_id, e, exc_info=True)
         finally:
             self.window_data = []
 
-    def _log_event(self, event: Dict[str, Any], window_id: str):
-        """Loga evento de forma padronizada."""
+    def _log_event(self, event: Dict[str, Any], window_id: str) -> None:
         ny_time = datetime.now(self.ny_tz)
-        
-        # Extrai métricas principais
-        of = event.get('order_flow', {})
-        ob = event.get('orderbook_data', {})
-        
-        delta = of.get('net_flow_1m', 0)
-        flow_imb = of.get('flow_imbalance', 0)
-        tick_rule = of.get('tick_rule_sum', 0)
-        cvd = event.get('cvd', 0)
-        
-        bid_depth = ob.get('bid_depth_usd', 0)
-        ask_depth = ob.get('ask_depth_usd', 0)
-        ob_imb = ob.get('imbalance', 0)
-        
+
+        of = event.get("order_flow", {})
+        ob = event.get("orderbook_data", {})
+        ml = event.get("ml_features", {})
+
+        delta = of.get("net_flow_1m", 0.0)
+        flow_imb = of.get("flow_imbalance", 0.0)
+        tick_rule = of.get("tick_rule_sum", 0.0)
+        cvd = event.get("cvd", 0.0)
+
+        bid_depth = ob.get("bid_depth_usd", 0.0)
+        ask_depth = ob.get("ask_depth_usd", 0.0)
+        ob_imb = ob.get("imbalance", 0.0)
+
+        momentum = ml.get("momentum_score", 0.0)
+        vol_sma = ml.get("volume_sma_ratio", 0.0)
+
         print(f"\n🎯 EVENTO COMPLETO - {ny_time.strftime('%H:%M:%S')} NY")
         print(f"   Janela: {window_id} | Símbolo: {self.symbol}")
-        print(f"   📊 Flow: delta=${delta:,.2f}, imbalance={flow_imb:+.3f}, tick_rule={tick_rule:+.1f}")
-        print(f"   💰 CVD: {cvd:.2f} BTC")
+        print(f"   📊 Flow: delta={delta:+,.2f}, imb={flow_imb:+.3f}, tick_rule={tick_rule:+.0f}")
+        print(f"   💰 CVD: {cvd:+.2f} BTC")
         print(f"   📚 Book: bid=${bid_depth:,.0f}, ask=${ask_depth:,.0f}, imb={ob_imb:+.3f}")
+        print(f"   🤖 ML: momentum={momentum:+.3f}, vol_sma={vol_sma:.2f}x")
         print(f"   🎲 Absorção: {event.get('tipo_absorcao', 'N/A')}")
 
-    def on_open(self, ws):
+    def on_open(self, ws) -> None:
         ny_time = datetime.now(self.ny_tz)
-        logging.info(f"🚀 Bot v2.0.0 iniciado - {ny_time.strftime('%H:%M:%S')} NY")
+        logger.info("🚀 Bot v%s iniciado para %s — %s NY", SCHEMA_VERSION, self.symbol, ny_time.strftime("%H:%M:%S"))
         self.window_end_time = None
-    
+        self.health_monitor.start()
+
+    def on_close(self, ws, close_status_code, close_msg) -> None:
+        logger.warning("🔌 Conexão fechada: %s - %s", close_status_code, close_msg)
+
+    def on_error(self, ws, error) -> None:
+        logger.error("❌ Erro WebSocket: %s", error)
+
     def get_stats(self) -> Dict[str, Any]:
-        """Retorna estatísticas do bot."""
         return {
             "window_count": self.window_count,
             "analyzer_stats": self.market_analyzer.get_stats(),
+            "connection_stats": self.connection_manager.get_stats(),
+            "health_stats": self.health_monitor.get_stats(),
         }
 
-    def run(self):
+    def diagnose(self) -> None:
+        logger.info("\n" + "=" * 72)
+        logger.info("🔍 DIAGNÓSTICO COMPLETO DO BOT")
+        logger.info("=" * 72)
+        stats = self.get_stats()
+        logger.info("📊 Bot: janelas processadas: %d", stats["window_count"])
+        self.market_analyzer.diagnose()
+        logger.info("🔌 Connection: %s", stats["connection_stats"])
+        logger.info("🏥 Health: %s", stats["health_stats"])
+        logger.info("=" * 72)
+
+    def run(self) -> None:
         try:
-            logging.info(f"🤖 Iniciando bot v2.0.0 para {self.symbol}...")
+            logger.info("🤖 Iniciando bot v%s para %s...", SCHEMA_VERSION, self.symbol)
             self.connection_manager.connect()
         except KeyboardInterrupt:
-            logging.info("⏹️ Bot interrompido pelo usuário.")
+            logger.info("⏹️ Bot interrompido pelo usuário")
         finally:
-            # 🆕 Mostra stats ao encerrar
+            self.diagnose()
             stats = self.get_stats()
-            logging.info(f"\n📊 ESTATÍSTICAS FINAIS:")
-            logging.info(f"   Janelas processadas: {stats['window_count']}")
-            logging.info(f"   Eventos válidos: {stats['analyzer_stats']['valid_events']}")
-            logging.info(f"   Taxa de válidos: {stats['analyzer_stats']['valid_rate_pct']}%")
-            
+            logger.info("\n📊 Estatísticas finais: janelas=%d | eventos válidos=%d | taxa=%.2f%%",
+                        stats["window_count"],
+                        stats["analyzer_stats"]["valid_events"],
+                        stats["analyzer_stats"]["valid_rate_pct"])
             self.connection_manager.disconnect()
-            logging.info("Bot encerrado.")
+            self.health_monitor.stop()
+            logger.info("✅ Encerrado com segurança.")
 
 
-# ===============================
-# EXECUÇÃO
-# ===============================
+# ========================================================================
+# EXECUÇÃO DIRETA
+# ========================================================================
 
 if __name__ == "__main__":
+    # Logging básico apenas quando executado diretamente (evita poluir ao importar)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+    # TimeManager compartilhado (parametrizável por config/env)
+    tm = TimeManager(
+        sync_interval_minutes=30,
+        max_init_attempts=3,
+        max_acceptable_offset_ms=500,
+    )
+
     bot = EnhancedMarketBot(
         stream_url=config.STREAM_URL,
         symbol=config.SYMBOL,
-        window_size_minutes=5
+        window_size_minutes=getattr(config, "WINDOW_SIZE_MINUTES", 5),
+        time_manager=tm,
     )
+
     bot.run()
