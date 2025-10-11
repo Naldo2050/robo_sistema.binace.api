@@ -1,13 +1,13 @@
-# flow_analyzer.py v2.0.1 - CORRIGIDO
+# flow_analyzer.py v2.1.0 - CORRIGIDO
 """
-Flow Analyzer com correções de contradições.
+Flow Analyzer com correções DEFINITIVAS.
 
-🔹 CORREÇÕES v2.0.1:
-  ✅ Corrige cálculo de buy_sell_ratio (usa volumes REAIS, não net_flow)
+🔹 CORREÇÕES v2.1.0:
+  ✅ CORRIGE conversão de is_buyer_maker (remove "sell", "ask" do set True)
+  ✅ ADICIONA validação de consistência whale_delta = buy - sell
+  ✅ CORRIGE cálculo de buy_sell_ratio (usa volumes REAIS, não net_flow)
   ✅ Retorna None para ratio se volumes zero
-  ✅ Calcula percentuais corretamente
-  ✅ Valida consistência de dados
-  ✅ Logs detalhados em contradições
+  ✅ Logs detalhados para debug
 """
 
 import logging
@@ -64,10 +64,10 @@ class FlowAnalyzer:
     """
     Analisador de fluxo com validação robusta.
     
-    🔹 CORREÇÕES v2.0.1:
-      - Buy/sell ratio usa volumes REAIS (não net_flow)
-      - Retorna None se volumes zero
-      - Valida consistência
+    🔹 CORREÇÕES v2.1.0:
+      - is_buyer_maker: conversão corrigida
+      - whale_delta: validação de consistência
+      - buy_sell_ratio: usa volumes reais
     """
 
     def __init__(self, time_manager: Optional[TimeManager] = None):
@@ -135,9 +135,13 @@ class FlowAnalyzer:
         self._invalid_trades = 0
         self._lock_contentions = 0
         self._last_price: Optional[float] = None
+        
+        # 🆕 Contadores de correção
+        self._whale_delta_corrections = 0
+        self._is_buyer_maker_conversions = 0
 
         logging.info(
-            "✅ FlowAnalyzer v2.0.1 inicializado | "
+            "✅ FlowAnalyzer v2.1.0 inicializado | "
             "Whale threshold: %.2f BTC | Net flow windows: %s min",
             self.whale_threshold,
             self.net_flow_windows_min,
@@ -287,32 +291,71 @@ class FlowAnalyzer:
                 self._invalid_trades += 1
                 return
 
+            # 🆕 CONVERSÃO CORRIGIDA DE is_buyer_maker
             is_buyer_maker = trade.get('m', None)
+            
             if isinstance(is_buyer_maker, bool):
+                # Já é boolean, usar direto
                 pass
             elif isinstance(is_buyer_maker, (int, float)):
+                # Converter número para boolean
                 is_buyer_maker = bool(int(is_buyer_maker))
             elif isinstance(is_buyer_maker, str):
+                # 🔧 CORREÇÃO: Remover "sell", "ask", etc do conjunto True
+                # Apenas valores explícitos de true
                 is_buyer_maker = is_buyer_maker.strip().lower() in {
-                    "true", "t", "1", "sell", "ask", "s", "seller", "yes"
+                    "true", "t", "1", "yes"
                 }
+                self._is_buyer_maker_conversions += 1
+                
+                # Log para debug (removível em produção)
+                if self._is_buyer_maker_conversions <= 5:
+                    logging.debug(
+                        f"String '{trade.get('m')}' convertida para is_buyer_maker={is_buyer_maker}"
+                    )
             else:
+                # Valor inválido
                 self._invalid_trades += 1
+                logging.warning(f"Tipo inválido para 'm': {type(is_buyer_maker)}")
                 return
 
+            # Calcular delta
+            # is_buyer_maker=True → Venda agressiva → delta negativo
+            # is_buyer_maker=False → Compra agressiva → delta positivo
             delta_btc = -qty if is_buyer_maker else qty
             delta_usd = delta_btc * price
             side = "sell" if is_buyer_maker else "buy"
 
             with self._lock:
+                # Atualizar CVD
                 self.cvd += delta_btc
 
+                # Atualizar whale metrics
                 if qty >= self.whale_threshold:
-                    if delta_btc > 0:
+                    if delta_btc > 0:  # Compra
                         self.whale_buy_volume += qty
-                    else:
+                    else:  # Venda
                         self.whale_sell_volume += qty
                     self.whale_delta += delta_btc
+                    
+                    # 🆕 VALIDAÇÃO DE CONSISTÊNCIA
+                    expected_delta = self.whale_buy_volume - self.whale_sell_volume
+                    actual_delta = self.whale_delta
+                    
+                    if abs(expected_delta - actual_delta) > 0.01:
+                        logging.error(
+                            f"🔴 INCONSISTÊNCIA DETECTADA: "
+                            f"whale_delta={actual_delta:.3f}, mas buy-sell={expected_delta:.3f} "
+                            f"(buy={self.whale_buy_volume:.3f}, sell={self.whale_sell_volume:.3f})"
+                        )
+                        
+                        # Corrigir automaticamente
+                        self.whale_delta = expected_delta
+                        self._whale_delta_corrections += 1
+                        
+                        logging.warning(
+                            f"✅ Whale delta CORRIGIDO para {expected_delta:.3f}"
+                        )
 
                 self._update_bursts(ts, qty)
                 self._update_sector_flow(qty, delta_btc)
@@ -424,10 +467,9 @@ class FlowAnalyzer:
         """
         Retorna métricas de fluxo.
         
-        🔹 CORRIGIDO v2.0.1:
+        🔹 CORRIGIDO v2.1.0:
+          - Validação de consistência whale_delta
           - buy_sell_ratio usa volumes REAIS
-          - Retorna None se volumes zero
-          - Calcula percentuais corretamente
         """
         try:
             acquired = self._lock.acquire(timeout=5.0)
@@ -447,6 +489,15 @@ class FlowAnalyzer:
                     include_local=True, 
                     timespec="milliseconds"
                 )
+
+                # 🆕 VALIDAÇÃO FINAL antes de retornar
+                expected_whale_delta = self.whale_buy_volume - self.whale_sell_volume
+                if abs(self.whale_delta - expected_whale_delta) > 0.01:
+                    logging.error(
+                        f"🔴 CORREÇÃO FINAL: whale_delta={self.whale_delta:.3f} → {expected_whale_delta:.3f}"
+                    )
+                    self.whale_delta = expected_whale_delta
+                    self._whale_delta_corrections += 1
 
                 metrics = {
                     "cvd": float(self.cvd),
@@ -475,7 +526,7 @@ class FlowAnalyzer:
                     },
                 }
 
-                # 🆕 ORDER FLOW CORRIGIDO
+                # Order flow (sem alterações na lógica, já estava correta)
                 try:
                     order_flow: Dict[str, Any] = {}
                     absorcao_por_janela: Dict[int, str] = {}
@@ -496,24 +547,20 @@ class FlowAnalyzer:
                             if t['ts'] >= start_ms
                         ]
 
-                        # Net flows (USD)
                         total_delta_usd = sum(t['delta_usd'] for t in relevant)
                         
-                        # 🆕 VOLUMES REAIS (não via delta!)
                         total_buy_usd = 0.0
                         total_sell_usd = 0.0
                         
                         for t in relevant:
                             if t['side'] == 'buy':
                                 total_buy_usd += t['price'] * t['qty']
-                            else:  # sell
+                            else:
                                 total_sell_usd += t['price'] * t['qty']
 
-                        # Net flow
                         key_net = f"net_flow_{window_min}m"
                         order_flow[key_net] = round(total_delta_usd, 4)
 
-                        # Absorção
                         rotulo = self.classificar_absorcao_por_delta(
                             total_delta_usd, 
                             eps=self.absorcao_eps
@@ -528,18 +575,15 @@ class FlowAnalyzer:
                         order_flow[f"absorcao_{window_min}m"] = rotulo
                         absorcao_por_janela[window_min] = rotulo
 
-                        # Para menor janela
                         if window_min == smallest_window:
                             total_vol_usd = total_buy_usd + total_sell_usd
                             
-                            # Flow imbalance
                             if total_vol_usd > 0:
                                 flow_imbalance = total_delta_usd / total_vol_usd
                                 order_flow["flow_imbalance"] = round(flow_imbalance, 4)
                             else:
                                 order_flow["flow_imbalance"] = 0.0
 
-                            # 🆕 PERCENTUAIS CORRIGIDOS
                             if total_vol_usd > 0:
                                 order_flow["aggressive_buy_pct"] = round(
                                     (total_buy_usd / total_vol_usd) * 100.0, 2
@@ -551,35 +595,16 @@ class FlowAnalyzer:
                                 order_flow["aggressive_buy_pct"] = None
                                 order_flow["aggressive_sell_pct"] = None
 
-                            # 🆕 RATIO CORRIGIDO (usa volumes REAIS)
                             if total_buy_usd > 0 and total_sell_usd > 0:
                                 order_flow["buy_sell_ratio"] = round(
                                     total_buy_usd / total_sell_usd, 4
                                 )
-                                
-                                # 🆕 LOG DE DEBUG
-                                logging.debug(
-                                    f"✅ Buy/Sell calculado: "
-                                    f"buy=${total_buy_usd:,.0f}, sell=${total_sell_usd:,.0f}, "
-                                    f"ratio={order_flow['buy_sell_ratio']:.4f}"
-                                )
                             else:
                                 order_flow["buy_sell_ratio"] = None
-                                
-                                if total_buy_usd == 0 and total_sell_usd == 0:
-                                    logging.debug(
-                                        f"⚠️ Sem trades na janela {window_min}m - ratio=None"
-                                    )
-                                else:
-                                    logging.warning(
-                                        f"⚠️ Volume zero: buy=${total_buy_usd}, sell=${total_sell_usd}"
-                                    )
 
-                            # Volumes para debug
                             order_flow["buy_volume"] = round(total_buy_usd, 2)
                             order_flow["sell_volume"] = round(total_sell_usd, 2)
 
-                            # Tick rule sum
                             tick_rule_sum = 0.0
                             prev_price = None
                             
@@ -601,7 +626,7 @@ class FlowAnalyzer:
                     else:
                         metrics["tipo_absorcao"] = "Neutra"
 
-                    # Participant analysis
+                    # Participant analysis (sem alterações)
                     participant_analysis: Dict[str, Any] = {}
                     
                     if self.net_flow_windows_min:
@@ -705,6 +730,8 @@ class FlowAnalyzer:
                     ),
                     "flow_trades_count": len(self.flow_trades),
                     "lock_contentions": self._lock_contentions,
+                    "whale_delta_corrections": self._whale_delta_corrections,
+                    "is_buyer_maker_conversions": self._is_buyer_maker_conversions,
                 }
 
                 return metrics
@@ -750,4 +777,6 @@ class FlowAnalyzer:
             "flow_trades_count": len(self.flow_trades),
             "cvd": self.cvd,
             "whale_delta": self.whale_delta,
+            "whale_delta_corrections": self._whale_delta_corrections,
+            "is_buyer_maker_conversions": self._is_buyer_maker_conversions,
         }
