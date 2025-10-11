@@ -1,4 +1,4 @@
-# market_analyzer.py v2.2.0 — COMPLETO e CORRIGIDO
+# market_analyzer.py v2.2.1 — COMPLETO e CORRIGIDO com log_formatter
 """
 Market Analyzer com integração COMPLETA e validação robusta.
 
@@ -8,20 +8,22 @@ Market Analyzer com integração COMPLETA e validação robusta.
   • EnhancedMarketBot        — orquestra janelas, persiste eventos, logs e healthcheck
   • __main__                 — ponto de execução
 
-Principais melhorias (v2.2.0):
-  ✅ Reconexão por “stale connection” fecha o socket (força saída do run_forever)
+Principais melhorias (v2.2.1):
+  ✅ Reconexão por "stale connection" fecha o socket (força saída do run_forever)
   ✅ Parser de mensagens tolerante a payloads combinados: {"stream": "...", "data": {...}}
   ✅ Remoção de duplicação: usa IntegrationValidator do módulo oficial
   ✅ Sanitização de trades (tipos/valores) antes de alimentar o FlowAnalyzer
   ✅ Logs nomeados e mensagem de sucesso padronizada
   ✅ Encerramento gracioso (disconnect fecha socket; join das threads)
+  ✅ Integração com log_formatter para clareza CVD vs Delta
   ✅ Código coeso e pronto para rodar sem arquivos extras além dos módulos já existentes
 
 Requisitos do projeto: time_manager.py, orderbook_analyzer.py, flow_analyzer.py,
-ml_features.py, event_saver.py, health_monitor.py, integration_validator.py, config.py
+ml_features.py, event_saver.py, health_monitor.py, integration_validator.py, 
+log_formatter.py, config.py
 
 Autor: Sistema de Trading Institucional
-Data: 2025-10-08
+Data: 2025-01-10
 """
 
 from __future__ import annotations
@@ -50,13 +52,14 @@ from ml_features import generate_ml_features
 from time_manager import TimeManager
 from event_saver import EventSaver
 from health_monitor import HealthMonitor
+from log_formatter import format_flow_log, track_cvd_consistency
 
 try:
     import websocket  # type: ignore
 except Exception as e:
     raise RuntimeError("O pacote 'websocket-client' é obrigatório. pip install websocket-client") from e
 
-SCHEMA_VERSION = "2.2.0"
+SCHEMA_VERSION = "2.2.1"
 
 logger = logging.getLogger("market_analyzer")
 
@@ -532,7 +535,7 @@ class EnhancedMarketBot:
         # componentes principais
         self.market_analyzer = EnhancedMarketAnalyzer(symbol=symbol, time_manager=self.time_manager)
         self.event_saver = EventSaver(sound_alert=True)
-        self.health_monitor = HealthMonitor(alert_after_seconds=60)
+        self.health_monitor = HealthMonitor()
 
         # conexão
         self.connection_manager = RobustConnectionManager(
@@ -554,6 +557,7 @@ class EnhancedMarketBot:
         self.window_data: List[Dict[str, Any]] = []
         self.window_end_time: Optional[datetime] = None
         self.window_count = 0
+        self.previous_event = None  # Para tracking de CVD
 
         logger.info("🎯 Enhanced Market Bot v%s | %s | janela=%d min (NY)", SCHEMA_VERSION, symbol, self.window_size_minutes)
 
@@ -578,7 +582,7 @@ class EnhancedMarketBot:
     def on_message(self, ws, message) -> None:
         """Aceita JSON bruto ou bytes e suporta payloads do tipo {'data': {...}}."""
         try:
-            self.health_monitor.heartbeat()
+            self.health_monitor.heartbeat("market_analyzer")
 
             if isinstance(message, (bytes, bytearray)):
                 message = message.decode("utf-8", errors="ignore")
@@ -644,43 +648,122 @@ class EnhancedMarketBot:
             self.window_data = []
 
     def _log_event(self, event: Dict[str, Any], window_id: str) -> None:
-        ny_time = datetime.now(self.ny_tz)
-
-        of = event.get("order_flow", {})
-        ob = event.get("orderbook_data", {})
-        ml = event.get("ml_features", {})
-
-        delta = of.get("net_flow_1m", 0.0)
-        flow_imb = of.get("flow_imbalance", 0.0)
-        tick_rule = of.get("tick_rule_sum", 0.0)
-        cvd = event.get("cvd", 0.0)
-
-        bid_depth = ob.get("bid_depth_usd", 0.0)
-        ask_depth = ob.get("ask_depth_usd", 0.0)
-        ob_imb = ob.get("imbalance", 0.0)
-
-        momentum = ml.get("momentum_score", 0.0)
-        vol_sma = ml.get("volume_sma_ratio", 0.0)
-
-        print(f"\n🎯 EVENTO COMPLETO - {ny_time.strftime('%H:%M:%S')} NY")
-        print(f"   Janela: {window_id} | Símbolo: {self.symbol}")
-        print(f"   📊 Flow: delta={delta:+,.2f}, imb={flow_imb:+.3f}, tick_rule={tick_rule:+.0f}")
-        print(f"   💰 CVD: {cvd:+.2f} BTC")
-        print(f"   📚 Book: bid=${bid_depth:,.0f}, ask=${ask_depth:,.0f}, imb={ob_imb:+.3f}")
-        print(f"   🤖 ML: momentum={momentum:+.3f}, vol_sma={vol_sma:.2f}x")
-        print(f"   🎲 Absorção: {event.get('tipo_absorcao', 'N/A')}")
+        """
+        Loga evento com contexto de CVD claro.
+        
+        Usa formato melhorado que mostra:
+        - Delta da janela vs CVD acumulado
+        - Incremento do CVD desde última janela
+        - Conversão USD → BTC
+        - Whale flow detalhado
+        """
+        try:
+            # 🆕 Log formatado com contexto de CVD
+            formatted_log = format_flow_log(event, self.previous_event)
+            print(formatted_log)
+            
+            # Guardar evento para próxima iteração (tracking de CVD)
+            self.previous_event = event
+            
+        except Exception as e:
+            # Fallback para log simples se houver erro no formatador
+            logger.warning(f"⚠️ Erro ao formatar log com contexto: {e}")
+            
+            # Log simples (backup)
+            try:
+                ny_time = datetime.now(self.ny_tz)
+                
+                of = event.get("order_flow", {})
+                ob = event.get("orderbook_data", {})
+                ml = event.get("ml_features", {})
+                
+                delta = of.get("net_flow_1m", 0.0)
+                flow_imb = of.get("flow_imbalance", 0.0)
+                tick_rule = of.get("tick_rule_sum", 0.0)
+                cvd = event.get("cvd", 0.0)
+                
+                bid_depth = ob.get("bid_depth_usd", 0.0)
+                ask_depth = ob.get("ask_depth_usd", 0.0)
+                ob_imb = ob.get("imbalance", 0.0)
+                
+                momentum = ml.get("momentum_score", 0.0)
+                vol_sma = ml.get("volume_sma_ratio", 0.0)
+                
+                whale_buy = event.get("whale_buy_volume", 0.0)
+                whale_sell = event.get("whale_sell_volume", 0.0)
+                whale_delta = event.get("whale_delta", 0.0)
+                
+                print(f"\n{'='*80}")
+                print(f"🎯 EVENTO COMPLETO - {ny_time.strftime('%H:%M:%S')} NY")
+                print(f"{'─'*80}")
+                print(f"📊 Janela: {window_id} | Símbolo: {self.symbol}")
+                print(f"")
+                print(f"💹 FLUXO DA JANELA:")
+                print(f"   Net Flow:        {delta:+,.2f} USD")
+                print(f"   Flow Imbalance:  {flow_imb:+.3f}")
+                print(f"   Tick Rule:       {tick_rule:+.0f}")
+                print(f"")
+                print(f"💰 CVD ACUMULADO:")
+                print(f"   CVD Total:       {cvd:+.2f} BTC")
+                print(f"")
+                print(f"📚 ORDER BOOK:")
+                print(f"   Bid Depth:       ${bid_depth:,.0f}")
+                print(f"   Ask Depth:       ${ask_depth:,.0f}")
+                print(f"   Imbalance:       {ob_imb:+.3f}")
+                print(f"")
+                print(f"🐋 WHALE FLOW:")
+                print(f"   Buy Volume:      {whale_buy:+,.2f} BTC")
+                print(f"   Sell Volume:     {whale_sell:+,.2f} BTC")
+                print(f"   Delta:           {whale_delta:+,.2f} BTC")
+                print(f"")
+                print(f"🤖 ML FEATURES:")
+                print(f"   Momentum:        {momentum:+.3f}")
+                print(f"   Volume SMA:      {vol_sma:.2f}x")
+                print(f"")
+                print(f"🎲 Absorção: {event.get('tipo_absorcao', 'N/A')}")
+                print(f"{'='*80}\n")
+                
+            except Exception as fallback_error:
+                # Se até o fallback falhar, log mínimo
+                logger.error(f"❌ Erro crítico ao logar evento: {fallback_error}")
+                print(f"\n⚠️ Evento {window_id} processado (erro no log)")
 
     def on_open(self, ws) -> None:
         ny_time = datetime.now(self.ny_tz)
         logger.info("🚀 Bot v%s iniciado para %s — %s NY", SCHEMA_VERSION, self.symbol, ny_time.strftime("%H:%M:%S"))
         self.window_end_time = None
-        self.health_monitor.start()
+        # self.health_monitor.start() # Removido - HealthMonitor não tem start()
 
     def on_close(self, ws, close_status_code, close_msg) -> None:
         logger.warning("🔌 Conexão fechada: %s - %s", close_status_code, close_msg)
 
     def on_error(self, ws, error) -> None:
         logger.error("❌ Erro WebSocket: %s", error)
+
+    def diagnose_cvd(self, events: List[Dict[str, Any]]) -> None:
+        """Diagnostica consistência do CVD em eventos recentes."""
+        try:
+            report = track_cvd_consistency(events)
+            logger.info("\n" + "=" * 72)
+            logger.info("📊 DIAGNÓSTICO DE CONSISTÊNCIA DO CVD")
+            logger.info("=" * 72)
+            logger.info(f"Status: {report['status']}")
+            logger.info(f"Total de eventos: {report['total_events']}")
+            logger.info(f"Inconsistências: {report['inconsistencies_found']}")
+            logger.info(f"Primeiro CVD: {report.get('first_cvd', 0):+.4f} BTC")
+            logger.info(f"Último CVD: {report.get('last_cvd', 0):+.4f} BTC")
+            logger.info(f"Mudança total: {report.get('total_change', 0):+.4f} BTC")
+            
+            if report.get('inconsistencies'):
+                logger.warning("⚠️ Inconsistências encontradas:")
+                for inc in report['inconsistencies']:
+                    logger.warning(f"  - {inc}")
+            else:
+                logger.info("✅ Nenhuma inconsistência detectada!")
+            
+            logger.info("=" * 72)
+        except Exception as e:
+            logger.error(f"Erro ao diagnosticar CVD: {e}")
 
     def get_stats(self) -> Dict[str, Any]:
         return {
