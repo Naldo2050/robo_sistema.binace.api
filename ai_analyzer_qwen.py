@@ -1,8 +1,9 @@
-# ai_analyzer_qwen.py v2.0.1 - CORRIGIDO
+# ai_analyzer_qwen.py v2.0.2 - CORRIGIDO COMPLETO
 """
 AI Analyzer para eventos de mercado com validação de dados.
 
-🔹 CORREÇÕES v2.0.1:
+🔹 CORREÇÕES v2.0.2:
+  ✅ Método analyze() adicionado para compatibilidade com main.py
   ✅ Corrige extração de orderbook (pega do lugar certo)
   ✅ Valida orderbook_data ANTES de formatar
   ✅ Detecta contradições corretamente (volumes vs ratio)
@@ -103,7 +104,7 @@ class AIAnalyzer:
         self.connection_failed_count = 0
         self.max_failures_before_mock = 3
 
-        logging.info("🧠 IA Analyzer Qwen v2.0.1 inicializada - Validação robusta ativada")
+        logging.info("🧠 IA Analyzer Qwen v2.0.2 inicializada - Validação robusta ativada")
         try:
             self._initialize_api()
         except Exception as e:
@@ -195,7 +196,7 @@ class AIAnalyzer:
         """
         Extrai dados de orderbook de múltiplas fontes possíveis.
         
-        🔹 CORRIGIDO v2.0.1:
+        🔹 CORRIGIDO v2.0.2:
           - Tenta múltiplos caminhos
           - Valida dados extraídos
           - Retorna dict vazio se inválido
@@ -246,7 +247,7 @@ class AIAnalyzer:
         """
         Cria prompt para IA com validação de dados.
         
-        🔹 CORRIGIDO v2.0.1:
+        🔹 CORRIGIDO v2.0.2:
           - Extrai orderbook corretamente
           - Valida ANTES de formatar
           - Detecta contradições de volumes
@@ -620,7 +621,7 @@ Forneça análise institucional:
     # ====================================================================
     
     def analyze_event(self, event_data: Dict[str, Any]) -> str:
-        """Analisa evento e retorna análise da IA."""
+        """Analisa evento e retorna análise da IA (string)."""
         if not self.enabled:
             try:
                 self._initialize_api()
@@ -657,6 +658,60 @@ Forneça análise institucional:
             analysis = self._generate_mock_analysis(event_data)
         
         return analysis
+
+    # ====================================================================
+    # 🔧 COMPATIBILIDADE COM MAIN.PY - v2.0.2
+    # ====================================================================
+    
+    def analyze(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analisa evento e retorna resultado estruturado.
+        
+        🔧 v2.0.2 - Wrapper para analyze_event() compatível com main.py
+        
+        Args:
+            event_data: Dict com dados do evento
+        
+        Returns:
+            Dict com:
+                - raw_response: str (análise da IA)
+                - tipo_evento: str
+                - ativo: str
+                - timestamp: str
+                - success: bool
+        """
+        try:
+            # Chama método principal que retorna string
+            analysis_text = self.analyze_event(event_data)
+            
+            # Extrai informações do evento
+            tipo_evento = event_data.get("tipo_evento", "N/A")
+            ativo = event_data.get("ativo") or event_data.get("symbol") or "N/A"
+            
+            # Log de sucesso
+            logging.info(f"✅ IA analisou: {tipo_evento} - {ativo}")
+            
+            # Retorna formato esperado pelo main.py
+            return {
+                "raw_response": analysis_text,
+                "tipo_evento": tipo_evento,
+                "ativo": ativo,
+                "timestamp": self.time_manager.now_iso(),
+                "success": True,
+            }
+            
+        except Exception as e:
+            logging.error(f"❌ Erro em analyze(): {e}", exc_info=True)
+            
+            # Retorna erro estruturado
+            return {
+                "raw_response": f"❌ Erro ao analisar evento: {str(e)}",
+                "tipo_evento": event_data.get("tipo_evento", "N/A"),
+                "ativo": event_data.get("ativo", "N/A"),
+                "timestamp": self.time_manager.now_iso(),
+                "success": False,
+                "error": str(e),
+            }
 
     def close(self):
         """Fecha conexão com IA."""

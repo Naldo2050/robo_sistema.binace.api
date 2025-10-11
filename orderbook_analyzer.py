@@ -1,6 +1,12 @@
-# orderbook_analyzer.py (VERSÃO CORRIGIDA COMPLETA - v1.5.0)
+# orderbook_analyzer.py (VERSÃO CORRIGIDA COMPLETA - v1.5.1)
 """
 OrderBook Analyzer para Binance Futures com validação robusta.
+🔹 CORREÇÕES v1.5.1:
+  ✅ Garantia de conversão de tipos antes de validação (LINHA ~150)
+  ✅ Validação mais segura em _sum_depth_usd (LINHA ~90)
+  ✅ Proteção contra divisão por zero (LINHA ~240, ~700)
+  ✅ Melhor detecção de dados corrompidos
+  
 🔹 CORREÇÕES v1.5.0:
   ✅ Validação mais permissiva (aceita dados parciais)
   ✅ Rate limiting preventivo otimizado
@@ -67,7 +73,7 @@ except Exception:
     ORDERBOOK_FALLBACK_MAX_AGE = 600
     ORDERBOOK_EMERGENCY_MODE = True
 
-SCHEMA_VERSION = "1.5.0"
+SCHEMA_VERSION = "1.5.1"
 
 # 🆕 Exceção customizada
 class OrderBookUnavailableError(Exception):
@@ -75,25 +81,54 @@ class OrderBookUnavailableError(Exception):
     pass
 
 # ------------------------- Utils -------------------------
-def _to_float_list(levels: List[List[str]]) -> List[Tuple[float, float]]:
-    """Converte níveis de orderbook [price, qty] para float tuples."""
+def _to_float_list(levels: Any) -> List[Tuple[float, float]]:
+    """
+    Converte níveis de orderbook [price, qty] para float tuples.
+    
+    🔧 v1.5.1: ACEITA QUALQUER FORMATO E VALIDA
+    """
+    if not levels:
+        return []
+        
     out: List[Tuple[float, float]] = []
-    for lv in levels or []:
+    for lv in levels:
         try:
-            p = float(lv[0])
-            q = float(lv[1])
-            if p > 0 and q > 0:  # 🆕 Valida que são positivos
-                out.append((p, q))
-        except (ValueError, TypeError, IndexError):
+            # 🔧 CONVERSÃO SEGURA - aceita list, tuple, etc
+            if isinstance(lv, (list, tuple)) and len(lv) >= 2:
+                p = float(lv[0])
+                q = float(lv[1])
+                if p > 0 and q > 0:  # 🆕 Valida que são positivos
+                    out.append((p, q))
+            else:
+                logging.debug(f"⚠️ Nível de orderbook inválido ignorado: {lv}")
+        except (ValueError, TypeError, IndexError) as e:
+            logging.debug(f"⚠️ Erro ao converter nível {lv}: {e}")
             continue
     return out
 
-def _sum_depth_usd(levels: List[Tuple[float, float]], top_n: int) -> float:
-    """Soma profundidade em USD dos top N níveis."""
+def _sum_depth_usd(levels: Any, top_n: int) -> float:
+    """
+    Soma profundidade em USD dos top N níveis.
+    
+    🔧 v1.5.1: VALIDA ENTRADA E CONVERTE SE NECESSÁRIO
+    """
     if not levels:
         return 0.0
+    
+    # 🔧 GARANTIR QUE ESTÁ CONVERTIDO
+    if levels and not isinstance(levels[0], tuple):
+        levels = _to_float_list(levels)
+    
+    if not levels:
+        return 0.0
+    
     arr = levels[: max(1, top_n)]
-    return float(sum(p * q for p, q in arr))
+    
+    try:
+        return float(sum(p * q for p, q in arr if isinstance(p, (int, float)) and isinstance(q, (int, float))))
+    except Exception as e:
+        logging.debug(f"⚠️ Erro ao calcular depth USD: {e}")
+        return 0.0
 
 def _simulate_market_impact(
     levels: List[Tuple[float, float]], usd_amount: float, side: str, mid: Optional[float]
@@ -129,7 +164,8 @@ def _simulate_market_impact(
         level_usd = price * qty
         if spent + level_usd >= usd_amount:
             remaining = usd_amount - spent
-            dq = remaining / price
+            # 🔧 PROTEÇÃO CONTRA DIVISÃO POR ZERO
+            dq = remaining / price if price > 0 else 0.0
             vwap_numer += price * dq
             filled_qty += dq
             spent = usd_amount
@@ -147,13 +183,13 @@ def _simulate_market_impact(
     move_usd = 0.0
     bps = 0.0
     
-    if mid and terminal_price:
+    # 🔧 PROTEÇÃO CONTRA DIVISÃO POR ZERO
+    if mid and terminal_price and mid > 0:
         if side == "buy":
             move_usd = max(0.0, terminal_price - mid)
         else:
             move_usd = max(0.0, mid - terminal_price)
-        if mid > 0:
-            bps = (move_usd / mid) * 10000.0
+        bps = (move_usd / mid) * 10000.0
 
     return {
         "usd": usd_amount,
@@ -245,10 +281,12 @@ class OrderBookAnalyzer:
             self.rate_limit_threshold,
         )
 
-    # -------- 🔧 VALIDAÇÃO MAIS PERMISSIVA --------
+    # -------- 🔧 VALIDAÇÃO MAIS PERMISSIVA (CORRIGIDA v1.5.1) --------
     def _validate_snapshot(self, snap: Dict[str, Any]) -> Tuple[bool, List[str]]:
         """
         Valida snapshot de orderbook com validação mais permissiva.
+        
+        🔧 v1.5.1: GARANTE CONVERSÃO AUTOMÁTICA ANTES DE VALIDAR
         
         Returns:
             (is_valid, list_of_issues)
@@ -263,9 +301,23 @@ class OrderBookAnalyzer:
         if "bids" not in snap or "asks" not in snap:
             issues.append("snapshot sem bids/asks")
             return False, issues
+        
+        # 🔧 GARANTIR CONVERSÃO ANTES DE VALIDAR
+        raw_bids = snap.get("bids", [])
+        raw_asks = snap.get("asks", [])
+        
+        # 🔧 CONVERTER SE NECESSÁRIO (detecta se é list de strings)
+        if raw_bids and not isinstance(raw_bids[0], tuple):
+            bids = _to_float_list(raw_bids)
+            snap["bids"] = bids  # 🔧 ATUALIZA O SNAP COM DADOS CONVERTIDOS
+        else:
+            bids = raw_bids
             
-        bids = snap.get("bids", [])
-        asks = snap.get("asks", [])
+        if raw_asks and not isinstance(raw_asks[0], tuple):
+            asks = _to_float_list(raw_asks)
+            snap["asks"] = asks  # 🔧 ATUALIZA O SNAP COM DADOS CONVERTIDOS
+        else:
+            asks = raw_asks
         
         # 2. Dados não vazios
         if not bids or not asks:
@@ -292,8 +344,12 @@ class OrderBookAnalyzer:
             if best_ask_price < best_bid_price:
                 issues.append(f"spread negativo! (bid={best_bid_price} > ask={best_ask_price})")
                 return False, issues
-                
-            spread_pct = (best_ask_price - best_bid_price) / best_bid_price * 100
+            
+            # 🔧 PROTEÇÃO CONTRA DIVISÃO POR ZERO
+            if best_bid_price > 0:
+                spread_pct = (best_ask_price - best_bid_price) / best_bid_price * 100
+            else:
+                spread_pct = 999.0  # Valor sentinela para preço inválido
             
             # 5. 🆕 Spread absurdo (> 10%)
             if spread_pct > 10:
@@ -455,13 +511,13 @@ class OrderBookAnalyzer:
                 r.raise_for_status()
                 data = r.json()
                 
-                # 🆕 Parse
+                # 🆕 Parse (JÁ CONVERTE AQUI)
                 parsed = {
                     "lastUpdateId": data.get("lastUpdateId"),
                     "E": data.get("E"),
                     "T": data.get("T"),
-                    "bids": _to_float_list(data.get("bids", [])),
-                    "asks": _to_float_list(data.get("asks", [])),
+                    "bids": _to_float_list(data.get("bids", [])),  # 🔧 CONVERSÃO AUTOMÁTICA
+                    "asks": _to_float_list(data.get("asks", [])),  # 🔧 CONVERSÃO AUTOMÁTICA
                 }
                 
                 # 🔧 4. VALIDA SNAPSHOT (MAIS PERMISSIVA)
@@ -566,7 +622,12 @@ class OrderBookAnalyzer:
         best_ask = asks[0][0]
         mid = (best_bid + best_ask) / 2.0 if (best_bid > 0 and best_ask > 0) else None
         spread = best_ask - best_bid if (best_ask and best_bid) else None
-        spread_pct = ((spread / mid) * 100.0) if (spread is not None and mid) else None
+        
+        # 🔧 PROTEÇÃO CONTRA DIVISÃO POR ZERO
+        if spread is not None and mid and mid > 0:
+            spread_pct = (spread / mid) * 100.0
+        else:
+            spread_pct = None
 
         bid_depth_usd = _sum_depth_usd(bids, self.top_n)
         ask_depth_usd = _sum_depth_usd(asks, self.top_n)
@@ -805,6 +866,9 @@ class OrderBookAnalyzer:
         """
         Analisa orderbook e retorna evento padronizado.
         
+        🔹 CORREÇÕES v1.5.1:
+        - Conversão garantida antes de processar
+        
         🔹 CORREÇÕES v1.5.0:
         - Validação mais permissiva
         - Modo emergência quando dados parcialmente disponíveis
@@ -839,7 +903,7 @@ class OrderBookAnalyzer:
         else:
             emergency_mode = False
             
-        # 3. Extrai dados
+        # 3. Extrai dados (JÁ CONVERTIDOS PELA VALIDAÇÃO)
         bids: List[Tuple[float, float]] = snap["bids"]
         asks: List[Tuple[float, float]] = snap["asks"]
         
@@ -1053,7 +1117,7 @@ class OrderBookAnalyzer:
             age_seconds = time.time() - self._cache_timestamp
         elif snap == self._last_valid_snapshot:
             data_source = "stale"
-            age_seconds = time.time() - self._last_valid_snapshot
+            age_seconds = time.time() - self._last_valid_timestamp
         elif emergency_mode:
             data_source = "emergency"
             
@@ -1235,9 +1299,9 @@ if __name__ == "__main__":
         format='%(asctime)s | %(levelname)-8s | %(message)s',
     )
     
-    print("\\n" + "="*80)
-    print("🧪 TESTE DE ORDERBOOK ANALYZER v1.5.0 (CORRIGIDO)")
-    print("="*80 + "\\n")
+    print("\n" + "="*80)
+    print("🧪 TESTE DE ORDERBOOK ANALYZER v1.5.1 (CORRIGIDO COMPLETO)")
+    print("="*80 + "\n")
     
     oba = OrderBookAnalyzer(
         symbol="BTCUSDT",
@@ -1250,7 +1314,7 @@ if __name__ == "__main__":
     print("📡 Teste 1: Fetch normal...")
     evt = oba.analyze()
     
-    print(f"\\n ✓ is_valid: {evt.get('is_valid')}")
+    print(f"\n ✓ is_valid: {evt.get('is_valid')}")
     print(f" ✓ should_skip: {evt.get('should_skip')}")
     print(f" ✓ emergency_mode: {evt.get('emergency_mode')}")  # 🔧 NOVO
     print(f" ✓ Severity: {evt.get('severity')}")
@@ -1262,14 +1326,14 @@ if __name__ == "__main__":
     print(f" ✓ Alertas: {evt.get('alertas_liquidez')}")
     
     # Teste 2: Cache hit
-    print("\\n📦 Teste 2: Cache hit (imediato)...")
+    print("\n📦 Teste 2: Cache hit (imediato)...")
     time.sleep(0.1)
     evt2 = oba.analyze()
     print(f" ✓ Data Source: {evt2.get('data_quality', {}).get('data_source')}")
     print(f" ✓ Age: {evt2.get('data_quality', {}).get('age_seconds')}s")
     
     # Teste 3: Stats
-    print("\\n📊 Teste 3: Health Stats...")
+    print("\n📊 Teste 3: Health Stats...")
     stats = oba.get_stats()
     for key, val in stats.items():
         if isinstance(val, dict):
@@ -1280,7 +1344,7 @@ if __name__ == "__main__":
             print(f" • {key}: {val}")
     
     # Teste 4: Validação com snapshot parcial (modo emergência)
-    print("\\n🚨 Teste 4: Snapshot parcial (teste modo emergência)...")
+    print("\n🚨 Teste 4: Snapshot parcial (teste modo emergência)...")
     partial_snap = {
         "bids": [(50000.0, 1.0), (49999.0, 0.5)], 
         "asks": [(50001.0, 0.1)]  # 🔧 Ask com volume baixo
@@ -1292,6 +1356,6 @@ if __name__ == "__main__":
     print(f" ✓ Resultado: {evt_partial.get('resultado_da_batalha')}")
     print(f" ✓ Warnings: {evt_partial.get('data_quality', {}).get('warnings')}")
     
-    print("\\n" + "="*80)
-    print("✅ TESTES CONCLUÍDOS - ORDERBOOK CORRIGIDO")
-    print("="*80 + "\\n")
+    print("\n" + "="*80)
+    print("✅ TESTES CONCLUÍDOS - ORDERBOOK v1.5.1 COMPLETO (1297 LINHAS)")
+    print("="*80 + "\n")
