@@ -1,19 +1,19 @@
-# report_generator.py v2.0.0 - Gerador de relatórios com validação robusta
+# report_generator.py v2.0.1 - COM DETECÇÃO DE DISCREPÂNCIAS
 """
-Gerador de relatórios com validação de dados.
+Gerador de relatórios com validação robusta e detecção de erros.
 
-🔹 CORREÇÕES v2.0.0:
-  ✅ Valida volumes zero antes de comparar
-  ✅ Valida orderbook zerado
-  ✅ Detecta contradições (volumes zero mas ratio existe)
-  ✅ Warnings claros para dados inválidos
-  ✅ Formatação consistente
-  ✅ Não gera interpretações absurdas
+🔹 MELHORIAS v2.0.1:
+  ✅ Detecta discrepâncias volume_total vs (buy + sell)
+  ✅ Loga origem dos dados para debug
+  ✅ Warnings detalhados com valores exatos
+  ✅ Validação automática de consistência
+  ✅ Todas as correções da v2.0.0 mantidas
 """
 
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
+from decimal import Decimal, ROUND_HALF_UP
 
 # 🔹 Importa utilitários de formatação
 from format_utils import (
@@ -29,6 +29,70 @@ from format_utils import (
 logger = logging.getLogger(__name__)
 
 
+def _decimal_round(value: float, decimals: int = 8) -> float:
+    """Arredonda usando Decimal para evitar erros de float."""
+    try:
+        d = Decimal(str(value))
+        quantize_str = '0.' + '0' * decimals
+        return float(d.quantize(Decimal(quantize_str), rounding=ROUND_HALF_UP))
+    except Exception:
+        return round(value, decimals)
+
+
+def _validate_volume_consistency(
+    volume_total: float,
+    volume_compra: float,
+    volume_venda: float,
+    event_type: str = "UNKNOWN",
+    timestamp: str = "UNKNOWN"
+) -> bool:
+    """
+    Valida consistência de volumes e loga discrepâncias.
+    
+    Args:
+        volume_total: Volume total reportado
+        volume_compra: Volume de compra
+        volume_venda: Volume de venda
+        event_type: Tipo do evento (para log)
+        timestamp: Timestamp do evento (para log)
+        
+    Returns:
+        True se consistente, False se há discrepância
+    """
+    try:
+        # Arredondar para evitar erros de float
+        vt = _decimal_round(volume_total, decimals=8)
+        vc = _decimal_round(volume_compra, decimals=8)
+        vv = _decimal_round(volume_venda, decimals=8)
+        
+        # Calcular soma esperada
+        expected_total = _decimal_round(vc + vv, decimals=8)
+        
+        # Verificar discrepância (tolerância: 0.001 BTC)
+        discrepancy = abs(vt - expected_total)
+        
+        if discrepancy > 0.001:
+            logger.error(
+                f"🔴 DISCREPÂNCIA DE VOLUME DETECTADA!\n"
+                f"   Evento: {event_type}\n"
+                f"   Timestamp: {timestamp}\n"
+                f"   volume_total: {vt:.8f} BTC\n"
+                f"   volume_compra: {vc:.8f} BTC\n"
+                f"   volume_venda: {vv:.8f} BTC\n"
+                f"   Soma (buy+sell): {expected_total:.8f} BTC\n"
+                f"   DIFERENÇA: {discrepancy:.8f} BTC\n"
+                f"   ---\n"
+                f"   ⚠️ AÇÃO: Verificar origem de 'volume_total' em market_analyzer.py ou event_memory.py"
+            )
+            return False
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Erro ao validar consistência de volumes: {e}")
+        return False
+
+
 def generate_ai_analysis_report(
     event_data: Dict[str, Any], 
     ml_features: Dict[str, Any], 
@@ -39,11 +103,11 @@ def generate_ai_analysis_report(
     """
     Gera relatório estruturado de análise institucional.
     
-    🔹 v2.0.0:
-      - Valida dados antes de gerar interpretação
-      - Detecta contradições
-      - Warnings para dados inválidos
-      - Não gera absurdos tipo "0 < 0"
+    🔹 v2.0.1:
+      - Detecta e loga discrepâncias de volume
+      - Validação automática de consistência
+      - Warnings detalhados para debug
+      - Todas as validações da v2.0.0
     
     Args:
         event_data: Dados do evento
@@ -57,7 +121,8 @@ def generate_ai_analysis_report(
     """
     try:
         # --- Extração segura de dados ---
-        event_type = event_data.get("tipo_evento", "")
+        event_type = event_data.get("tipo_evento", "UNKNOWN")
+        timestamp = event_data.get("timestamp", "UNKNOWN")
         absorption_side = event_data.get("absorption_side", "")
         aggression_side = event_data.get("aggression_side", "")
         delta = event_data.get("delta", 0)
@@ -72,6 +137,23 @@ def generate_ai_analysis_report(
         buy_sell_ratio = order_flow.get("buy_sell_ratio", 0)
         volume_compra = event_data.get("volume_compra", 0)
         volume_venda = event_data.get("volume_venda", 0)
+
+        # 🆕 VALIDAÇÃO DE CONSISTÊNCIA DE VOLUMES
+        volume_is_consistent = _validate_volume_consistency(
+            volume_total=volume_total,
+            volume_compra=volume_compra,
+            volume_venda=volume_venda,
+            event_type=event_type,
+            timestamp=timestamp
+        )
+        
+        # 🆕 CORRIGIR volume_total se inconsistente
+        if not volume_is_consistent and (volume_compra > 0 or volume_venda > 0):
+            corrected_total = _decimal_round(volume_compra + volume_venda, decimals=8)
+            logger.warning(
+                f"✅ AUTO-CORREÇÃO: volume_total {volume_total:.8f} → {corrected_total:.8f} BTC"
+            )
+            volume_total = corrected_total
 
         # ML Features
         microstructure = ml_features.get("microstructure", {})
@@ -116,16 +198,21 @@ def generate_ai_analysis_report(
             vol_compra_fmt = format_large_number(volume_compra)
             vol_venda_fmt = format_large_number(volume_venda)
             
+            # 🆕 ADICIONA WARNING SE FOI CORRIGIDO
+            consistency_note = ""
+            if not volume_is_consistent:
+                consistency_note = " ⚠️ (volume_total corrigido automaticamente)"
+            
             # Só compara se volumes são diferentes
             if volume_compra != volume_venda:
                 interpretation_lines.append(
                     f"  Buy volume ({vol_compra_fmt}) "
                     f"{'>' if volume_compra > volume_venda else '<'} "
-                    f"Sell volume ({vol_venda_fmt})."
+                    f"Sell volume ({vol_venda_fmt}){consistency_note}."
                 )
             else:
                 interpretation_lines.append(
-                    f"  Buy volume = Sell volume ({vol_compra_fmt})."
+                    f"  Buy volume = Sell volume ({vol_compra_fmt}){consistency_note}."
                 )
         else:
             # 🆕 VOLUMES INDISPONÍVEIS
@@ -152,7 +239,7 @@ def generate_ai_analysis_report(
                 f"  Razão Buy/Sell: Indisponível."
             )
 
-        # 🆕 PERCENTUAIS AGRESSIVOS (JÁ CORRIGIDO - NÃO MULTIPLICAR)
+        # 🆕 PERCENTUAIS AGRESSIVOS (NÃO MULTIPLICAR POR 100)
         if aggressive_buy_pct > 0 or aggressive_sell_pct > 0:
             buy_pct_fmt = format_percent(aggressive_buy_pct)
             sell_pct_fmt = format_percent(aggressive_sell_pct)
@@ -211,8 +298,9 @@ def generate_ai_analysis_report(
             # 🆕 VALUE AREA INDISPONÍVEL
             price_fmt = format_price(price_close)
             interpretation_lines.append(
-                f"- **Zona:** ⚠️ Value Area indisponível (VAL=${val_daily}, VAH=${vah_daily}). "
-                f"Preço atual: ${price_fmt}."
+                f"- **Zona:** ⚠️ ⚠️ VALUE AREA ZERADA: VAL=${val_daily}, VAH=${vah_daily}. "
+                f"Preço atual: ${price_fmt}. "
+                f"VERIFICAR: dynamic_volume_profile.py"
             )
         
         if proximos_hvns:
@@ -239,7 +327,12 @@ def generate_ai_analysis_report(
         # 🆕 WARNING se orderbook válido mas slope zero
         if order_book_slope == 0 and is_orderbook_valid:
             ml_lines.append(
-                f"  - order_book_slope = {ob_slope_fmt} ⚠️ (pode estar quebrado)"
+                f"  - order_book_slope = {ob_slope_fmt} ⚠️ ⚠️ (QUEBRADO! Orderbook tem dados mas slope=0)"
+            )
+            logger.warning(
+                f"🔴 INCONSISTÊNCIA: order_book_slope=0 mas orderbook válido "
+                f"(bids=${bid_depth}, asks=${ask_depth}). "
+                f"VERIFICAR: orderbook_analyzer.py ou ml_features.py"
             )
         else:
             ml_lines.append(

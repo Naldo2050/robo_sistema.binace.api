@@ -1,4 +1,14 @@
 # main.py v2.1.1 (CORRIGIDO COMPLETO - IA FUNCIONANDO)
+# -*- coding: utf-8 -*-
+
+# 🆕 FORÇAR UTF-8 NO WINDOWS (ADICIONAR ANTES DE TUDO)
+import sys
+import io
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+# Agora importa o resto normalmente
 from dotenv import load_dotenv; load_dotenv()
 import json
 import time
@@ -14,8 +24,23 @@ import random
 import websocket
 from collections import deque
 import signal
-import sys
 import atexit
+
+# Importa o arquivo de configurações central
+import config
+
+# 🔹 NOVO: Importa utilitários de formatação
+from format_utils import (
+    format_price,
+    format_quantity,
+    format_percent,
+    format_large_number,
+    format_delta,
+    format_time_seconds,
+    format_scientific
+)
+
+# ... (resto do código continua igual)
 
 # Importa o arquivo de configurações central
 import config

@@ -1,18 +1,12 @@
-# flow_analyzer.py v2.2.0 - VERSÃO HÍBRIDA COM TODAS AS MELHORIAS
+# flow_analyzer.py v2.1.1 - MELHORADO COM VALIDAÇÃO DE VOLUMES
 """
-Flow Analyzer com validação robusta e precisão máxima.
+Flow Analyzer com validação de consistência de volumes.
 
-🔹 MELHORIAS v2.2.0 (HÍBRIDO v2.1.2 + v2.1.1):
-  ✅ BTC e USD usam Decimal para cálculos críticos
-  ✅ Invariância de UI para USD (total_rounded == buy_rounded + sell_rounded)
-  ✅ Invariância de UI para BTC
-  ✅ Validação rigorosa com warnings para discrepâncias >0.001 BTC
-  ✅ Valores exatos (_exact) expostos para auditoria
-  ✅ Etiquetas de janela (computation_window_min)
-  ✅ Logs detalhados e informativos
-  ✅ Correção automática de inconsistências
-  ✅ Contadores de qualidade de dados
-  ✅ Helper functions otimizadas
+🔹 MELHORIAS v2.1.1:
+  ✅ Adiciona validação volume_total = buy + sell
+  ✅ Usa Decimal para cálculos críticos (evita erro 0.01)
+  ✅ Logs detalhados de discrepâncias
+  ✅ Todas as correções da v2.1.0 mantidas
 """
 
 import logging
@@ -46,39 +40,8 @@ class FlowAnalyzerError(Exception):
     pass
 
 
-# ============================
-# HELPER FUNCTIONS
-# ============================
-
-def _to_decimal(value) -> Decimal:
-    """
-    Converte valor para Decimal de forma segura e eficiente.
-    
-    Args:
-        value: Valor a converter (int, float, str, Decimal)
-        
-    Returns:
-        Decimal convertido ou Decimal('0') se falhar
-    """
-    if value is None:
-        return Decimal('0')
-    if isinstance(value, Decimal):
-        return value
-    if isinstance(value, (int, float)):
-        return Decimal(str(value))
-    try:
-        return Decimal(str(value))
-    except Exception:
-        logging.warning(f"⚠️ Conversão falhou para {value}, usando 0")
-        return Decimal('0')
-
-
 def _guard_absorcao(delta: float, rotulo: str, eps: float, mode: str = "warn"):
-    """
-    Validação de consistência para absorção.
-    
-    Verifica se o rótulo de absorção corresponde ao sinal do delta.
-    """
+    """Validação de consistência para absorção."""
     try:
         mode = (mode or "warn").strip().lower()
     except Exception:
@@ -91,168 +54,48 @@ def _guard_absorcao(delta: float, rotulo: str, eps: float, mode: str = "warn"):
                (delta < -eps and rotulo != "Absorção de Venda")
     
     if mismatch:
-        msg = (
-            f"[ABSORCAO_GUARD] delta={delta:.4f} eps={eps} "
-            f"rotulo='{rotulo}' (modo={mode})"
-        )
+        msg = f"[ABSORCAO_GUARD] delta={delta:.4f} eps={eps} rotulo='{rotulo}' (modo={mode})"
         if mode == "raise":
             raise AssertionError(msg)
         logging.warning(msg)
 
 
 def _decimal_round(value: float, decimals: int = 8) -> float:
-    """
-    Arredonda usando Decimal para evitar erros de float.
-    
-    Args:
-        value: Valor a arredondar
-        decimals: Número de casas decimais
-        
-    Returns:
-        Float arredondado com precisão decimal
-    """
+    """Arredonda usando Decimal para evitar erros de float."""
     try:
-        d = _to_decimal(value)
+        d = Decimal(str(value))
         quantize_str = '0.' + '0' * decimals
         return float(d.quantize(Decimal(quantize_str), rounding=ROUND_HALF_UP))
     except Exception:
         return round(value, decimals)
 
 
-# Quantização de USD para 2 casas, arredondamento comercial
-DEC_CENT = Decimal('0.01')
-
-
-def _q2(d: Decimal) -> Decimal:
-    """Quantiza Decimal para 2 casas com ROUND_HALF_UP (comercial)."""
-    try:
-        return d.quantize(DEC_CENT, rounding=ROUND_HALF_UP)
-    except Exception:
-        return Decimal('0.00')
-
-
-def _ui_safe_round_usd(
-    buy_dec: Decimal, 
-    sell_dec: Decimal, 
-    tol: Decimal = Decimal('0.005')
-) -> Tuple[float, float, float, bool, float]:
-    """
-    Garante invariância de UI: total_rounded == buy_rounded + sell_rounded.
-    
-    Args:
-        buy_dec: Volume de compra em Decimal
-        sell_dec: Volume de venda em Decimal
-        tol: Tolerância para validação
-        
-    Returns:
-        (buy_usd, sell_usd, total_usd, ok, tolerance)
-    """
-    try:
-        total_dec = buy_dec + sell_dec
-    except Exception:
-        buy_dec = Decimal('0')
-        sell_dec = Decimal('0')
-        total_dec = Decimal('0')
-
-    buy_r = _q2(buy_dec)
-    sell_r = _q2(sell_dec)
-    total_r = _q2(total_dec)
-
-    sum_components = buy_r + sell_r
-    
-    # Invariância de soma: ajustar total se necessário
-    if sum_components != total_r:
-        logging.debug(
-            f"[UI-INVARIANT-USD] Ajustando total_rounded de {total_r} → {sum_components}"
-        )
-        total_r = sum_components
-
-    gap = abs(total_r - sum_components)
-    ok = gap <= tol
-    
-    if not ok:
-        logging.warning(
-            f"[UI-INVARIANT-USD] |total - (buy+sell)|={gap} > {tol}"
-        )
-    
-    return float(buy_r), float(sell_r), float(total_r), bool(ok), float(tol)
-
-
-def _ui_safe_round_btc(
-    buy_dec: Decimal, 
-    sell_dec: Decimal,
-    decimals: int = 8
-) -> Tuple[float, float, float, float]:
-    """
-    Garante invariância de UI para BTC: total == buy + sell.
-    
-    Args:
-        buy_dec: Volume de compra em Decimal
-        sell_dec: Volume de venda em Decimal
-        decimals: Casas decimais (padrão: 8)
-        
-    Returns:
-        (buy_btc, sell_btc, total_btc, diff)
-    """
-    try:
-        total_dec = buy_dec + sell_dec
-    except Exception:
-        buy_dec = Decimal('0')
-        sell_dec = Decimal('0')
-        total_dec = Decimal('0')
-
-    buy_r = _decimal_round(float(buy_dec), decimals=decimals)
-    sell_r = _decimal_round(float(sell_dec), decimals=decimals)
-    total_r_calc = _decimal_round(float(total_dec), decimals=decimals)
-    total_r_sum = _decimal_round(buy_r + sell_r, decimals=decimals)
-
-    diff = abs(total_r_calc - total_r_sum)
-
-    if diff > 10 ** (-decimals):
-        logging.debug(
-            f"[UI-INVARIANT-BTC] Ajustando total de {total_r_calc:.{decimals}f} "
-            f"→ {total_r_sum:.{decimals}f} (diff={diff:.{decimals}f})"
-        )
-
-    # Sempre usar soma dos componentes para garantir invariância
-    total_r = total_r_sum
-
-    return buy_r, sell_r, total_r, diff
-
-
 class FlowAnalyzer:
     """
     Analisador de fluxo com validação robusta de volumes.
     
-    🔹 CARACTERÍSTICAS v2.2.0:
-      - Precisão máxima com Decimal
-      - Invariância de UI para USD e BTC
-      - Validação automática e correção de inconsistências
-      - Logs detalhados e informativos
-      - Contadores de qualidade de dados
-      - Exposição de valores exatos para auditoria
+    🔹 MELHORIAS v2.1.1:
+      - Validação automática de consistência
+      - Arredondamento decimal preciso
+      - Logs de discrepâncias
     """
 
     def __init__(self, time_manager: Optional[TimeManager] = None):
         self.time_manager = time_manager or TimeManager()
 
-        # Métricas principais
         self.cvd = 0.0
         self.whale_threshold = float(getattr(config, "WHALE_TRADE_THRESHOLD", 5.0))
         self.whale_buy_volume = 0.0
         self.whale_sell_volume = 0.0
         self.whale_delta = 0.0
 
-        # Reset automático
         self.last_reset_ms = self.time_manager.now_ms()
         self.reset_interval_ms = int(
             getattr(config, "CVD_RESET_INTERVAL_HOURS", 24) * 3600 * 1000
         )
 
-        # Thread safety
         self._lock = Lock()
 
-        # Burst detection
         self.recent_trades = deque(maxlen=500)
         self.bursts = {"count": 0, "max_burst_volume": 0.0}
         self._in_burst = False
@@ -264,7 +107,6 @@ class FlowAnalyzer:
             getattr(config, "BURST_VOLUME_THRESHOLD", self.whale_threshold)
         )
 
-        # Sector flow
         order_buckets = getattr(config, "ORDER_SIZE_BUCKETS", {
             "retail": (0, 0.5),
             "mid": (0.5, 2.0),
@@ -276,17 +118,10 @@ class FlowAnalyzer:
         }
         self._order_buckets = order_buckets
 
-        # Liquidity heatmap
         lhm_window_size = int(getattr(config, "LHM_WINDOW_SIZE", 2000))
-        lhm_cluster_threshold_pct = float(
-            getattr(config, "LHM_CLUSTER_THRESHOLD_PCT", 0.003)
-        )
-        lhm_min_trades_per_cluster = int(
-            getattr(config, "LHM_MIN_TRADES_PER_CLUSTER", 5)
-        )
-        lhm_update_interval_ms = int(
-            getattr(config, "LHM_UPDATE_INTERVAL_MS", 100)
-        )
+        lhm_cluster_threshold_pct = float(getattr(config, "LHM_CLUSTER_THRESHOLD_PCT", 0.003))
+        lhm_min_trades_per_cluster = int(getattr(config, "LHM_MIN_TRADES_PER_CLUSTER", 5))
+        lhm_update_interval_ms = int(getattr(config, "LHM_UPDATE_INTERVAL_MS", 100))
 
         self.liquidity_heatmap = LiquidityHeatmap(
             window_size=lhm_window_size,
@@ -295,14 +130,10 @@ class FlowAnalyzer:
             update_interval_ms=lhm_update_interval_ms
         )
 
-        # Flow tracking
         self.net_flow_windows_min: List[int] = list(NET_FLOW_WINDOWS_MIN)
         self.flow_trades: deque = deque()
 
-        # Absorção config
-        self.absorcao_eps: float = float(
-            getattr(config, "ABSORCAO_DELTA_EPS", ABSORCAO_DELTA_EPS)
-        )
+        self.absorcao_eps: float = float(getattr(config, "ABSORCAO_DELTA_EPS", ABSORCAO_DELTA_EPS))
         try:
             self.absorcao_guard_mode: str = str(
                 getattr(config, "ABSORCAO_GUARD_MODE", ABSORCAO_GUARD_MODE)
@@ -310,7 +141,6 @@ class FlowAnalyzer:
         except Exception:
             self.absorcao_guard_mode = "warn"
         
-        # Qualidade de dados
         self._total_trades_processed = 0
         self._invalid_trades = 0
         self._lock_contentions = 0
@@ -319,10 +149,10 @@ class FlowAnalyzer:
         # Contadores de correção
         self._whale_delta_corrections = 0
         self._is_buyer_maker_conversions = 0
-        self._volume_discrepancies = 0
+        self._volume_discrepancies = 0  # 🆕
 
         logging.info(
-            "✅ FlowAnalyzer v2.2.0 inicializado | "
+            "✅ FlowAnalyzer v2.1.1 inicializado | "
             "Whale threshold: %.2f BTC | Net flow windows: %s min",
             self.whale_threshold,
             self.net_flow_windows_min,
@@ -526,7 +356,7 @@ class FlowAnalyzer:
                     
                     if abs(expected_delta - actual_delta) > 0.001:
                         logging.error(
-                            f"🔴 INCONSISTÊNCIA WHALE: delta={actual_delta:.8f}, "
+                            f"🔴 INCONSISTÊNCIA: whale_delta={actual_delta:.8f}, "
                             f"mas buy-sell={expected_delta:.8f} "
                             f"(buy={self.whale_buy_volume:.8f}, sell={self.whale_sell_volume:.8f})"
                         )
@@ -642,16 +472,7 @@ class FlowAnalyzer:
         self, 
         reference_epoch_ms: Optional[int] = None
     ) -> dict:
-        """
-        Retorna métricas de fluxo com validação completa de volumes.
-        
-        🔹 GARANTIAS v2.2.0:
-          - USD: total_rounded == buy_rounded + sell_rounded
-          - BTC: total_rounded == buy_rounded + sell_rounded
-          - Valores exatos expostos para auditoria
-          - Validação automática com warnings
-          - Correção de inconsistências
-        """
+        """Retorna métricas de fluxo com validação de volumes."""
         try:
             acquired = self._lock.acquire(timeout=5.0)
             
@@ -677,8 +498,8 @@ class FlowAnalyzer:
                 )
                 if abs(self.whale_delta - expected_whale_delta) > 0.001:
                     logging.error(
-                        f"🔴 CORREÇÃO FINAL WHALE: "
-                        f"delta={self.whale_delta:.8f} → {expected_whale_delta:.8f}"
+                        f"🔴 CORREÇÃO FINAL: whale_delta={self.whale_delta:.8f} "
+                        f"→ {expected_whale_delta:.8f}"
                     )
                     self.whale_delta = expected_whale_delta
                     self._whale_delta_corrections += 1
@@ -710,7 +531,7 @@ class FlowAnalyzer:
                     },
                 }
 
-                # 🆕 VALIDAÇÃO DE CONSISTÊNCIA DE SECTOR FLOW
+                # 🆕 VALIDAÇÃO DE CONSISTÊNCIA DE VOLUMES
                 for sector_name, sector_data in metrics["sector_flow"].items():
                     buy_vol = sector_data["buy"]
                     sell_vol = sector_data["sell"]
@@ -720,16 +541,10 @@ class FlowAnalyzer:
                     
                     if abs(delta - expected_delta) > 0.001:
                         logging.warning(
-                            f"⚠️ DISCREPÂNCIA SECTOR[{sector_name}]: "
+                            f"⚠️ DISCREPÂNCIA em sector_flow[{sector_name}]: "
                             f"delta={delta:.8f}, mas buy-sell={expected_delta:.8f}"
                         )
-                        # Corrigir automaticamente
-                        metrics["sector_flow"][sector_name]["delta"] = expected_delta
                         self._volume_discrepancies += 1
-                        logging.info(
-                            f"✅ Corrigido sector[{sector_name}]: "
-                            f"{delta:.8f} → {expected_delta:.8f}"
-                        )
 
                 # Order flow
                 try:
@@ -752,44 +567,32 @@ class FlowAnalyzer:
                             if t['ts'] >= start_ms
                         ]
 
-                        # Delta USD acumulado (mantido para compatibilidade)
                         total_delta_usd = sum(t['delta_usd'] for t in relevant)
                         total_delta_usd = _decimal_round(total_delta_usd, decimals=2)
                         
-                        # ==================== USD COM DECIMAL ====================
-                        total_buy_usd_dec  = Decimal('0')
-                        total_sell_usd_dec = Decimal('0')
+                        total_buy_usd = Decimal('0')
+                        total_sell_usd = Decimal('0')
+                        total_buy_btc = Decimal('0')  # 🆕
+                        total_sell_btc = Decimal('0')  # 🆕
                         
                         for t in relevant:
-                            price_dec = _to_decimal(t['price'])
-                            qty_dec = _to_decimal(t['qty'])
+                            qty_dec = Decimal(str(t['qty']))
+                            price_dec = Decimal(str(t['price']))
                             
                             if t['side'] == 'buy':
-                                total_buy_usd_dec += price_dec * qty_dec
+                                total_buy_usd += price_dec * qty_dec
+                                total_buy_btc += qty_dec
                             else:
-                                total_sell_usd_dec += price_dec * qty_dec
+                                total_sell_usd += price_dec * qty_dec
+                                total_sell_btc += qty_dec
 
-                        total_vol_usd_dec = total_buy_usd_dec + total_sell_usd_dec
+                        total_buy_usd = float(total_buy_usd)
+                        total_sell_usd = float(total_sell_usd)
+                        total_buy_btc = float(total_buy_btc)
+                        total_sell_btc = float(total_sell_btc)
 
-                        # ==================== BTC COM DECIMAL ====================
-                        total_buy_btc_dec  = Decimal('0')
-                        total_sell_btc_dec = Decimal('0')
-                        
-                        for t in relevant:
-                            qty_dec = _to_decimal(t['qty'])
-                            
-                            if t['side'] == 'buy':
-                                total_buy_btc_dec += qty_dec
-                            else:
-                                total_sell_btc_dec += qty_dec
-
-                        total_vol_btc_dec = total_buy_btc_dec + total_sell_btc_dec
-
-                        # Net flow e absorção por janela
                         key_net = f"net_flow_{window_min}m"
-                        order_flow[key_net] = _decimal_round(
-                            total_delta_usd, decimals=4
-                        )
+                        order_flow[key_net] = _decimal_round(total_delta_usd, decimals=4)
 
                         rotulo = self.classificar_absorcao_por_delta(
                             total_delta_usd, 
@@ -805,110 +608,60 @@ class FlowAnalyzer:
                         order_flow[f"absorcao_{window_min}m"] = rotulo
                         absorcao_por_janela[window_min] = rotulo
 
-                        # Cálculos para menor janela
                         if window_min == smallest_window:
-                            # ===== USD: INVARIÂNCIA DE UI =====
-                            buy_usd, sell_usd, total_usd, ui_ok, tol = \
-                                _ui_safe_round_usd(
-                                    total_buy_usd_dec, 
-                                    total_sell_usd_dec
-                                )
-
-                            # Expor valores exatos para auditoria
-                            order_flow["buy_volume_usd_exact"]   = float(total_buy_usd_dec)
-                            order_flow["sell_volume_usd_exact"]  = float(total_sell_usd_dec)
-                            order_flow["total_volume_usd_exact"] = float(total_vol_usd_dec)
-
-                            # Valores arredondados com invariância
-                            order_flow["buy_volume"]   = buy_usd
-                            order_flow["sell_volume"]  = sell_usd
-                            order_flow["total_volume"] = total_usd
-                            order_flow["ui_sum_ok"]    = ui_ok
-                            order_flow["ui_sum_tolerance"] = tol
-
-                            # ===== BTC: INVARIÂNCIA DE UI =====
-                            buy_btc, sell_btc, total_btc, diff_btc = \
-                                _ui_safe_round_btc(
-                                    total_buy_btc_dec, 
-                                    total_sell_btc_dec,
-                                    decimals=8
-                                )
-
-                            # Validação de diferença alta em BTC
-                            if diff_btc > 0.001:
-                                logging.warning(
-                                    f"⚠️ DISCREPÂNCIA BTC ALTA: {diff_btc:.8f} BTC "
-                                    f"(buy={buy_btc:.8f}, sell={sell_btc:.8f})"
-                                )
-                                self._volume_discrepancies += 1
-
-                            order_flow["buy_volume_btc"]   = buy_btc
-                            order_flow["sell_volume_btc"]  = sell_btc
-                            order_flow["total_volume_btc"] = total_btc
-
-                            # ===== VALIDAÇÃO DE DELTA BTC =====
-                            expected_delta_btc = _decimal_round(buy_btc - sell_btc)
-                            actual_delta_btc = sum(t['delta_btc'] for t in relevant)
+                            total_vol_usd = total_buy_usd + total_sell_usd
+                            total_vol_btc = total_buy_btc + total_sell_btc
+                            
+                            # 🆕 VALIDAÇÃO DE CONSISTÊNCIA
+                            expected_delta_btc = _decimal_round(
+                                total_buy_btc - total_sell_btc
+                            )
+                            actual_delta_btc = sum(
+                                t['delta_btc'] for t in relevant
+                            )
                             actual_delta_btc = _decimal_round(actual_delta_btc)
                             
                             if abs(expected_delta_btc - actual_delta_btc) > 0.01:
                                 logging.warning(
-                                    f"⚠️ DISCREPÂNCIA DELTA {window_min}m: "
-                                    f"Σdelta={actual_delta_btc:.4f}, "
+                                    f"⚠️ DISCREPÂNCIA {window_min}m: "
+                                    f"Σdelta_btc={actual_delta_btc:.4f}, "
                                     f"mas buy-sell={expected_delta_btc:.4f} "
-                                    f"(buy={buy_btc:.4f}, sell={sell_btc:.4f})"
+                                    f"(buy={total_buy_btc:.4f}, sell={total_sell_btc:.4f})"
                                 )
                                 self._volume_discrepancies += 1
-
-                            # ===== MÉTRICAS DERIVADAS =====
-                            if float(total_vol_usd_dec) > 0:
-                                flow_imbalance = total_delta_usd / float(total_vol_usd_dec)
+                            
+                            if total_vol_usd > 0:
+                                flow_imbalance = total_delta_usd / total_vol_usd
                                 order_flow["flow_imbalance"] = _decimal_round(
                                     flow_imbalance, decimals=4
                                 )
-                                
-                                order_flow["aggressive_buy_pct"] = _decimal_round(
-                                    float((total_buy_usd_dec / total_vol_usd_dec) * Decimal('100')),
-                                    decimals=2
-                                )
-                                order_flow["aggressive_sell_pct"] = _decimal_round(
-                                    float((total_sell_usd_dec / total_vol_usd_dec) * Decimal('100')),
-                                    decimals=2
-                                )
-                                
-                                if float(total_sell_usd_dec) > 0:
-                                    order_flow["buy_sell_ratio"] = _decimal_round(
-                                        float(total_buy_usd_dec / total_sell_usd_dec),
-                                        decimals=4
-                                    )
-                                else:
-                                    order_flow["buy_sell_ratio"] = None
                             else:
                                 order_flow["flow_imbalance"] = 0.0
+
+                            if total_vol_usd > 0:
+                                order_flow["aggressive_buy_pct"] = _decimal_round(
+                                    (total_buy_usd / total_vol_usd) * 100.0, decimals=2
+                                )
+                                order_flow["aggressive_sell_pct"] = _decimal_round(
+                                    (total_sell_usd / total_vol_usd) * 100.0, decimals=2
+                                )
+                            else:
                                 order_flow["aggressive_buy_pct"] = None
                                 order_flow["aggressive_sell_pct"] = None
+
+                            if total_buy_usd > 0 and total_sell_usd > 0:
+                                order_flow["buy_sell_ratio"] = _decimal_round(
+                                    total_buy_usd / total_sell_usd, decimals=4
+                                )
+                            else:
                                 order_flow["buy_sell_ratio"] = None
 
-                            # ===== LOG DETALHADO =====
-                            logging.info(
-                                f"📊 VOLUMES CALCULADOS (janela {window_min}m):\n"
-                                f"   === USD (Decimal → UI) ===\n"
-                                f"   buy_exact:  {order_flow['buy_volume_usd_exact']:.2f}\n"
-                                f"   sell_exact: {order_flow['sell_volume_usd_exact']:.2f}\n"
-                                f"   total_exact:{order_flow['total_volume_usd_exact']:.2f}\n"
-                                f"   buy_ui:     {order_flow['buy_volume']:.2f}\n"
-                                f"   sell_ui:    {order_flow['sell_volume']:.2f}\n"
-                                f"   total_ui:   {order_flow['total_volume']:.2f}\n"
-                                f"   ui_sum_ok:  {order_flow['ui_sum_ok']} (tol={tol})\n"
-                                f"   === BTC (Decimal → Arredondado) ===\n"
-                                f"   buy:        {buy_btc:.8f}\n"
-                                f"   sell:       {sell_btc:.8f}\n"
-                                f"   total:      {total_btc:.8f}\n"
-                                f"   sum:        {buy_btc + sell_btc:.8f}\n"
-                                f"   diff:       {abs(total_btc - (buy_btc + sell_btc)):.8f}\n"
-                            )
+                            order_flow["buy_volume"] = _decimal_round(total_buy_usd, decimals=2)
+                            order_flow["sell_volume"] = _decimal_round(total_sell_usd, decimals=2)
+                            order_flow["buy_volume_btc"] = _decimal_round(total_buy_btc, decimals=8)  # 🆕
+                            order_flow["sell_volume_btc"] = _decimal_round(total_sell_btc, decimals=8)  # 🆕
+                            order_flow["total_volume_btc"] = _decimal_round(total_vol_btc, decimals=8)  # 🆕
 
-                            # ===== TICK RULE =====
                             tick_rule_sum = 0.0
                             prev_price = None
                             
@@ -924,10 +677,6 @@ class FlowAnalyzer:
                             order_flow["tick_rule_sum"] = _decimal_round(
                                 tick_rule_sum, decimals=4
                             )
-
-                    # Etiquetas de janela
-                    order_flow["computation_window_min"] = smallest_window
-                    order_flow["available_windows_min"]  = list(self.net_flow_windows_min)
 
                     if self.net_flow_windows_min:
                         metrics["tipo_absorcao"] = absorcao_por_janela.get(
@@ -998,18 +747,6 @@ class FlowAnalyzer:
                                 "activity_level": activity_level,
                             }
 
-                        # Validação: soma de volume_pct deve ser ~100%
-                        total_pct = sum(
-                            float(p.get("volume_pct", 0) or 0) 
-                            for p in participant_analysis.values()
-                        )
-                        
-                        if abs(total_pct - 100.0) > 0.5:
-                            logging.warning(
-                                f"⚠️ Soma de volume_pct = {total_pct:.2f}% "
-                                f"(esperado: 100%)"
-                            )
-
                     metrics["order_flow"] = order_flow
                     metrics["participant_analysis"] = participant_analysis
 
@@ -1043,7 +780,6 @@ class FlowAnalyzer:
                         "clusters_count": 0,
                     }
 
-                # Qualidade de dados
                 metrics["data_quality"] = {
                     "total_trades_processed": self._total_trades_processed,
                     "invalid_trades": self._invalid_trades,
@@ -1055,7 +791,7 @@ class FlowAnalyzer:
                     "lock_contentions": self._lock_contentions,
                     "whale_delta_corrections": self._whale_delta_corrections,
                     "is_buyer_maker_conversions": self._is_buyer_maker_conversions,
-                    "volume_discrepancies": self._volume_discrepancies,
+                    "volume_discrepancies": self._volume_discrepancies,  # 🆕
                 }
 
                 return metrics
@@ -1090,7 +826,7 @@ class FlowAnalyzer:
             }
     
     def get_stats(self) -> Dict[str, Any]:
-        """Retorna estatísticas de performance e qualidade."""
+        """Retorna estatísticas de performance."""
         return {
             "total_trades_processed": self._total_trades_processed,
             "invalid_trades": self._invalid_trades,
