@@ -5,7 +5,42 @@
 import sys
 import io
 if sys.platform == 'win32':
+from colorama import init as colorama_init, Fore, Style
+colorama_init(autoreset=True)
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+# --- Helpers de layout para janelas (injetado pelo patch) ---
+try:
+    from colorama import init as _colorama_init, Fore as _Fore, Style as _Style
+    _colorama_init(autoreset=True)
+except Exception:
+    # fallback: define dummies se colorama indisponível
+    class _Dummy:
+        def __getattr__(self, name): return ''
+    _Fore = _Style = _Dummy()
+from datetime import datetime as _dt
+
+def _yellow_rule(width: int = 100) -> str:
+    try:
+        return _Fore.YELLOW + ("━" * width) + _Style.RESET_ALL
+    except Exception:
+        return "━" * width
+
+def print_janela_header(self, delta_fmt: str, vol_fmt: str):
+    try:
+        agora_ny = _dt.now(self.ny_tz).strftime('%H:%M:%S')
+    except Exception:
+        try:
+            agora_ny = _dt.utcnow().strftime('%H:%M:%S')
+        except Exception:
+            agora_ny = "NY"
+    print(_yellow_rule())
+    try:
+print_janela_header(self, delta_fmt, vol_fmt)
+    except Exception:
+        # fallback se atributos não existirem
+        print(f"[Janela] [{agora_ny} NY] | Delta: {delta_fmt} | Vol: {vol_fmt}")
+# --- fim helpers ---
+
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # Agora importa o resto normalmente
@@ -668,16 +703,13 @@ class EnhancedMarketBot:
         def _print_ai_report_clean(report_text: str):
             header = "ANÁLISE PROFISSIONAL DA IA"
             start = (report_text or "")[:200].upper()
-            # ANSI: amarelo
-            YELLOW = "\033[33m"
-            RESET = "\033[0m"
-            sep = "═" * 75
             if header in start:
-                print("\n" + report_text.rstrip())
+                print("\n" + report_text.rstrip() + "\n")
             else:
                 print("\n" + "═" * 25 + " " + header + " " + "═" * 25)
                 print(report_text)
-            print(f"{YELLOW}{sep}{RESET}\n")
+                print("═" * 75 + "\n")
+        
         def ai_worker():
             try:
                 with self.ai_semaphore:
@@ -904,7 +936,7 @@ class EnhancedMarketBot:
                                 self.last_valid_orderbook_time = time.time()
                                 self.orderbook_fetch_failures = 0
                                 logging.info(
-                                    f"✅ Orderbook OK - Janela #{self.window_count}: "
+                                    f"✅ Orderbook OK: "
                                     f"bid=${bid_depth:,.0f}, ask=${ask_depth:,.0f}"
                                 )
                                 break
@@ -1066,7 +1098,7 @@ class EnhancedMarketBot:
                     clusters = liquidity_data.get("clusters", [])
                     
                     if clusters:
-                        print(f"\n📊 LIQUIDITY HEATMAP - Janela #{self.window_count}:")
+                        print(f"\n📊 LIQUIDITY HEATMAP:")
                         for i, cluster in enumerate(clusters[:3]):
                             center_fmt = format_price(cluster.get('center', 0.0))
                             vol_fmt = format_large_number(cluster.get('total_volume', 0))
@@ -1081,7 +1113,7 @@ class EnhancedMarketBot:
                                 f"Age: {age_fmt}"
                             )
                     else:
-                        print(f"\n📊 LIQUIDITY HEATMAP - Janela #{self.window_count}: Nenhum cluster detectado")
+                        print(f"\n📊 LIQUIDITY HEATMAP: Nenhum cluster detectado")
                         
                 except Exception as e:
                     logging.error(f"Erro ao logar liquidity heatmap: {e}")
@@ -1362,7 +1394,7 @@ class EnhancedMarketBot:
             # Log consolidado de qualidade
             if self.window_count % 10 == 0:
                 logging.info(
-                    f"\n📊 HEALTH CHECK - Janela #{self.window_count}:\n"
+                    f"\n📊 HEALTH CHECK::\n"
                     f"  Orderbook: failures={self.orderbook_fetch_failures}, "
                     f"last_valid={time.time() - self.last_valid_orderbook_time:.0f}s ago\n"
                     f"  Value Area: last_valid={time.time() - self.last_valid_vp_time:.0f}s ago\n"
