@@ -1037,7 +1037,7 @@ class EnhancedMarketBot:
                         "is_signal": True,
                         "tipo_evento": "ANALYSIS_TRIGGER",
                         "descricao": "Evento automático para análise da IA",
-                        "timestamp": datetime.now(self.ny_tz).isoformat(timespec="seconds"),
+                        "timestamp": self.time_manager.now_utc_iso(timespec="seconds"),
                         "delta": enriched.get("delta_fechamento", 0),
                         "volume_total": enriched.get("volume_total", 0),
                         "preco_fechamento": enriched.get("ohlc", {}).get("close", 0),
@@ -1218,7 +1218,7 @@ class EnhancedMarketBot:
                             "descricao": f"Preço {preco_fmt} tocou {z.kind} {z.timeframe} [{low_fmt} ~ {high_fmt}]",
                             "zone_context": z.to_dict(),
                             "preco_fechamento": preco_atual,
-                            "timestamp": datetime.now(self.ny_tz).isoformat(timespec="seconds"),
+                            "timestamp": self.time_manager.now_utc_iso(timespec="seconds"),
                         })
                         
                         if "historical_confidence" not in zone_event:
@@ -1340,7 +1340,7 @@ class EnhancedMarketBot:
                                 "tipo_evento": "Alerta",
                                 "resultado_da_batalha": alert.get('type'),
                                 "descricao": descricao_alert,
-                                "timestamp": datetime.now(self.ny_tz).isoformat(timespec="seconds"),
+                                "timestamp": self.time_manager.now_utc_iso(timespec="seconds"),
                                 "severity": alert.get('severity'),
                                 "probability": alert.get('probability'),
                                 "action": alert.get('action'),
