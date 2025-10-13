@@ -74,6 +74,7 @@ from flow_analyzer import FlowAnalyzer
 from ai_analyzer_qwen import AIAnalyzer
 from report_generator import generate_ai_analysis_report
 from levels_registry import LevelRegistry
+from data_validator import validator
 
 # 🔹 NOVOS MÓDULOS
 from time_manager import TimeManager
@@ -1101,6 +1102,14 @@ class EnhancedMarketBot:
             
             for signal in signals:
                 if signal.get("is_signal", False):
+                    # Integração da validação de dados
+                    validated_signal = validator.validate_and_clean(signal)
+                    if not validated_signal:
+                        logging.warning(f"Evento {signal.get('tipo_evento')} / {signal.get('resultado_da_batalha')} descartado pela validação.")
+                        continue
+
+                    signal = validated_signal
+
                     if "derivatives" not in signal:
                         signal["derivatives"] = derivatives_context
                     
