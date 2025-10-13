@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # data_validator.py - VERSÃO CORRIGIDA v2.0
 
 import time
@@ -31,8 +32,12 @@ class DataValidator:
             'whale_delta': 0,
             'year': 0,
             'timestamp': 0,
-            'volumes': 0
+            'volumes': 0,
+            'volume_consistency_failed': 0,
+            'participant_direction_mismatch': 0,
+            'temporal_inconsistency': 0
         }
+        self.last_event_timestamp_ms = 0
 
     def validate_and_clean(self, data: Dict) -> Optional[Dict]:
         """Valida e limpa dados antes do processamento"""
@@ -141,18 +146,80 @@ class DataValidator:
             if not self._validate_and_fix_volumes(data['fluxo_continuo']['sector_flow']):
                 return False
 
+<<<<<<< HEAD
         # 4. Validação de participação
         if 'participant_analysis' in data:
             if not self._validate_participant_analysis(data['participant_analysis']):
+=======
+        # 4. Validação de consistência de volume BTC/USDT
+        if not self._validate_volume_consistency(data):
+            self.corrections_count['volume_consistency_failed'] += 1
+            # Não retorna False, apenas loga e conta por enquanto.
+
+        # 5. Validação de participação
+        if 'fluxo_continuo' in data and 'participant_analysis' in data['fluxo_continuo']:
+            if not self._validate_participant_analysis(data['fluxo_continuo']):
+>>>>>>> 22247cc (Atualiza scripts e configurações do robô (ajustes e melhorias))
                 return False
                 
-        # 5. Validação de tempo
+        # 6. Validação de tempo
+        if not self._validate_temporal_consistency(data):
+            self.corrections_count['temporal_inconsistency'] += 1
+            return False # Inconsistência temporal é um erro crítico
+
         if 'age_ms' in data:
             if data['age_ms'] < 0:
                 self.logger.warning(f"age_ms negativo: {data['age_ms']}")
                 return False
                 
         return True
+
+    def _validate_temporal_consistency(self, data: Dict) -> bool:
+        """Valida a ordem cronológica dos eventos."""
+        current_timestamp_ms = data.get('epoch_ms')
+        if current_timestamp_ms:
+            if self.last_event_timestamp_ms > 0 and current_timestamp_ms < self.last_event_timestamp_ms:
+                self.logger.error(f"Inconsistência temporal detectada: Evento atual ({current_timestamp_ms}) é mais antigo que o anterior ({self.last_event_timestamp_ms}).")
+                return False
+            self.last_event_timestamp_ms = current_timestamp_ms
+        return True
+
+    def _validate_volume_consistency(self, event: Dict) -> bool:
+        """Valida a consistência entre volumes BTC, USDT e preço."""
+        try:
+            # Tenta obter os valores de múltiplos locais possíveis para robustez
+            btc_volume = event.get('volume_total_btc') or event.get('volume_total')
+            usdt_volume_str = event.get('total_notional_usdt')
+            avg_price = event.get('preco_fechamento')
+
+            if btc_volume is None or usdt_volume_str is None or avg_price is None:
+                return True # Dados insuficientes para validar
+
+            btc_volume = float(btc_volume)
+            avg_price = float(avg_price)
+
+            # Converte volume USDT de string (ex: "2.12M") para float
+            usdt_volume_str = str(usdt_volume_str).upper()
+            if 'M' in usdt_volume_str:
+                usdt_volume = float(usdt_volume_str.replace('M', '')) * 1_000_000
+            elif 'K' in usdt_volume_str:
+                usdt_volume = float(usdt_volume_str.replace('K', '')) * 1_000
+            else:
+                usdt_volume = float(usdt_volume_str)
+
+            if usdt_volume == 0: return True
+
+            expected_usdt = btc_volume * avg_price
+            diff_percent = abs(expected_usdt - usdt_volume) / usdt_volume * 100
+
+            # Tolerância de 0.5%
+            if diff_percent > 0.5:
+                self.logger.warning(f"Discrepância de volume BTC/USDT: {diff_percent:.2f}%. Esperado: ${expected_usdt:,.0f}, Atual: ${usdt_volume:,.0f}")
+                return False
+            return True
+        except (ValueError, TypeError, AttributeError) as e:
+            self.logger.debug(f"Não foi possível validar consistência de volume: {e}")
+            return True # Não falha se os dados estiverem mal formatados
 
     def _validate_orderbook(self, orderbook: Dict) -> bool:
         """Valida dados do orderbook"""
@@ -220,19 +287,62 @@ class DataValidator:
                 
         return True
 
-    def _validate_participant_analysis(self, analysis: Dict) -> bool:
-        """Valida análise de participantes"""
-        total = 0
+    def _validate_participant_analysis(self, fluxo_continuo: Dict) -> bool:
+        """Valida a análise de participantes, incluindo a direção vs delta."""
+        analysis = fluxo_continuo.get('participant_analysis', {})
+        if not analysis:
+            return True # Nada a validar
+
+        total_pct = 0
+        all_valid = True
+
         for role in ['retail', 'mid', 'whale']:
+<<<<<<< HEAD
             pct = analysis.get(role, {}).get('volume_pct', 0)
             total += pct
 
         # Deve somar 100% com tolerância
         if abs(total - 100) > 0.5:
             self.logger.warning(f"Percentuais não somam 100%: {total:.2f}%")
+=======
+            # Valida soma de percentuais
+            pct_str = analysis.get(role, {}).get('volume_pct', '0')
+            try:
+                total_pct += float(pct_str)
+            except ValueError:
+                self.logger.warning(f"Formato de volume_pct inválido para {role}: {pct_str}")
+
+            # Valida direção vs delta
+            # O delta relevante é o do 'sector_flow', não o do 'participant_analysis' que não existe
+            sector_flow = fluxo_continuo.get('sector_flow', {})
+            segment_flow = sector_flow.get(role, {})
+            delta_str = segment_flow.get('delta', '0')
+            direction = analysis.get(role, {}).get('direction')
+
+            if direction is None:
+                continue
+
+            try:
+                delta = float(delta_str)
+                if delta > 0 and direction == 'SELL':
+                    self.logger.warning(f"Inconsistência de participante ({role}): delta positivo ({delta}) mas direção SELL")
+                    self.corrections_count['participant_direction_mismatch'] += 1
+                    all_valid = False
+                if delta < 0 and direction == 'BUY':
+                    self.logger.warning(f"Inconsistência de participante ({role}): delta negativo ({delta}) mas direção BUY")
+                    self.corrections_count['participant_direction_mismatch'] += 1
+                    all_valid = False
+            except (ValueError, TypeError):
+                self.logger.warning(f"Formato de delta inválido para {role} em sector_flow: {delta_str}")
+
+
+        # Valida soma de percentuais
+        if abs(total_pct - 100) > 0.5:
+            self.logger.warning(f"Percentuais de participantes não somam 100%: {total_pct:.2f}%")
+>>>>>>> 22247cc (Atualiza scripts e configurações do robô (ajustes e melhorias))
             # Não falha, apenas avisa
             
-        return True
+        return all_valid
 
     def _correct_inconsistencies(self, data: Dict) -> Dict:
         """Corrige inconsistências conhecidas"""

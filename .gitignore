@@ -37,3 +37,6 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+eventos_visuais.log
+# ou, de forma mais ampla:
+*.log

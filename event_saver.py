@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # event_saver.py - Ponto central de serialização com formatação limpa (VERSÃO FINAL)
 import json
 from pathlib import Path
