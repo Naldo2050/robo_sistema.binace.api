@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # event_saver.py - Ponto central de serialização com formatação limpa (VERSÃO FINAL)
 import json
 from pathlib import Path
@@ -144,54 +143,43 @@ class EventSaver:
 
     def _clean_numeric_value(self, value, field_type="generic"):
         """
-        Limpa e formata um valor numérico baseado no tipo de campo.
-        Retorna o valor formatado para serialização JSON (número limpo, não string).
+        Limpa e arredonda um valor numérico, retornando-o como float ou int.
+        A formatação para exibição é feita em outra função.
         """
         if value is None or value == '' or (isinstance(value, str) and value.lower() in ['n/a', 'none', 'null']):
             return None
         
         try:
-            # Converte para float primeiro
+            # Converte para float, removendo vírgulas de strings
             if isinstance(value, str):
                 value = float(value.replace(',', ''))
             else:
                 value = float(value)
-            
-            # Aplica formatação específica por tipo
+
+            if np.isnan(value) or np.isinf(value):
+                return None
+
+            # Aplica arredondamento baseado no tipo
+            precision = 4 # Default
             if field_type == "price":
-                # Preços: mantém precisão adequada (2-8 decimais)
-                if abs(value) >= 1000:
-                    return round(value, 2)
-                elif abs(value) >= 100:
-                    return round(value, 3)
-                elif abs(value) >= 1:
-                    return round(value, 4)
-                else:
-                    # Pequenos valores: até 8 decimais significativos
-                    return round(value, 8)
-            
+                precision = 4
             elif field_type == "quantity":
-                # Quantidades: remove decimais desnecessários
-                if value == int(value):
-                    return int(value)
-                else:
-                    return round(value, 2)
-            
+                precision = 3
             elif field_type == "percent":
-                # Percentuais: sempre 2-4 decimais
-                return round(value, 4)
-            
+                precision = 4
             elif field_type == "delta":
-                # Deltas: 2 decimais
-                return round(value, 2)
-            
+                precision = 3
             elif field_type == "scientific":
-                # Valores científicos: 6 decimais
-                return round(value, 6)
+                # Para garantir que não seja notação científica no JSON
+                return float(f"{value:.8f}")
+
+            rounded_value = round(value, precision)
             
-            else:
-                # Genérico: 4 decimais
-                return round(value, 4)
+            # Retorna como int se não houver parte fracionária
+            if rounded_value == int(rounded_value):
+                return int(rounded_value)
+
+            return rounded_value
                 
         except (ValueError, TypeError):
             return value  # Retorna original se não for numérico
@@ -661,7 +649,7 @@ class EventSaver:
             return json.dumps(data, ensure_ascii=False, default=str)
 
     def _add_visual_log_entry(self, event: dict):
-        """Log visual amigável com formatação adequada."""
+        """Log visual amigável com formatação adequada e JSON válido."""
         try:
             # 🔹 PRIORIZA epoch_ms PARA GERAR HORÁRIOS
             epoch_ms = event.get("epoch_ms")
@@ -721,9 +709,10 @@ class EventSaver:
                 if "timestamp" in clean:
                     clean["timestamp_utc"] = clean.pop("timestamp")
 
-                # Usa a função de formatação customizada CORRIGIDA
-                log_string = self._compact_json_log(clean, indent=0)
+                # CORREÇÃO: Usar json.dump para garantir um JSON válido e f.flush() para evitar truncamento.
+                log_string = json.dumps(clean, indent=4, ensure_ascii=False, default=str)
                 f.write(log_string + "\n")
+                f.flush() # Força a escrita para o disco
 
         except Exception as e:
             logging.error(f"Erro ao adicionar entrada visual: {e}")
@@ -733,6 +722,7 @@ class EventSaver:
                 fallback_file = fallback_dir / "eventos_visuais.log"
                 with open(fallback_file, "a", encoding="utf-8") as f:
                     f.write(f"Erro ao adicionar entrada: {e}\nEvento: {json.dumps(event, ensure_ascii=False, default=str)}\n")
+                    f.flush()
             except Exception as e2:
                 logging.critical(f"💀 FALHA TOTAL ao salvar entrada visual: {e2}")
 
