@@ -146,11 +146,6 @@ class DataValidator:
             if not self._validate_and_fix_volumes(data['fluxo_continuo']['sector_flow']):
                 return False
 
-<<<<<<< HEAD
-        # 4. Validação de participação
-        if 'participant_analysis' in data:
-            if not self._validate_participant_analysis(data['participant_analysis']):
-=======
         # 4. Validação de consistência de volume BTC/USDT
         if not self._validate_volume_consistency(data):
             self.corrections_count['volume_consistency_failed'] += 1
@@ -159,7 +154,6 @@ class DataValidator:
         # 5. Validação de participação
         if 'fluxo_continuo' in data and 'participant_analysis' in data['fluxo_continuo']:
             if not self._validate_participant_analysis(data['fluxo_continuo']):
->>>>>>> 22247cc (Atualiza scripts e configurações do robô (ajustes e melhorias))
                 return False
                 
         # 6. Validação de tempo
@@ -297,14 +291,6 @@ class DataValidator:
         all_valid = True
 
         for role in ['retail', 'mid', 'whale']:
-<<<<<<< HEAD
-            pct = analysis.get(role, {}).get('volume_pct', 0)
-            total += pct
-
-        # Deve somar 100% com tolerância
-        if abs(total - 100) > 0.5:
-            self.logger.warning(f"Percentuais não somam 100%: {total:.2f}%")
-=======
             # Valida soma de percentuais
             pct_str = analysis.get(role, {}).get('volume_pct', '0')
             try:
@@ -335,11 +321,9 @@ class DataValidator:
             except (ValueError, TypeError):
                 self.logger.warning(f"Formato de delta inválido para {role} em sector_flow: {delta_str}")
 
-
         # Valida soma de percentuais
         if abs(total_pct - 100) > 0.5:
             self.logger.warning(f"Percentuais de participantes não somam 100%: {total_pct:.2f}%")
->>>>>>> 22247cc (Atualiza scripts e configurações do robô (ajustes e melhorias))
             # Não falha, apenas avisa
             
         return all_valid
@@ -456,7 +440,10 @@ class DataValidator:
                 f"whale_delta={self.corrections_count['whale_delta']}, "
                 f"year={self.corrections_count['year']}, "
                 f"timestamp={self.corrections_count['timestamp']}, "
-                f"volumes={self.corrections_count['volumes']}"
+                f"volumes={self.corrections_count['volumes']}, "
+                f"volume_consistency_failed={self.corrections_count['volume_consistency_failed']}, "
+                f"participant_direction_mismatch={self.corrections_count['participant_direction_mismatch']}, "
+                f"temporal_inconsistency={self.corrections_count['temporal_inconsistency']}"
             )
 
     def get_correction_stats(self) -> Dict[str, int]:

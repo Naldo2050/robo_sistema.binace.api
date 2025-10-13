@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # event_saver.py - Ponto central de serialização com formatação limpa (VERSÃO FINAL)
 import json
 from pathlib import Path
@@ -10,6 +9,7 @@ import atexit
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from time_manager import TimeManager
+import numpy as np  # 🔹 ADICIONADO IMPORT DO NUMPY
 
 # 🔹 IMPORTA UTILITÁRIOS DE FORMATAÇÃO
 from format_utils import (
