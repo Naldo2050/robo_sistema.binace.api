@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # data_pipeline.py - VERSÃO FINAL ULTRA-OTIMIZADA COM MÁXIMA REDUÇÃO
 import pandas as pd
 import numpy as np
