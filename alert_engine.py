@@ -100,11 +100,14 @@ def detect_volatility_squeeze(
     current_percentile = np.sum(vols <= current_vol) / len(vols) * 100
     
     if current_vol <= low_thresh:
+        # Probabilidade aumenta quanto mais perto de zero
+        prob = 0.6 + 0.3 * (1 - (current_vol / max(low_thresh, 1e-9)))
+        severity = "HIGH" if current_percentile < 5 else "MEDIUM"
         alert = {
             "type": "VOLATILITY_SQUEEZE",
             "level": "LOW",
-            "severity": "MEDIUM",
-            "probability": 0.6,
+            "severity": severity,
+            "probability": min(prob, 0.95), # Cap em 95%
             "action": "WATCH_FOR_BREAKOUT",
             # 🔹 Adiciona valores formatados
             "volatility_current": current_vol,
@@ -115,11 +118,14 @@ def detect_volatility_squeeze(
         return _clean_alert_data(alert)
     
     if current_vol >= high_thresh:
+        # Probabilidade aumenta quanto mais acima do threshold
+        prob = 0.6 + 0.3 * ((current_vol - high_thresh) / max(high_thresh, 1e-9))
+        severity = "HIGH" if current_percentile > 95 else "MEDIUM"
         alert = {
             "type": "VOLATILITY_SQUEEZE",
             "level": "HIGH",
-            "severity": "MEDIUM",
-            "probability": 0.6,
+            "severity": severity,
+            "probability": min(prob, 0.95), # Cap em 95%
             "action": "WATCH_FOR_REVERSION",
             # 🔹 Adiciona valores formatados
             "volatility_current": current_vol,
