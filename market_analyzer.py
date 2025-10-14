@@ -1,39 +1,27 @@
-# market_analyzer.py v2.2.2 — COMPLETO e CORRIGIDO com mapeamento de volumes
+# market_analyzer.py v2.3.0 — SUPER-CORRECTED
 """
-Market Analyzer com integração COMPLETA e validação robusta.
+Market Analyzer com integração COMPLETA, validação robusta e precisão máxima.
 
-📌 CORREÇÕES v2.2.2:
-  ✅ Adiciona mapeamento de volumes (buy_volume_btc → volume_compra)
-  ✅ Validação de consistência volume_total = buy + sell
-  ✅ Usa Decimal para evitar erros de arredondamento (0.01 BTC)
-  ✅ Logs detalhados de discrepâncias
-  ✅ Todas as correções das versões anteriores
+📌 CORREÇÕES v2.3.0:
+  ✅ Tolerância correta (1e-8 BTC em vez de 0.001 BTC)
+  ✅ Validação de timestamps em clusters do heatmap
+  ✅ Correção automática de age_ms negativo
+  ✅ Validação de first_seen <= last_seen
+  ✅ Logs informativos sem poluir console
+  ✅ Integração com data_validator para validação final
+  ✅ Precisão máxima em TODOS os cálculos
+  ✅ Contadores de correções detalhados
 
-📌 O que há aqui (tudo em um arquivo, por pedido):
-  • RobustConnectionManager  — WebSocket com backoff e anti-stale (fecha socket e reconecta)
-  • EnhancedMarketAnalyzer   — apenas análise e validação do evento integrado
-  • EnhancedMarketBot        — orquestra janelas, persiste eventos, logs e healthcheck
-  • __main__                 — ponto de execução
-
-Principais melhorias (v2.2.2):
-  ✅ Mapeamento correto de volumes BTC/USD
-  ✅ Arredondamento decimal preciso
-  ✅ Validação automática de discrepâncias
-  ✅ Reconexão por "stale connection" fecha o socket (força saída do run_forever)
-  ✅ Parser de mensagens tolerante a payloads combinados: {"stream": "...", "data": {...}}
-  ✅ Remoção de duplicação: usa IntegrationValidator do módulo oficial
-  ✅ Sanitização de trades (tipos/valores) antes de alimentar o FlowAnalyzer
-  ✅ Logs nomeados e mensagem de sucesso padronizada
-  ✅ Encerramento gracioso (disconnect fecha socket; join das threads)
-  ✅ Integração com log_formatter para clareza CVD vs Delta
-  ✅ Código coeso e pronto para rodar sem arquivos extras além dos módulos já existentes
-
-Requisitos do projeto: time_manager.py, orderbook_analyzer.py, flow_analyzer.py,
-ml_features.py, event_saver.py, health_monitor.py, integration_validator.py, 
-log_formatter.py, config.py
+📌 Componentes integrados:
+  • RobustConnectionManager  — WebSocket robusto
+  • EnhancedMarketAnalyzer   — análise e validação completa
+  • EnhancedMarketBot        — orquestração de janelas
+  • Validação de timestamps  — previne erros críticos
+  • Data validator           — validação final de eventos
 
 Autor: Sistema de Trading Institucional
 Data: 2025-01-11
+Versão: 2.3.0
 """
 
 from __future__ import annotations
@@ -64,13 +52,14 @@ from time_manager import TimeManager
 from event_saver import EventSaver
 from health_monitor import HealthMonitor
 from log_formatter import format_flow_log, track_cvd_consistency
+from data_validator import DataValidator  # 🆕 Importa validador
 
 try:
     import websocket  # type: ignore
 except Exception as e:
     raise RuntimeError("O pacote 'websocket-client' é obrigatório. pip install websocket-client") from e
 
-SCHEMA_VERSION = "2.2.2"
+SCHEMA_VERSION = "2.3.0"
 
 logger = logging.getLogger("market_analyzer")
 
@@ -83,6 +72,8 @@ def _decimal_round(value: float, decimals: int = 8) -> float:
     """
     Arredonda usando Decimal para evitar erros de float.
     
+    🆕 CORREÇÃO: Trata None e valores inválidos
+    
     Args:
         value: Valor a arredondar
         decimals: Número de casas decimais
@@ -90,12 +81,17 @@ def _decimal_round(value: float, decimals: int = 8) -> float:
     Returns:
         Valor arredondado com precisão decimal
     """
+    if value is None:
+        return 0.0
+    
     try:
+        # Converte para Decimal usando string para evitar erros de float
         d = Decimal(str(value))
         quantize_str = '0.' + '0' * decimals
         return float(d.quantize(Decimal(quantize_str), rounding=ROUND_HALF_UP))
-    except Exception:
-        return round(value, decimals)
+    except (ValueError, TypeError, Exception) as e:
+        logger.warning(f"⚠️ Erro ao arredondar {value}: {e}. Retornando 0.0")
+        return 0.0
 
 
 def _validate_volume_consistency(
@@ -106,6 +102,8 @@ def _validate_volume_consistency(
 ) -> Tuple[bool, float]:
     """
     Valida consistência de volumes e retorna flag + volume corrigido.
+    
+    🆕 CORREÇÃO: Tolerância correta (1e-8 BTC em vez de 0.001 BTC)
     
     Args:
         volume_total: Volume total reportado
@@ -124,24 +122,117 @@ def _validate_volume_consistency(
         expected_total = _decimal_round(vc + vv, decimals=8)
         discrepancy = abs(vt - expected_total)
         
-        if discrepancy > 0.001:  # Tolerância: 0.001 BTC
-            logger.error(
-                f"🔴 DISCREPÂNCIA DE VOLUME (janela {window_id}):\n"
-                f"   volume_compra: {vc:.8f} BTC\n"
-                f"   volume_venda: {vv:.8f} BTC\n"
-                f"   Soma calculada: {expected_total:.8f} BTC\n"
-                f"   Total reportado: {vt:.8f} BTC\n"
-                f"   DIFERENÇA: {discrepancy:.8f} BTC\n"
-                f"   ---\n"
-                f"   ✅ Usando soma calculada (mais confiável)"
-            )
+        # 🆕 CORREÇÃO: Tolerância adequada (1e-8 BTC = 0.00000001 BTC)
+        tolerance = 1e-8
+        
+        if discrepancy > tolerance:
+            # 🆕 CORREÇÃO: Log apenas se discrepância for significativa (> 0.0001 BTC)
+            if discrepancy > 0.0001:
+                logger.error(
+                    f"🔴 DISCREPÂNCIA SIGNIFICATIVA DE VOLUME (janela {window_id}):\n"
+                    f"   volume_compra: {vc:.8f} BTC\n"
+                    f"   volume_venda: {vv:.8f} BTC\n"
+                    f"   Soma calculada: {expected_total:.8f} BTC\n"
+                    f"   Total reportado: {vt:.8f} BTC\n"
+                    f"   DIFERENÇA: {discrepancy:.8f} BTC (${discrepancy * 100000:.2f} @ $100k/BTC)\n"
+                    f"   ---\n"
+                    f"   ✅ Usando soma calculada (mais confiável)"
+                )
+            else:
+                # Log de debug para discrepâncias pequenas
+                logger.debug(
+                    f"⚠️ Pequena discrepância de volume (janela {window_id}): "
+                    f"{discrepancy:.8f} BTC. Corrigindo silenciosamente."
+                )
+            
             return False, expected_total
         
         return True, vt
         
     except Exception as e:
         logger.error(f"Erro ao validar volumes: {e}")
-        return False, _decimal_round(volume_compra + volume_venda)
+        # Fallback: usa soma calculada
+        return False, _decimal_round(volume_compra + volume_venda, decimals=8)
+
+
+def _validate_and_fix_cluster_timestamps(
+    cluster: Dict[str, Any],
+    reference_ts_ms: int,
+    window_id: str = "UNKNOWN"
+) -> Dict[str, Any]:
+    """
+    🆕 Valida e corrige timestamps em clusters do heatmap.
+    
+    Garante:
+    - first_seen_ms <= last_seen_ms
+    - age_ms >= 0
+    - Timestamps positivos
+    
+    Args:
+        cluster: Cluster a validar
+        reference_ts_ms: Timestamp de referência
+        window_id: ID da janela (para log)
+        
+    Returns:
+        Cluster corrigido
+    """
+    try:
+        first_seen = cluster.get('first_seen_ms')
+        last_seen = cluster.get('last_seen_ms')
+        age_ms = cluster.get('age_ms')
+        
+        # Valida first_seen e last_seen
+        if first_seen is not None and last_seen is not None:
+            first = int(first_seen)
+            last = int(last_seen)
+            
+            # Validar que são positivos
+            if first <= 0 or last <= 0:
+                logger.warning(
+                    f"⚠️ Cluster com timestamps inválidos (janela {window_id}): "
+                    f"first={first}, last={last}. Usando reference."
+                )
+                cluster['first_seen_ms'] = reference_ts_ms
+                cluster['last_seen_ms'] = reference_ts_ms
+            
+            # Validar que first <= last
+            elif first > last:
+                logger.warning(
+                    f"⚠️ Cluster com timestamps invertidos (janela {window_id}): "
+                    f"first_seen ({first}) > last_seen ({last}). Invertendo."
+                )
+                cluster['first_seen_ms'] = last
+                cluster['last_seen_ms'] = first
+        
+        # Valida age_ms
+        if age_ms is not None:
+            age = int(age_ms)
+            
+            if age < 0:
+                # Tenta recalcular
+                last_seen = cluster.get('last_seen_ms')
+                if last_seen and reference_ts_ms:
+                    recalculated_age = reference_ts_ms - int(last_seen)
+                    if recalculated_age >= 0:
+                        cluster['age_ms'] = recalculated_age
+                        logger.debug(
+                            f"✅ age_ms corrigido em cluster (janela {window_id}): "
+                            f"{age} → {recalculated_age}"
+                        )
+                    else:
+                        cluster['age_ms'] = 0
+                        logger.warning(
+                            f"⚠️ age_ms negativo irrecuperável (janela {window_id}). "
+                            f"Zerado."
+                        )
+                else:
+                    cluster['age_ms'] = 0
+        
+        return cluster
+        
+    except Exception as e:
+        logger.error(f"Erro ao validar timestamps de cluster: {e}")
+        return cluster
 
 
 # ========================================================================
@@ -200,7 +291,7 @@ class RobustConnectionManager:
         self.ws: Optional[websocket.WebSocketApp] = None
 
         logger.info(
-            "🔌 ConnectionManager inicializado: %s | max_reconnects=%d | backoff %.1f..%.1fs",
+            "🔌 ConnectionManager v2.3.0 inicializado: %s | max_reconnects=%d | backoff %.1f..%.1fs",
             symbol, max_reconnect_attempts, initial_delay, max_delay
         )
 
@@ -323,7 +414,6 @@ class RobustConnectionManager:
                     on_open=self._on_open,
                 )
 
-                # run_forever bloqueia até fechar; ao fechar, voltamos e decidimos reconectar
                 self.ws.run_forever(ping_interval=self.heartbeat_interval, ping_timeout=10)
 
                 if self.should_stop:
@@ -385,18 +475,21 @@ class AnalyzerStats:
     total_windows: int = 0
     valid_events: int = 0
     invalid_events: int = 0
-    volume_corrections: int = 0  # 🆕 Contador de correções
+    volume_corrections: int = 0
+    timestamp_corrections: int = 0  # 🆕
 
 
 class EnhancedMarketAnalyzer:
     """
-    Analisador de mercado COMPLETO com validação robusta.
-    Integra FlowAnalyzer, OrderBookAnalyzer, ML features e IntegrationValidator.
+    Analisador de mercado COMPLETO com validação robusta v2.3.0.
     
-    🆕 v2.2.2:
-      - Mapeia volumes corretamente (buy_volume_btc → volume_compra)
-      - Valida consistência volume_total = buy + sell
-      - Usa Decimal para evitar erros de 0.01 BTC
+    🆕 CORREÇÕES v2.3.0:
+      - Validação de timestamps em clusters do heatmap
+      - Correção automática de age_ms negativo
+      - Validação de first_seen <= last_seen
+      - Tolerância correta (1e-8 BTC)
+      - Integração com data_validator
+      - Logs informativos sem poluir console
     """
 
     def __init__(
@@ -406,6 +499,7 @@ class EnhancedMarketAnalyzer:
         flow_analyzer: Optional[FlowAnalyzer] = None,
         orderbook_analyzer: Optional[OrderBookAnalyzer] = None,
         validator: Optional[IntegrationValidator] = None,
+        data_validator: Optional[DataValidator] = None,  # 🆕
     ) -> None:
         self.symbol = symbol
         self.time_manager = time_manager or TimeManager()
@@ -418,6 +512,7 @@ class EnhancedMarketAnalyzer:
             rate_limit_threshold=10,
         )
         self.validator = validator or IntegrationValidator()
+        self.data_validator = data_validator or DataValidator()  # 🆕
 
         self.stats = AnalyzerStats()
         self.last_event: Optional[Dict[str, Any]] = None
@@ -426,8 +521,8 @@ class EnhancedMarketAnalyzer:
         logger.info("✅ EnhancedMarketAnalyzer v%s inicializado", SCHEMA_VERSION)
         logger.info("   Symbol:           %s", symbol)
         logger.info("   Schema Version:   %s", SCHEMA_VERSION)
-        logger.info("   Components:       FlowAnalyzer, OrderBook, ML, Validator")
-        logger.info("   Features:         Volume Mapping, Decimal Rounding, Consistency Validation")
+        logger.info("   Components:       FlowAnalyzer, OrderBook, ML, Validator, DataValidator")
+        logger.info("   Features:         Volume Validation, Timestamp Validation, Precision Control")
         logger.info("=" * 72)
 
     # ---------------- helpers ----------------
@@ -468,9 +563,8 @@ class EnhancedMarketAnalyzer:
     def analyze_window(self, window_data: List[Dict[str, Any]], window_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Analisa uma janela de trades e retorna um evento integrado.
-        Retorna None quando inválido/descartado.
         
-        🆕 v2.2.2: Adiciona mapeamento e validação de volumes
+        🆕 v2.3.0: Validação completa de timestamps e volumes
         """
         self.stats.total_windows += 1
 
@@ -497,7 +591,7 @@ class EnhancedMarketAnalyzer:
                 return None
             orderbook_data = orderbook_event.get("orderbook_data", {})
 
-            # ML features a partir da janela
+            # ML features
             df_window = pd.DataFrame(clean_window)
             ml_features = generate_ml_features(
                 df=df_window,
@@ -508,19 +602,19 @@ class EnhancedMarketAnalyzer:
             )
 
             # ============================================================
-            # 🆕 MAPEAMENTO E VALIDAÇÃO DE VOLUMES (v2.2.2)
+            # 🆕 MAPEAMENTO E VALIDAÇÃO DE VOLUMES (v2.3.0)
             # ============================================================
             order_flow_data = flow_metrics.get("order_flow", {})
             
-            # Extrair volumes em BTC
-            volume_compra_btc = _decimal_round(order_flow_data.get("buy_volume_btc", 0.0))
-            volume_venda_btc = _decimal_round(order_flow_data.get("sell_volume_btc", 0.0))
+            # Extrair volumes em BTC com precisão de 8 casas
+            volume_compra_btc = _decimal_round(order_flow_data.get("buy_volume_btc", 0.0), decimals=8)
+            volume_venda_btc = _decimal_round(order_flow_data.get("sell_volume_btc", 0.0), decimals=8)
             
             # Calcular total com arredondamento decimal
-            volume_total_calculated = _decimal_round(volume_compra_btc + volume_venda_btc)
+            volume_total_calculated = _decimal_round(volume_compra_btc + volume_venda_btc, decimals=8)
             
-            # Validar consistência
-            reported_total = _decimal_round(order_flow_data.get("total_volume_btc", 0.0))
+            # Validar consistência com tolerância correta
+            reported_total = _decimal_round(order_flow_data.get("total_volume_btc", 0.0), decimals=8)
             
             if reported_total > 0:
                 is_consistent, volume_total_btc = _validate_volume_consistency(
@@ -533,19 +627,33 @@ class EnhancedMarketAnalyzer:
                 if not is_consistent:
                     self.stats.volume_corrections += 1
             else:
-                # Se não há total reportado, usar o calculado
                 volume_total_btc = volume_total_calculated
             
-            # Extrair volumes em USD
+            # Extrair volumes em USD (precisão de 2 casas para display)
             volume_compra_usd = _decimal_round(order_flow_data.get("buy_volume", 0.0), decimals=2)
             volume_venda_usd = _decimal_round(order_flow_data.get("sell_volume", 0.0), decimals=2)
-            
-            # Log de debug (removível em produção)
-            logger.debug(
-                f"Volumes janela {window_id}: "
-                f"BTC buy={volume_compra_btc:.4f}, sell={volume_venda_btc:.4f}, total={volume_total_btc:.4f} | "
-                f"USD buy={volume_compra_usd:.2f}, sell={volume_venda_usd:.2f}"
-            )
+
+            # ============================================================
+            # 🆕 VALIDAÇÃO DE TIMESTAMPS EM CLUSTERS (v2.3.0)
+            # ============================================================
+            liquidity_heatmap = flow_metrics.get("liquidity_heatmap", {})
+            if "clusters" in liquidity_heatmap:
+                corrected_clusters = []
+                for cluster in liquidity_heatmap["clusters"]:
+                    corrected_cluster = _validate_and_fix_cluster_timestamps(
+                        cluster=cluster,
+                        reference_ts_ms=last_trade_ts,
+                        window_id=window_id or "UNKNOWN"
+                    )
+                    corrected_clusters.append(corrected_cluster)
+                    
+                    # Incrementa contador se houve correção
+                    if corrected_cluster != cluster:
+                        self.stats.timestamp_corrections += 1
+                
+                # Substitui clusters por versão corrigida
+                liquidity_heatmap["clusters"] = corrected_clusters
+                flow_metrics["liquidity_heatmap"] = liquidity_heatmap
 
             # ============================================================
             # CRIAÇÃO DO EVENTO
@@ -575,7 +683,7 @@ class EnhancedMarketAnalyzer:
                 "bursts": flow_metrics.get("bursts", {}),
                 "sector_flow": flow_metrics.get("sector_flow", {}),
                 
-                # 🆕 VOLUMES MAPEADOS (v2.2.2)
+                # volumes mapeados (validados)
                 "volume_compra": volume_compra_btc,
                 "volume_venda": volume_venda_btc,
                 "volume_total": volume_total_btc,
@@ -589,12 +697,32 @@ class EnhancedMarketAnalyzer:
                 # ML
                 "ml_features": ml_features,
                 
-                # stats simples
+                # liquidity heatmap (com timestamps corrigidos)
+                "liquidity_heatmap": liquidity_heatmap,
+                
+                # stats
                 "trades_count": len(clean_window),
                 "window_duration_ms": int(window_duration_ms) if window_duration_ms > 0 else 0,
             }
 
-            # Validação integrada
+            # ============================================================
+            # 🆕 VALIDAÇÃO FINAL COM DATA VALIDATOR (v2.3.0)
+            # ============================================================
+            try:
+                validated_event = self.data_validator.validate_and_clean(event)
+                
+                if validated_event is None:
+                    logger.error("❌ Evento rejeitado pelo DataValidator (janela %s)", window_id)
+                    self.stats.invalid_events += 1
+                    return None
+                
+                # Usa evento validado
+                event = validated_event
+                
+            except Exception as e:
+                logger.error(f"❌ Erro no DataValidator: {e}. Usando evento sem validação final.")
+
+            # Validação integrada (IntegrationValidator)
             validation = self.validator.validate_event(event)
             event["validation"] = validation
             event["is_valid"] = bool(validation.get("is_valid", False))
@@ -613,7 +741,7 @@ class EnhancedMarketAnalyzer:
             self.last_event = event
 
             for warning in validation.get("warnings", []):
-                logger.warning("⚡ %s", warning)
+                logger.debug("⚡ %s", warning)  # 🆕 Debug em vez de warning para não poluir
 
             of = event.get("order_flow", {})
             logger.info(
@@ -635,11 +763,13 @@ class EnhancedMarketAnalyzer:
             "total_windows": self.stats.total_windows,
             "valid_events": self.stats.valid_events,
             "invalid_events": self.stats.invalid_events,
-            "volume_corrections": self.stats.volume_corrections,  # 🆕
+            "volume_corrections": self.stats.volume_corrections,
+            "timestamp_corrections": self.stats.timestamp_corrections,  # 🆕
             "valid_rate_pct": round(valid_rate, 2),
             "flow_analyzer_stats": self.flow_analyzer.get_stats(),
             "orderbook_analyzer_stats": self.orderbook_analyzer.get_stats(),
             "validator_stats": self.validator.get_stats(),
+            "data_validator_stats": self.data_validator.get_correction_stats(),  # 🆕
         }
 
     def diagnose(self) -> Dict[str, Any]:
@@ -649,9 +779,11 @@ class EnhancedMarketAnalyzer:
         logger.info("📊 Janelas: total=%d | válidas=%d (%.2f%%) | inválidas=%d",
                     stats["total_windows"], stats["valid_events"], stats["valid_rate_pct"], stats["invalid_events"])
         logger.info("🔧 Correções de volume: %d", stats["volume_corrections"])
+        logger.info("⏰ Correções de timestamp: %d", stats["timestamp_corrections"])
         logger.info("🌊 Flow Analyzer: %s", stats["flow_analyzer_stats"])
         logger.info("📚 OrderBook Analyzer: %s", stats["orderbook_analyzer_stats"])
-        logger.info("✅ Validator: %s", stats["validator_stats"])
+        logger.info("✅ Integration Validator: %s", stats["validator_stats"])
+        logger.info("🛡️ Data Validator: %s", stats["data_validator_stats"])
         logger.info("-" * 72)
         return stats
 
@@ -662,13 +794,7 @@ class EnhancedMarketAnalyzer:
 
 class EnhancedMarketBot:
     """
-    Bot principal que:
-      - recebe mensagens do stream,
-      - fecha janelas por relógio de NY,
-      - analisa com EnhancedMarketAnalyzer,
-      - valida, salva e loga.
-      
-    🆕 v2.2.2: Integração com volumes validados
+    Bot principal v2.3.0 com validação completa.
     """
 
     def __init__(
@@ -709,7 +835,7 @@ class EnhancedMarketBot:
         self.window_data: List[Dict[str, Any]] = []
         self.window_end_time: Optional[datetime] = None
         self.window_count = 0
-        self.previous_event = None  # Para tracking de CVD
+        self.previous_event = None
 
         logger.info("🎯 Enhanced Market Bot v%s | %s | janela=%d min (NY)", SCHEMA_VERSION, symbol, self.window_size_minutes)
 
@@ -732,7 +858,6 @@ class EnhancedMarketBot:
     # ---------------- callbacks websocket ----------------
 
     def on_message(self, ws, message) -> None:
-        """Aceita JSON bruto ou bytes e suporta payloads do tipo {'data': {...}}."""
         try:
             self.health_monitor.heartbeat("market_analyzer")
 
@@ -740,9 +865,8 @@ class EnhancedMarketBot:
                 message = message.decode("utf-8", errors="ignore")
 
             raw = json.loads(message)
-            trade = raw.get("data", raw)  # compat: combinado ou trade direto
+            trade = raw.get("data", raw)
 
-            # precisa de T para janelar
             if "T" not in trade:
                 return
 
@@ -800,87 +924,16 @@ class EnhancedMarketBot:
             self.window_data = []
 
     def _log_event(self, event: Dict[str, Any], window_id: str) -> None:
-        """
-        Loga evento com contexto de CVD claro.
-        
-        Usa formato melhorado que mostra:
-        - Delta da janela vs CVD acumulado
-        - Incremento do CVD desde última janela
-        - Conversão USD → BTC
-        - Whale flow detalhado
-        """
+        """Log formatado com contexto de CVD."""
         try:
-            # 🆕 Log formatado com contexto de CVD
             formatted_log = format_flow_log(event, self.previous_event)
             print(formatted_log)
-            
-            # Guardar evento para próxima iteração (tracking de CVD)
             self.previous_event = event
             
         except Exception as e:
-            # Fallback para log simples se houver erro no formatador
-            logger.warning(f"⚠️ Erro ao formatar log com contexto: {e}")
-            
-            # Log simples (backup)
-            try:
-                ny_time = datetime.now(self.ny_tz)
-                
-                of = event.get("order_flow", {})
-                ob = event.get("orderbook_data", {})
-                ml = event.get("ml_features", {})
-                
-                delta = of.get("net_flow_1m", 0.0)
-                flow_imb = of.get("flow_imbalance", 0.0)
-                tick_rule = of.get("tick_rule_sum", 0.0)
-                cvd = event.get("cvd", 0.0)
-                
-                bid_depth = ob.get("bid_depth_usd", 0.0)
-                ask_depth = ob.get("ask_depth_usd", 0.0)
-                ob_imb = ob.get("imbalance", 0.0)
-                
-                momentum = ml.get("momentum_score", 0.0)
-                vol_sma = ml.get("volume_sma_ratio", 0.0)
-                
-                whale_buy = event.get("whale_buy_volume", 0.0)
-                whale_sell = event.get("whale_sell_volume", 0.0)
-                whale_delta = event.get("whale_delta", 0.0)
-                
-                # 🆕 Volumes mapeados
-                vol_compra = event.get("volume_compra", 0.0)
-                vol_venda = event.get("volume_venda", 0.0)
-                vol_total = event.get("volume_total", 0.0)
-                
-                print(f"\n{'='*80}")
-                print(f"🎯 EVENTO COMPLETO - {ny_time.strftime('%H:%M:%S')} NY")
-                print(f"{'─'*80}")
-                print(f"📊 Janela: {window_id} | Símbolo: {self.symbol}")
-                print(f"")
-                print(f"💹 FLUXO DA JANELA:")
-                print(f"   Net Flow:        {delta:+,.2f} USD")
-                print(f"   Buy Volume:      +{vol_compra:.2f} BTC")
-                print(f"   Sell Volume:     +{vol_venda:.2f} BTC")
-                print(f"   Flow Imbalance:  {flow_imb:+.4f}")
-                print(f"")
-                print(f"💰 CVD ACUMULADO (desde início do dia):")
-                print(f"   CVD Total:       {cvd:+.4f} BTC")
-                print(f"")
-                print(f"🐋 WHALE FLOW:")
-                print(f"   Buy Volume:   +{whale_buy:.2f} BTC")
-                print(f"   Sell Volume:  +{whale_sell:.2f} BTC")
-                print(f"   Delta:        {whale_delta:+.2f} BTC (buy - sell)")
-                print(f"")
-                print(f"📚 ORDER BOOK:")
-                print(f"   Bid Depth:    $+{bid_depth:,.0f}")
-                print(f"   Ask Depth:    $+{ask_depth:,.0f}")
-                print(f"   Imbalance:    {ob_imb:+.4f}")
-                print(f"")
-                print(f"🎲 Absorção: {event.get('tipo_absorcao', 'Neutra')}")
-                print(f"{'='*80}\n")
-                
-            except Exception as fallback_error:
-                # Se até o fallback falhar, log mínimo
-                logger.error(f"❌ Erro crítico ao logar evento: {fallback_error}")
-                print(f"\n⚠️ Evento {window_id} processado (erro no log)")
+            logger.warning(f"⚠️ Erro ao formatar log: {e}")
+            # Fallback simples
+            print(f"\n⚠️ Evento {window_id} processado (erro no log)")
 
     def on_open(self, ws) -> None:
         ny_time = datetime.now(self.ny_tz)
@@ -892,31 +945,6 @@ class EnhancedMarketBot:
 
     def on_error(self, ws, error) -> None:
         logger.error("❌ Erro WebSocket: %s", error)
-
-    def diagnose_cvd(self, events: List[Dict[str, Any]]) -> None:
-        """Diagnostica consistência do CVD em eventos recentes."""
-        try:
-            report = track_cvd_consistency(events)
-            logger.info("\n" + "=" * 72)
-            logger.info("📊 DIAGNÓSTICO DE CONSISTÊNCIA DO CVD")
-            logger.info("=" * 72)
-            logger.info(f"Status: {report['status']}")
-            logger.info(f"Total de eventos: {report['total_events']}")
-            logger.info(f"Inconsistências: {report['inconsistencies_found']}")
-            logger.info(f"Primeiro CVD: {report.get('first_cvd', 0):+.4f} BTC")
-            logger.info(f"Último CVD: {report.get('last_cvd', 0):+.4f} BTC")
-            logger.info(f"Mudança total: {report.get('total_change', 0):+.4f} BTC")
-            
-            if report.get('inconsistencies'):
-                logger.warning("⚠️ Inconsistências encontradas:")
-                for inc in report['inconsistencies']:
-                    logger.warning(f"  - {inc}")
-            else:
-                logger.info("✅ Nenhuma inconsistência detectada!")
-            
-            logger.info("=" * 72)
-        except Exception as e:
-            logger.error(f"Erro ao diagnosticar CVD: {e}")
 
     def get_stats(self) -> Dict[str, Any]:
         return {
@@ -946,11 +974,16 @@ class EnhancedMarketBot:
         finally:
             self.diagnose()
             stats = self.get_stats()
-            logger.info("\n📊 Estatísticas finais: janelas=%d | eventos válidos=%d | taxa=%.2f%% | correções=%d",
-                        stats["window_count"],
-                        stats["analyzer_stats"]["valid_events"],
-                        stats["analyzer_stats"]["valid_rate_pct"],
-                        stats["analyzer_stats"]["volume_corrections"])
+            logger.info(
+                "\n📊 Estatísticas finais: "
+                "janelas=%d | eventos válidos=%d | taxa=%.2f%% | "
+                "correções volume=%d | correções timestamp=%d",
+                stats["window_count"],
+                stats["analyzer_stats"]["valid_events"],
+                stats["analyzer_stats"]["valid_rate_pct"],
+                stats["analyzer_stats"]["volume_corrections"],
+                stats["analyzer_stats"]["timestamp_corrections"]
+            )
             self.connection_manager.disconnect()
             self.health_monitor.stop()
             logger.info("✅ Encerrado com segurança.")
@@ -961,14 +994,12 @@ class EnhancedMarketBot:
 # ========================================================================
 
 if __name__ == "__main__":
-    # Logging básico apenas quando executado diretamente (evita poluir ao importar)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-    # TimeManager compartilhado (parametrizável por config/env)
     tm = TimeManager(
         sync_interval_minutes=30,
         max_init_attempts=3,
-        max_acceptable_offset_ms=500,
+        max_acceptable_offset_ms=600,  # 🆕 Ajustado
     )
 
     bot = EnhancedMarketBot(

@@ -29,6 +29,13 @@ firefox_data/
 playwright_user_data/
 gemini_data/
 
+# Arquivos de dados específicos (não devem ir para o repositório)
+features.csv
+levels_BTCUSDT.json
+eventos_fluxo.jsonl
+eventos-fluxo.json
+# eventos_visuais.log  # já coberto por *.log, mas pode deixar explícito se quiser
+
 # OS files
 .DS_Store
 Thumbs.db
@@ -37,6 +44,3 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
-eventos_visuais.log
-# ou, de forma mais ampla:
-*.log

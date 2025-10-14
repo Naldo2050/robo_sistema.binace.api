@@ -1,4 +1,4 @@
-# liquidity_heatmap.py
+# liquidity_heatmap.py v2.1.0 - CORREÇÃO DE TIMESTAMPS
 
 from __future__ import annotations
 import numpy as np
@@ -28,7 +28,7 @@ def _norm_side(side: Any) -> str:
             return "sell"
         if s in {"buy", "bid", "b", "compra", "comprar"}:
             return "buy"
-    # fallback neutro (trataremos como buy para não “sumir” volume)
+    # fallback neutro (trataremos como buy para não "sumir" volume)
     return "buy"
 
 
@@ -42,6 +42,12 @@ class LiquidityHeatmap:
     ):
         """
         Heatmap de Liquidez em Tempo Real — identifica clusters dinâmicos de liquidez.
+
+        🔹 CORREÇÕES v2.1.0:
+          ✅ Validação de timestamps (first_seen <= last_seen)
+          ✅ Cálculo correto de age_ms
+          ✅ Proteção contra timestamps invertidos
+          ✅ Contadores de validação
 
         Parâmetros:
         - window_size: número máximo de trades para manter na janela de análise
@@ -60,12 +66,16 @@ class LiquidityHeatmap:
         self.side_levels: deque[str] = deque(maxlen=self.window_size)
         self.timestamp_levels: deque[int] = deque(maxlen=self.window_size)
 
-        # Clusters ativos (lista de dicts “finalizados”)
+        # Clusters ativos (lista de dicts "finalizados")
         self.clusters: List[Dict[str, Any]] = []
         self.last_update_time: int = 0
 
+        # 🆕 Contadores de validação
+        self._timestamp_corrections = 0
+        self._invalid_timestamps = 0
+
         logging.info(
-            "✅ Liquidity Heatmap inicializado | Janela: %d trades | Threshold: %.3f%%",
+            "✅ Liquidity Heatmap v2.1.0 inicializado | Janela: %d trades | Threshold: %.3f%%",
             self.window_size,
             self.cluster_threshold_pct * 100.0,
         )
@@ -158,7 +168,13 @@ class LiquidityHeatmap:
                             current["buy_volume"] += volume
                         else:
                             current["sell_volume"] += volume
-                        current["last_seen_ms"] = ts
+                        
+                        # 🆕 CORREÇÃO CRÍTICA: Atualizar first_seen e last_seen corretamente
+                        # Como os trades estão ordenados por PREÇO (não timestamp),
+                        # precisamos verificar min/max
+                        current["first_seen_ms"] = min(current["first_seen_ms"], ts)
+                        current["last_seen_ms"] = max(current["last_seen_ms"], ts)
+                        
                     else:
                         # Finaliza cluster atual se tiver trades suficientes
                         if len(current["prices"]) >= self.min_trades_per_cluster:
@@ -188,7 +204,14 @@ class LiquidityHeatmap:
             self.clusters = []
 
     def _finalize_cluster(self, raw: Dict[str, Any]) -> Dict[str, Any]:
-        """Finaliza e formata um cluster — versão robusta com fallbacks e aliases."""
+        """
+        Finaliza e formata um cluster — versão robusta com fallbacks e aliases.
+        
+        🆕 CORREÇÕES v2.1.0:
+          - Sempre recalcula first_seen e last_seen dos timestamps reais
+          - Valida que first_seen <= last_seen
+          - Calcula age_ms corretamente
+        """
         prices = np.asarray(raw.get("prices", []), dtype=float)
         volumes = np.asarray(raw.get("volumes", []), dtype=float)
         timestamps = np.asarray(raw.get("timestamps", []), dtype=np.int64)
@@ -215,15 +238,58 @@ class LiquidityHeatmap:
         trades_count = int(prices.size)
         avg_trade_size = float(np.mean(volumes)) if volumes.size else 0.0
 
-        first_seen_ms = int(raw.get("first_seen_ms", timestamps.min() if timestamps.size else now_ms))
-        last_seen_ms = int(raw.get("last_seen_ms", timestamps.max() if timestamps.size else now_ms))
+        # 🆕 CORREÇÃO CRÍTICA: Sempre recalcular first_seen e last_seen dos timestamps REAIS
+        # Não confiar nos valores de raw, pois podem estar invertidos
+        if timestamps.size > 0:
+            first_seen_ms = int(timestamps.min())
+            last_seen_ms = int(timestamps.max())
+        else:
+            # Fallback se não houver timestamps
+            first_seen_ms = int(raw.get("first_seen_ms", now_ms))
+            last_seen_ms = int(raw.get("last_seen_ms", now_ms))
+        
+        # 🆕 VALIDAÇÃO: Garantir que first_seen <= last_seen
+        if first_seen_ms > last_seen_ms:
+            logging.warning(
+                f"⚠️ TIMESTAMP INVERTIDO no cluster (center={center:.2f}): "
+                f"first_seen ({first_seen_ms}) > last_seen ({last_seen_ms}). "
+                f"Corrigindo..."
+            )
+            self._timestamp_corrections += 1
+            # Trocar os valores
+            first_seen_ms, last_seen_ms = last_seen_ms, first_seen_ms
+        
+        # Validar que timestamps são positivos
+        if first_seen_ms <= 0 or last_seen_ms <= 0:
+            logging.warning(
+                f"⚠️ Timestamps inválidos no cluster (center={center:.2f}): "
+                f"first={first_seen_ms}, last={last_seen_ms}. Usando now_ms."
+            )
+            self._invalid_timestamps += 1
+            first_seen_ms = now_ms
+            last_seen_ms = now_ms
+        
         recent_timestamp = last_seen_ms  # alias primário
+        
+        # 🆕 CORREÇÃO: age_ms calculado corretamente
+        # age_ms = tempo desde a última visualização do cluster
         age_ms = max(0, now_ms - last_seen_ms)
+        
+        # 🆕 VALIDAÇÃO ADICIONAL: Verificar consistência
+        cluster_duration_ms = last_seen_ms - first_seen_ms
+        if cluster_duration_ms < 0:
+            logging.error(
+                f"🔴 ERRO: cluster_duration_ms negativo! "
+                f"first={first_seen_ms}, last={last_seen_ms}, duration={cluster_duration_ms}"
+            )
+            # Forçar correção
+            first_seen_ms = last_seen_ms
+            cluster_duration_ms = 0
 
         price_std = float(np.std(prices)) if prices.size > 1 else 0.0
         volume_std = float(np.std(volumes)) if volumes.size > 1 else 0.0
 
-        # Tamanho do “bin” equivalente ao threshold atual (útil para debug)
+        # Tamanho do "bin" equivalente ao threshold atual (útil para debug)
         bin_threshold_usd = max(0.01, center * self.cluster_threshold_pct)
 
         cluster_data: Dict[str, Any] = {
@@ -241,9 +307,10 @@ class LiquidityHeatmap:
             # recência / idade + aliases para o normalizador do FlowAnalyzer
             "recent_timestamp": recent_timestamp,
             "recent_ts_ms": recent_timestamp,
-            "last_seen_ms": last_seen_ms,
-            "first_seen_ms": first_seen_ms,
-            "age_ms": age_ms,
+            "last_seen_ms": last_seen_ms,      # 🆕 Validado
+            "first_seen_ms": first_seen_ms,    # 🆕 Validado
+            "age_ms": age_ms,                  # 🆕 Correto
+            "cluster_duration_ms": cluster_duration_ms,  # 🆕 Novo campo útil
             # dispersões
             "price_std": price_std,
             "volume_std": volume_std,
@@ -405,3 +472,13 @@ class LiquidityHeatmap:
 
         # Recalcula clusters
         self._update_clusters()
+
+    def get_stats(self) -> Dict[str, Any]:
+        """🆕 Retorna estatísticas de validação."""
+        return {
+            "clusters_count": len(self.clusters),
+            "trades_in_buffer": len(self.timestamp_levels),
+            "timestamp_corrections": self._timestamp_corrections,
+            "invalid_timestamps": self._invalid_timestamps,
+            "last_update_time": self.last_update_time,
+        }
