@@ -1,4 +1,6 @@
+# ==============================
 # Python
+# ==============================
 __pycache__/
 *.pyc
 *.pyo
@@ -11,37 +13,55 @@ build/
 .eggs/
 *.manifest
 *.spec
+.coverage
+.pytest_cache/
+.coverage.*
 
-# Virtual environments
+# ==============================
+# Virtual Environments
+# ==============================
 venv/
 env/
 ENV/
 .venv/
+.env
+.env.local
+.env.*.local
 
+# ==============================
 # Playwright
+# ==============================
 playwright-report/
 *.log
 *.tmp
+playwright_user_data/
 
-
-# Local data folders
+# ==============================
+# Local Data Folders (NÃO DEVEM SER COMMITADOS)
+# ==============================
 dados/
 firefox_data/
-playwright_user_data/
 gemini_data/
+features/                  # <-- Pasta inteira ignorada
 
-# Arquivos de dados específicos (não devem ir para o repositório)
+# ==============================
+# Arquivos de Dados Específicos (redundantes se a pasta já for ignorada, mas mantidos por segurança)
+# ==============================
 features.csv
 levels_BTCUSDT.json
 eventos_fluxo.jsonl
 eventos-fluxo.json
-# eventos_visuais.log  # já coberto por *.log, mas pode deixar explícito se quiser
 
-# OS files
+# ==============================
+# Sistema Operacional
+# ==============================
 .DS_Store
 Thumbs.db
 
-# Environment variables (NEVER commit secrets!)
-.env
-.env.local
-.env.*.local
+# ==============================
+# IDEs e Editores (opcional, mas recomendado)
+# ==============================
+.vscode/
+.idea/
+*.swp
+*.swo
