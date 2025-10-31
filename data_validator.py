@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# data_validator.py v2.3.0 - SUPER-VALIDATOR (CORRECTED + PRECISION FIX)
+# data_validator.py v2.3.1 - SUPER-VALIDATOR (CORRECTED + PRECISION FIX)
 
 import time
 from datetime import datetime
@@ -12,7 +12,7 @@ class DataValidator:
     """
     Validador e limpador de dados completo com precisão máxima.
     
-    🔹 CORREÇÕES v2.3.0:
+    🔹 CORREÇÕES v2.3.1:
       ✅ Precisão de 8 casas decimais para volumes BTC
       ✅ Validação rigorosa de timestamps (positivos, em range válido, first <= last)
       ✅ Correção automática de age_ms negativo
@@ -705,19 +705,38 @@ class DataValidator:
     # --- MÉTODOS DE VALIDAÇÃO COMPLETOS ---
     
     def _validate_temporal_consistency(self, data: Dict) -> bool:
-        """Valida consistência temporal dos timestamps."""
+        """
+        Valida consistência temporal dos timestamps.
+        
+        🆕 v2.3.1 - CORREÇÃO: Adiciona tolerância temporal
+        """
+        # 🆕 Tolerância temporal (200ms)
+        TEMPORAL_TOLERANCE_MS = 200
+        
         current_timestamp_ms = data.get('epoch_ms')
         if current_timestamp_ms and self.last_event_timestamp_ms > 0:
-            if current_timestamp_ms < self.last_event_timestamp_ms:
+            time_diff = self.last_event_timestamp_ms - current_timestamp_ms
+            
+            if time_diff > TEMPORAL_TOLERANCE_MS:
                 self.logger.error(
-                    f"Inconsistência temporal: "
-                    f"{current_timestamp_ms} < {self.last_event_timestamp_ms}"
+                    f"❌ Inconsistência temporal SIGNIFICATIVA: "
+                    f"diff={time_diff}ms (atual={current_timestamp_ms}, "
+                    f"último={self.last_event_timestamp_ms})"
                 )
                 return False
+            
+            elif time_diff > 0:
+                self.logger.debug(
+                    f"⚠️ Evento fora de ordem (tolerado): "
+                    f"diff={time_diff}ms (tolerância={TEMPORAL_TOLERANCE_MS}ms)"
+                )
+                return True
+        
         if current_timestamp_ms:
-            self.last_event_timestamp_ms = current_timestamp_ms
+            if current_timestamp_ms > self.last_event_timestamp_ms:
+                self.last_event_timestamp_ms = current_timestamp_ms
+        
         return True
-
     def _validate_volume_consistency(self, event: Dict) -> bool:
         """
         Valida que os volumes sejam consistentes entre si.
@@ -884,7 +903,7 @@ def test_whale_delta_correction():
     }
     
     print("="*80)
-    print("🧪 TESTE DE CORREÇÃO v2.3.0")
+    print("🧪 TESTE DE CORREÇÃO v2.3.1")
     print("="*80)
     print(f"\n📋 ANTES:")
     print(f"   whale_delta: {test_data['whale_delta']}")

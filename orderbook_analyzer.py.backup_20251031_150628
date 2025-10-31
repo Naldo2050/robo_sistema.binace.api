@@ -14,11 +14,6 @@ OrderBook Analyzer para Binance Futures com validação robusta.
   ✅ Logs informativos sem poluir
   ✅ Validação de timestamp obrigatória
 
-🔹 CORREÇÕES v1.6.1 (PATCH AUTOMÁTICO):
-  ✅ ORDERBOOK_MIN_DEPTH_USD reduzido para $1000 (era $5000)
-  ✅ Melhoria na detecção de liquidez baixa
-  ✅ Patch aplicado em: 2025-10-31 15:06:28
-
 🔹 CORREÇÕES v1.5.1:
   ✅ Garantia de conversão de tipos antes de validação
   ✅ Validação mais segura em _sum_depth_usd
@@ -80,7 +75,7 @@ except Exception as e:
     ORDERBOOK_MAX_REQUESTS_PER_MIN = 10    # ✅ 10 req/min (não 5)
     ORDERBOOK_CACHE_TTL = 15.0             # ✅ 15s (não 30s)
     ORDERBOOK_MAX_STALE = 60.0             # ✅ 1min (NÃO 5min!)
-    ORDERBOOK_MIN_DEPTH_USD = 1_000.0      # ✅ $1k (reduzido de $5k)
+    ORDERBOOK_MIN_DEPTH_USD = 5_000.0      # ✅ $5k (NÃO $500!)
     ORDERBOOK_ALLOW_PARTIAL = False        # ✅ FALSE (NÃO TRUE!)
     ORDERBOOK_USE_FALLBACK = True          # OK
     ORDERBOOK_FALLBACK_MAX_AGE = 120       # ✅ 2min (NÃO 10min!)
@@ -89,7 +84,7 @@ except Exception as e:
 # ===== 🆕 VALIDAÇÃO DE IDADE MÁXIMA =====
 ORDERBOOK_MAX_AGE_MS = 60000  # ✅ 60 segundos máximo
 
-SCHEMA_VERSION = "1.6.1"
+SCHEMA_VERSION = "1.6.0"
 
 
 # ===== EXCEÇÃO CUSTOMIZADA =====

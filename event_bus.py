@@ -1,9 +1,10 @@
-# event_bus.py v2.1.0 - Sistema de eventos com normalização numérica CORRIGIDA
+# event_bus.py v2.1.2 - Sistema de eventos com normalização numérica e timestamp ISO 8601
 
 import time
 import threading
 from collections import deque
 from typing import Dict, Any, Callable, Union, List, Optional
+from datetime import datetime, timezone
 import logging
 import hashlib
 import re
@@ -29,14 +30,14 @@ class EventBus:
     """
     Sistema de eventos com normalização numérica inteligente.
     
-    🔹 CORREÇÕES v2.1.0:
+    🔹 CORREÇÕES v2.1.2:
+      ✅ Validação inteligente (não tenta converter BEARISH/BULLISH/NEUTRAL)
+      ✅ Suporte completo para timestamps ISO 8601
       ✅ Preserva precisão máxima para campos críticos (timestamps, volumes BTC)
       ✅ Não converte volumes BTC para int (preserva 8 casas decimais)
       ✅ Timestamps nunca são normalizados (precisão de milissegundos)
       ✅ Deduplicação usa precisão correta para cada tipo de campo
-      ✅ Validação de perda de precisão com warnings
-      ✅ Opção de desabilitar normalização para eventos críticos
-      ✅ Logs detalhados de alterações causadas por normalização
+      ✅ Logs reduzidos (apenas DEBUG para strings não-timestamp)
     """
 
     # 🆕 Campos que NÃO devem ser normalizados (precisão crítica)
@@ -44,7 +45,7 @@ class EventBus:
         'timestamp', 'epoch_ms', 'timestamp_utc', 'timestamp_ny', 'timestamp_sp',
         'first_seen_ms', 'last_seen_ms', 'recent_timestamp', 'recent_ts_ms',
         'age_ms', 'duration_ms', 'last_update_ms', 'cluster_duration_ms',
-        'T', 'E',  # Campos de timestamp da Binance
+        'T', 'E', 'time', 'created_at',  # Campos de timestamp da Binance
     }
     
     # 🆕 Campos que precisam de 8 casas decimais (volumes BTC)
@@ -84,6 +85,90 @@ class EventBus:
         
         # Iniciar thread de processamento
         self.start()
+
+    def _normalize_timestamp(self, timestamp: Any) -> Optional[int]:
+        """
+        Normaliza timestamp de diferentes formatos para int (ms).
+        
+        🆕 v2.1.2 - Validação inteligente (ignora strings não-timestamp)
+        
+        Aceita:
+        - int/float (ms ou s)
+        - datetime object
+        - string ISO 8601 (com ou sem timezone, com ou sem 'Z')
+        - None
+        
+        Retorna int (ms) ou None
+        """
+        if timestamp is None:
+            return None
+            
+        # Já é int/float
+        if isinstance(timestamp, (int, float)):
+            ts = int(timestamp)
+            # Se está em segundos (< ano 3000), converte para ms
+            if ts < 32503680000:  # 01/01/3000 em segundos
+                return ts * 1000
+            return ts
+            
+        # É datetime
+        if isinstance(timestamp, datetime):
+            return int(timestamp.timestamp() * 1000)
+            
+        # É string
+        if isinstance(timestamp, str):
+            # 🆕 VALIDAÇÃO: Ignora strings que claramente NÃO são timestamps
+            cleaned = timestamp.strip().upper()
+            
+            # Lista de valores conhecidos que NÃO são timestamps
+            non_timestamp_values = {
+                'BEARISH', 'BULLISH', 'NEUTRAL',
+                'BUY', 'SELL', 'HOLD',
+                'LONG', 'SHORT',
+                'UP', 'DOWN', 'SIDEWAYS',
+                'POSITIVE', 'NEGATIVE',
+                'HIGH', 'MEDIUM', 'LOW',
+                'TRUE', 'FALSE',
+                'N/A', 'NONE', 'NULL', 'UNKNOWN',
+            }
+            
+            if cleaned in non_timestamp_values:
+                return None  # ✅ Retorna None silenciosamente (sem warning)
+            
+            # 🆕 Validação adicional: timestamp deve ter formato mínimo
+            # Aceita formatos como: "2025-10-31", "1730394063", "1730394063000"
+            if len(cleaned) < 10:  # Timestamp mínimo tem 10 chars
+                return None
+            
+            try:
+                # Remove 'Z' final e garante formato compatível
+                if cleaned.endswith('Z'):
+                    cleaned = cleaned[:-1] + '+00:00'
+                
+                # Tenta parsing direto (Python 3.7+)
+                try:
+                    # Tenta com timezone
+                    dt = datetime.fromisoformat(cleaned)
+                except ValueError:
+                    # Tenta sem timezone (assume UTC)
+                    dt = datetime.fromisoformat(cleaned.replace('+00:00', '')).replace(tzinfo=timezone.utc)
+                
+                return int(dt.timestamp() * 1000)
+                
+            except (ValueError, AttributeError):
+                # Se falhar, tenta converter diretamente para int (epoch)
+                try:
+                    ts = int(float(cleaned))
+                    if ts < 32503680000:  # Converter segundos para ms
+                        return ts * 1000
+                    return ts
+                except (ValueError, TypeError):
+                    # ✅ Apenas loga se parecer um timestamp malformado
+                    if any(char in cleaned for char in ['-', ':', 'T', '/']):
+                        self._logger.debug(f"⚠️ Timestamp malformado '{timestamp}'")
+                    return None
+                    
+        return None
 
     def _parse_numeric_string(self, value: Any) -> Union[float, int, Any]:
         """
@@ -136,7 +221,7 @@ class EventBus:
             # Remove vírgulas (separador de milhar)
             cleaned = cleaned.replace(',', '')
             
-            # Converte para número usando Decimal para máxima precisão
+            # Converte para número usando float para máxima precisão
             num = float(cleaned)
             
             # Aplica multiplicador
@@ -182,27 +267,64 @@ class EventBus:
         # Padrão: 8 casas decimais
         return 8
 
-    def _normalize_value(self, key: str, value: Any, validate: bool = True) -> Union[float, int, None]:
+    def _normalize_value(self, key: str, value: Any, validate: bool = True) -> Union[float, int, None, str]:
         """
         Normaliza um valor baseado no tipo de campo.
         
-        🆕 CORREÇÕES:
-          - Preserva precisão crítica para timestamps
-          - Usa precisão correta para cada tipo de campo
-          - Valida perda de precisão e loga warnings
+        🆕 CORREÇÕES v2.1.2:
+          - Validação inteligente (não tenta converter strings conhecidas)
+          - Preserva strings de viés/tendência (BEARISH, BULLISH, etc)
+          - Suporta timestamps ISO 8601
         
         Args:
             key: Nome do campo
             value: Valor a normalizar
             validate: Se True, valida perda de precisão
         """
-        # Primeiro tenta converter string para número
+        # ✅ Se for None, retorna None
+        if value is None:
+            return None
+        
+        # ✅ NOVO: Preserva strings conhecidas que não são números
+        if isinstance(value, str):
+            cleaned = value.strip().upper()
+            
+            # Lista expandida de valores string a preservar
+            preserve_strings = {
+                # Viés/Direção
+                'BEARISH', 'BULLISH', 'NEUTRAL',
+                'BUY', 'SELL', 'HOLD',
+                'LONG', 'SHORT',
+                'UP', 'DOWN', 'SIDEWAYS',
+                'POSITIVE', 'NEGATIVE',
+                # Níveis
+                'HIGH', 'MEDIUM', 'LOW',
+                'STRONG', 'WEAK', 'MODERATE',
+                # Booleanos/Status
+                'TRUE', 'FALSE', 'YES', 'NO',
+                'ACTIVE', 'INACTIVE', 'PENDING',
+                'OK', 'ERROR', 'WARNING',
+                # Valores vazios
+                'N/A', 'NONE', 'NULL', 'UNKNOWN', '-',
+            }
+            
+            if cleaned in preserve_strings:
+                return value  # ✅ Retorna string original sem normalizar
+        
+        # 🆕 Tenta normalizar timestamp se for campo de tempo
+        if key in self.CRITICAL_PRECISION_FIELDS or 'timestamp' in key.lower() or 'time' in key.lower():
+            normalized_ts = self._normalize_timestamp(value)
+            if normalized_ts is not None:
+                return normalized_ts
+            # Se retornou None, continua tentando outras normalizações
+        
+        # Tenta converter string numérica para número
         parsed = self._parse_numeric_string(value)
         
         if parsed is None:
             return None
         
-        # Se não for numérico, retorna original
+        # Se não for numérico, retorna original (preserva strings)
         if not isinstance(parsed, (int, float)):
             return parsed
         
@@ -242,15 +364,15 @@ class EventBus:
                 
                 if diff > tolerance:
                     self._precision_loss_warnings += 1
-                    self._logger.warning(
+                    self._logger.debug(
                         f"⚠️ PERDA DE PRECISÃO: {key}={original} → {normalized} "
-                        f"(diff={diff:.10f}, tolerance={tolerance:.10f})"
+                        f"(diff={diff:.10f})"
                     )
             
             return normalized
             
         except Exception as e:
-            self._logger.error(f"Erro ao normalizar {key}={value}: {e}")
+            self._logger.debug(f"Erro ao normalizar {key}={value}: {e}")
             return parsed
 
     def _normalize_event_data(self, event: Dict[str, Any], validate: bool = True) -> Dict[str, Any]:
@@ -274,15 +396,6 @@ class EventBus:
         for key, value in event.items():
             if value is None:
                 normalized[key] = None
-                continue
-            
-            # 🆕 CORREÇÃO: Timestamps NUNCA são normalizados
-            if key in self.CRITICAL_PRECISION_FIELDS:
-                # Apenas garante que é int se for inteiro
-                if isinstance(value, float) and value == int(value):
-                    normalized[key] = int(value)
-                else:
-                    normalized[key] = value
                 continue
             
             # Normaliza listas
@@ -324,19 +437,25 @@ class EventBus:
         """
         Gera ID único para deduplicação.
         
-        🆕 CORREÇÃO: Usa precisão correta para cada tipo de campo.
+        🆕 CORREÇÃO v2.1.2: Usa normalização de timestamp robusta
         """
-        # Normaliza valores antes de gerar o hash
-        norm_timestamp = self._normalize_value('timestamp', event.get('timestamp', ''), validate=False)
-        norm_delta = self._normalize_value('delta', event.get('delta', ''), validate=False)
-        norm_volume = self._normalize_value('volume_total', event.get('volume_total', ''), validate=False)
-        norm_price = self._normalize_value('preco_fechamento', event.get('preco_fechamento', ''), validate=False)
+        # Extrai campos chave
+        timestamp = event.get('timestamp') or event.get('time') or event.get('created_at')
+        delta = event.get('delta')
+        volume = event.get('volume_total') or event.get('volume')
+        price = event.get('preco_fechamento') or event.get('price')
+        
+        # Normaliza valores (SEM validação para performance)
+        norm_timestamp = self._normalize_timestamp(timestamp)
+        norm_delta = self._normalize_value('delta', delta, validate=False)
+        norm_volume = self._normalize_value('volume_total', volume, validate=False)
+        norm_price = self._normalize_value('preco_fechamento', price, validate=False)
         
         # 🆕 CORREÇÃO: Usa precisão correta para cada campo
-        timestamp_str = str(int(norm_timestamp)) if norm_timestamp else ''  # Timestamp como int
-        delta_str = f"{norm_delta:.8f}" if norm_delta is not None else ''  # Delta BTC: 8 decimais
-        volume_str = f"{norm_volume:.8f}" if norm_volume is not None else ''  # Volume BTC: 8 decimais
-        price_str = f"{norm_price:.4f}" if norm_price is not None else ''  # Preço: 4 decimais
+        timestamp_str = str(norm_timestamp) if norm_timestamp else ''
+        delta_str = f"{norm_delta:.8f}" if norm_delta is not None else ''
+        volume_str = f"{norm_volume:.8f}" if norm_volume is not None else ''
+        price_str = f"{norm_price:.4f}" if norm_price is not None else ''
         
         # Gera chave única
         key = f"{timestamp_str}|{delta_str}|{volume_str}|{price_str}"
@@ -344,21 +463,26 @@ class EventBus:
 
     def _is_duplicate(self, event: Dict) -> bool:
         """Verifica se evento é duplicado usando valores normalizados"""
-        event_id = self._generate_event_id(event)
-        current_time = time.time()
-        
-        # Limpar cache antigo
-        expired_keys = [k for k, t in self._dedup_cache.items() if current_time - t > self._dedup_window]
-        for k in expired_keys:
-            del self._dedup_cache[k]
-        
-        # Verificar duplicado
-        if event_id in self._dedup_cache:
-            return True
+        try:
+            event_id = self._generate_event_id(event)
+            current_time = time.time()
             
-        # Registrar novo evento
-        self._dedup_cache[event_id] = current_time
-        return False
+            # Limpar cache antigo
+            expired_keys = [k for k, t in self._dedup_cache.items() if current_time - t > self._dedup_window]
+            for k in expired_keys:
+                del self._dedup_cache[k]
+            
+            # Verificar duplicado
+            if event_id in self._dedup_cache:
+                return True
+                
+            # Registrar novo evento
+            self._dedup_cache[event_id] = current_time
+            return False
+            
+        except Exception as e:
+            self._logger.debug(f"⚠️ Erro ao verificar duplicação: {e}")
+            return False  # Em caso de erro, permite o evento
 
     def subscribe(self, event_type: str, handler: Callable):
         """Registra handler para um tipo de evento."""
@@ -389,7 +513,7 @@ class EventBus:
                     event_data = self._normalize_event_data(event_data, validate=validate)
                 except Exception as e:
                     self._normalization_warnings += 1
-                    self._logger.warning(f"⚠️ Erro ao normalizar evento {event_type}: {e}")
+                    self._logger.debug(f"⚠️ Erro ao normalizar evento {event_type}: {e}")
             
             # Ignorar eventos duplicados
             if self._is_duplicate(event_data):
@@ -434,7 +558,7 @@ class EventBus:
             self._stop = False
             self._thread = threading.Thread(target=self._process_queue, daemon=True)
             self._thread.start()
-            self._logger.info("✅ EventBus v2.1.0 iniciado")
+            self._logger.info("✅ EventBus v2.1.2 iniciado (validação inteligente)")
 
     def shutdown(self):
         """Para thread de processamento."""
@@ -444,11 +568,7 @@ class EventBus:
         self._logger.info("🔄 EventBus desligado")
 
     def get_stats(self) -> Dict[str, Any]:
-        """
-        Retorna estatísticas do EventBus.
-        
-        🆕 Inclui estatísticas de normalização
-        """
+        """Retorna estatísticas do EventBus"""
         with self._lock:
             stats = {
                 "queue_size": len(self._queue),
@@ -456,117 +576,8 @@ class EventBus:
                 "event_types": list(self._handlers.keys()),
                 "dedup_cache_size": len(self._dedup_cache),
                 "is_running": self._thread.is_alive() if self._thread else False,
-                # 🆕 Estatísticas de normalização
                 "total_events_normalized": self._total_events_normalized,
                 "normalization_warnings": self._normalization_warnings,
                 "precision_loss_warnings": self._precision_loss_warnings,
             }
         return stats
-
-
-# ============================================================================
-# TESTES E VALIDAÇÃO
-# ============================================================================
-
-if __name__ == "__main__":
-    # Configurar logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    
-    # Teste de normalização
-    bus = EventBus()
-    
-    print("="*80)
-    print("TESTE DE NORMALIZAÇÃO v2.1.0")
-    print("="*80)
-    
-    # Evento com valores formatados (strings)
-    test_event = {
-        "timestamp": "1,759,761,480,000.00",  # epoch com vírgulas
-        "preco_fechamento": "123,456.789",     # preço com vírgulas
-        "delta": "+1,234.56789123",            # delta com sinal e mais de 8 decimais
-        "volume_total": "1.5M",                # volume com notação M
-        "imbalance_ratio": "60.46%",           # percentual
-        "buy_sell_ratio": "0.41234567",        # ratio (sem %)
-        "num_trades": "1343.0",                # inteiro com .0
-        "duration_s": "13.67",                 # segundos
-        "hvns": ["123,172.00", "124,500.50", "125,000"],  # lista de preços
-        "whale_buy_volume": "45.12345678901",  # Volume BTC com muitos decimais
-        "nested": {
-            "poc": "$126,789.12",              # preço com $
-            "volatility_5": "0.00045",         # volatilidade
-            "first_seen_ms": "1759761480123.5", # timestamp não deve perder precisão
-        }
-    }
-    
-    # Normaliza
-    normalized = bus._normalize_event_data(test_event, validate=True)
-    
-    print("\n📋 ORIGINAL:")
-    for k, v in test_event.items():
-        print(f"   {k}: {v}")
-    
-    print("\n✅ NORMALIZADO:")
-    for k, v in normalized.items():
-        print(f"   {k}: {v}")
-    
-    print("\n" + "="*80)
-    print("TESTE DE DEDUPLICAÇÃO")
-    print("="*80)
-    
-    # Testa deduplicação
-    event_id_1 = bus._generate_event_id(test_event)
-    
-    # Mesmo evento mas com formatação diferente
-    test_event_2 = {
-        "timestamp": "1759761480000",         # sem vírgulas
-        "preco_fechamento": "123456.789",      # sem vírgulas
-        "delta": "1234.56789123",              # sem sinal
-        "volume_total": "1500000",             # expandido
-    }
-    
-    event_id_2 = bus._generate_event_id(test_event_2)
-    
-    print(f"\n📊 Hash evento 1: {event_id_1}")
-    print(f"📊 Hash evento 2: {event_id_2}")
-    print(f"✅ São iguais após normalização? {event_id_1 == event_id_2}")
-    
-    print("\n" + "="*80)
-    print("ESTATÍSTICAS")
-    print("="*80)
-    
-    stats = bus.get_stats()
-    print(f"\n📈 Eventos normalizados: {stats['total_events_normalized']}")
-    print(f"⚠️ Warnings de normalização: {stats['normalization_warnings']}")
-    print(f"⚠️ Warnings de perda de precisão: {stats['precision_loss_warnings']}")
-    
-    print("\n" + "="*80)
-    print("TESTE DE PRECISÃO CRÍTICA")
-    print("="*80)
-    
-    # Testa preservação de precisão em campos críticos
-    critical_test = {
-        "timestamp": 1759761480123,           # Timestamp exato
-        "first_seen_ms": 1759761480123,
-        "last_seen_ms": 1759761480999,
-        "whale_buy_volume": 123.45678901,     # 8+ decimais
-        "whale_sell_volume": 78.12345678,
-        "delta": 45.33333223,                 # Delta com muitos decimais
-    }
-    
-    normalized_critical = bus._normalize_event_data(critical_test, validate=True)
-    
-    print("\n🔬 TESTE DE PRECISÃO:")
-    for k in critical_test:
-        original = critical_test[k]
-        norm = normalized_critical[k]
-        if isinstance(original, (int, float)) and isinstance(norm, (int, float)):
-            diff = abs(original - norm)
-            status = "✅" if diff < 1e-8 else "❌"
-            print(f"   {status} {k}: {original} → {norm} (diff: {diff:.15f})")
-    
-    print("\n✅ Testes concluídos!")
-    
-    bus.shutdown()

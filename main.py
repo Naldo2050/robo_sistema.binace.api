@@ -326,12 +326,12 @@ class RobustConnectionManager:
     def _heartbeat_monitor(self):
         """Monitora se está recebendo mensagens."""
         while not self.should_stop and self.is_connected:
-            time.sleep(30)
+            time.sleep(20)
             
             if self.last_message_time:
                 gap = (datetime.now(timezone.utc) - self.last_message_time).total_seconds()
                 
-                if gap > 90:  # ✅ Reduzido de 120 para 90s
+                if gap > 60:  # ✅ Reduzido de 120 para 90s
                     logging.warning(
                         f"⚠️ Sem mensagens há {gap:.0f}s. "
                         f"Forçando reconexão."
@@ -345,7 +345,7 @@ class RobustConnectionManager:
                     self.last_successful_message_time
                 ).total_seconds()
                 
-                if valid_gap > 180:  # ✅ Reduzido de 300 para 180s
+                if valid_gap > 120:  # ✅ Reduzido de 300 para 180s
                     logging.critical(
                         f"💀 SEM MENSAGENS VÁLIDAS HÁ {valid_gap:.0f}s!"
                     )
@@ -366,8 +366,8 @@ class RobustConnectionManager:
     def connect(self):
         """Conecta ao WebSocket com retry automático."""
         # ✅ OTIMIZADO: Ping/Pong mais agressivo
-        ping_interval = getattr(config, "WS_PING_INTERVAL", 20)  # Reduzido de 30
-        ping_timeout = getattr(config, "WS_PING_TIMEOUT", 10)    # Reduzido de 15
+        ping_interval = getattr(config, "WS_PING_INTERVAL", 15)  # Reduzido de 30
+        ping_timeout = getattr(config, "WS_PING_TIMEOUT", 8)    # Reduzido de 15
         
         while self.reconnect_count < self.max_reconnect_attempts and not self.should_stop:
             try:
@@ -661,7 +661,7 @@ class EnhancedMarketBot:
         self.connection_manager = RobustConnectionManager(
             stream_url,
             symbol,
-            max_reconnect_attempts=15
+            max_reconnect_attempts=25
         )
         self.connection_manager.set_callbacks(
             on_message=self.on_message,

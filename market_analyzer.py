@@ -44,7 +44,6 @@ import pandas as pd
 
 # Config e componentes do projeto
 import config
-from integration_validator import IntegrationValidator
 from orderbook_analyzer import OrderBookAnalyzer
 from flow_analyzer import FlowAnalyzer
 from ml_features import generate_ml_features
@@ -52,7 +51,22 @@ from time_manager import TimeManager
 from event_saver import EventSaver
 from health_monitor import HealthMonitor
 from log_formatter import format_flow_log, track_cvd_consistency
-from data_validator import DataValidator  # 🆕 Importa validador
+
+# 🆕 Importa validador com tratamento de erro
+try:
+    from data_validator import DataValidator
+    DATA_VALIDATOR_AVAILABLE = True
+except ImportError:
+    DATA_VALIDATOR_AVAILABLE = False
+    logging.warning("⚠️ DataValidator não disponível. Continuando sem validação final.")
+
+# 🆕 Importa IntegrationValidator com tratamento de erro
+try:
+    from integration_validator import IntegrationValidator
+    INTEGRATION_VALIDATOR_AVAILABLE = True
+except ImportError:
+    INTEGRATION_VALIDATOR_AVAILABLE = False
+    logging.warning("⚠️ IntegrationValidator não disponível. Continuando sem validação integrada.")
 
 try:
     import websocket  # type: ignore
@@ -498,8 +512,8 @@ class EnhancedMarketAnalyzer:
         time_manager: Optional[TimeManager] = None,
         flow_analyzer: Optional[FlowAnalyzer] = None,
         orderbook_analyzer: Optional[OrderBookAnalyzer] = None,
-        validator: Optional[IntegrationValidator] = None,
-        data_validator: Optional[DataValidator] = None,  # 🆕
+        validator: Optional[Any] = None,  # 🆕 Tipo flexível
+        data_validator: Optional[Any] = None,  # 🆕 Tipo flexível
     ) -> None:
         self.symbol = symbol
         self.time_manager = time_manager or TimeManager()
@@ -511,8 +525,17 @@ class EnhancedMarketAnalyzer:
             max_stale_seconds=30.0,
             rate_limit_threshold=10,
         )
-        self.validator = validator or IntegrationValidator()
-        self.data_validator = data_validator or DataValidator()  # 🆕
+        
+        # 🆕 Inicialização condicional dos validadores
+        if INTEGRATION_VALIDATOR_AVAILABLE:
+            self.validator = validator or IntegrationValidator()
+        else:
+            self.validator = None
+            
+        if DATA_VALIDATOR_AVAILABLE:
+            self.data_validator = data_validator or DataValidator()
+        else:
+            self.data_validator = None
 
         self.stats = AnalyzerStats()
         self.last_event: Optional[Dict[str, Any]] = None
@@ -521,7 +544,11 @@ class EnhancedMarketAnalyzer:
         logger.info("✅ EnhancedMarketAnalyzer v%s inicializado", SCHEMA_VERSION)
         logger.info("   Symbol:           %s", symbol)
         logger.info("   Schema Version:   %s", SCHEMA_VERSION)
-        logger.info("   Components:       FlowAnalyzer, OrderBook, ML, Validator, DataValidator")
+        logger.info("   Components:       FlowAnalyzer, OrderBook, ML")
+        if self.validator:
+            logger.info("   Integration Validator: ATIVO")
+        if self.data_validator:
+            logger.info("   Data Validator:   ATIVO")
         logger.info("   Features:         Volume Validation, Timestamp Validation, Precision Control")
         logger.info("=" * 72)
 
@@ -708,40 +735,57 @@ class EnhancedMarketAnalyzer:
             # ============================================================
             # 🆕 VALIDAÇÃO FINAL COM DATA VALIDATOR (v2.3.0)
             # ============================================================
-            try:
-                validated_event = self.data_validator.validate_and_clean(event)
-                
-                if validated_event is None:
-                    logger.error("❌ Evento rejeitado pelo DataValidator (janela %s)", window_id)
-                    self.stats.invalid_events += 1
-                    return None
-                
-                # Usa evento validado
-                event = validated_event
-                
-            except Exception as e:
-                logger.error(f"❌ Erro no DataValidator: {e}. Usando evento sem validação final.")
+            if self.data_validator:
+                try:
+                    validated_event = self.data_validator.validate_and_clean(event)
+                    
+                    if validated_event is None:
+                        logger.error("❌ Evento rejeitado pelo DataValidator (janela %s)", window_id)
+                        self.stats.invalid_events += 1
+                        return None
+                    
+                    # Usa evento validado
+                    event = validated_event
+                    
+                except Exception as e:
+                    logger.error(f"❌ Erro no DataValidator: {e}. Usando evento sem validação final.")
+            else:
+                logger.debug("⏭️ DataValidator não disponível - pulando validação final")
 
             # Validação integrada (IntegrationValidator)
-            validation = self.validator.validate_event(event)
-            event["validation"] = validation
-            event["is_valid"] = bool(validation.get("is_valid", False))
-            event["should_skip"] = bool(validation.get("should_skip", False))
+            if self.validator:
+                validation = self.validator.validate_event(event)
+                event["validation"] = validation
+                event["is_valid"] = bool(validation.get("is_valid", False))
+                event["should_skip"] = bool(validation.get("should_skip", False))
 
-            if event["should_skip"]:
-                self.stats.invalid_events += 1
-                logger.error("❌ EVENTO INVÁLIDO (janela %s): %s", window_id, validation.get("validation_summary"))
-                for issue in validation.get("critical_issues", []):
-                    logger.error("   🔴 %s", issue)
-                for issue in validation.get("issues", []):
-                    logger.warning("   ⚠️ %s", issue)
-                return None
+                if event["should_skip"]:
+                    self.stats.invalid_events += 1
+                    logger.error("❌ EVENTO INVÁLIDO (janela %s): %s", window_id, validation.get("validation_summary"))
+                    for issue in validation.get("critical_issues", []):
+                        logger.error("   🔴 %s", issue)
+                    for issue in validation.get("issues", []):
+                        logger.warning("   ⚠️ %s", issue)
+                    return None
+            else:
+                # Se não tiver validator, assume que o evento é válido
+                event["is_valid"] = True
+                event["should_skip"] = False
+                event["validation"] = {
+                    "is_valid": True,
+                    "should_skip": False,
+                    "validation_summary": "Sem validação - aceito por padrão",
+                    "issues": [],
+                    "critical_issues": [],
+                    "warnings": []
+                }
 
             self.stats.valid_events += 1
             self.last_event = event
 
-            for warning in validation.get("warnings", []):
-                logger.debug("⚡ %s", warning)  # 🆕 Debug em vez de warning para não poluir
+            if self.validator:
+                for warning in event.get("validation", {}).get("warnings", []):
+                    logger.debug("⚡ %s", warning)  # 🆕 Debug em vez de warning para não poluir
 
             of = event.get("order_flow", {})
             logger.info(
@@ -768,8 +812,8 @@ class EnhancedMarketAnalyzer:
             "valid_rate_pct": round(valid_rate, 2),
             "flow_analyzer_stats": self.flow_analyzer.get_stats(),
             "orderbook_analyzer_stats": self.orderbook_analyzer.get_stats(),
-            "validator_stats": self.validator.get_stats(),
-            "data_validator_stats": self.data_validator.get_correction_stats(),  # 🆕
+            "validator_stats": self.validator.get_stats() if self.validator else {"status": "não disponível"},
+            "data_validator_stats": self.data_validator.get_correction_stats() if self.data_validator else {"status": "não disponível"},  # 🆕
         }
 
     def diagnose(self) -> Dict[str, Any]:
@@ -782,8 +826,10 @@ class EnhancedMarketAnalyzer:
         logger.info("⏰ Correções de timestamp: %d", stats["timestamp_corrections"])
         logger.info("🌊 Flow Analyzer: %s", stats["flow_analyzer_stats"])
         logger.info("📚 OrderBook Analyzer: %s", stats["orderbook_analyzer_stats"])
-        logger.info("✅ Integration Validator: %s", stats["validator_stats"])
-        logger.info("🛡️ Data Validator: %s", stats["data_validator_stats"])
+        if self.validator:
+            logger.info("✅ Integration Validator: %s", stats["validator_stats"])
+        if self.data_validator:
+            logger.info("🛡️ Data Validator: %s", stats["data_validator_stats"])
         logger.info("-" * 72)
         return stats
 

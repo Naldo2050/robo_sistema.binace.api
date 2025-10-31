@@ -538,11 +538,6 @@ class EventSaver:
         except Exception as e:
             self.logger.error(f"Erro ao limpar _seen_in_block: {e}")
 
-        # ✅ Limpa set de janelas processadas se ficar muito grande
-        if len(self._janelas_processadas) > 1000:
-            self._janelas_processadas.clear()
-            self.logger.info("🧹 Set de janelas processadas limpo")
-
     def stop(self):
         """Para threads e realiza flush final."""
         if not self._stop_event.is_set():
@@ -1020,12 +1015,6 @@ class EventSaver:
             self.logger.warning(f"⚠️ Separador para janela {janela_num} já foi escrito, pulando")
             return
         
-        # ✅ PROTEÇÃO: Verifica se janela já teve separador escrito
-        janela_num = event.get("janela_numero")
-        if janela_num and janela_num in self._janelas_processadas:
-            self.logger.warning(f"⚠️ Separador para janela {janela_num} já foi escrito, PULANDO")
-            return
-
         try:
             epoch_ms = event.get("epoch_ms") or event.get("window_close_ms")
             
@@ -1099,11 +1088,6 @@ class EventSaver:
                     with open(self.visual_log_file, "a", encoding="utf-8") as f:
                         f.write(separator)
                         f.flush()
-
-                        # ✅ Marca janela como processada
-                        if janela_num:
-                            self._janelas_processadas.add(janela_num)
-                            self.logger.info(f"✅ Separador escrito e janela {janela_num} marcada como processada")
                     
                     # Marca janela como processada
                     if janela_num:

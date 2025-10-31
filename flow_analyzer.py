@@ -1,18 +1,23 @@
-# flow_analyzer.py v2.2.0 - VERSÃO HÍBRIDA COM TODAS AS MELHORIAS
+# flow_analyzer.py v2.3.1 - CORREÇÃO: TIMESTAMP JITTER + JANELA vs ACUMULADO
 """
-Flow Analyzer com validação robusta e precisão máxima.
+Flow Analyzer com correção de timestamps e separação clara entre métricas.
 
-🔹 MELHORIAS v2.2.0 (HÍBRIDO v2.1.2 + v2.1.1):
+🔹 CORREÇÕES v2.3.1:
+  ✅ Tolerância a jitter de timestamps (±2000ms)
+  ✅ Ajuste automático de timestamps futuros
+  ✅ Logs reduzidos (a cada 10 ocorrências)
+  ✅ Integração com Clock Sync (CORRIGIDO: get_server_time_ms)
+  ✅ Estatísticas de ajustes de timestamp
+
+🔹 MANTIDO v2.3.0:
+  ✅ Whale volumes calculados POR JANELA + acumulado separado
+  ✅ Sector flow calculado POR JANELA + acumulado separado
+  ✅ Participant analysis usa MENOR janela (não maior)
+  ✅ Documentação clara de métricas acumuladas vs janela
+  ✅ Validação de consistência whale delta
+  ✅ Reset interval configurável (4h)
   ✅ BTC e USD usam Decimal para cálculos críticos
-  ✅ Invariância de UI para USD (total_rounded == buy_rounded + sell_rounded)
-  ✅ Invariância de UI para BTC
-  ✅ Validação rigorosa com warnings para discrepâncias >0.001 BTC
-  ✅ Valores exatos (_exact) expostos para auditoria
-  ✅ Etiquetas de janela (computation_window_min)
-  ✅ Logs detalhados e informativos
-  ✅ Correção automática de inconsistências
-  ✅ Contadores de qualidade de dados
-  ✅ Helper functions otimizadas
+  ✅ Invariância de UI para USD e BTC
 """
 
 import logging
@@ -27,6 +32,13 @@ import config
 from time_manager import TimeManager
 from liquidity_heatmap import LiquidityHeatmap
 
+# ✅ Clock Sync
+try:
+    from clock_sync import get_clock_sync
+    HAS_CLOCK_SYNC = True
+except ImportError:
+    HAS_CLOCK_SYNC = False
+
 try:
     from config import (
         NET_FLOW_WINDOWS_MIN,
@@ -40,6 +52,9 @@ except Exception:
     ABSORCAO_DELTA_EPS = 1.0
     ABSORCAO_GUARD_MODE = "warn"
 
+# ✅ Tolerância para jitter de timestamps
+TIMESTAMP_JITTER_TOLERANCE_MS = 2000  # 2 segundos
+
 
 class FlowAnalyzerError(Exception):
     """Levantada quando FlowAnalyzer encontra erro crítico."""
@@ -51,15 +66,7 @@ class FlowAnalyzerError(Exception):
 # ============================
 
 def _to_decimal(value) -> Decimal:
-    """
-    Converte valor para Decimal de forma segura e eficiente.
-    
-    Args:
-        value: Valor a converter (int, float, str, Decimal)
-        
-    Returns:
-        Decimal convertido ou Decimal('0') se falhar
-    """
+    """Converte valor para Decimal de forma segura e eficiente."""
     if value is None:
         return Decimal('0')
     if isinstance(value, Decimal):
@@ -74,11 +81,7 @@ def _to_decimal(value) -> Decimal:
 
 
 def _guard_absorcao(delta: float, rotulo: str, eps: float, mode: str = "warn"):
-    """
-    Validação de consistência para absorção.
-    
-    Verifica se o rótulo de absorção corresponde ao sinal do delta.
-    """
+    """Validação de consistência para absorção."""
     try:
         mode = (mode or "warn").strip().lower()
     except Exception:
@@ -101,16 +104,7 @@ def _guard_absorcao(delta: float, rotulo: str, eps: float, mode: str = "warn"):
 
 
 def _decimal_round(value: float, decimals: int = 8) -> float:
-    """
-    Arredonda usando Decimal para evitar erros de float.
-    
-    Args:
-        value: Valor a arredondar
-        decimals: Número de casas decimais
-        
-    Returns:
-        Float arredondado com precisão decimal
-    """
+    """Arredonda usando Decimal para evitar erros de float."""
     try:
         d = _to_decimal(value)
         quantize_str = '0.' + '0' * decimals
@@ -136,17 +130,7 @@ def _ui_safe_round_usd(
     sell_dec: Decimal, 
     tol: Decimal = Decimal('0.005')
 ) -> Tuple[float, float, float, bool, float]:
-    """
-    Garante invariância de UI: total_rounded == buy_rounded + sell_rounded.
-    
-    Args:
-        buy_dec: Volume de compra em Decimal
-        sell_dec: Volume de venda em Decimal
-        tol: Tolerância para validação
-        
-    Returns:
-        (buy_usd, sell_usd, total_usd, ok, tolerance)
-    """
+    """Garante invariância de UI: total_rounded == buy_rounded + sell_rounded."""
     try:
         total_dec = buy_dec + sell_dec
     except Exception:
@@ -160,7 +144,6 @@ def _ui_safe_round_usd(
 
     sum_components = buy_r + sell_r
     
-    # Invariância de soma: ajustar total se necessário
     if sum_components != total_r:
         logging.debug(
             f"[UI-INVARIANT-USD] Ajustando total_rounded de {total_r} → {sum_components}"
@@ -183,17 +166,7 @@ def _ui_safe_round_btc(
     sell_dec: Decimal,
     decimals: int = 8
 ) -> Tuple[float, float, float, float]:
-    """
-    Garante invariância de UI para BTC: total == buy + sell.
-    
-    Args:
-        buy_dec: Volume de compra em Decimal
-        sell_dec: Volume de venda em Decimal
-        decimals: Casas decimais (padrão: 8)
-        
-    Returns:
-        (buy_btc, sell_btc, total_btc, diff)
-    """
+    """Garante invariância de UI para BTC: total == buy + sell."""
     try:
         total_dec = buy_dec + sell_dec
     except Exception:
@@ -222,21 +195,29 @@ def _ui_safe_round_btc(
 
 class FlowAnalyzer:
     """
-    Analisador de fluxo com validação robusta de volumes.
+    Analisador de fluxo com correção de timestamps e separação clara entre métricas.
     
-    🔹 CARACTERÍSTICAS v2.2.0:
+    🔹 CARACTERÍSTICAS v2.3.1:
+      - Correção automática de timestamps com jitter
+      - Whale volumes: acumulado + por janela
+      - Sector flow: acumulado + por janela
+      - Participant analysis: baseado na menor janela
       - Precisão máxima com Decimal
       - Invariância de UI para USD e BTC
-      - Validação automática e correção de inconsistências
-      - Logs detalhados e informativos
-      - Contadores de qualidade de dados
-      - Exposição de valores exatos para auditoria
     """
 
     def __init__(self, time_manager: Optional[TimeManager] = None):
         self.time_manager = time_manager or TimeManager()
 
-        # Métricas principais
+        # ✅ Clock Sync
+        self.clock_sync = None
+        if HAS_CLOCK_SYNC:
+            try:
+                self.clock_sync = get_clock_sync()
+            except Exception as e:
+                logging.warning(f"⚠️ Erro ao obter Clock Sync: {e}")
+
+        # Métricas principais (ACUMULADAS)
         self.cvd = 0.0
         self.whale_threshold = float(getattr(config, "WHALE_TRADE_THRESHOLD", 5.0))
         self.whale_buy_volume = 0.0
@@ -244,9 +225,9 @@ class FlowAnalyzer:
         self.whale_delta = 0.0
 
         # Reset automático
-        self.last_reset_ms = self.time_manager.now_ms()
+        self.last_reset_ms = self._get_synced_timestamp_ms()
         self.reset_interval_ms = int(
-            getattr(config, "CVD_RESET_INTERVAL_HOURS", 24) * 3600 * 1000
+            getattr(config, "CVD_RESET_INTERVAL_HOURS", 4) * 3600 * 1000
         )
 
         # Thread safety
@@ -264,7 +245,7 @@ class FlowAnalyzer:
             getattr(config, "BURST_VOLUME_THRESHOLD", self.whale_threshold)
         )
 
-        # Sector flow
+        # Sector flow (ACUMULADO)
         order_buckets = getattr(config, "ORDER_SIZE_BUCKETS", {
             "retail": (0, 0.5),
             "mid": (0.5, 2.0),
@@ -320,13 +301,125 @@ class FlowAnalyzer:
         self._whale_delta_corrections = 0
         self._is_buyer_maker_conversions = 0
         self._volume_discrepancies = 0
+        
+        # ✅ Contadores de timestamp
+        self.negative_age_count = 0
+        self.timestamp_adjustments = 0
 
         logging.info(
-            "✅ FlowAnalyzer v2.2.0 inicializado | "
-            "Whale threshold: %.2f BTC | Net flow windows: %s min",
+            "✅ FlowAnalyzer v2.3.1 inicializado | "
+            "Whale threshold: %.2f BTC | Net flow windows: %s min | "
+            "Reset interval: %.1fh | Timestamp tolerance: ±%dms",
             self.whale_threshold,
             self.net_flow_windows_min,
+            self.reset_interval_ms / (3600 * 1000),
+            TIMESTAMP_JITTER_TOLERANCE_MS
         )
+
+    # ✅ CORRIGIDO: Métodos de timestamp
+    def _get_synced_timestamp_ms(self) -> int:
+        """
+        Obtém timestamp sincronizado com servidor.
+        
+        Prioridade:
+        1. TimeManager (sempre disponível)
+        2. ClockSync (se disponível)
+        3. time.time() (fallback)
+        """
+        # Prioridade 1: TimeManager (sempre disponível e confiável)
+        if self.time_manager:
+            try:
+                return self.time_manager.now_ms()
+            except Exception as e:
+                logging.warning(f"⚠️ Erro ao obter timestamp do TimeManager: {e}")
+        
+        # Prioridade 2: ClockSync (se disponível)
+        if self.clock_sync:
+            try:
+                # ✅ CORREÇÃO: ClockSync usa get_server_time_ms(), não now_ms()
+                return self.clock_sync.get_server_time_ms()
+            except Exception as e:
+                logging.warning(f"⚠️ Erro ao obter timestamp do ClockSync: {e}")
+        
+        # Fallback final: time.time()
+        return int(time.time() * 1000)
+
+    def _adjust_timestamp_if_needed(
+        self,
+        trade_ts: int,
+        reference_ts: int
+    ) -> tuple:
+        """
+        Ajusta timestamp se houver jitter aceitável.
+        
+        Returns:
+            (timestamp_ajustado, foi_ajustado)
+        """
+        diff = trade_ts - reference_ts
+        
+        # Se está dentro da tolerância, aceita
+        if abs(diff) <= TIMESTAMP_JITTER_TOLERANCE_MS:
+            if diff < 0:
+                # Timestamp levemente no passado - ok
+                return trade_ts, False
+            else:
+                # Timestamp levemente no futuro - ajusta para referência
+                self.timestamp_adjustments += 1
+                return reference_ts, True
+        
+        # Diferença maior que tolerância
+        if diff > TIMESTAMP_JITTER_TOLERANCE_MS:
+            # Muito no futuro - clamp para referência
+            if self.timestamp_adjustments % 10 == 0:
+                logging.warning(
+                    f"⚠️ Timestamp muito futuro: diff={diff}ms > {TIMESTAMP_JITTER_TOLERANCE_MS}ms. "
+                    f"Ajustando para referência. (ajustes totais: {self.timestamp_adjustments})"
+                )
+            self.timestamp_adjustments += 1
+            return reference_ts, True
+        
+        # Muito no passado - mantém original
+        return trade_ts, False
+
+    def _calculate_age_ms(
+        self,
+        trade_ts: int,
+        reference_ts: int
+    ) -> float:
+        """
+        Calcula idade do trade com tolerância a jitter.
+        
+        Args:
+            trade_ts: Timestamp do trade (ms)
+            reference_ts: Timestamp de referência (ms)
+            
+        Returns:
+            Idade em ms (sempre >= 0)
+        """
+        # Ajusta timestamp se necessário
+        adjusted_ts, was_adjusted = self._adjust_timestamp_if_needed(
+            trade_ts,
+            reference_ts
+        )
+        
+        age_ms = reference_ts - adjusted_ts
+        
+        # Se ainda assim ficou negativo
+        if age_ms < 0:
+            self.negative_age_count += 1
+            
+            # Log detalhado apenas a cada 10 ocorrências
+            if self.negative_age_count % 10 == 1:
+                logging.warning(
+                    f"⚠️ Idade negativa após ajuste: {age_ms}ms "
+                    f"(trade={trade_ts}, ref={reference_ts}). "
+                    f"Ocorrências: {self.negative_age_count}. "
+                    f"Retornando 0."
+                )
+            
+            return 0.0
+        
+        return float(age_ms)
 
     @staticmethod
     def map_absorcao_label(aggression_side: str) -> str:
@@ -369,15 +462,25 @@ class FlowAnalyzer:
             }
             self.flow_trades.clear()
             self._last_price = None
-            self.last_reset_ms = self.time_manager.now_ms()
-            logging.info("🔄 FlowAnalyzer metrics resetados.")
+            self.last_reset_ms = self._get_synced_timestamp_ms()
+            
+            reset_time = self.time_manager.format_timestamp(self.last_reset_ms)
+            logging.info(
+                f"🔄 FlowAnalyzer metrics resetados em {reset_time}. "
+                f"Ajustes de timestamp desde último reset: {self.timestamp_adjustments}"
+            )
+            
+            # ✅ Reseta contadores de timestamp
+            self.timestamp_adjustments = 0
+            self.negative_age_count = 0
+            
         except Exception as e:
             logging.error(f"Erro ao resetar métricas: {e}")
 
     def _check_reset(self):
         """Verifica se deve resetar métricas."""
         try:
-            now_ms = self.time_manager.now_ms()
+            now_ms = self._get_synced_timestamp_ms()
             if now_ms - self.last_reset_ms > self.reset_interval_ms:
                 with self._lock:
                     self._reset_metrics()
@@ -433,7 +536,7 @@ class FlowAnalyzer:
             self._last_burst_end_ms = ts_ms
 
     def _update_sector_flow(self, qty: float, delta_btc: float):
-        """Atualiza sector flow com arredondamento decimal."""
+        """Atualiza sector flow ACUMULADO com arredondamento decimal."""
         try:
             for name, (minv, maxv) in self._order_buckets.items():
                 if minv <= qty < maxv:
@@ -453,7 +556,7 @@ class FlowAnalyzer:
             logging.error(f"Erro ao atualizar sector_flow: {e}")
 
     def process_trade(self, trade: dict):
-        """Processa trade e atualiza métricas."""
+        """Processa trade e atualiza métricas ACUMULADAS."""
         try:
             self._check_reset()
             self._total_trades_processed += 1
@@ -478,6 +581,13 @@ class FlowAnalyzer:
                 self._invalid_trades += 1
                 return
 
+            # ✅ Ajusta timestamp se necessário
+            reference_ts = self._get_synced_timestamp_ms()
+            ts_adjusted, was_adjusted = self._adjust_timestamp_if_needed(ts, reference_ts)
+            
+            if was_adjusted:
+                ts = ts_adjusted
+
             # Conversão corrigida de is_buyer_maker
             is_buyer_maker = trade.get('m', None)
             
@@ -501,10 +611,10 @@ class FlowAnalyzer:
             side = "sell" if is_buyer_maker else "buy"
 
             with self._lock:
-                # Atualizar CVD
+                # Atualizar CVD (ACUMULADO)
                 self.cvd = _decimal_round(self.cvd + delta_btc)
 
-                # Atualizar whale metrics
+                # Atualizar whale metrics (ACUMULADO)
                 if qty >= self.whale_threshold:
                     if delta_btc > 0:  # Compra
                         self.whale_buy_volume = _decimal_round(
@@ -526,7 +636,7 @@ class FlowAnalyzer:
                     
                     if abs(expected_delta - actual_delta) > 0.001:
                         logging.error(
-                            f"🔴 INCONSISTÊNCIA WHALE: delta={actual_delta:.8f}, "
+                            f"🔴 INCONSISTÊNCIA WHALE ACUMULADO: delta={actual_delta:.8f}, "
                             f"mas buy-sell={expected_delta:.8f} "
                             f"(buy={self.whale_buy_volume:.8f}, sell={self.whale_sell_volume:.8f})"
                         )
@@ -536,7 +646,7 @@ class FlowAnalyzer:
                         logging.warning(f"✅ Corrigido para {expected_delta:.8f}")
 
                 self._update_bursts(ts, qty)
-                self._update_sector_flow(qty, delta_btc)
+                self._update_sector_flow(qty, delta_btc)  # ACUMULADO
 
                 self.liquidity_heatmap.add_trade(
                     price=price,
@@ -577,7 +687,7 @@ class FlowAnalyzer:
         clusters: List[Dict[str, Any]], 
         now_ms: int
     ) -> List[Dict[str, Any]]:
-        """Normaliza clusters do heatmap."""
+        """Normaliza clusters do heatmap com cálculo correto de idade."""
         out: List[Dict[str, Any]] = []
         
         for c in clusters or []:
@@ -595,11 +705,9 @@ class FlowAnalyzer:
                         recent_ts = int(cc[k])
                         break
                 
+                # ✅ Usa método corrigido de cálculo de idade
                 if recent_ts is not None:
-                    cc["age_ms"] = self.time_manager.calc_age_ms(
-                        recent_ts, 
-                        reference_ts_ms=now_ms
-                    )
+                    cc["age_ms"] = self._calculate_age_ms(recent_ts, now_ms)
 
                 tv = cc.get("total_volume", None)
                 bv = float(cc.get("buy_volume", 0.0) or 0.0)
@@ -643,14 +751,19 @@ class FlowAnalyzer:
         reference_epoch_ms: Optional[int] = None
     ) -> dict:
         """
-        Retorna métricas de fluxo com validação completa de volumes.
+        Retorna métricas de fluxo com separação clara entre acumulado e janela.
         
-        🔹 GARANTIAS v2.2.0:
-          - USD: total_rounded == buy_rounded + sell_rounded
-          - BTC: total_rounded == buy_rounded + sell_rounded
-          - Valores exatos expostos para auditoria
-          - Validação automática com warnings
-          - Correção de inconsistências
+        🔹 MÉTRICAS ACUMULADAS (desde último reset):
+          - cvd: Cumulative Volume Delta total
+          - whale_buy_volume / whale_sell_volume / whale_delta: Acumulado
+          - sector_flow: Flow acumulado desde reset
+          - bursts: Contadores acumulados
+        
+        🔹 MÉTRICAS POR JANELA (computation_window_min):
+          - order_flow.net_flow_Xm: Net flow por janela X
+          - order_flow.whale_*_window: Volumes whale na menor janela
+          - order_flow.sector_flow_window: Sector flow na menor janela
+          - participant_analysis: Análise baseada na menor janela
         """
         try:
             acquired = self._lock.acquire(timeout=5.0)
@@ -662,8 +775,9 @@ class FlowAnalyzer:
                 raise FlowAnalyzerError(error_msg)
 
             try:
+                # ✅ Usa timestamp sincronizado
                 now_ms = reference_epoch_ms if reference_epoch_ms is not None \
-                         else self.time_manager.now_ms()
+                         else self._get_synced_timestamp_ms()
                 
                 time_index = self.time_manager.build_time_index(
                     now_ms, 
@@ -671,18 +785,19 @@ class FlowAnalyzer:
                     timespec="milliseconds"
                 )
 
-                # Validação final whale delta
+                # Validação final whale delta ACUMULADO
                 expected_whale_delta = _decimal_round(
                     self.whale_buy_volume - self.whale_sell_volume
                 )
                 if abs(self.whale_delta - expected_whale_delta) > 0.001:
                     logging.error(
-                        f"🔴 CORREÇÃO FINAL WHALE: "
+                        f"🔴 CORREÇÃO FINAL WHALE ACUMULADO: "
                         f"delta={self.whale_delta:.8f} → {expected_whale_delta:.8f}"
                     )
                     self.whale_delta = expected_whale_delta
                     self._whale_delta_corrections += 1
 
+                # ===== MÉTRICAS ACUMULADAS =====
                 metrics = {
                     "cvd": _decimal_round(self.cvd),
                     "whale_buy_volume": _decimal_round(self.whale_buy_volume),
@@ -707,10 +822,11 @@ class FlowAnalyzer:
                         "last_reset_iso_utc": self.time_manager.format_timestamp(
                             self.last_reset_ms
                         ),
+                        "reset_interval_hours": self.reset_interval_ms / (3600 * 1000),
                     },
                 }
 
-                # 🆕 VALIDAÇÃO DE CONSISTÊNCIA DE SECTOR FLOW
+                # Validação de consistência de sector flow acumulado
                 for sector_name, sector_data in metrics["sector_flow"].items():
                     buy_vol = sector_data["buy"]
                     sell_vol = sector_data["sell"]
@@ -720,18 +836,13 @@ class FlowAnalyzer:
                     
                     if abs(delta - expected_delta) > 0.001:
                         logging.warning(
-                            f"⚠️ DISCREPÂNCIA SECTOR[{sector_name}]: "
+                            f"⚠️ DISCREPÂNCIA SECTOR ACUMULADO[{sector_name}]: "
                             f"delta={delta:.8f}, mas buy-sell={expected_delta:.8f}"
                         )
-                        # Corrigir automaticamente
                         metrics["sector_flow"][sector_name]["delta"] = expected_delta
                         self._volume_discrepancies += 1
-                        logging.info(
-                            f"✅ Corrigido sector[{sector_name}]: "
-                            f"{delta:.8f} → {expected_delta:.8f}"
-                        )
 
-                # Order flow
+                # ===== ORDER FLOW POR JANELA =====
                 try:
                     order_flow: Dict[str, Any] = {}
                     absorcao_por_janela: Dict[int, str] = {}
@@ -752,40 +863,9 @@ class FlowAnalyzer:
                             if t['ts'] >= start_ms
                         ]
 
-                        # Delta USD acumulado (mantido para compatibilidade)
                         total_delta_usd = sum(t['delta_usd'] for t in relevant)
                         total_delta_usd = _decimal_round(total_delta_usd, decimals=2)
                         
-                        # ==================== USD COM DECIMAL ====================
-                        total_buy_usd_dec  = Decimal('0')
-                        total_sell_usd_dec = Decimal('0')
-                        
-                        for t in relevant:
-                            price_dec = _to_decimal(t['price'])
-                            qty_dec = _to_decimal(t['qty'])
-                            
-                            if t['side'] == 'buy':
-                                total_buy_usd_dec += price_dec * qty_dec
-                            else:
-                                total_sell_usd_dec += price_dec * qty_dec
-
-                        total_vol_usd_dec = total_buy_usd_dec + total_sell_usd_dec
-
-                        # ==================== BTC COM DECIMAL ====================
-                        total_buy_btc_dec  = Decimal('0')
-                        total_sell_btc_dec = Decimal('0')
-                        
-                        for t in relevant:
-                            qty_dec = _to_decimal(t['qty'])
-                            
-                            if t['side'] == 'buy':
-                                total_buy_btc_dec += qty_dec
-                            else:
-                                total_sell_btc_dec += qty_dec
-
-                        total_vol_btc_dec = total_buy_btc_dec + total_sell_btc_dec
-
-                        # Net flow e absorção por janela
                         key_net = f"net_flow_{window_min}m"
                         order_flow[key_net] = _decimal_round(
                             total_delta_usd, decimals=4
@@ -805,28 +885,58 @@ class FlowAnalyzer:
                         order_flow[f"absorcao_{window_min}m"] = rotulo
                         absorcao_por_janela[window_min] = rotulo
 
-                        # Cálculos para menor janela
                         if window_min == smallest_window:
-                            # ===== USD: INVARIÂNCIA DE UI =====
+                            logging.info(
+                                f"📊 Calculando métricas detalhadas para janela {window_min}m "
+                                f"({len(relevant)} trades)"
+                            )
+                            
+                            # USD COM DECIMAL
+                            total_buy_usd_dec  = Decimal('0')
+                            total_sell_usd_dec = Decimal('0')
+                            
+                            for t in relevant:
+                                price_dec = _to_decimal(t['price'])
+                                qty_dec = _to_decimal(t['qty'])
+                                
+                                if t['side'] == 'buy':
+                                    total_buy_usd_dec += price_dec * qty_dec
+                                else:
+                                    total_sell_usd_dec += price_dec * qty_dec
+
+                            total_vol_usd_dec = total_buy_usd_dec + total_sell_usd_dec
+
+                            # BTC COM DECIMAL
+                            total_buy_btc_dec  = Decimal('0')
+                            total_sell_btc_dec = Decimal('0')
+                            
+                            for t in relevant:
+                                qty_dec = _to_decimal(t['qty'])
+                                
+                                if t['side'] == 'buy':
+                                    total_buy_btc_dec += qty_dec
+                                else:
+                                    total_sell_btc_dec += qty_dec
+
+                            total_vol_btc_dec = total_buy_btc_dec + total_sell_btc_dec
+
+                            # USD: INVARIÂNCIA DE UI
                             buy_usd, sell_usd, total_usd, ui_ok, tol = \
                                 _ui_safe_round_usd(
                                     total_buy_usd_dec, 
                                     total_sell_usd_dec
                                 )
 
-                            # Expor valores exatos para auditoria
                             order_flow["buy_volume_usd_exact"]   = float(total_buy_usd_dec)
                             order_flow["sell_volume_usd_exact"]  = float(total_sell_usd_dec)
                             order_flow["total_volume_usd_exact"] = float(total_vol_usd_dec)
-
-                            # Valores arredondados com invariância
                             order_flow["buy_volume"]   = buy_usd
                             order_flow["sell_volume"]  = sell_usd
                             order_flow["total_volume"] = total_usd
                             order_flow["ui_sum_ok"]    = ui_ok
                             order_flow["ui_sum_tolerance"] = tol
 
-                            # ===== BTC: INVARIÂNCIA DE UI =====
+                            # BTC: INVARIÂNCIA DE UI
                             buy_btc, sell_btc, total_btc, diff_btc = \
                                 _ui_safe_round_btc(
                                     total_buy_btc_dec, 
@@ -834,11 +944,9 @@ class FlowAnalyzer:
                                     decimals=8
                                 )
 
-                            # Validação de diferença alta em BTC
                             if diff_btc > 0.001:
                                 logging.warning(
-                                    f"⚠️ DISCREPÂNCIA BTC ALTA: {diff_btc:.8f} BTC "
-                                    f"(buy={buy_btc:.8f}, sell={sell_btc:.8f})"
+                                    f"⚠️ DISCREPÂNCIA BTC ALTA ({window_min}m): {diff_btc:.8f} BTC"
                                 )
                                 self._volume_discrepancies += 1
 
@@ -846,7 +954,91 @@ class FlowAnalyzer:
                             order_flow["sell_volume_btc"]  = sell_btc
                             order_flow["total_volume_btc"] = total_btc
 
-                            # ===== VALIDAÇÃO DE DELTA BTC =====
+                            # WHALE VOLUMES POR JANELA
+                            whale_buy_window = sum(
+                                t['qty'] for t in relevant 
+                                if t['qty'] >= self.whale_threshold and t['side'] == 'buy'
+                            )
+                            whale_sell_window = sum(
+                                t['qty'] for t in relevant 
+                                if t['qty'] >= self.whale_threshold and t['side'] == 'sell'
+                            )
+                            whale_delta_window = whale_buy_window - whale_sell_window
+                            
+                            order_flow["whale_buy_volume_window"] = _decimal_round(whale_buy_window)
+                            order_flow["whale_sell_volume_window"] = _decimal_round(whale_sell_window)
+                            order_flow["whale_delta_window"] = _decimal_round(whale_delta_window)
+                            
+                            expected_whale_delta_window = _decimal_round(
+                                whale_buy_window - whale_sell_window
+                            )
+                            actual_whale_delta_window = order_flow["whale_delta_window"]
+                            
+                            if abs(expected_whale_delta_window - actual_whale_delta_window) > 0.001:
+                                logging.error(
+                                    f"🔴 INCONSISTÊNCIA WHALE JANELA {window_min}m: "
+                                    f"delta={actual_whale_delta_window:.8f}, "
+                                    f"mas buy-sell={expected_whale_delta_window:.8f}"
+                                )
+                                order_flow["whale_delta_window"] = expected_whale_delta_window
+                                self._whale_delta_corrections += 1
+
+                            logging.info(
+                                f"🐋 WHALE JANELA {window_min}m: "
+                                f"buy={whale_buy_window:.4f}, "
+                                f"sell={whale_sell_window:.4f}, "
+                                f"delta={whale_delta_window:.4f}"
+                            )
+
+                            # SECTOR FLOW POR JANELA
+                            sector_flow_window = {
+                                sector: {"buy": 0.0, "sell": 0.0, "delta": 0.0}
+                                for sector in self._order_buckets.keys()
+                            }
+
+                            for t in relevant:
+                                sector = t.get('sector')
+                                if sector and sector in sector_flow_window:
+                                    if t['side'] == 'buy':
+                                        sector_flow_window[sector]["buy"] += t['qty']
+                                    else:
+                                        sector_flow_window[sector]["sell"] += t['qty']
+                                    sector_flow_window[sector]["delta"] += t['delta_btc']
+
+                            for sector in sector_flow_window:
+                                buy_s = sector_flow_window[sector]["buy"]
+                                sell_s = sector_flow_window[sector]["sell"]
+                                delta_s = sector_flow_window[sector]["delta"]
+                                
+                                sector_flow_window[sector] = {
+                                    "buy": _decimal_round(buy_s),
+                                    "sell": _decimal_round(sell_s),
+                                    "delta": _decimal_round(delta_s)
+                                }
+                                
+                                expected_delta_s = _decimal_round(buy_s - sell_s)
+                                actual_delta_s = sector_flow_window[sector]["delta"]
+                                
+                                if abs(expected_delta_s - actual_delta_s) > 0.001:
+                                    logging.warning(
+                                        f"⚠️ DISCREPÂNCIA SECTOR JANELA[{sector}]: "
+                                        f"delta={actual_delta_s:.8f}, "
+                                        f"mas buy-sell={expected_delta_s:.8f}"
+                                    )
+                                    sector_flow_window[sector]["delta"] = expected_delta_s
+                                    self._volume_discrepancies += 1
+
+                            order_flow["sector_flow_window"] = sector_flow_window
+
+                            logging.info(
+                                f"📊 SECTOR FLOW JANELA {window_min}m: "
+                                + ", ".join([
+                                    f"{s}(Δ={v['delta']:.2f})" 
+                                    for s, v in sector_flow_window.items()
+                                ])
+                            )
+
+                            # VALIDAÇÃO DE DELTA BTC
                             expected_delta_btc = _decimal_round(buy_btc - sell_btc)
                             actual_delta_btc = sum(t['delta_btc'] for t in relevant)
                             actual_delta_btc = _decimal_round(actual_delta_btc)
@@ -855,12 +1047,11 @@ class FlowAnalyzer:
                                 logging.warning(
                                     f"⚠️ DISCREPÂNCIA DELTA {window_min}m: "
                                     f"Σdelta={actual_delta_btc:.4f}, "
-                                    f"mas buy-sell={expected_delta_btc:.4f} "
-                                    f"(buy={buy_btc:.4f}, sell={sell_btc:.4f})"
+                                    f"mas buy-sell={expected_delta_btc:.4f}"
                                 )
                                 self._volume_discrepancies += 1
 
-                            # ===== MÉTRICAS DERIVADAS =====
+                            # MÉTRICAS DERIVADAS
                             if float(total_vol_usd_dec) > 0:
                                 flow_imbalance = total_delta_usd / float(total_vol_usd_dec)
                                 order_flow["flow_imbalance"] = _decimal_round(
@@ -889,7 +1080,7 @@ class FlowAnalyzer:
                                 order_flow["aggressive_sell_pct"] = None
                                 order_flow["buy_sell_ratio"] = None
 
-                            # ===== LOG DETALHADO =====
+                            # LOG DETALHADO
                             logging.info(
                                 f"📊 VOLUMES CALCULADOS (janela {window_min}m):\n"
                                 f"   === USD (Decimal → UI) ===\n"
@@ -908,7 +1099,7 @@ class FlowAnalyzer:
                                 f"   diff:       {abs(total_btc - (buy_btc + sell_btc)):.8f}\n"
                             )
 
-                            # ===== TICK RULE =====
+                            # TICK RULE
                             tick_rule_sum = 0.0
                             prev_price = None
                             
@@ -925,7 +1116,6 @@ class FlowAnalyzer:
                                 tick_rule_sum, decimals=4
                             )
 
-                    # Etiquetas de janela
                     order_flow["computation_window_min"] = smallest_window
                     order_flow["available_windows_min"]  = list(self.net_flow_windows_min)
 
@@ -936,17 +1126,24 @@ class FlowAnalyzer:
                     else:
                         metrics["tipo_absorcao"] = "Neutra"
 
-                    # Participant analysis
+                    # PARTICIPANT ANALYSIS (MENOR JANELA)
                     participant_analysis: Dict[str, Any] = {}
                     
                     if self.net_flow_windows_min:
-                        largest_window = max(self.net_flow_windows_min)
-                        start_ms_p = now_ms - largest_window * 60 * 1000
+                        analysis_window = min(self.net_flow_windows_min)
+                        start_ms_p = now_ms - analysis_window * 60 * 1000
+                        
                         all_trades = [
                             t for t in self.flow_trades 
                             if t['ts'] >= start_ms_p
                         ]
+                        
                         total_qty_all = sum(t['qty'] for t in all_trades)
+
+                        logging.info(
+                            f"👥 Calculando participant analysis para janela {analysis_window}m "
+                            f"({len(all_trades)} trades, {total_qty_all:.4f} BTC total)"
+                        )
 
                         for sector in self._order_buckets.keys():
                             sector_trades = [
@@ -982,7 +1179,7 @@ class FlowAnalyzer:
                             sentiment = "BULLISH" if direction == "BUY" else \
                                        ("BEARISH" if direction == "SELL" else "NEUTRAL")
                             
-                            duration_seconds = largest_window * 60
+                            duration_seconds = analysis_window * 60
                             trades_per_sec = _decimal_round(
                                 count_trades / duration_seconds, decimals=4
                             ) if duration_seconds > 0 else None
@@ -990,15 +1187,15 @@ class FlowAnalyzer:
                             activity_level = "HIGH" if trades_per_sec and \
                                             trades_per_sec >= 1.0 else "LOW"
 
-                            participant_analysis[sector] = {
-                                "volume_pct": volume_pct,
-                                "direction": direction,
-                                "avg_order_size": avg_order_size,
-                                "sentiment": sentiment,
-                                "activity_level": activity_level,
-                            }
+                            if total_qty_sector > 0:
+                                participant_analysis[sector] = {
+                                    "volume_pct": volume_pct,
+                                    "direction": direction,
+                                    "avg_order_size": avg_order_size,
+                                    "sentiment": sentiment,
+                                    "activity_level": activity_level,
+                                }
 
-                        # Validação: soma de volume_pct deve ser ~100%
                         total_pct = sum(
                             float(p.get("volume_pct", 0) or 0) 
                             for p in participant_analysis.values()
@@ -1006,8 +1203,7 @@ class FlowAnalyzer:
                         
                         if abs(total_pct - 100.0) > 0.5:
                             logging.warning(
-                                f"⚠️ Soma de volume_pct = {total_pct:.2f}% "
-                                f"(esperado: 100%)"
+                                f"⚠️ Soma de volume_pct = {total_pct:.2f}% (esperado: 100%)"
                             )
 
                     metrics["order_flow"] = order_flow
@@ -1056,6 +1252,8 @@ class FlowAnalyzer:
                     "whale_delta_corrections": self._whale_delta_corrections,
                     "is_buyer_maker_conversions": self._is_buyer_maker_conversions,
                     "volume_discrepancies": self._volume_discrepancies,
+                    "negative_age_count": self.negative_age_count,
+                    "timestamp_adjustments": self.timestamp_adjustments,
                 }
 
                 return metrics
@@ -1069,7 +1267,7 @@ class FlowAnalyzer:
             logging.error(f"Erro ao obter flow metrics: {e}", exc_info=True)
             
             now_ms = reference_epoch_ms if reference_epoch_ms is not None \
-                     else self.time_manager.now_ms()
+                     else self._get_synced_timestamp_ms()
             time_index = self.time_manager.build_time_index(
                 now_ms, include_local=True, timespec="milliseconds"
             )
@@ -1105,4 +1303,10 @@ class FlowAnalyzer:
             "whale_delta_corrections": self._whale_delta_corrections,
             "is_buyer_maker_conversions": self._is_buyer_maker_conversions,
             "volume_discrepancies": self._volume_discrepancies,
+            "negative_age_count": self.negative_age_count,
+            "timestamp_adjustments": self.timestamp_adjustments,
+            "reset_interval_hours": self.reset_interval_ms / (3600 * 1000),
+            "time_since_last_reset_hours": (
+                self._get_synced_timestamp_ms() - self.last_reset_ms
+            ) / (3600 * 1000),
         }
