@@ -1,20 +1,37 @@
-# CONFIG.PY - VERSÃO 2.1.0 CORRIGIDA
+# CONFIG.PY - VERSÃO 2.3.1 - GROQ CORRIGIDO
 # ==============================================================================
 # CONFIGURAÇÕES GERAIS DO BOT
 # ==============================================================================
+
+import os
+from dotenv import load_dotenv
+
+# Carrega variáveis de ambiente do arquivo .env (se existir)
+# Exemplo de .env:
+# GROQ_API_KEY=...
+# DASHSCOPE_API_KEY=...
+# OPENAI_API_KEY=...  (opcional)
+load_dotenv()
 
 # -- Ativo e Conexão --
 SYMBOL = "BTCUSDT"
 STREAM_URL = f"wss://fstream.binance.com/ws/{SYMBOL.lower()}@aggTrade"
 
-# === Credenciais de IA (DashScope/Qwen) ===
-DASHSCOPE_API_KEY = "sk-6f40dca1f07b492d8ee6fa6b724dd4dc"
+# === Credenciais de IA (GroqCloud + DashScope/Qwen) ===
+# ✅ PRIORIDADE 1: GroqCloud (rápido e eficiente)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = "llama-3.3-70b-versatile"  # ✅ CORRIGIDO: era llama-3.1-70b-versatile (descontinuado)
+
+# FALLBACK: DashScope
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+
 AI_KEYS = {
-    "dashscope": DASHSCOPE_API_KEY,
+    "groq": GROQ_API_KEY,           # ✅ Prioridade 1
+    "dashscope": DASHSCOPE_API_KEY, # Fallback
 }
 
-# (Opcional) Se algum dia usar OpenAI, pode definir aqui também:
-OPENAI_API_KEY = None
+# (Opcional) OpenAI
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # -- Janela de Análise (Candle) --
 WINDOW_SIZE_MINUTES = 1  # Tamanho da janela de tempo para agrupar trades (em minutos)
@@ -412,9 +429,6 @@ ENABLE_QUALITY_STATS = True            # ✅ NOVO: Habilitar contadores de quali
 LOG_STATS_INTERVAL_SEC = 300           # ✅ NOVO: Logar estatísticas a cada 5 minutos
 
 # ==============================================================================
-# FIM DO CONFIG.PY v2.1.0
-# ==============================================================================
-# ==============================================================================
 # 🆕 CONFIGURAÇÕES DE RECONEXÃO E ESTABILIDADE v2.3.0
 # ==============================================================================
 
@@ -457,16 +471,27 @@ USE_NUMPY_VECTORIZATION = True         # ✅ Usa NumPy para otimização
 MAX_WORKER_THREADS = 5                 # ✅ Pool de threads
 
 # ==============================================================================
-# 🆕 VALIDAÇÃO AUTOMÁTICA DE CONFIGURAÇÃO v2.3.0
+# 🆕 VALIDAÇÃO AUTOMÁTICA DE CONFIGURAÇÃO v2.3.1
 # ==============================================================================
 
 def validate_config():
     """
     Valida configurações críticas automaticamente.
-    ✅ NOVO v2.3.0
+    ✅ ATUALIZADO v2.3.1 - Valida Groq
     """
     errors = []
     warnings = []
+    
+    # Valida credenciais de IA
+    if not GROQ_API_KEY and not DASHSCOPE_API_KEY:
+        warnings.append(
+            "⚠️ Nenhuma chave de IA configurada. Sistema rodará em modo MOCK."
+        )
+    
+    if GROQ_API_KEY and not GROQ_API_KEY.startswith("gsk_"):
+        errors.append(
+            f"❌ GROQ_API_KEY inválida (deve começar com 'gsk_')"
+        )
     
     # Valida WebSocket
     if WS_PING_INTERVAL < 10:
@@ -525,7 +550,7 @@ def validate_config():
 # Auto-validação ao importar
 if __name__ == "__main__":
     print("\n" + "=" * 70)
-    print("🔧 VALIDANDO CONFIGURAÇÕES v2.3.0...")
+    print("🔧 VALIDANDO CONFIGURAÇÕES v2.3.1 (com Groq)...")
     print("=" * 70)
     
     try:
@@ -537,6 +562,9 @@ if __name__ == "__main__":
         print("=" * 70)
         print(f"  Símbolo: {SYMBOL}")
         print(f"  Janela: {WINDOW_SIZE_MINUTES} min")
+        print(f"  IA Groq: {'✅ Configurado' if GROQ_API_KEY else '❌ Não configurado'}")
+        print(f"  Modelo Groq: {GROQ_MODEL}")
+        print(f"  IA DashScope: {'✅ Fallback' if DASHSCOPE_API_KEY else '❌ Não configurado'}")
         print(f"  WebSocket Ping: {WS_PING_INTERVAL}s / Timeout: {WS_PING_TIMEOUT}s")
         print(f"  Warmup: {WARMUP_WINDOWS} janelas")
         print(f"  Min Trades: {MIN_TRADES_FOR_PIPELINE}")
@@ -551,5 +579,5 @@ if __name__ == "__main__":
         exit(1)
 
 # ==============================================================================
-# FIM DAS ADIÇÕES v2.3.0
+# FIM DO CONFIG.PY v2.3.1 - GROQ CORRIGIDO
 # ==============================================================================

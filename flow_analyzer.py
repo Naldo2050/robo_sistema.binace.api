@@ -1,13 +1,19 @@
-# flow_analyzer.py v2.3.1 - CORREÇÃO: TIMESTAMP JITTER + JANELA vs ACUMULADO
+# flow_analyzer.py v2.3.2 - CORREÇÃO: MÉTODO classificar_absorcao_contextual IMPLEMENTADO
 """
 Flow Analyzer com correção de timestamps e separação clara entre métricas.
 
-🔹 CORREÇÕES v2.3.1:
+🔹 CORREÇÕES v2.3.2:
+  ✅ Implementado método classificar_absorcao_contextual (FALTANTE)
+  ✅ Lógica de absorção contextual baseada em OHLC
+  ✅ Validações robustas de parâmetros
+
+🔹 MANTIDO v2.3.1:
   ✅ Tolerância a jitter de timestamps (±2000ms)
   ✅ Ajuste automático de timestamps futuros
   ✅ Logs reduzidos (a cada 10 ocorrências)
   ✅ Integração com Clock Sync (CORRIGIDO: get_server_time_ms)
   ✅ Estatísticas de ajustes de timestamp
+  ✅ Thread-safety melhorado em contadores e leituras de métricas (get_stats)
 
 🔹 MANTIDO v2.3.0:
   ✅ Whale volumes calculados POR JANELA + acumulado separado
@@ -31,6 +37,7 @@ import config
 
 from time_manager import TimeManager
 from liquidity_heatmap import LiquidityHeatmap
+
 
 # ✅ Clock Sync
 try:
@@ -193,17 +200,22 @@ def _ui_safe_round_btc(
     return buy_r, sell_r, total_r, diff
 
 
+# ============================
+# CLASSE PRINCIPAL
+# ============================
+
 class FlowAnalyzer:
     """
     Analisador de fluxo com correção de timestamps e separação clara entre métricas.
     
-    🔹 CARACTERÍSTICAS v2.3.1:
+    🔹 CARACTERÍSTICAS v2.3.2:
       - Correção automática de timestamps com jitter
       - Whale volumes: acumulado + por janela
       - Sector flow: acumulado + por janela
       - Participant analysis: baseado na menor janela
       - Precisão máxima com Decimal
       - Invariância de UI para USD e BTC
+      - Classificação contextual de absorção com OHLC + volatilidade dinâmica
     """
 
     def __init__(self, time_manager: Optional[TimeManager] = None):
@@ -290,7 +302,30 @@ class FlowAnalyzer:
             ).lower()
         except Exception:
             self.absorcao_guard_mode = "warn"
-        
+
+        # 🔹 NOVO: contexto de volatilidade para absorção
+        self._atr_price: Optional[float] = None
+        self._price_volatility: Optional[float] = None
+
+        # Parâmetros configuráveis da sensibilidade da absorção ao ATR/vol
+        self.absorcao_atr_multiplier: float = float(
+            getattr(config, "ABSORCAO_ATR_MULTIPLIER", 0.5)  # 0.5 * ATR
+        )
+        self.absorcao_vol_multiplier: float = float(
+            getattr(config, "ABSORCAO_VOL_MULTIPLIER", 1.0)  # 1.0 * desvio padrão
+        )
+        # Limites de tolerância em termos percentuais (fração do preço)
+        self.absorcao_min_pct_tolerance: float = float(
+            getattr(config, "ABSORCAO_MIN_PCT_TOLERANCE", 0.001)  # 0.1%
+        )
+        self.absorcao_max_pct_tolerance: float = float(
+            getattr(config, "ABSORCAO_MAX_PCT_TOLERANCE", 0.01)   # 1.0%
+        )
+        # Fallback se ATR/vol não estiverem disponíveis (mantém ~0.2% padrão atual)
+        self.absorcao_fallback_pct_tolerance: float = float(
+            getattr(config, "ABSORCAO_FALLBACK_PCT_TOLERANCE", 0.002)  # 0.2%
+        )
+
         # Qualidade de dados
         self._total_trades_processed = 0
         self._invalid_trades = 0
@@ -307,7 +342,7 @@ class FlowAnalyzer:
         self.timestamp_adjustments = 0
 
         logging.info(
-            "✅ FlowAnalyzer v2.3.1 inicializado | "
+            "✅ FlowAnalyzer v2.3.2 inicializado | "
             "Whale threshold: %.2f BTC | Net flow windows: %s min | "
             "Reset interval: %.1fh | Timestamp tolerance: ±%dms",
             self.whale_threshold,
@@ -316,7 +351,10 @@ class FlowAnalyzer:
             TIMESTAMP_JITTER_TOLERANCE_MS
         )
 
-    # ✅ CORRIGIDO: Métodos de timestamp
+    # ============================
+    # TIMESTAMP / CLOCK SYNC
+    # ============================
+
     def _get_synced_timestamp_ms(self) -> int:
         """
         Obtém timestamp sincronizado com servidor.
@@ -421,6 +459,10 @@ class FlowAnalyzer:
         
         return float(age_ms)
 
+    # ============================
+    # ABSORÇÃO: LABELS BÁSICOS
+    # ============================
+
     @staticmethod
     def map_absorcao_label(aggression_side: str) -> str:
         """Mapeia lado de agressão para rótulo."""
@@ -433,7 +475,7 @@ class FlowAnalyzer:
 
     @staticmethod
     def classificar_absorcao_por_delta(delta: float, eps: float = 1.0) -> str:
-        """Classificador de absorção por sinal do delta."""
+        """Classificador simples de absorção por sinal do delta."""
         try:
             d = float(delta)
         except Exception:
@@ -444,6 +486,168 @@ class FlowAnalyzer:
         if d < -eps:
             return "Absorção de Venda"
         return "Neutra"
+
+    # ============================
+    # CONTEXTO DE VOLATILIDADE
+    # ============================
+
+    def update_volatility_context(
+        self,
+        atr_price: Optional[float] = None,
+        price_volatility: Optional[float] = None
+    ) -> None:
+        """
+        Atualiza o contexto de volatilidade usado na classificação de absorção.
+
+        Args:
+            atr_price: ATR em unidades de preço (ex: USDT), janelas curtíssimas (ex: 1m/5m).
+            price_volatility: desvio padrão da variação de preço (ou outro proxy), em unidades de preço.
+        """
+        try:
+            with self._lock:
+                if isinstance(atr_price, (int, float)) and atr_price > 0:
+                    self._atr_price = float(atr_price)
+                if isinstance(price_volatility, (int, float)) and price_volatility > 0:
+                    self._price_volatility = float(price_volatility)
+        except Exception as e:
+            logging.debug(f"Erro em update_volatility_context: {e}")
+
+    def classificar_absorcao_contextual(
+        self,
+        delta_btc: float,
+        open_p: float,
+        high_p: float,
+        low_p: float,
+        close_p: float,
+        eps: float = 1.0,
+        atr: Optional[float] = None,
+        price_volatility: Optional[float] = None,
+    ) -> str:
+        """
+        Classifica absorção usando contexto OHLC + volatilidade recente (ATR / desvio padrão).
+
+        Se ATR/volatilidade forem fornecidos (ou já tiverem sido setados via
+        update_volatility_context), a tolerância para "fechar perto da abertura"
+        é ajustada dinamicamente. Caso contrário, usa fallback percentual fixo.
+
+        Returns:
+            "Absorção de Compra", "Absorção de Venda" ou "Neutra"
+        """
+        try:
+            # Validações básicas
+            if not all(isinstance(x, (int, float)) for x in [delta_btc, open_p, high_p, low_p, close_p, eps]):
+                logging.debug("classificar_absorcao_contextual: parâmetros inválidos")
+                return "Neutra"
+            
+            if high_p < low_p or close_p <= 0 or open_p <= 0:
+                logging.debug(
+                    f"classificar_absorcao_contextual: OHLC inválido "
+                    f"(H:{high_p} L:{low_p} C:{close_p} O:{open_p})"
+                )
+                return "Neutra"
+            
+            # Range do candle
+            candle_range = high_p - low_p
+            if candle_range <= 0:
+                candle_range = 0.0001
+            
+            # Posição do fechamento no range (0 a 1)
+            close_pos_compra = (close_p - low_p) / candle_range  # 0=low, 1=high
+            close_pos_venda = (high_p - close_p) / candle_range  # 0=high, 1=low
+
+            # =========================
+            # TOLERÂNCIA DINÂMICA
+            # =========================
+            # Usa valores fornecidos na chamada, senão contexto interno.
+            if atr is None:
+                atr = self._atr_price
+            if price_volatility is None:
+                price_volatility = self._price_volatility
+
+            # Preço de referência para converter medidas absolutas em % do preço
+            base_price = close_p if close_p > 0 else open_p
+
+            pct_tolerance: Optional[float] = None
+
+            # 1) Se ATR disponível, baseia a tolerância nele
+            if isinstance(atr, (int, float)) and atr > 0 and base_price > 0:
+                pct_tolerance = (self.absorcao_atr_multiplier * float(atr)) / base_price
+
+            # 2) Se desvio padrão disponível, usa como fallback / complemento
+            if (
+                pct_tolerance is None
+                and isinstance(price_volatility, (int, float))
+                and price_volatility > 0
+                and base_price > 0
+            ):
+                pct_tolerance = (
+                    self.absorcao_vol_multiplier * float(price_volatility)
+                ) / base_price
+
+            # 3) Se nada disponível, cai no fallback fixo (mantém compatibilidade)
+            if pct_tolerance is None:
+                pct_tolerance = self.absorcao_fallback_pct_tolerance
+
+            # Clampa tolerância a um intervalo razoável
+            pct_tolerance = max(
+                self.absorcao_min_pct_tolerance,
+                min(self.absorcao_max_pct_tolerance, pct_tolerance),
+            )
+
+            # Em vez de 0.998 / 1.002, usamos 1 ± pct_tolerance
+            lower_bound = open_p * (1.0 - pct_tolerance)
+            upper_bound = open_p * (1.0 + pct_tolerance)
+
+            # ========================================
+            # Absorção de Compra (Sell Absorption)
+            # ========================================
+            if (
+                delta_btc < -abs(eps)
+                and close_p >= lower_bound
+                and close_pos_compra > 0.5
+            ):
+                logging.debug(
+                    f"✅ Absorção de Compra: "
+                    f"delta={delta_btc:.4f} (< -{eps}), "
+                    f"close={close_p:.2f}, open={open_p:.2f}, "
+                    f"tol_pct={pct_tolerance:.4%}, "
+                    f"pos_compra={close_pos_compra:.2f}"
+                )
+                return "Absorção de Compra"
+            
+            # ========================================
+            # Absorção de Venda (Buy Absorption)
+            # ========================================
+            if (
+                delta_btc > abs(eps)
+                and close_p <= upper_bound
+                and close_pos_venda > 0.5
+            ):
+                logging.debug(
+                    f"✅ Absorção de Venda: "
+                    f"delta={delta_btc:.4f} (> {eps}), "
+                    f"close={close_p:.2f}, open={open_p:.2f}, "
+                    f"tol_pct={pct_tolerance:.4%}, "
+                    f"pos_venda={close_pos_venda:.2f}"
+                )
+                return "Absorção de Venda"
+            
+            # Nenhuma absorção detectada
+            logging.debug(
+                f"Sem absorção: delta={delta_btc:.4f}, "
+                f"close={close_p:.2f}, open={open_p:.2f}, "
+                f"tol_pct={pct_tolerance:.4%}, "
+                f"pos_compra={close_pos_compra:.2f}, pos_venda={close_pos_venda:.2f}"
+            )
+            return "Neutra"
+            
+        except Exception as e:
+            logging.warning(f"⚠️ Erro em classificar_absorcao_contextual: {e}")
+            return "Neutra"
+
+    # ============================
+    # RESET / PODA
+    # ============================
 
     def _reset_metrics(self):
         """Reseta todas as métricas acumuladas."""
@@ -509,6 +713,10 @@ class FlowAnalyzer:
         except Exception as e:
             logging.debug(f"Erro ao podar flow_trades: {e}")
 
+    # ============================
+    # BURSTS / SECTOR FLOW
+    # ============================
+
     def _update_bursts(self, ts_ms: int, qty: float):
         """Detecta bursts de volume."""
         try:
@@ -555,18 +763,27 @@ class FlowAnalyzer:
         except Exception as e:
             logging.error(f"Erro ao atualizar sector_flow: {e}")
 
+    # ============================
+    # PROCESSAR TRADE
+    # ============================
+
     def process_trade(self, trade: dict):
         """Processa trade e atualiza métricas ACUMULADAS."""
         try:
+            # Pode disparar reset interno (usa o mesmo lock internamente)
             self._check_reset()
-            self._total_trades_processed += 1
 
+            # --------- Validação e parsing SEM tocar estado compartilhado ---------
             if not isinstance(trade, dict):
-                self._invalid_trades += 1
+                with self._lock:
+                    self._total_trades_processed += 1
+                    self._invalid_trades += 1
                 return
             
             if not all(k in trade for k in ("q", "T", "p")):
-                self._invalid_trades += 1
+                with self._lock:
+                    self._total_trades_processed += 1
+                    self._invalid_trades += 1
                 return
 
             try:
@@ -574,43 +791,54 @@ class FlowAnalyzer:
                 ts = int(trade.get('T'))
                 price = float(trade.get('p', 0.0))
             except (ValueError, TypeError):
-                self._invalid_trades += 1
+                with self._lock:
+                    self._total_trades_processed += 1
+                    self._invalid_trades += 1
                 return
 
             if qty <= 0 or price <= 0 or ts <= 0:
-                self._invalid_trades += 1
+                with self._lock:
+                    self._total_trades_processed += 1
+                    self._invalid_trades += 1
                 return
 
-            # ✅ Ajusta timestamp se necessário
-            reference_ts = self._get_synced_timestamp_ms()
-            ts_adjusted, was_adjusted = self._adjust_timestamp_if_needed(ts, reference_ts)
-            
-            if was_adjusted:
-                ts = ts_adjusted
+            # Conversão corrigida de is_buyer_maker (ainda sem tocar estado)
+            is_buyer_maker_raw = trade.get('m', None)
+            buyer_maker_conversion = False
 
-            # Conversão corrigida de is_buyer_maker
-            is_buyer_maker = trade.get('m', None)
-            
-            if isinstance(is_buyer_maker, bool):
-                pass
-            elif isinstance(is_buyer_maker, (int, float)):
-                is_buyer_maker = bool(int(is_buyer_maker))
-            elif isinstance(is_buyer_maker, str):
-                is_buyer_maker = is_buyer_maker.strip().lower() in {
+            if isinstance(is_buyer_maker_raw, bool):
+                is_buyer_maker = is_buyer_maker_raw
+            elif isinstance(is_buyer_maker_raw, (int, float)):
+                is_buyer_maker = bool(int(is_buyer_maker_raw))
+            elif isinstance(is_buyer_maker_raw, str):
+                is_buyer_maker = is_buyer_maker_raw.strip().lower() in {
                     "true", "t", "1", "yes"
                 }
-                self._is_buyer_maker_conversions += 1
+                buyer_maker_conversion = True
             else:
-                self._invalid_trades += 1
-                logging.warning(f"Tipo inválido para 'm': {type(is_buyer_maker)}")
+                with self._lock:
+                    self._total_trades_processed += 1
+                    self._invalid_trades += 1
+                logging.warning(f"Tipo inválido para 'm': {type(is_buyer_maker_raw)}")
                 return
 
-            # Calcular delta com arredondamento decimal
+            # Cálculo local de deltas (sem mexer no estado ainda)
             delta_btc = _decimal_round(-qty if is_buyer_maker else qty)
             delta_usd = _decimal_round(delta_btc * price, decimals=2)
             side = "sell" if is_buyer_maker else "buy"
 
+            # --------- Atualização de estado compartilhado SOB O MESMO LOCK ---------
             with self._lock:
+                self._total_trades_processed += 1
+
+                if buyer_maker_conversion:
+                    self._is_buyer_maker_conversions += 1
+
+                reference_ts = self._get_synced_timestamp_ms()
+                ts_adjusted, was_adjusted = self._adjust_timestamp_if_needed(ts, reference_ts)
+                if was_adjusted:
+                    ts = ts_adjusted
+
                 # Atualizar CVD (ACUMULADO)
                 self.cvd = _decimal_round(self.cvd + delta_btc)
 
@@ -645,9 +873,11 @@ class FlowAnalyzer:
                         self._whale_delta_corrections += 1
                         logging.warning(f"✅ Corrigido para {expected_delta:.8f}")
 
+                # Burst + sector flow (ACUMULADOS)
                 self._update_bursts(ts, qty)
-                self._update_sector_flow(qty, delta_btc)  # ACUMULADO
+                self._update_sector_flow(qty, delta_btc)
 
+                # Liquidity heatmap
                 self.liquidity_heatmap.add_trade(
                     price=price,
                     volume=qty,
@@ -655,6 +885,7 @@ class FlowAnalyzer:
                     timestamp_ms=ts
                 )
 
+                # Histórico de flow
                 try:
                     sector_name: Optional[str] = None
                     for name, (minv, maxv) in self._order_buckets.items():
@@ -680,7 +911,12 @@ class FlowAnalyzer:
 
         except Exception as e:
             logging.debug(f"Erro ao processar trade: {e}")
-            self._invalid_trades += 1
+            with self._lock:
+                self._invalid_trades += 1
+
+    # ============================
+    # NORMALIZAÇÃO HEATMAP
+    # ============================
 
     def _normalize_heatmap_clusters(
         self, 
@@ -746,24 +982,16 @@ class FlowAnalyzer:
         
         return out
 
+    # ============================
+    # MÉTRICAS DE FLUXO
+    # ============================
+
     def get_flow_metrics(
         self, 
         reference_epoch_ms: Optional[int] = None
     ) -> dict:
         """
         Retorna métricas de fluxo com separação clara entre acumulado e janela.
-        
-        🔹 MÉTRICAS ACUMULADAS (desde último reset):
-          - cvd: Cumulative Volume Delta total
-          - whale_buy_volume / whale_sell_volume / whale_delta: Acumulado
-          - sector_flow: Flow acumulado desde reset
-          - bursts: Contadores acumulados
-        
-        🔹 MÉTRICAS POR JANELA (computation_window_min):
-          - order_flow.net_flow_Xm: Net flow por janela X
-          - order_flow.whale_*_window: Volumes whale na menor janela
-          - order_flow.sector_flow_window: Sector flow na menor janela
-          - participant_analysis: Análise baseada na menor janela
         """
         try:
             acquired = self._lock.acquire(timeout=5.0)
@@ -871,10 +1099,33 @@ class FlowAnalyzer:
                             total_delta_usd, decimals=4
                         )
 
-                        rotulo = self.classificar_absorcao_por_delta(
-                            total_delta_usd, 
-                            eps=self.absorcao_eps
+                        # 1. OHLC da janela
+                        if relevant:
+                            prices = [t['price'] for t in relevant]
+                            w_open = prices[0]
+                            w_close = prices[-1]
+                            w_high = max(prices)
+                            w_low = min(prices)
+                        elif self._last_price:
+                            w_open = w_close = w_high = w_low = self._last_price
+                        else:
+                            w_open = w_close = w_high = w_low = 0.0
+                        
+                        # 2. Total Delta BTC
+                        total_delta_btc = sum(t['delta_btc'] for t in relevant)
+
+                        # 3. Classificação contextual com volatilidade
+                        rotulo = self.classificar_absorcao_contextual(
+                            delta_btc=total_delta_btc,
+                            open_p=w_open,
+                            high_p=w_high,
+                            low_p=w_low,
+                            close_p=w_close,
+                            eps=self.absorcao_eps,
+                            atr=self._atr_price,
+                            price_volatility=self._price_volatility,
                         )
+                        
                         _guard_absorcao(
                             total_delta_usd, 
                             rotulo, 
@@ -1238,6 +1489,114 @@ class FlowAnalyzer:
                         "resistances": [],
                         "clusters_count": 0,
                     }
+                
+                # ---------- ABSORPTION ANALYSIS AVANÇADA ----------
+                try:
+                    of = metrics.get("order_flow", {}) or {}
+                    window_min = of.get("computation_window_min")
+
+                    current_absorption = None
+                    absorption_zones: List[Dict[str, Any]] = []
+
+                    if window_min is not None:
+                        net_key = f"net_flow_{window_min}m"
+                        delta_usd = float(of.get(net_key, 0.0) or 0.0)
+                        total_usd = float(of.get("total_volume_usd_exact", 0.0) or 0.0)
+                        flow_imb = float(of.get("flow_imbalance", 0.0) or 0.0)
+                        buy_pct = float(of.get("aggressive_buy_pct", 0.0) or 0.0)
+                        sell_pct = float(of.get("aggressive_sell_pct", 0.0) or 0.0)
+
+                        # fração do volume "absorvido" (0–1)
+                        if total_usd > 0:
+                            rel_delta = min(1.0, abs(delta_usd) / total_usd)
+                        else:
+                            rel_delta = 0.0
+
+                        abs_flow = min(1.0, abs(flow_imb))
+                        absorption_index = float(round(rel_delta * abs_flow, 4))
+
+                        # classificação simples
+                        if absorption_index >= 0.7:
+                            classification = "STRONG_ABSORPTION"
+                        elif absorption_index >= 0.4:
+                            classification = "MODERATE_ABSORPTION"
+                        elif absorption_index > 0:
+                            classification = "WEAK_ABSORPTION"
+                        else:
+                            classification = "NONE"
+
+                        # força comprador vs vendedor (0–10)
+                        if buy_pct + sell_pct > 0:
+                            buy_intensity = buy_pct / (buy_pct + sell_pct)
+                        else:
+                            buy_intensity = 0.5
+                        buyer_strength = round(buy_intensity * 10, 1)
+                        seller_strength = round((1 - buy_intensity) * 10, 1)
+
+                        tipo_abs = metrics.get("tipo_absorcao", "Neutra") or "Neutra"
+                        if "Compra" in tipo_abs:
+                            seller_exhaustion = buyer_strength
+                        elif "Venda" in tipo_abs:
+                            seller_exhaustion = seller_strength
+                        else:
+                            seller_exhaustion = round(abs_flow * 10, 1)
+
+                        continuation_probability = round(absorption_index * 0.9, 2)
+
+                        current_absorption = {
+                            "index": absorption_index,
+                            "classification": classification,
+                            "buyer_strength": buyer_strength,
+                            "seller_exhaustion": seller_exhaustion,
+                            "continuation_probability": continuation_probability,
+                            "delta_usd": delta_usd,
+                            "total_volume_usd": total_usd,
+                            "flow_imbalance": flow_imb,
+                            "label": tipo_abs,
+                            "window_min": window_min,
+                        }
+
+                        # zonas de absorção a partir dos clusters atuais do heatmap
+                        lh = metrics.get("liquidity_heatmap", {}) or {}
+                        clusters = lh.get("clusters", []) or []
+
+                        for c in clusters:
+                            center = c.get("center")
+                            strength = float(c.get("imbalance_ratio", 0.0) or 0.0)
+                            vol = float(c.get("total_volume", 0.0) or 0.0)
+                            if center is None or vol <= 0:
+                                continue
+
+                            abs_type = None
+                            if "Compra" in tipo_abs and strength > 0:
+                                abs_type = "BUY_ABSORPTION"
+                            elif "Venda" in tipo_abs and strength < 0:
+                                abs_type = "SELL_ABSORPTION"
+
+                            if abs_type is None:
+                                continue
+
+                            score = min(
+                                10.0,
+                                abs(strength) * 10.0 * (1.0 + (vol / (vol + 1.0)))
+                            )
+
+                            absorption_zones.append(
+                                {
+                                    "price": center,
+                                    "strength": round(score, 2),
+                                    "type": abs_type,
+                                }
+                            )
+
+                    if current_absorption is not None or absorption_zones:
+                        metrics["absorption_analysis"] = {
+                            "current_absorption": current_absorption,
+                            "absorption_zones": absorption_zones,
+                        }
+
+                except Exception as e:
+                    logging.debug(f"Erro ao construir absorption_analysis avançada: {e}")
 
                 # Qualidade de dados
                 metrics["data_quality"] = {
@@ -1287,26 +1646,38 @@ class FlowAnalyzer:
                 },
             }
     
+    # ============================
+    # STATS
+    # ============================
+
     def get_stats(self) -> Dict[str, Any]:
-        """Retorna estatísticas de performance e qualidade."""
-        return {
-            "total_trades_processed": self._total_trades_processed,
-            "invalid_trades": self._invalid_trades,
-            "valid_rate_pct": _decimal_round(
-                100 * (1 - self._invalid_trades / max(1, self._total_trades_processed)),
+        """Retorna estatísticas de performance e qualidade (snapshot sob lock único)."""
+        with self._lock:
+            total_trades = self._total_trades_processed
+            invalid_trades = self._invalid_trades
+
+            valid_rate_pct = _decimal_round(
+                100 * (1 - invalid_trades / max(1, total_trades)),
                 decimals=2
-            ),
-            "lock_contentions": self._lock_contentions,
-            "flow_trades_count": len(self.flow_trades),
-            "cvd": _decimal_round(self.cvd),
-            "whale_delta": _decimal_round(self.whale_delta),
-            "whale_delta_corrections": self._whale_delta_corrections,
-            "is_buyer_maker_conversions": self._is_buyer_maker_conversions,
-            "volume_discrepancies": self._volume_discrepancies,
-            "negative_age_count": self.negative_age_count,
-            "timestamp_adjustments": self.timestamp_adjustments,
-            "reset_interval_hours": self.reset_interval_ms / (3600 * 1000),
-            "time_since_last_reset_hours": (
+            )
+
+            time_since_last_reset_hours = (
                 self._get_synced_timestamp_ms() - self.last_reset_ms
-            ) / (3600 * 1000),
-        }
+            ) / (3600 * 1000)
+
+            return {
+                "total_trades_processed": total_trades,
+                "invalid_trades": invalid_trades,
+                "valid_rate_pct": valid_rate_pct,
+                "lock_contentions": self._lock_contentions,
+                "flow_trades_count": len(self.flow_trades),
+                "cvd": _decimal_round(self.cvd),
+                "whale_delta": _decimal_round(self.whale_delta),
+                "whale_delta_corrections": self._whale_delta_corrections,
+                "is_buyer_maker_conversions": self._is_buyer_maker_conversions,
+                "volume_discrepancies": self._volume_discrepancies,
+                "negative_age_count": self.negative_age_count,
+                "timestamp_adjustments": self.timestamp_adjustments,
+                "time_since_last_reset_hours": time_since_last_reset_hours,
+                "in_burst": self._in_burst
+            }
