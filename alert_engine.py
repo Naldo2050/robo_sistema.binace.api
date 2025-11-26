@@ -1,16 +1,12 @@
 """
-alert_engine.py v2.1.0 - CORREÇÃO DE SEVERIDADE
+alert_engine.py v2.1.1 - CORREÇÃO DE VOLATILITY SQUEEZE COM ZEROS
 
-Motor simplificado para detecção de condições de mercado relevantes.
-Apenas detecta spikes de volume e compressão de volatilidade.
-REMOVEU todos os alertas de suporte/resistência conforme solicitado.
-
-🔹 CORREÇÕES v2.1.0:
-  ✅ Severidade calculada corretamente baseada na intensidade do squeeze
-  ✅ Campos renomeados para clareza (level → volatility_state)
-  ✅ Descrições mais claras e informativas
-  ✅ Validação de consistência entre dados e severidade
-  ✅ Logs detalhados de alertas gerados
+Correções v2.1.1:
+  ✅ Evita alertas de VOLATILITY_SQUEEZE quando:
+      - histórico é insuficiente (poucos pontos)
+      - toda a série de volatilidade está praticamente em zero (spread ~ 0)
+      - thresholds (low/high) são ~0 e current_vol ~0
+  ✅ Garante que não haja casos como: vol=0.0, thresh=0.0, percentile=100%, severity=CRITICAL
 """
 
 import numpy as np
@@ -27,6 +23,11 @@ from format_utils import (
     format_scientific
 )
 
+# 🔹 PARÂMETROS DE SEGURANÇA PARA SQUEEZE
+MIN_VOL_POINTS = 10        # mínimo de pontos de histórico para considerar squeeze
+MIN_VOL_SPREAD = 1e-8      # spread mínimo entre min/max(vols) para considerar variação real
+MIN_VALID_VOL = 1e-10      # volatilidade mínima “não-zero”
+
 
 def _clean_alert_data(alert: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -37,7 +38,6 @@ def _clean_alert_data(alert: Dict[str, Any]) -> Dict[str, Any]:
     
     # Adiciona versões formatadas dos valores numéricos
     if 'threshold_exceeded' in cleaned:
-        # Para ratios de volume, mostra como multiplicador (ex: 3.5x)
         cleaned['threshold_exceeded_display'] = f"{cleaned['threshold_exceeded']:.1f}x"
     
     if 'current_volume' in cleaned:
@@ -58,7 +58,7 @@ def _clean_alert_data(alert: Dict[str, Any]) -> Dict[str, Any]:
     if 'probability' in cleaned:
         cleaned['probability_display'] = format_percent(cleaned['probability'])
     
-    # 🆕 Adiciona campo numérico de intensidade (0.0 a 1.0)
+    # Intensidade (0.0 a 1.0)
     if 'intensity' in cleaned:
         cleaned['intensity_display'] = f"{cleaned['intensity']*100:.1f}%"
     
@@ -78,16 +78,14 @@ def detect_volume_spike(
     ratio = current_volume / average_volume
     
     if ratio >= threshold_factor:
-        # 🆕 Calcula intensidade normalizada
         intensity = min(1.0, (ratio - threshold_factor) / (10 - threshold_factor))
         
         alert = {
             "type": "VOLUME_SPIKE",
             "threshold_exceeded": round(ratio, 2),
             "severity": "HIGH" if ratio >= 5.0 else "MEDIUM",
-            "intensity": round(intensity, 3),  # 🆕 0.0 a 1.0
+            "intensity": round(intensity, 3),
             "duration": duration,
-            # Valores brutos
             "current_volume": current_volume,
             "average_volume": average_volume,
             "volume_ratio": ratio,
@@ -111,39 +109,74 @@ def detect_volatility_squeeze(
     """
     Volatility squeeze detection com formatação adequada.
     
-    🔹 CORREÇÕES v2.1.0:
-      - Campo "level" renomeado para "volatility_state" (mais claro)
-      - Severidade calculada baseada na intensidade do squeeze/expansion
-      - Intensidade numérica adicionada (0.0 a 1.0)
-      - Descrição mais clara sobre o significado
+    CORREÇÕES v2.1.1:
+      - Ignora casos de histórico insuficiente ou série quase toda zerada
+      - Evita alertas com vol=0.0 e thresholds=0.0
     """
+    # Nenhum histórico
     if not recent_vols:
         return None
     
-    vols = np.array([v for v in recent_vols if v is not None])
+    # Filtra valores válidos (finitos e >= 0)
+    vols = np.array(
+        [v for v in recent_vols if v is not None and np.isfinite(v) and v >= 0.0],
+        dtype=float
+    )
     if vols.size == 0:
         return None
+
+    # Histórico insuficiente → sem squeeze confiável
+    if vols.size < MIN_VOL_POINTS:
+        logging.debug(
+            "Volatility squeeze: histórico insuficiente (%d pontos, min=%d). Nenhum alerta.",
+            vols.size, MIN_VOL_POINTS
+        )
+        return None
+
+    # Spread muito pequeno → volatilidade praticamente constante (ex: tudo zero)
+    vol_min = float(np.min(vols))
+    vol_max = float(np.max(vols))
+    vol_spread = vol_max - vol_min
+
+    if vol_spread < MIN_VOL_SPREAD:
+        logging.debug(
+            "Volatility squeeze: spread de volatilidade muito baixo (min=%.3e, max=%.3e, spread=%.3e). "
+            "Provavelmente primeira(s) janela(s) com vol≈0. Nenhum alerta.",
+            vol_min, vol_max, vol_spread
+        )
+        return None
+
+    # Volatilidade atual não positiva → não gera squeeze
+    if not np.isfinite(current_vol) or current_vol <= 0.0:
+        logging.debug(
+            "Volatility squeeze: current_vol inválido ou não positivo (%.3e). Nenhum alerta.",
+            current_vol
+        )
+        return None
     
-    low_thresh = np.percentile(vols, low_percentile)
-    high_thresh = np.percentile(vols, high_percentile)
+    low_thresh = float(np.percentile(vols, low_percentile))
+    high_thresh = float(np.percentile(vols, high_percentile))
+
+    # Se thresholds também são praticamente zero, aborta
+    if low_thresh < MIN_VALID_VOL and high_thresh < MIN_VALID_VOL:
+        logging.debug(
+            "Volatility squeeze: thresholds muito baixos (low=%.3e, high=%.3e). "
+            "Interpretado como falta de histórico real. Nenhum alerta.",
+            low_thresh, high_thresh
+        )
+        return None
     
-    # 🔹 Calcula percentil atual
-    current_percentile = np.sum(vols <= current_vol) / len(vols) * 100
+    # Calcula percentil atual
+    current_percentile = float(np.sum(vols <= current_vol) / len(vols) * 100.0)
     
     # ============================================================
     # VOLATILIDADE BAIXA (SQUEEZE - compressão)
     # ============================================================
     if current_vol <= low_thresh:
-        # 🆕 Calcula intensidade normalizada (0.0 = no limite, 1.0 = zero absoluto)
-        # Quanto mais perto de zero, maior a intensidade
-        intensity = 1.0 - (current_vol / max(low_thresh, 1e-9))
-        intensity = max(0.0, min(1.0, intensity))  # Clamp [0, 1]
+        # Intensidade normalizada (0.0 = no limite, 1.0 = muito comprimido)
+        intensity = 1.0 - (current_vol / max(low_thresh, MIN_VALID_VOL))
+        intensity = max(0.0, min(1.0, intensity))
         
-        # 🆕 CORREÇÃO: Severidade baseada na INTENSIDADE, não percentil
-        # Intensidade > 0.7 (muito perto de zero) = CRITICAL
-        # Intensidade > 0.5 = HIGH
-        # Intensidade > 0.3 = MEDIUM
-        # Intensidade <= 0.3 = LOW
         if intensity > 0.7:
             severity = "CRITICAL"
             action = "PREPARE_FOR_BREAKOUT_IMMINENT"
@@ -157,19 +190,16 @@ def detect_volatility_squeeze(
             severity = "LOW"
             action = "WATCH_FOR_EXPANSION"
         
-        # 🆕 Probabilidade baseada na intensidade
-        # Intensidade alta = maior probabilidade de breakout
         probability = 0.4 + (0.55 * intensity)  # 40% a 95%
         probability = min(0.95, max(0.4, probability))
         
         alert = {
             "type": "VOLATILITY_SQUEEZE",
-            "volatility_state": "COMPRESSED",  # 🆕 Renomeado de "level"
+            "volatility_state": "COMPRESSED",
             "severity": severity,
-            "intensity": round(intensity, 3),  # 🆕 0.0 a 1.0
+            "intensity": round(intensity, 3),
             "probability": round(probability, 3),
             "action": action,
-            # Valores brutos
             "volatility_current": current_vol,
             "volatility_threshold": low_thresh,
             "percentile": round(current_percentile, 1),
@@ -182,12 +212,10 @@ def detect_volatility_squeeze(
             )
         }
         
-        # 🆕 Log detalhado
         logging.info(
-            f"🔍 VOLATILITY SQUEEZE detectado: "
-            f"vol={current_vol:.6f}, thresh={low_thresh:.6f}, "
-            f"percentile={current_percentile:.1f}%, "
-            f"intensity={intensity*100:.0f}%, severity={severity}"
+            "🔍 VOLATILITY SQUEEZE detectado: "
+            "vol=%.6f, low_thresh=%.6f, percentile=%.1f%%, intensity=%.0f%%, severity=%s",
+            current_vol, low_thresh, current_percentile, intensity*100, severity
         )
         
         return _clean_alert_data(alert)
@@ -196,11 +224,9 @@ def detect_volatility_squeeze(
     # VOLATILIDADE ALTA (EXPANSION - expansão)
     # ============================================================
     if current_vol >= high_thresh:
-        # 🆕 Calcula intensidade normalizada (0.0 = no limite, 1.0 = muito acima)
-        intensity = (current_vol - high_thresh) / max(high_thresh, 1e-9)
-        intensity = max(0.0, min(1.0, intensity))  # Clamp [0, 1]
+        intensity = (current_vol - high_thresh) / max(high_thresh, MIN_VALID_VOL)
+        intensity = max(0.0, min(1.0, intensity))
         
-        # 🆕 CORREÇÃO: Severidade baseada na INTENSIDADE
         if intensity > 0.7:
             severity = "CRITICAL"
             action = "EXPECT_REVERSION_IMMINENT"
@@ -214,18 +240,16 @@ def detect_volatility_squeeze(
             severity = "LOW"
             action = "WATCH_FOR_NORMALIZATION"
         
-        # 🆕 Probabilidade baseada na intensidade
         probability = 0.4 + (0.55 * intensity)  # 40% a 95%
         probability = min(0.95, max(0.4, probability))
         
         alert = {
             "type": "VOLATILITY_SQUEEZE",
-            "volatility_state": "EXPANDED",  # 🆕 Renomeado de "level"
+            "volatility_state": "EXPANDED",
             "severity": severity,
-            "intensity": round(intensity, 3),  # 🆕 0.0 a 1.0
+            "intensity": round(intensity, 3),
             "probability": round(probability, 3),
             "action": action,
-            # Valores brutos
             "volatility_current": current_vol,
             "volatility_threshold": high_thresh,
             "percentile": round(current_percentile, 1),
@@ -238,12 +262,10 @@ def detect_volatility_squeeze(
             )
         }
         
-        # 🆕 Log detalhado
         logging.info(
-            f"🔍 VOLATILITY EXPANSION detectado: "
-            f"vol={current_vol:.6f}, thresh={high_thresh:.6f}, "
-            f"percentile={current_percentile:.1f}%, "
-            f"intensity={intensity*100:.0f}%, severity={severity}"
+            "🔍 VOLATILITY EXPANSION detectado: "
+            "vol=%.6f, high_thresh=%.6f, percentile=%.1f%%, intensity=%.0f%%, severity=%s",
+            current_vol, high_thresh, current_percentile, intensity*100, severity
         )
         
         return _clean_alert_data(alert)
@@ -254,8 +276,6 @@ def detect_volatility_squeeze(
 def format_alert_message(alert: Dict[str, Any]) -> str:
     """
     Formata um alerta em mensagem legível com números formatados.
-    
-    🆕 CORREÇÃO: Usa novos campos (volatility_state, intensity)
     """
     alert_type = alert.get('type', 'UNKNOWN')
     
@@ -275,7 +295,7 @@ def format_alert_message(alert: Dict[str, Any]) -> str:
         )
     
     elif alert_type == 'VOLATILITY_SQUEEZE':
-        state = alert.get('volatility_state', 'UNKNOWN')  # 🆕 Renomeado
+        state = alert.get('volatility_state', 'UNKNOWN')
         current = format_scientific(alert.get('volatility_current', 0), decimals=5)
         threshold = format_scientific(alert.get('volatility_threshold', 0), decimals=5)
         percentile = alert.get('percentile', 0)
@@ -316,47 +336,21 @@ def generate_alerts(
 ) -> List[Dict[str, Any]]:
     """
     Gera apenas alertas de volume e volatilidade com formatação adequada.
-    REMOVIDO: Todos os alertas de suporte/resistência.
-    
-    🔹 CORREÇÕES v2.1.0:
-      - Alertas agora incluem campo "intensity" numérico (0.0 a 1.0)
-      - Severidade calculada corretamente baseada na intensidade
-      - Logs detalhados de cada alerta gerado
-    
-    Args:
-        price: Preço atual
-        support_resistance: Dict com níveis (ignorado)
-        current_volume: Volume atual
-        average_volume: Volume médio
-        current_volatility: Volatilidade atual
-        recent_volatilities: Lista de volatilidades recentes
-        delta: Delta atual (opcional)
-        monitor: Monitor de alertas (opcional)
-        volume_threshold: Fator multiplicador para spike de volume
-        tolerance_pct: Tolerância percentual (não usado)
-        
-    Returns:
-        Lista de alertas formatados
     """
     alerts = []
 
-    # Spikes de volume
     vol_alert = detect_volume_spike(current_volume, average_volume, volume_threshold)
     if vol_alert:
         alerts.append(vol_alert)
 
-    # Volatility squeeze
     vol_squeeze_alert = detect_volatility_squeeze(current_volatility, recent_volatilities)
     if vol_squeeze_alert:
         alerts.append(vol_squeeze_alert)
 
-    # 🔹 Log de debug com valores formatados
     if alerts:
         for alert in alerts:
             msg = format_alert_message(alert)
             logging.info(f"📢 Alerta gerado:\n{msg}\n" + "="*60)
-            
-            # 🆕 Validação de consistência
             _validate_alert_consistency(alert)
 
     return alerts
@@ -364,11 +358,7 @@ def generate_alerts(
 
 def _validate_alert_consistency(alert: Dict[str, Any]) -> None:
     """
-    🆕 Validação de consistência entre campos do alerta.
-    
-    Detecta e loga inconsistências como:
-    - Intensidade muito baixa mas severidade alta
-    - Probabilidade inconsistente com intensidade
+    Validação de consistência entre campos do alerta.
     """
     try:
         alert_type = alert.get('type', '')
@@ -379,35 +369,31 @@ def _validate_alert_consistency(alert: Dict[str, Any]) -> None:
         if alert_type == 'VOLATILITY_SQUEEZE':
             state = alert.get('volatility_state', '')
             
-            # Validar: Intensidade vs Severidade
             if intensity <= 0.3 and severity in ['HIGH', 'CRITICAL']:
                 logging.warning(
-                    f"⚠️ INCONSISTÊNCIA: {alert_type} com intensidade baixa "
-                    f"({intensity*100:.0f}%) mas severity={severity}. "
-                    f"Esperava-se MEDIUM ou LOW."
+                    "⚠️ INCONSISTÊNCIA: %s com intensidade baixa (%.0f%%) mas severity=%s. "
+                    "Esperava-se MEDIUM ou LOW.",
+                    alert_type, intensity*100, severity
                 )
             
             if intensity > 0.7 and severity == 'LOW':
                 logging.warning(
-                    f"⚠️ INCONSISTÊNCIA: {alert_type} com intensidade alta "
-                    f"({intensity*100:.0f}%) mas severity={severity}. "
-                    f"Esperava-se HIGH ou CRITICAL."
+                    "⚠️ INCONSISTÊNCIA: %s com intensidade alta (%.0f%%) mas severity=%s. "
+                    "Esperava-se HIGH ou CRITICAL.",
+                    alert_type, intensity*100, severity
                 )
             
-            # Validar: Intensidade vs Probabilidade
             expected_prob = 0.4 + (0.55 * intensity)
             if abs(probability - expected_prob) > 0.1:
                 logging.warning(
-                    f"⚠️ INCONSISTÊNCIA: Probabilidade ({probability:.2f}) "
-                    f"não corresponde à intensidade ({intensity:.2f}). "
-                    f"Esperava-se ~{expected_prob:.2f}"
+                    "⚠️ INCONSISTÊNCIA: Probabilidade (%.2f) não corresponde à intensidade (%.2f). "
+                    "Esperava-se ~%.2f",
+                    probability, intensity, expected_prob
                 )
             
-            # Log de validação bem-sucedida
             logging.debug(
-                f"✅ Validação OK: {alert_type} | "
-                f"State: {state} | Severity: {severity} | "
-                f"Intensity: {intensity*100:.0f}% | Prob: {probability*100:.0f}%"
+                "✅ Validação OK: %s | State: %s | Severity: %s | Intensity: %.0f%% | Prob: %.0f%%",
+                alert_type, state, severity, intensity*100, probability*100
             )
     
     except Exception as e:
@@ -417,8 +403,6 @@ def _validate_alert_consistency(alert: Dict[str, Any]) -> None:
 def create_alert_summary(alerts: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Cria um sumário dos alertas com estatísticas formatadas.
-    
-    🆕 CORREÇÃO: Inclui estatísticas de intensidade média
     """
     if not alerts:
         return {
@@ -430,11 +414,11 @@ def create_alert_summary(alerts: List[Dict[str, Any]]) -> Dict[str, Any]:
     summary = {
         "total_alerts": len(alerts),
         "by_type": {},
-        "critical_severity": 0,  # 🆕
+        "critical_severity": 0,
         "high_severity": 0,
         "medium_severity": 0,
         "low_severity": 0,
-        "avg_intensity": 0.0,  # 🆕
+        "avg_intensity": 0.0,
     }
     
     intensities = []
@@ -444,12 +428,10 @@ def create_alert_summary(alerts: List[Dict[str, Any]]) -> Dict[str, Any]:
         severity = alert.get('severity', 'LOW')
         intensity = alert.get('intensity', 0)
         
-        # Conta por tipo
         if alert_type not in summary['by_type']:
             summary['by_type'][alert_type] = 0
         summary['by_type'][alert_type] += 1
         
-        # Conta por severidade
         if severity == 'CRITICAL':
             summary['critical_severity'] += 1
         elif severity == 'HIGH':
@@ -459,15 +441,12 @@ def create_alert_summary(alerts: List[Dict[str, Any]]) -> Dict[str, Any]:
         else:
             summary['low_severity'] += 1
         
-        # Coleta intensidades
         if intensity > 0:
             intensities.append(intensity)
     
-    # Calcula intensidade média
     if intensities:
         summary['avg_intensity'] = round(np.mean(intensities), 3)
     
-    # 🔹 Cria texto resumo formatado
     summary_parts = []
     if summary['critical_severity'] > 0:
         summary_parts.append(f"{summary['critical_severity']} crítica")
@@ -486,12 +465,9 @@ def create_alert_summary(alerts: List[Dict[str, Any]]) -> Dict[str, Any]:
     return summary
 
 
-# 🔹 Função auxiliar para serialização JSON
 def serialize_alerts_for_json(alerts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Prepara alertas para serialização JSON, garantindo que números estejam formatados.
-    
-    🆕 CORREÇÃO: Trata novos campos (volatility_state, intensity)
     """
     serialized = []
     
@@ -499,11 +475,8 @@ def serialize_alerts_for_json(alerts: List[Dict[str, Any]]) -> List[Dict[str, An
         clean_alert = {}
         
         for key, value in alert.items():
-            # Mantém valores numéricos originais mas adiciona versões display
             if isinstance(value, (int, float)):
                 clean_alert[key] = value
-                
-                # Adiciona versão formatada se ainda não existir
                 display_key = f"{key}_display"
                 if display_key not in alert:
                     if 'volume' in key:

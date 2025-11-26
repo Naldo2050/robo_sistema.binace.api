@@ -523,6 +523,7 @@ class EnhancedMarketBot:
         self._ai_init_lock = threading.Lock()
 
         self.warming_up = False
+        self._warmup_lock = threading.Lock()  # PATCH 1: lock de warmup
         self.warmup_windows_remaining = 0
         self.warmup_windows_required = getattr(config, "WARMUP_WINDOWS", 3)
 
@@ -611,6 +612,7 @@ class EnhancedMarketBot:
         self.ai_thread_pool: List[threading.Thread] = []
         self.max_ai_threads = 3
         self.ai_semaphore = threading.Semaphore(3)
+        self._ai_pool_lock = threading.Lock()  # lock dedicado para o pool de threads
         self.ai_rate_limiter = RateLimiter(max_calls=10, period_seconds=60)
 
         self._initialize_ai_async()
@@ -1086,10 +1088,19 @@ class EnhancedMarketBot:
     # HANDLERS DE EVENTOS / IA
     # ========================================
     def _is_important_event_for_ai(self, event_data: Dict[str, Any]) -> bool:
+        """
+        Decide se um evento é importante o bastante para chamar a IA.
+
+        Regra:
+          - Absorção / Exaustão / Zonas / OrderBook crítico / Alertas fortes → sempre True
+          - ANALYSIS_TRIGGER → True APENAS se já passou o cooldown da IA
+                               (evita gastar IA demais, mas garante heartbeat).
+        """
         tipo = (event_data.get("tipo_evento") or "").upper()
         resultado = (event_data.get("resultado_da_batalha") or "").upper()
         severity = (event_data.get("severity") or "").upper()
 
+        # Eventos fortes sempre importantes
         if tipo in ("ABSORÇÃO", "ABSORCAO", "EXAUSTÃO", "EXAUSTAO"):
             return True
 
@@ -1113,7 +1124,11 @@ class EnhancedMarketBot:
             if alert_type in important_alerts:
                 return True
 
+        # ANALYSIS_TRIGGER: só vira importante se já passou o cooldown da IA
         if tipo == "ANALYSIS_TRIGGER":
+            now = time.time()
+            if now - self._last_ai_analysis_ts >= self._ai_min_interval_sec:
+                return True
             return False
 
         return False
@@ -1245,16 +1260,34 @@ class EnhancedMarketBot:
                     exc_info=True,
                 )
             finally:
-                try:
-                    self.ai_thread_pool = [
-                        t for t in self.ai_thread_pool if t.is_alive()
-                    ]
-                except Exception:
-                    pass
+                # Limpeza agressiva (remove thread atual)
+                with self._ai_pool_lock:
+                    try:
+                        current_thread = threading.current_thread()
+                        self.ai_thread_pool = [
+                            t
+                            for t in self.ai_thread_pool
+                            if t is not current_thread and t.is_alive()
+                        ]
+                    except Exception as e:
+                        logging.debug(f"Erro ao limpar thread pool: {e}")
 
         logging.debug("🔧 Criando thread para análise da IA...")
         t = threading.Thread(target=ai_worker, daemon=True)
-        self.ai_thread_pool.append(t)
+
+        # Limpeza e limitação do pool antes de adicionar a nova thread
+        with self._ai_pool_lock:
+            # Limpa pool antes de adicionar
+            self.ai_thread_pool = [th for th in self.ai_thread_pool if th.is_alive()]
+
+            # Limita tamanho máximo
+            if len(self.ai_thread_pool) >= self.max_ai_threads:
+                logging.warning("⚠️ Thread pool da IA cheio, aguardando...")
+                self.ai_thread_pool[0].join(timeout=5.0)
+                self.ai_thread_pool = [th for th in self.ai_thread_pool if th.is_alive()]
+
+            self.ai_thread_pool.append(t)
+
         t.start()
 
     # ========================================
@@ -1425,8 +1458,8 @@ class EnhancedMarketBot:
 
                 print(
                     f"  - {ts_display} | "
-                    f"{e.get('tipo_evento', 'N/A')} "
-                    f"{e.get('resultado_da_batalha', 'N/A')} "
+                    f"{e.get("tipo_evento", "N/A")} "
+                    f"{e.get("resultado_da_batalha", "N/A")} "
                     f"(Δ={delta_fmt}, Vol={vol_fmt})"
                 )
 
@@ -1438,21 +1471,23 @@ class EnhancedMarketBot:
             self.window_data = []
             return
 
-        if self.warming_up:
-            self.warmup_windows_remaining -= 1
+        # PATCH 2: warmup thread-safe com lock
+        with self._warmup_lock:
+            if self.warming_up:
+                self.warmup_windows_remaining -= 1
 
-            logging.info(
-                f"⏳ AQUECIMENTO: Janela processada "
-                f"({self.warmup_windows_required - self.warmup_windows_remaining}/"
-                f"{self.warmup_windows_required})"
-            )
+                logging.info(
+                    f"⏳ AQUECIMENTO: Janela processada "
+                    f"({self.warmup_windows_required - self.warmup_windows_remaining}/"
+                    f"{self.warmup_windows_required})"
+                )
 
-            if self.warmup_windows_remaining <= 0:
-                self.warming_up = False
-                logging.info("✅ AQUECIMENTO CONCLUÍDO - Sistema pronto!")
+                if self.warmup_windows_remaining <= 0:
+                    self.warming_up = False
+                    logging.info("✅ AQUECIMENTO CONCLUÍDO - Sistema pronto!")
 
-            self.window_data = []
-            return
+                self.window_data = []
+                return
 
         valid_window_data: List[Dict[str, Any]] = []
         for trade in self.window_data:
@@ -1517,13 +1552,31 @@ class EnhancedMarketBot:
         try:
             self.health_monitor.heartbeat("main")
 
+            # PATCH 3: cálculo robusto de dynamic_delta_threshold (NaN/Inf-safe)
             dynamic_delta_threshold = 0.0
             if len(self.delta_history) > 10:
-                mean_delta = float(np.mean(self.delta_history))
-                std_delta = float(np.std(self.delta_history))
-                dynamic_delta_threshold = abs(
-                    mean_delta + self.delta_std_dev_factor * std_delta
-                )
+                try:
+                    mean_delta = float(np.mean(self.delta_history))
+                    std_delta = float(np.std(self.delta_history))
+
+                    # Valida valores
+                    if np.isnan(mean_delta) or np.isinf(mean_delta):
+                        mean_delta = 0.0
+                    if np.isnan(std_delta) or np.isinf(std_delta):
+                        std_delta = 0.0
+
+                    dynamic_delta_threshold = abs(
+                        mean_delta + self.delta_std_dev_factor * std_delta
+                    )
+
+                    # Valida resultado
+                    if np.isnan(dynamic_delta_threshold) or np.isinf(dynamic_delta_threshold):
+                        dynamic_delta_threshold = 0.0
+                        logging.warning("⚠️ Threshold calculado inválido, usando 0.0")
+
+                except Exception as e:
+                    logging.error(f"Erro ao calcular threshold: {e}")
+                    dynamic_delta_threshold = 0.0
 
             macro_context = self.context_collector.get_context()
             historical_profile = macro_context.get("historical_vp", {})
@@ -1646,8 +1699,9 @@ class EnhancedMarketBot:
         """
         Executa OrderBookAnalyzer.analyze() no loop asyncio dedicado.
 
-        Evita criar um novo event loop com asyncio.run() a cada chamada
-        e reaproveita a ClientSession do OrderBookAnalyzer ligada a esse loop.
+        Roda em uma thread separada e permite que as corotinas do
+        OrderBookAnalyzer sejam executadas via asyncio.run_coroutine_threadsafe
+        sem recriar event loops.
         Garante também que, em caso de timeout, a coroutine seja cancelada
         explicitamente para não ficar rodando como "zumbi" no loop.
         """
@@ -1662,11 +1716,17 @@ class EnhancedMarketBot:
 
         loop = getattr(self, "_async_loop", None)
         if loop is None:
-            logging.error("❌ Loop assíncrono do OrderBookAnalyzer não inicializado")
+            logging.error("❌ Loop assíncrono não inicializado")
             return None
 
+        # Verifica se loop está rodando
         if loop.is_closed():
-            logging.error("❌ Loop assíncrono do OrderBookAnalyzer já foi fechado")
+            logging.error("❌ Loop assíncrono já foi fechado")
+            return None
+
+        # Verifica se thread do loop está viva
+        if not getattr(self, "_async_loop_thread", None) or not self._async_loop_thread.is_alive():
+            logging.error("❌ Thread do loop assíncrono não está rodando")
             return None
 
         try:
@@ -1980,10 +2040,10 @@ class EnhancedMarketBot:
         )
         for i, sig in enumerate(signals, 1):
             logging.info(
-                f"  {i}. {sig.get('tipo_evento')} / "
-                f"{sig.get('resultado_da_batalha', 'N/A')} | "
-                f"delta={sig.get('delta', 0):.2f} | "
-                f"volume={sig.get('volume_total', 0):.2f}"
+                f"  {i}. {sig.get("tipo_evento")} / "
+                f"{sig.get("resultado_da_batalha", "N/A")} | "
+                f"delta={sig.get("delta", 0):.2f} | "
+                f"volume={sig.get("volume_total", 0):.2f}"
             )
 
         for signal in signals:
@@ -2704,7 +2764,7 @@ class EnhancedMarketBot:
         if window_close > 0:
             self.close_price_history.append(window_close)
 
-               # Histórico de volatilidade (para alertas + FlowAnalyzer)
+        # Histórico de volatilidade (para alertas + FlowAnalyzer)
         try:
             price_feats = ml_payload.get("price_features") or {}
             current_volatility = None

@@ -339,7 +339,7 @@ class OrderBookAnalyzer:
             self._owns_session = True
         return self._session
 
-    # ===== ✅ VALIDAÇÃO (NÃO MUDOU) =====
+    # ===== ✅ VALIDAÇÃO (NÃO MUDOU, COM PATCH 3) =====
     def _validate_snapshot(
         self,
         snap: Dict[str, Any],
@@ -456,24 +456,43 @@ class OrderBookAnalyzer:
                 issues.append(f"volume zero detectado (bid={bid_vol}, ask={ask_vol})")
                 return False, issues, converted_snap
 
-            # 8. ✅ PROFUNDIDADE USD MÍNIMA (RIGOROSA)
+            # 8. ✅ PROFUNDIDADE USD MÍNIMA (RIGOROSA, PATCH 3)
             bid_depth_usd = _sum_depth_usd(bids, 5)
             ask_depth_usd = _sum_depth_usd(asks, 5)
 
             min_depth = ORDERBOOK_MIN_DEPTH_USD
 
-            # ✅ SEMPRE REJEITA SE MUITO BAIXO
+            # SEMPRE rejeita se zero
+            if bid_depth_usd == 0 or ask_depth_usd == 0:
+                issues.append(
+                    f"liquidez ZERO (bid=${bid_depth_usd:.0f}, ask=${ask_depth_usd:.0f})"
+                )
+                return False, issues, converted_snap
+
+            # Verifica se está MUITO abaixo do mínimo
             if bid_depth_usd < min_depth or ask_depth_usd < min_depth:
                 issues.append(
                     f"liquidez muito baixa (bid=${bid_depth_usd:.0f}, "
                     f"ask=${ask_depth_usd:.0f}, min=${min_depth:.0f})"
                 )
 
-                # ✅ SÓ PERMITE SE CONFIG EXPLICITAMENTE PERMITE E NÃO É ZERO
-                if not ORDERBOOK_ALLOW_PARTIAL or bid_depth_usd == 0 or ask_depth_usd == 0:
-                    return False, issues, converted_snap
+                # Só permite se >= 50% do mínimo E config permite
+                if ORDERBOOK_ALLOW_PARTIAL:
+                    pct_bid = (bid_depth_usd / min_depth) * 100
+                    pct_ask = (ask_depth_usd / min_depth) * 100
+
+                    if pct_bid >= 50.0 and pct_ask >= 50.0:
+                        logging.warning(
+                            f"⚠️ Liquidez baixa mas aceita "
+                            f"(bid={pct_bid:.0f}%, ask={pct_ask:.0f}% do mínimo)"
+                        )
+                    else:
+                        issues.append(
+                            f"liquidez < 50% do mínimo (rejeitado mesmo com ALLOW_PARTIAL)"
+                        )
+                        return False, issues, converted_snap
                 else:
-                    logging.warning(f"⚠️ Liquidez baixa mas ALLOW_PARTIAL=True")
+                    return False, issues, converted_snap
 
             return True, issues, converted_snap
 
@@ -493,7 +512,7 @@ class OrderBookAnalyzer:
         """Registra request para tracking."""
         self._request_times.append(time.time())
 
-    # ===== ✅ FETCH ASYNC v2.1.0 (SESSÃO REUTILIZÁVEL) =====
+    # ===== ✅ FETCH ASYNC v2.1.0 (SESSÃO REUTILIZÁVEL, PATCHES 1 e 2) =====
     async def _fetch_orderbook(
         self,
         limit: Optional[int] = None,
@@ -511,6 +530,10 @@ class OrderBookAnalyzer:
         ✅ v2.0.0:
         - Usa aiohttp (não bloqueia event loop)
         - await asyncio.sleep() ao invés de time.sleep()
+
+        ✅ Patches:
+        - Verificação de sessão antes de cada uso
+        - Timeout com cancelamento explícito da request (evita requests órfãs)
 
         Returns:
             Snapshot válido (convertido) ou None
@@ -543,13 +566,16 @@ class OrderBookAnalyzer:
         max_retries = ORDERBOOK_MAX_RETRIES
         base_delay = ORDERBOOK_RETRY_DELAY
 
-        # Sessão HTTP reutilizável
-        session = await self._get_session()
-
         for attempt in range(max_retries):
+            task: Optional[asyncio.Task] = None
+
             try:
-                # Se por algum motivo a sessão foi fechada externamente, recria
+                session = await self._get_session()
+
+                # Verifica se foi fechada externamente
                 if session.closed:
+                    logging.warning("⚠️ Sessão fechada, recriando...")
+                    self._session = None
                     session = await self._get_session()
 
                 self._register_request()
@@ -558,94 +584,121 @@ class OrderBookAnalyzer:
                     f"📡 Fetching orderbook (attempt {attempt + 1}/{max_retries})..."
                 )
 
-                # ✅ ASYNC REQUEST - NÃO BLOQUEIA!
-                async with session.get(url) as r:
-
-                    # Rate limiting
-                    if r.status == 429:
-                        retry_after = int(r.headers.get('Retry-After', 60))
-                        self._fetch_errors += 1
-
-                        logging.error(
-                            f"🚫 RATE LIMIT (429) - Retry após {retry_after}s"
-                        )
-
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(min(retry_after, base_delay * 3))  # ✅ ASYNC
-                            continue
-                        else:
-                            break
-
-                    # Outros erros HTTP
-                    if r.status != 200:
-                        self._fetch_errors += 1
-                        text = await r.text()
-                        logging.error(
-                            f"❌ HTTP {r.status}: {text[:200]}"
-                        )
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(base_delay * (attempt + 1))  # ✅ ASYNC
-                            continue
-                        else:
-                            break
-
-                    # ✅ PARSE JSON ASYNC
-                    data = await r.json()
-
-                    # ✅ VALIDA E CONVERTE (síncrono, não bloqueia)
-                    is_valid, issues, converted = self._validate_snapshot(data)
-
-                    if not is_valid:
-                        self._validation_failures += 1
-
-                        logging.error(
-                            f"❌ Snapshot inválido (attempt {attempt + 1}): {', '.join(issues)}"
-                        )
-
-                        if attempt < max_retries - 1:
-                            delay = base_delay * (attempt + 1)
-                            logging.debug(f"  Retry em {delay:.1f}s...")
-                            await asyncio.sleep(delay)  # ✅ ASYNC
-                            continue
-                        else:
-                            break
-
-                    # ✅ SUCESSO - Salva snapshot CONVERTIDO
-                    self._cached_snapshot = converted
-                    self._cache_timestamp = time.time()
-
-                    self._last_valid_snapshot = converted.copy()
-                    self._last_valid_timestamp = time.time()
-
-                    # ✅ SALVA TIMESTAMP ORIGINAL
-                    exchange_ts = converted.get("E") or converted.get("T")
-                    if exchange_ts:
-                        self._last_valid_exchange_ts = int(exchange_ts)
-
-                    logging.debug(
-                        f"✅ Orderbook obtido: "
-                        f"{len(converted['bids'])} bids, {len(converted['asks'])} asks"
+                # Cria task para poder cancelar
+                task = asyncio.create_task(
+                    session.get(
+                        url,
+                        timeout=aiohttp.ClientTimeout(total=5.0)  # Timeout no nível da request
                     )
+                )
 
-                    return converted
+                try:
+                    # Timeout com cancelamento explícito
+                    r = await asyncio.wait_for(task, timeout=5.0)
+
+                    async with r:
+                        # Rate limiting
+                        if r.status == 429:
+                            retry_after = int(r.headers.get('Retry-After', 60))
+                            self._fetch_errors += 1
+
+                            logging.error(
+                                f"🚫 RATE LIMIT (429) - Retry após {retry_after}s"
+                            )
+
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(min(retry_after, base_delay * 3))
+                                continue
+                            else:
+                                break
+
+                        # Outros erros HTTP
+                        if r.status != 200:
+                            self._fetch_errors += 1
+                            text = await r.text()
+                            logging.error(
+                                f"❌ HTTP {r.status}: {text[:200]}"
+                            )
+                            if attempt < max_retries - 1:
+                                await asyncio.sleep(base_delay * (attempt + 1))
+                                continue
+                            else:
+                                break
+
+                        # ✅ PARSE JSON ASYNC
+                        data = await r.json()
+
+                        # ✅ VALIDA E CONVERTE (síncrono, não bloqueia)
+                        is_valid, issues, converted = self._validate_snapshot(data)
+
+                        if not is_valid:
+                            self._validation_failures += 1
+
+                            logging.error(
+                                f"❌ Snapshot inválido (attempt {attempt + 1}): {', '.join(issues)}"
+                            )
+
+                            if attempt < max_retries - 1:
+                                delay = base_delay * (attempt + 1)
+                                logging.debug(f"  Retry em {delay:.1f}s...")
+                                await asyncio.sleep(delay)
+                                continue
+                            else:
+                                break
+
+                        # ✅ SUCESSO - Salva snapshot CONVERTIDO
+                        self._cached_snapshot = converted
+                        self._cache_timestamp = time.time()
+
+                        self._last_valid_snapshot = converted.copy()
+                        self._last_valid_timestamp = time.time()
+
+                        # ✅ SALVA TIMESTAMP ORIGINAL
+                        exchange_ts = converted.get("E") or converted.get("T")
+                        if exchange_ts:
+                            self._last_valid_exchange_ts = int(exchange_ts)
+
+                        logging.debug(
+                            f"✅ Orderbook obtido: "
+                            f"{len(converted['bids'])} bids, {len(converted['asks'])} asks"
+                        )
+
+                        return converted
+
+                except asyncio.TimeoutError:
+                    # Cancela request pendente
+                    if task and not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+
+                    # Repassa para o bloco externo tratar retry
+                    raise
 
             except asyncio.TimeoutError:
                 self._fetch_errors += 1
                 logging.error(f"⏱️ Timeout (attempt {attempt + 1})")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(base_delay * (attempt + 1))  # ✅ ASYNC
+                    await asyncio.sleep(base_delay * (attempt + 1))
 
             except aiohttp.ClientError as e:
                 self._fetch_errors += 1
                 logging.error(f"🌐 Client error (attempt {attempt + 1}): {e}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(base_delay * (attempt + 1))  # ✅ ASYNC
+                    await asyncio.sleep(base_delay * (attempt + 1))
 
             except Exception as e:
                 self._fetch_errors += 1
                 logging.error(f"💥 Unexpected error (attempt {attempt + 1}): {e}", exc_info=True)
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(base_delay * (attempt + 1))  # ✅ ASYNC
+                    await asyncio.sleep(base_delay * (attempt + 1))
+
+            finally:
+                # Garante cancelamento mesmo em exceção
+                if task and not task.done():
+                    task.cancel()
 
         # 5. ✅ FALLBACK CONSERVADOR
         if allow_stale and self._last_valid_snapshot is not None:

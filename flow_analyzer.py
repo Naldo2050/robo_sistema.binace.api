@@ -1,6 +1,9 @@
-# flow_analyzer.py v2.3.2 - CORREÇÃO: MÉTODO classificar_absorcao_contextual IMPLEMENTADO
+# flow_analyzer.py v2.3.3 - CORREÇÃO: ABSORCAO_GUARD USA DELTA EM BTC
 """
 Flow Analyzer com correção de timestamps e separação clara entre métricas.
+
+🔹 CORREÇÕES v2.3.3:
+  ✅ _guard_absorcao agora usa delta em BTC (total_delta_btc), consistente com eps (ABSORCAO_DELTA_EPS em BTC)
 
 🔹 CORREÇÕES v2.3.2:
   ✅ Implementado método classificar_absorcao_contextual (FALTANTE)
@@ -88,7 +91,12 @@ def _to_decimal(value) -> Decimal:
 
 
 def _guard_absorcao(delta: float, rotulo: str, eps: float, mode: str = "warn"):
-    """Validação de consistência para absorção."""
+    """Validação de consistência para absorção.
+
+    Semântica esperada:
+      - delta < 0  → agressão vendedora dominante → Absorção de Compra
+      - delta > 0  → agressão compradora dominante → Absorção de Venda
+    """
     try:
         mode = (mode or "warn").strip().lower()
     except Exception:
@@ -97,8 +105,9 @@ def _guard_absorcao(delta: float, rotulo: str, eps: float, mode: str = "warn"):
     if mode == "off":
         return
 
-    mismatch = (delta > eps and rotulo != "Absorção de Compra") or \
-               (delta < -eps and rotulo != "Absorção de Venda")
+    # Corrigido: delta negativo => Absorção de Compra ; delta positivo => Absorção de Venda
+    mismatch = (delta < -eps and rotulo != "Absorção de Compra") or \
+               (delta >  eps and rotulo != "Absorção de Venda")
     
     if mismatch:
         msg = (
@@ -208,7 +217,7 @@ class FlowAnalyzer:
     """
     Analisador de fluxo com correção de timestamps e separação clara entre métricas.
     
-    🔹 CARACTERÍSTICAS v2.3.2:
+    🔹 CARACTERÍSTICAS v2.3.x:
       - Correção automática de timestamps com jitter
       - Whale volumes: acumulado + por janela
       - Sector flow: acumulado + por janela
@@ -342,7 +351,7 @@ class FlowAnalyzer:
         self.timestamp_adjustments = 0
 
         logging.info(
-            "✅ FlowAnalyzer v2.3.2 inicializado | "
+            "✅ FlowAnalyzer v2.3.3 inicializado | "
             "Whale threshold: %.2f BTC | Net flow windows: %s min | "
             "Reset interval: %.1fh | Timestamp tolerance: ±%dms",
             self.whale_threshold,
@@ -1114,8 +1123,8 @@ class FlowAnalyzer:
                         # 2. Total Delta BTC
                         total_delta_btc = sum(t['delta_btc'] for t in relevant)
 
-                        # 3. Classificação contextual com volatilidade
-                        rotulo = self.classificar_absorcao_contextual(
+                        # 3. Classificação contextual com volatilidade (rótulo bruto)
+                        rotulo_bruto = self.classificar_absorcao_contextual(
                             delta_btc=total_delta_btc,
                             open_p=w_open,
                             high_p=w_high,
@@ -1126,15 +1135,10 @@ class FlowAnalyzer:
                             price_volatility=self._price_volatility,
                         )
                         
-                        _guard_absorcao(
-                            total_delta_usd, 
-                            rotulo, 
-                            self.absorcao_eps, 
-                            self.absorcao_guard_mode
-                        )
-
-                        order_flow[f"absorcao_{window_min}m"] = rotulo
-                        absorcao_por_janela[window_min] = rotulo
+                        # Guarda rótulo bruto por janela;
+                        # o rótulo final da menor janela será refinado depois.
+                        order_flow[f"absorcao_{window_min}m"] = rotulo_bruto
+                        absorcao_por_janela[window_min] = rotulo_bruto
 
                         if window_min == smallest_window:
                             logging.info(
@@ -1367,6 +1371,45 @@ class FlowAnalyzer:
                                 tick_rule_sum, decimals=4
                             )
 
+                            # ------------ AJUSTE DE RÓTULO PARA MENOR JANELA ------------
+                            try:
+                                total_btc_window = total_btc
+                                if total_btc_window > 0:
+                                    intensidade = abs(actual_delta_btc) / total_btc_window
+                                else:
+                                    intensidade = 0.0
+
+                                flow_imb = float(order_flow.get("flow_imbalance", 0.0) or 0.0)
+
+                                INTENSITY_MIN = 0.15   # 15% do volume
+                                FLOW_IMB_MIN  = 0.15   # 15% de desequilíbrio
+
+                                if intensidade >= INTENSITY_MIN and abs(flow_imb) >= FLOW_IMB_MIN:
+                                    if actual_delta_btc < -self.absorcao_eps:
+                                        rotulo_final = "Absorção de Compra"
+                                    elif actual_delta_btc > self.absorcao_eps:
+                                        rotulo_final = "Absorção de Venda"
+                                    else:
+                                        rotulo_final = "Neutra"
+                                else:
+                                    rotulo_final = "Neutra"
+
+                            except Exception:
+                                rotulo_final = absorcao_por_janela.get(window_min, "Neutra")
+
+                            # Atualiza rótulo da menor janela com o rótulo final
+                            order_flow[f"absorcao_{window_min}m"] = rotulo_final
+                            absorcao_por_janela[window_min] = rotulo_final
+
+                            # Guard SÓ para a menor janela, com semântica correta
+                            _guard_absorcao(
+                                actual_delta_btc,
+                                rotulo_final,
+                                self.absorcao_eps,
+                                self.absorcao_guard_mode,
+                            )
+                            # ------------ FIM AJUSTE DE RÓTULO ------------
+
                     order_flow["computation_window_min"] = smallest_window
                     order_flow["available_windows_min"]  = list(self.net_flow_windows_min)
 
@@ -1467,6 +1510,8 @@ class FlowAnalyzer:
                         "tick_rule_sum": 0.0,
                         "buy_sell_ratio": None,
                     }
+               
+
                     metrics["participant_analysis"] = {}
 
                 # Heatmap

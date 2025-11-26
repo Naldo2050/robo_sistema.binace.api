@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
-# event_saver.py - v4.5.4 - CORREÇÃO: Timezone unificado/UTC
+# event_saver.py - v4.5.5 - CORREÇÕES: Thread-safety/Timezone
 """
-EventSaver v4.5.4 - Sistema de salvamento de eventos de trading
+EventSaver v4.5.5 - Sistema de salvamento de eventos de trading
+
+🔹 CORREÇÕES v4.5.5:
+  ✅ Thread-safe em _janelas_processadas (lock dedicado)
+  ✅ Conversão de timezone com fallback seguro (não silencioso, força UTC em caso de erro)
 
 🔹 CORREÇÕES v4.5.4:
   ✅ Sempre parte de epoch_ms/UTC para construir timestamps
@@ -347,6 +351,7 @@ class EventSaver:
     """
     Classe responsável por salvar e formatar eventos de trading.
     
+    ✅ v4.5.5: Lock em _janelas_processadas + timezone mais robusto
     ✅ v4.5.4: Timezone unificado (epoch_ms/UTC) e uso de TimeManager quando disponível
     ✅ v4.5.3: Separadores só são escritos se o evento trouxer janela_numero
     ✅ v4.5.2: Usa janela_numero do bot
@@ -361,8 +366,11 @@ class EventSaver:
         self.last_window_id = None  # compat legada
         self.time_manager = TimeManager()
         self._window_counter = 0   # pode ser usado por código legado sem janela_numero
-        self._janelas_processadas = set()  # Rastreia janelas que já tiveram separador
-        self._last_janela_numero = None    # Última janela com separador escrito
+
+        # Controle de janelas processadas
+        self._janelas_processadas = set()      # Rastreia janelas que já tiveram separador
+        self._last_janela_numero = None        # Última janela com separador escrito
+        self._janelas_lock = threading.Lock()  # NOVO: lock dedicado para _janelas_processadas
         
         # _seen_in_block com timestamp para limpeza
         self._seen_in_block: Dict[Tuple, float] = {}
@@ -430,7 +438,7 @@ class EventSaver:
         lock_type = f"({LOCK_METHOD})" if LOCK_METHOD else ""
         
         self.logger.info(
-            "✅ EventSaver v4.5.4 inicializado | "
+            "✅ EventSaver v4.5.5 inicializado | "
             "Buffer max: %d | Cleanup: %ds | File locking: %s %s",
             MAX_BUFFER_SIZE,
             CLEANUP_INTERVAL,
@@ -467,7 +475,10 @@ class EventSaver:
             self.logger.error(f"Erro ao verificar timezones: {e}")
 
     def _convert_timezone(self, dt: datetime, target_tz) -> datetime:
-        """Converte datetime para timezone alvo de forma segura."""
+        """
+        Converte datetime para timezone alvo de forma segura.
+        v4.5.5: em caso de erro, força tzinfo = UTC e loga como erro.
+        """
         try:
             # Suporte para DynamicNYTZ
             if hasattr(target_tz, 'get_offset'):
@@ -498,7 +509,14 @@ class EventSaver:
                     else:
                         return dt_utc.astimezone(target_tz)
         except Exception as e:
-            self.logger.debug(f"Erro na conversão de timezone: {e}")
+            # Antes era debug + retorno silencioso do dt original (possivelmente naive)
+            self.logger.error(
+                f"❌ FALHA na conversão de timezone: {e}",
+                exc_info=True
+            )
+            # Fallback: garante pelo menos tzinfo=UTC para evitar datetime "naive" em logs
+            if isinstance(dt, datetime) and dt.tzinfo is None:
+                return dt.replace(tzinfo=UTC_TZ)
             return dt
 
     @staticmethod
@@ -568,10 +586,11 @@ class EventSaver:
         except Exception as e:
             self.logger.error(f"Erro ao limpar _seen_in_block: {e}")
 
-        # Limpa set de janelas processadas se ficar muito grande
-        if len(self._janelas_processadas) > 1000:
-            self._janelas_processadas.clear()
-            self.logger.info("🧹 Set de janelas processadas limpo")
+        # Limpa set de janelas processadas se ficar muito grande (thread-safe)
+        with self._janelas_lock:
+            if len(self._janelas_processadas) > 1000:
+                self._janelas_processadas.clear()
+                self.logger.info("🧹 Set de janelas processadas limpo")
 
     def stop(self):
         """Para threads e realiza flush final."""
@@ -1048,9 +1067,13 @@ class EventSaver:
             # Segurança: nunca escreve separador sem número de janela
             return
         
-        if janela_num in self._janelas_processadas:
-            self.logger.warning(f"⚠️ Separador para janela {janela_num} já foi escrito, pulando")
-            return
+        # THREAD-SAFE: checagem e marcação atômica
+        with self._janelas_lock:
+            if janela_num in self._janelas_processadas:
+                self.logger.warning(f"⚠️ Separador para janela {janela_num} já foi escrito, pulando")
+                return
+            # Marca como processada ANTES de escrever, para evitar duplicatas em race
+            self._janelas_processadas.add(janela_num)
 
         try:
             epoch_ms = event.get("epoch_ms") or event.get("window_close_ms")
@@ -1104,7 +1127,6 @@ class EventSaver:
                         f.write(separator)
                         f.flush()
 
-                    self._janelas_processadas.add(janela_num)
                     self.logger.info(f"✅ Separador escrito e janela {janela_num} marcada como processada")
                 else:
                     self.logger.warning("Timeout ao adquirir lock do visual log")
@@ -1490,7 +1512,7 @@ if __name__ == "__main__":
     )
     
     print("\n" + "="*80)
-    print("🧪 TESTE DO EVENTSAVER v4.5.4 - JANELAS ALINHADAS + TIMEZONE UTC")
+    print("🧪 TESTE DO EVENTSAVER v4.5.5 - JANELAS ALINHADAS + TIMEZONE UTC")
     print("="*80 + "\n")
     
     saver = EventSaver(sound_alert=False)

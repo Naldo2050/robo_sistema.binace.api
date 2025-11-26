@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# data_validator.py v2.3.1 - SUPER-VALIDATOR (CORRECTED + PRECISION FIX)
+# data_validator.py v2.3.2 - SUPER-VALIDATOR (CORRECTED + PRECISION FIX + WHALE CHECK FIX)
 
 import time
 from datetime import datetime
@@ -11,6 +11,12 @@ import numpy as np
 class DataValidator:
     """
     Validador e limpador de dados completo com precisão máxima.
+    
+    🔹 CORREÇÕES v2.3.2:
+      ✅ Mesmo comportamento de v2.3.1, com correção extra:
+         - Check "Whale buy volume excede volume total de compra" só é aplicado
+           quando os volumes claramente estão no MESMO horizonte (sem fluxo_continuo).
+         - Evita comparar whale acumulado (desde o reset) com volume_compra da janela.
     
     🔹 CORREÇÕES v2.3.1:
       ✅ Precisão de 8 casas decimais para volumes BTC
@@ -59,10 +65,10 @@ class DataValidator:
             'volume_consistency_failed': 0,
             'participant_direction_mismatch': 0,
             'temporal_inconsistency': 0,
-            'timestamp_validation_failed': 0,      # 🆕
-            'age_ms_corrected': 0,                 # 🆕
-            'first_last_seen_corrected': 0,       # 🆕
-            'precision_corrections': 0,            # 🆕
+            'timestamp_validation_failed': 0,
+            'age_ms_corrected': 0,
+            'first_last_seen_corrected': 0,
+            'precision_corrections': 0,
         }
         self.last_event_timestamp_ms = 0
 
@@ -75,7 +81,7 @@ class DataValidator:
         data = self._fix_year(data)
         data = self._fix_utf8_encoding(data)
         
-        # 2. 🆕 Validar e corrigir timestamps ANTES de outras validações
+        # 2. Validar e corrigir timestamps ANTES de outras validações
         data = self._validate_and_fix_timestamps(data)
         if data is None:
             return None
@@ -113,7 +119,7 @@ class DataValidator:
     
     def _validate_and_fix_timestamps(self, data: Dict) -> Optional[Dict]:
         """
-        🆕 Valida e corrige todos os timestamps no evento.
+        Valida e corrige todos os timestamps no evento.
         
         Validações:
         - Timestamps são positivos
@@ -131,7 +137,6 @@ class DataValidator:
                     if field == 'epoch_ms':
                         main_timestamp = data[field]
                     elif field in ['timestamp_utc', 'timestamp']:
-                        # Tenta converter ISO para epoch
                         try:
                             ts_str = data[field].replace('Z', '+00:00')
                             dt = datetime.fromisoformat(ts_str)
@@ -151,10 +156,10 @@ class DataValidator:
                     self.corrections_count['timestamp_validation_failed'] += 1
                     return None
             
-            # 🆕 Valida e corrige first_seen_ms e last_seen_ms
+            # Valida e corrige first_seen_ms e last_seen_ms
             data = self._fix_first_last_seen(data, main_timestamp)
             
-            # 🆕 Valida e corrige age_ms
+            # Valida e corrige age_ms
             data = self._fix_age_ms(data, main_timestamp)
             
             # Valida timestamps em nested structures
@@ -173,28 +178,14 @@ class DataValidator:
             return None
     
     def _is_valid_timestamp(self, ts_ms: int) -> bool:
-        """
-        🆕 Verifica se timestamp está em range válido.
-        
-        Args:
-            ts_ms: Timestamp em milissegundos
-            
-        Returns:
-            True se válido
-        """
+        """Verifica se timestamp está em range válido."""
         try:
             ts = int(ts_ms)
-            
-            # Verifica se é positivo
             if ts <= 0:
                 return False
-            
-            # Verifica se está em range válido
             if ts < self.MIN_VALID_TIMESTAMP_MS or ts > self.MAX_VALID_TIMESTAMP_MS:
                 return False
-            
             return True
-            
         except Exception:
             return False
     
@@ -203,55 +194,41 @@ class DataValidator:
         data: Dict, 
         reference_ts_ms: Optional[int]
     ) -> Dict:
-        """
-        🆕 Corrige first_seen_ms e last_seen_ms garantindo first <= last.
-        
-        Args:
-            data: Dicionário a corrigir
-            reference_ts_ms: Timestamp de referência (epoch_ms do evento)
-        """
+        """Corrige first_seen_ms e last_seen_ms garantindo first <= last."""
         try:
             first_seen = data.get('first_seen_ms')
             last_seen = data.get('last_seen_ms')
             
-            # Se ambos existem, valida
             if first_seen is not None and last_seen is not None:
                 first = int(first_seen)
                 last = int(last_seen)
                 
-                # Valida que são positivos
                 if first <= 0 or last <= 0:
                     self.logger.warning(
                         f"⚠️ first_seen ou last_seen não-positivo: "
                         f"first={first}, last={last}"
                     )
-                    # Usa referência se disponível
                     if reference_ts_ms and reference_ts_ms > 0:
                         data['first_seen_ms'] = reference_ts_ms
                         data['last_seen_ms'] = reference_ts_ms
                         self.corrections_count['first_last_seen_corrected'] += 1
                     return data
                 
-                # 🔴 VALIDAÇÃO CRÍTICA: first <= last
                 if first > last:
                     self.logger.warning(
                         f"⚠️ TIMESTAMP INVERTIDO: "
                         f"first_seen ({first}) > last_seen ({last}). "
                         f"Invertendo valores."
                     )
-                    # Corrige invertendo
                     data['first_seen_ms'] = last
                     data['last_seen_ms'] = first
                     self.corrections_count['first_last_seen_corrected'] += 1
             
-            # Se apenas um existe mas referência está disponível
             elif reference_ts_ms and reference_ts_ms > 0:
                 if first_seen is None and last_seen is not None:
-                    # Define first_seen como o menor entre last_seen e reference
                     data['first_seen_ms'] = min(int(last_seen), reference_ts_ms)
                     self.corrections_count['first_last_seen_corrected'] += 1
                 elif last_seen is None and first_seen is not None:
-                    # Define last_seen como o maior entre first_seen e reference
                     data['last_seen_ms'] = max(int(first_seen), reference_ts_ms)
                     self.corrections_count['first_last_seen_corrected'] += 1
             
@@ -262,27 +239,19 @@ class DataValidator:
             return data
     
     def _fix_age_ms(self, data: Dict, reference_ts_ms: Optional[int]) -> Dict:
-        """
-        🆕 Corrige age_ms garantindo que seja >= 0.
-        
-        Args:
-            data: Dicionário a corrigir
-            reference_ts_ms: Timestamp de referência
-        """
+        """Corrige age_ms garantindo que seja >= 0."""
         try:
             age_ms = data.get('age_ms')
             
             if age_ms is not None:
                 age = int(age_ms)
                 
-                # 🔴 VALIDAÇÃO CRÍTICA: age_ms não pode ser negativo
                 if age < 0:
                     self.logger.warning(
                         f"⚠️ age_ms negativo: {age}. "
                         f"Tentando recalcular..."
                     )
                     
-                    # Tenta recalcular baseado em last_seen_ms
                     last_seen = data.get('last_seen_ms')
                     if last_seen and reference_ts_ms:
                         recalculated_age = reference_ts_ms - int(last_seen)
@@ -293,11 +262,9 @@ class DataValidator:
                                 f"✅ age_ms corrigido: {age} → {recalculated_age}"
                             )
                         else:
-                            # Se ainda for negativo, zera
                             data['age_ms'] = 0
                             self.corrections_count['age_ms_corrected'] += 1
                     else:
-                        # Se não consegue recalcular, zera
                         data['age_ms'] = 0
                         self.corrections_count['age_ms_corrected'] += 1
             
@@ -321,7 +288,6 @@ class DataValidator:
         elif isinstance(data, list):
             return [self._fix_utf8_encoding(item) for item in data]
         elif isinstance(data, str):
-            # Mapeamento de correções comuns
             replacements = {
                 "AbsorÃ§Ã£o": "Absorção", "Absorï¿½ï¿½o": "Absorção",
                 "AcumulaÃ§Ã£o": "Acumulação", "Acumulaï¿½ï¿½o": "Acumulação",
@@ -340,19 +306,13 @@ class DataValidator:
 
     def _correct_all_inconsistencies(self, data: Dict) -> Dict:
         """Orquestra todas as funções de correção de dados."""
-        # Reconciliação de volumes deve vir primeiro
         data = self._reconcile_total_volume(data)
         data = self._reconcile_whale_volume(data)
-        
-        # Recálculos baseados nos volumes corrigidos
         data = self._recalculate_deltas(data)
         data = self._recalculate_whale_delta(data)
         data = self._recalculate_poc_percentage(data)
-        
-        # Correções de contexto e tempo
         data = self._sanitize_session_time(data)
         
-        # Outras correções
         if 'timestamp' in data and data['timestamp'] and not data['timestamp'].endswith('Z'):
             data['timestamp'] += 'Z'
             self.corrections_count['timestamp'] += 1
@@ -360,23 +320,16 @@ class DataValidator:
         return data
 
     def _recalculate_deltas(self, data: Dict) -> Dict:
-        """
-        Recalcula 'delta' e 'delta_fechamento' com base nos volumes de compra/venda.
-        
-        🆕 CORREÇÃO: Usa precisão de 8 casas decimais
-        """
-        # Nível raiz
+        """Recalcula 'delta' e 'delta_fechamento' com base nos volumes de compra/venda."""
         if 'volume_compra' in data and 'volume_venda' in data:
             buy = float(data['volume_compra'])
             sell = float(data['volume_venda'])
             correct_delta = buy - sell
             
-            # 🆕 Tolerância adequada para BTC
             if abs(float(data.get('delta', 0)) - correct_delta) > self.BTC_TOLERANCE:
                 self.corrections_count['recalculated_delta'] += 1
-                data['delta'] = round(correct_delta, self.BTC_PRECISION)  # 🆕 8 decimais
+                data['delta'] = round(correct_delta, self.BTC_PRECISION)
 
-        # Em enriched_snapshot
         if 'enriched_snapshot' in data and 'delta_fechamento' in data['enriched_snapshot']:
             buy = float(data.get('volume_compra', 0))
             sell = float(data.get('volume_venda', 0))
@@ -389,15 +342,10 @@ class DataValidator:
         return data
 
     def _recalculate_whale_delta(self, data: Dict) -> Dict:
-        """
-        Recalcula o whale_delta em TODOS os lugares onde aparece.
-        
-        🆕 CORREÇÃO: Usa precisão de 8 casas decimais
-        """
+        """Recalcula o whale_delta em TODOS os lugares onde aparece."""
         whale_buy = 0
         whale_sell = 0
         
-        # Obtém os volumes de whale de qualquer fonte disponível
         if 'whale_buy_volume' in data and 'whale_sell_volume' in data:
             whale_buy = float(data['whale_buy_volume'])
             whale_sell = float(data['whale_sell_volume'])
@@ -411,21 +359,18 @@ class DataValidator:
                 whale_buy = float(whale_sector.get('buy', 0))
                 whale_sell = float(whale_sector.get('sell', 0))
         
-        # Calcula o delta correto
         correct_whale_delta = whale_buy - whale_sell
         
-        # Corrige no nível raiz
         if 'whale_delta' in data:
             current_delta = float(data['whale_delta'])
-            if abs(current_delta - correct_whale_delta) > self.BTC_TOLERANCE:  # 🆕 Tolerância correta
+            if abs(current_delta - correct_whale_delta) > self.BTC_TOLERANCE:
                 self.corrections_count['recalculated_whale_delta'] += 1
-                data['whale_delta'] = round(correct_whale_delta, self.BTC_PRECISION)  # 🆕 8 decimais
+                data['whale_delta'] = round(correct_whale_delta, self.BTC_PRECISION)
                 self.logger.debug(
                     f"Corrigido whale_delta na raiz: "
                     f"{current_delta:.8f} -> {correct_whale_delta:.8f}"
                 )
         
-        # Corrige em fluxo_continuo
         if 'fluxo_continuo' in data:
             fluxo = data['fluxo_continuo']
             if 'whale_delta' in fluxo:
@@ -438,7 +383,6 @@ class DataValidator:
                         f"{current_delta:.8f} -> {correct_whale_delta:.8f}"
                     )
             
-            # Corrige em sector_flow.whale
             if 'sector_flow' in fluxo and 'whale' in fluxo['sector_flow']:
                 whale_sector = fluxo['sector_flow']['whale']
                 if 'delta' in whale_sector:
@@ -456,20 +400,16 @@ class DataValidator:
     def _reconcile_total_volume(self, data: Dict) -> Dict:
         """
         Padroniza o 'volume_total' usando enriched_snapshot como fonte da verdade.
-        
-        🆕 CORREÇÃO: Usa tolerância e precisão adequadas
         """
         if 'enriched_snapshot' not in data or 'volume_total' not in data['enriched_snapshot']:
             return data
 
         authoritative_volume = float(data['enriched_snapshot']['volume_total'])
         
-        # Corrige volume na raiz
         if abs(float(data.get('volume_total', 0)) - authoritative_volume) > self.BTC_TOLERANCE:
             self.corrections_count['reconciled_total_volume'] += 1
             data['volume_total'] = round(authoritative_volume, self.BTC_PRECISION)
 
-        # Corrige em fluxo_continuo.order_flow
         if 'fluxo_continuo' in data and 'order_flow' in data['fluxo_continuo']:
             flow = data['fluxo_continuo']['order_flow']
             if abs(float(flow.get('total_volume_btc', 0)) - authoritative_volume) > self.BTC_TOLERANCE:
@@ -499,7 +439,6 @@ class DataValidator:
         """Verifica e corrige 'time_to_session_close' se for irrealista."""
         if 'market_context' in data and 'time_to_session_close' in data['market_context']:
             session_time = data['market_context']['time_to_session_close']
-            # Um dia tem 1440 minutos. Valor acima disso é irrealista.
             if session_time is not None and int(session_time) > 1440:
                 self.corrections_count['sanitized_session_time'] += 1
                 data['market_context']['time_to_session_close'] = None
@@ -526,15 +465,11 @@ class DataValidator:
         return data
 
     def _generate_event_id(self, data: Dict) -> str:
-        """
-        Gera ID único para deduplicação.
-        
-        🆕 CORREÇÃO: Usa precisão adequada para cada campo
-        """
+        """Gera ID único para deduplicação."""
         timestamp_str = str(data.get('epoch_ms', ''))
-        delta_str = f"{float(data.get('delta', 0)):.8f}"  # 🆕 8 decimais
-        volume_str = f"{float(data.get('volume_total', 0)):.8f}"  # 🆕 8 decimais
-        price_str = f"{float(data.get('preco_fechamento', 0)):.4f}"  # 4 decimais
+        delta_str = f"{float(data.get('delta', 0)):.8f}"
+        volume_str = f"{float(data.get('volume_total', 0)):.8f}"
+        price_str = f"{float(data.get('preco_fechamento', 0)):.4f}"
         
         key = f"{timestamp_str}|{delta_str}|{volume_str}|{price_str}"
         return hashlib.md5(key.encode()).hexdigest()
@@ -548,30 +483,24 @@ class DataValidator:
 
     def _validate_data_integrity(self, data: Dict) -> bool:
         """Valida a integridade dos dados após correções."""
-        # Validação do índice de absorção
         if 'indice_absorcao' in data and abs(data['indice_absorcao']) < self.min_absorption_index:
             self.logger.warning(f"Índice de absorção muito baixo: {data['indice_absorcao']:.4%}")
             return False
         
-        # Validação do orderbook
         if 'orderbook_data' in data and not self._validate_orderbook(data['orderbook_data']):
             return False
         
-        # Validação dos volumes de setor
         if 'fluxo_continuo' in data and 'sector_flow' in data['fluxo_continuo']:
             if not self._validate_and_fix_volumes(data['fluxo_continuo']['sector_flow']):
                 return False
         
-        # Validação de consistência de volume
         if not self._validate_volume_consistency(data):
             self.corrections_count['volume_consistency_failed'] += 1
         
-        # Validação de análise de participantes
         if 'fluxo_continuo' in data and 'participant_analysis' in data['fluxo_continuo']:
             if not self._validate_participant_analysis(data['fluxo_continuo']):
                 return False
         
-        # Validação de consistência temporal
         if not self._validate_temporal_consistency(data):
             self.corrections_count['temporal_inconsistency'] += 1
             return False
@@ -580,9 +509,7 @@ class DataValidator:
     
     def _reconcile_whale_volume(self, data: Dict) -> Dict:
         """
-        Reconcilia e CORRIGE whale volume.
-        
-        🆕 CORREÇÃO: Usa tolerância e precisão adequadas
+        Reconcilia e CORRIGE whale volume entre sector_flow e campos whale_*.
         """
         fluxo = data.get('fluxo_continuo', {})
         sector_flow = fluxo.get('sector_flow', {})
@@ -592,7 +519,6 @@ class DataValidator:
             buy_from_sector = float(whale_sector.get('buy', 0))
             sell_from_sector = float(whale_sector.get('sell', 0))
             
-            # Propaga valores de sector_flow para fluxo_continuo
             if 'whale_buy_volume' in fluxo:
                 if abs(float(fluxo['whale_buy_volume']) - buy_from_sector) > self.BTC_TOLERANCE:
                     fluxo['whale_buy_volume'] = round(buy_from_sector, self.BTC_PRECISION)
@@ -609,7 +535,6 @@ class DataValidator:
                 fluxo['whale_sell_volume'] = round(sell_from_sector, self.BTC_PRECISION)
                 self.corrections_count['reconciled_whale_volume'] += 1
             
-            # Propaga para o nível raiz
             if 'whale_buy_volume' in data:
                 if abs(float(data['whale_buy_volume']) - buy_from_sector) > self.BTC_TOLERANCE:
                     data['whale_buy_volume'] = round(buy_from_sector, self.BTC_PRECISION)
@@ -629,23 +554,16 @@ class DataValidator:
     def _normalize_values(self, data: Dict) -> Dict:
         """
         Normaliza valores para precisão adequada recursivamente.
-        
-        🆕 CORREÇÃO: Usa precisão correta para cada tipo de campo
         """
-        # Campos BTC (8 casas decimais)
         btc_fields = [
             'delta', 'volume_total', 'whale_delta',
             'whale_buy_volume', 'whale_sell_volume', 
             'volume_compra', 'volume_venda', 'cvd'
         ]
         
-        # Campos de preço (4 casas decimais)
         price_fields = ['preco_fechamento', 'preco_abertura', 'preco_maximo', 'preco_minimo']
-        
-        # Campos de ratio (6 casas decimais)
         ratio_fields = ['indice_absorcao']
         
-        # Normaliza valores na raiz
         for key in btc_fields:
             if key in data and isinstance(data[key], (int, float)):
                 original = data[key]
@@ -661,13 +579,11 @@ class DataValidator:
             if key in data and isinstance(data[key], (int, float)):
                 data[key] = round(data[key], self.RATIO_PRECISION)
         
-        # Normaliza em fluxo_continuo
         if 'fluxo_continuo' in data:
             for key in btc_fields:
                 if key in data['fluxo_continuo'] and isinstance(data['fluxo_continuo'][key], (int, float)):
                     data['fluxo_continuo'][key] = round(data['fluxo_continuo'][key], self.BTC_PRECISION)
             
-            # Normaliza em sector_flow
             if 'sector_flow' in data['fluxo_continuo']:
                 for sector in data['fluxo_continuo']['sector_flow'].values():
                     if isinstance(sector, dict):
@@ -675,11 +591,9 @@ class DataValidator:
                             if key in sector and isinstance(sector[key], (int, float)):
                                 sector[key] = round(sector[key], self.BTC_PRECISION)
         
-        # Normaliza em enriched_snapshot
         if 'enriched_snapshot' in data:
             for key in data['enriched_snapshot']:
                 if isinstance(data['enriched_snapshot'][key], (int, float)):
-                    # Usa precisão de preço por padrão
                     data['enriched_snapshot'][key] = round(
                         data['enriched_snapshot'][key], 
                         self.PRICE_PRECISION
@@ -708,9 +622,8 @@ class DataValidator:
         """
         Valida consistência temporal dos timestamps.
         
-        🆕 v2.3.1 - CORREÇÃO: Adiciona tolerância temporal
+        v2.3.1 - Adiciona tolerância temporal.
         """
-        # 🆕 Tolerância temporal (200ms)
         TEMPORAL_TOLERANCE_MS = 200
         
         current_timestamp_ms = data.get('epoch_ms')
@@ -737,20 +650,23 @@ class DataValidator:
                 self.last_event_timestamp_ms = current_timestamp_ms
         
         return True
+
     def _validate_volume_consistency(self, event: Dict) -> bool:
         """
         Valida que os volumes sejam consistentes entre si.
         
-        🆕 CORREÇÃO: Usa tolerância adequada para BTC
+        v2.3.2:
+          - Check "whale > total" na raiz só é aplicado se NÃO houver fluxo_continuo.
+            (evita comparar whale acumulado com volume_compra da janela)
         """
-        # Se temos volume_compra e volume_venda, o total deve ser a soma
+        # Check simples de volume_total = volume_compra + volume_venda
         if 'volume_compra' in event and 'volume_venda' in event and 'volume_total' in event:
             buy = float(event['volume_compra'])
             sell = float(event['volume_venda'])
             total = float(event['volume_total'])
             expected_total = buy + sell
             
-            if abs(total - expected_total) > self.BTC_TOLERANCE:  # 🆕 Tolerância correta
+            if abs(total - expected_total) > self.BTC_TOLERANCE:
                 self.logger.warning(
                     f"Volume total inconsistente: "
                     f"{total:.8f} != {buy:.8f} + {sell:.8f}"
@@ -759,16 +675,22 @@ class DataValidator:
                 event['volume_total'] = round(expected_total, self.BTC_PRECISION)
                 return False
         
-        # Valida que whale volumes não excedam volumes totais
-        if 'whale_buy_volume' in event and 'volume_compra' in event:
-            if float(event['whale_buy_volume']) > float(event['volume_compra']) + self.BTC_TOLERANCE:
-                self.logger.warning("Whale buy volume excede volume total de compra")
-                return False
+        # ---- CHECK DE WHALE NA RAIZ (SÓ QUANDO NÃO HÁ FLUXO_CONTINUO) ----
+        # Em eventos em tempo real, whale_buy_volume costuma ser ACUMULADO (desde o reset),
+        # enquanto volume_compra é da JANELA. Comparar os dois gera falsos positivos.
+        if 'fluxo_continuo' not in event:
+            if 'whale_buy_volume' in event and 'volume_compra' in event:
+                if float(event['whale_buy_volume']) > float(event['volume_compra']) + self.BTC_TOLERANCE:
+                    self.logger.warning("Whale buy volume excede volume total de compra")
+                    return False
+            
+            if 'whale_sell_volume' in event and 'volume_venda' in event:
+                if float(event['whale_sell_volume']) > float(event['volume_venda']) + self.BTC_TOLERANCE:
+                    self.logger.warning("Whale sell volume excede volume total de venda")
+                    return False
         
-        if 'whale_sell_volume' in event and 'volume_venda' in event:
-            if float(event['whale_sell_volume']) > float(event['volume_venda']) + self.BTC_TOLERANCE:
-                self.logger.warning("Whale sell volume excede volume total de venda")
-                return False
+        # (Opcional) Futuro: aqui poderíamos validar também whale_*_window vs buy/sell_volume_btc
+        # dentro de event['fluxo_continuo']['order_flow'], se necessário.
         
         return True
 
@@ -794,8 +716,6 @@ class DataValidator:
     def _validate_and_fix_volumes(self, sector_flow: Dict) -> bool:
         """
         Valida e corrige volumes por setor.
-        
-        🆕 CORREÇÃO: Usa tolerância e precisão adequadas
         """
         for sector_name, sector_data in sector_flow.items():
             if not isinstance(sector_data, dict):
@@ -805,17 +725,15 @@ class DataValidator:
             sell = float(sector_data.get('sell', 0))
             delta = float(sector_data.get('delta', 0))
             
-            # Verifica se o delta está correto
             expected_delta = buy - sell
-            if abs(delta - expected_delta) > self.BTC_TOLERANCE:  # 🆕 Tolerância correta
+            if abs(delta - expected_delta) > self.BTC_TOLERANCE:
                 self.logger.debug(
                     f"Corrigindo delta do setor {sector_name}: "
                     f"{delta:.8f} -> {expected_delta:.8f}"
                 )
-                sector_data['delta'] = round(expected_delta, self.BTC_PRECISION)  # 🆕 8 decimais
+                sector_data['delta'] = round(expected_delta, self.BTC_PRECISION)
                 self.corrections_count['volumes'] += 1
             
-            # Verifica se volumes são negativos
             if buy < 0 or sell < 0:
                 self.logger.warning(f"Volumes negativos no setor {sector_name}")
                 return False
@@ -829,7 +747,6 @@ class DataValidator:
         if not participant_analysis:
             return True
         
-        # Valida que as direções façam sentido com os volumes
         if 'whale_delta' in fluxo_continuo:
             whale_delta = float(fluxo_continuo['whale_delta'])
             whale_direction = participant_analysis.get('whale_direction', '')
@@ -868,7 +785,7 @@ validator = DataValidator(min_absorption_index=0.02, max_orderbook_change=0.3)
 def test_whale_delta_correction():
     """Testa a correção do whale delta"""
     test_data = {
-        'epoch_ms': 1704884519000,  # 2024-01-10 10:21:59 UTC
+        'epoch_ms': 1704884519000,
         'timestamp': '2024-01-10T10:21:59Z',
         'delta': 100,
         'volume_total': 1000,
@@ -877,7 +794,7 @@ def test_whale_delta_correction():
         'preco_fechamento': 50000,
         'whale_buy_volume': 59.902,
         'whale_sell_volume': 50.491,
-        'whale_delta': -1.82,  # ERRADO! Deveria ser +9.411
+        'whale_delta': -1.82,
         'fluxo_continuo': {
             'whale_delta': -1.82,
             'whale_buy_volume': 59.902,
@@ -890,20 +807,20 @@ def test_whale_delta_correction():
                 }
             },
             'participant_analysis': {
-                'whale_direction': 'vendendo'  # ERRADO
+                'whale_direction': 'vendendo'
             },
             'liquidity_heatmap': {
                 'clusters': [{
-                    'first_seen_ms': 1704884519999,  # ERRADO: > last_seen
+                    'first_seen_ms': 1704884519999,
                     'last_seen_ms': 1704884519000,
-                    'age_ms': -500  # ERRADO: negativo
+                    'age_ms': -500
                 }]
             }
         }
     }
     
     print("="*80)
-    print("🧪 TESTE DE CORREÇÃO v2.3.1")
+    print("🧪 TESTE DE CORREÇÃO v2.3.2")
     print("="*80)
     print(f"\n📋 ANTES:")
     print(f"   whale_delta: {test_data['whale_delta']}")
@@ -912,7 +829,6 @@ def test_whale_delta_correction():
     print(f"   last_seen: {test_data['fluxo_continuo']['liquidity_heatmap']['clusters'][0]['last_seen_ms']}")
     print(f"   age_ms: {test_data['fluxo_continuo']['liquidity_heatmap']['clusters'][0]['age_ms']}")
     
-    # Configura logging
     logging.basicConfig(level=logging.INFO)
     
     corrected = validator.validate_and_clean(test_data)

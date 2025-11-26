@@ -47,6 +47,21 @@ class TimeManager:
     WARNING_OFFSET_MS = 60000     # 1 minuto
     MAX_CORRECTION_ATTEMPTS = 3   # Limite de tentativas de correção
 
+    # ------------------ SINGLETON GLOBAL ------------------
+    _instance: "TimeManager" = None
+    _instance_lock: Lock = Lock()
+
+    def __new__(cls, *args, **kwargs):
+        """
+        Implementa padrão Singleton: qualquer chamada a TimeManager() retorna
+        SEMPRE a mesma instância global.
+        """
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+            return cls._instance
+    # ------------------------------------------------------
+
     def __init__(self, 
                  sync_interval_minutes: int = 30,
                  max_init_attempts: int = 3,
@@ -61,6 +76,12 @@ class TimeManager:
             max_acceptable_offset_ms: Offset máximo aceitável (padrão 600ms)
             num_sync_samples: Número de amostras por sincronização
         """
+        # --- GUARDA DE SINGLETON: evita reexecutar __init__ ---
+        if getattr(self, "_initialized", False):
+            return
+        self._initialized = True
+        # ------------------------------------------------------
+
         # Configuração
         self.sync_interval_seconds: int = sync_interval_minutes * 60
         self.max_acceptable_offset_ms: int = max_acceptable_offset_ms
@@ -184,7 +205,6 @@ class TimeManager:
             server_ms = int(resp.json().get("serverTime"))
             rtt_ms = max(0, recv_ms - send_ms)
             
-            # Rejeitar amostras com RTT muito alto (indica rede instável)
             if rtt_ms > self.MAX_ACCEPTABLE_RTT_MS:
                 logging.warning(
                     f"⚠️ Amostra rejeitada: RTT muito alto "
@@ -192,7 +212,6 @@ class TimeManager:
                 )
                 return None
             
-            # Usar float em vez de // para precisão máxima
             est_local_at_server = send_ms + (rtt_ms / 2.0)
             offset_ms = int(server_ms - est_local_at_server)
             
@@ -229,7 +248,6 @@ class TimeManager:
         
         logging.info(f"🔄 Iniciando sincronização com Binance ({self.num_sync_samples} amostras)...")
 
-        # Coletar amostras
         for i in range(self.num_sync_samples):
             sample = self._sample_server_time()
             if sample:
@@ -237,14 +255,11 @@ class TimeManager:
             else:
                 self.sync_failures += 1
             
-            # Pequeno jitter para evitar picos de requisição
             if i < self.num_sync_samples - 1:
                 time.sleep(0.05 + random.uniform(0, 0.1))
 
-        # Verificar se conseguiu pelo menos uma amostra válida
         if not samples:
             with self._lock:
-                # Mantém offset anterior (não zera)
                 if self.last_successful_sync_ms is not None:
                     self.time_sync_status = "degraded"
                     logging.warning(
@@ -258,10 +273,8 @@ class TimeManager:
                 self.last_sync_mono = time.monotonic()
             return
 
-        # Escolher a melhor amostra (menor RTT = mais precisa)
         best = min(samples, key=lambda s: s["rtt_ms"])
         
-        # Estatísticas das amostras (para debug)
         if len(samples) > 1:
             rtts = [s["rtt_ms"] for s in samples]
             offsets = [s["offset_ms"] for s in samples]
@@ -274,7 +287,6 @@ class TimeManager:
             f"RTT={best['rtt_ms']}ms, Offset={best['offset_ms']}ms"
         )
         
-        # Atualizar estado
         with self._lock:
             old_offset = self.server_time_offset_ms
             self.server_time_offset_ms = int(best["offset_ms"])
@@ -288,7 +300,6 @@ class TimeManager:
             self.last_sync_mono = time.monotonic()
             self.time_sync_status = "ok"
             
-            # Alertar sobre mudanças significativas
             offset_change = abs(old_offset - self.server_time_offset_ms)
             if offset_change > 100 and old_offset != 0:
                 logging.warning(
@@ -297,7 +308,6 @@ class TimeManager:
                     f"(Δ={offset_change}ms)"
                 )
 
-        # Validar offset após sincronização
         self._validate_offset()
 
     def _should_sync(self) -> bool:
@@ -322,12 +332,10 @@ class TimeManager:
         with self._lock:
             offset_abs = abs(self.server_time_offset_ms)
             
-            # Adiciona ao histórico
             self._last_offset_history.append(offset_abs)
             if len(self._last_offset_history) > 10:
                 self._last_offset_history.pop(0)
         
-        # CRÍTICO: Offset > 1 hora
         if offset_abs > self.CRITICAL_OFFSET_MS:
             logging.critical("=" * 80)
             logging.critical(f"⛔ OFFSET CRÍTICO: {offset_abs/1000:.1f}s")
@@ -347,7 +355,6 @@ class TimeManager:
             else:
                 logging.error("❌ NTP falhou. Intervenção manual necessária.")
         
-        # WARNING: Offset > 1 minuto
         elif offset_abs > self.WARNING_OFFSET_MS:
             logging.warning("=" * 80)
             logging.warning(f"⚠️ OFFSET ALTO: {offset_abs/1000:.1f}s")
@@ -362,60 +369,45 @@ class TimeManager:
                 logging.info("✅ NTP bem-sucedido. Re-sincronizando...")
                 self._sync_with_binance()
         
-        # Offset > limite mas < 1 segundo (LATÊNCIA DE REDE)
         elif offset_abs > self.max_acceptable_offset_ms:
-            # Verifica se é offset estável (latência de rede)
             is_stable = self._is_offset_stable(offset_abs)
             
-            # Se offset < 1000ms E estável = ACEITAR como latência de rede
             if offset_abs <= 1000 and is_stable:
-                if self._correction_attempts == 0:  # Log apenas na primeira vez
+                if self._correction_attempts == 0:
                     logging.warning(
                         f"⚠️ Offset {offset_abs}ms > {self.max_acceptable_offset_ms}ms "
                         f"mas ESTÁVEL e < 1000ms"
                     )
-                    logging.warning(
-                        f"   Isso parece ser LATÊNCIA DE REDE (não erro de relógio)."
-                    )
-                    logging.warning(
-                        f"   ✅ ACEITANDO offset. Sistema operará normalmente."
-                    )
+                    logging.warning("   Isso parece ser LATÊNCIA DE REDE (não erro de relógio).")
+                    logging.warning("   ✅ ACEITANDO offset. Sistema operará normalmente.")
                     logging.warning(
                         f"   💡 Para reduzir avisos, considere ajustar "
                         f"'max_acceptable_offset_ms' para {offset_abs + 100}ms no config."
                     )
-                self._correction_attempts = 0  # Reset contador
+                self._correction_attempts = 0
                 return
             
-            # Limite de tentativas de correção (previne loop infinito)
             if self._correction_attempts >= self.MAX_CORRECTION_ATTEMPTS:
                 if offset_abs <= 1000:
                     logging.warning(
                         f"⚠️ Offset {offset_abs}ms não corrigível após "
                         f"{self.MAX_CORRECTION_ATTEMPTS} tentativas."
                     )
-                    logging.warning(
-                        f"   Provável causa: LATÊNCIA DE REDE (não erro de relógio)."
-                    )
-                    logging.warning(
-                        f"   ✅ ACEITANDO offset. Sistema operará normalmente."
-                    )
+                    logging.warning("   Provável causa: LATÊNCIA DE REDE (não erro de relógio).")
+                    logging.warning("   ✅ ACEITANDO offset. Sistema operará normalmente.")
                     logging.warning(
                         f"   💡 Recomendação: Ajuste 'max_acceptable_offset_ms' "
                         f"para {offset_abs + 100}ms no config.py"
                     )
-                    self._correction_attempts = 0  # Reset
+                    self._correction_attempts = 0
                     return
                 else:
                     logging.error(
                         f"❌ Offset {offset_abs}ms muito alto e não corrigível."
                     )
-                    logging.error(
-                        f"   Sistema continuará mas pode haver problemas."
-                    )
+                    logging.error("   Sistema continuará mas pode haver problemas.")
                     return
             
-            # Tenta re-sincronização (máximo MAX_CORRECTION_ATTEMPTS vezes)
             self._correction_attempts += 1
             logging.warning(
                 f"⚠️ Offset {offset_abs}ms > {self.max_acceptable_offset_ms}ms "
@@ -433,7 +425,7 @@ class TimeManager:
                     f"✅ Offset corrigido: {old_offset}ms → {self.server_time_offset_ms}ms"
                 )
                 self.auto_corrections += 1
-                self._correction_attempts = 0  # Reset
+                self._correction_attempts = 0
             else:
                 logging.warning(
                     f"⚠️ Re-sync não melhorou: {old_offset}ms → {self.server_time_offset_ms}ms"
@@ -441,30 +433,22 @@ class TimeManager:
         
         else:
             logging.info(f"✅ Offset dentro do limite aceitável: {offset_abs}ms")
-            self._correction_attempts = 0  # Reset
+            self._correction_attempts = 0
     
     def _is_offset_stable(self, current_offset: int) -> bool:
-        """
-        Verifica se o offset é estável (não está aumentando).
-        
-        Se o offset varia menos de 50ms entre medições, considera estável.
-        """
+        """Verifica se o offset é estável (não está aumentando)."""
         if len(self._last_offset_history) < 3:
             return False
         
-        # Calcula variação dos últimos 3 offsets
         recent = self._last_offset_history[-3:]
         max_offset = max(recent)
         min_offset = min(recent)
         variation = max_offset - min_offset
         
-        # Se varia menos de 50ms = estável (latência de rede)
         return variation < 50
 
     def _try_system_ntp_sync(self) -> bool:
-        """
-        Tenta sincronizar o relógio do sistema usando NTP.
-        """
+        """Tenta sincronizar o relógio do sistema usando NTP."""
         import platform
         import subprocess
         
@@ -535,9 +519,7 @@ class TimeManager:
     # ========================================================================
     
     def now(self) -> int:
-        """
-        Retorna o timestamp atual em milissegundos, ajustado pelo offset da Binance.
-        """
+        """Retorna o timestamp atual em milissegundos, ajustado pelo offset da Binance."""
         try:
             if self._should_sync():
                 logging.debug("⏰ Tempo de re-sincronização automática")
@@ -563,41 +545,20 @@ class TimeManager:
         return self.get_sync_stats()
 
     # ========================================================================
-    # ✅ NOVO: MÉTODO from_timestamp_ms() (CORREÇÃO CRÍTICA)
+    # MÉTODO from_timestamp_ms()
     # ========================================================================
     
     def from_timestamp_ms(self, ts_ms: int, tz=None) -> datetime:
-        """
-        Converte timestamp em milissegundos para objeto datetime.
-        
-        Args:
-            ts_ms: Timestamp em milissegundos
-            tz: Timezone (padrão: UTC). Pode ser self.tz_utc, self.tz_ny, self.tz_sp
-            
-        Returns:
-            Objeto datetime no timezone especificado
-            
-        Example:
-            >>> tm = TimeManager()
-            >>> dt = tm.from_timestamp_ms(1735234523000)
-            >>> dt.isoformat()
-            '2024-12-26T17:35:23+00:00'
-        """
+        """Converte timestamp em milissegundos para objeto datetime."""
         if tz is None:
             tz = self.tz_utc
         
         try:
-            # Converte ms para segundos
             ts_sec = ts_ms / 1000.0
-            
-            # Cria datetime no timezone especificado
             dt = datetime.fromtimestamp(ts_sec, tz=tz)
-            
             return dt
-            
         except Exception as e:
             logging.error(f"❌ Erro ao converter timestamp {ts_ms}: {e}")
-            # Fallback: retorna now
             return datetime.now(tz)
 
     # ========================================================================
@@ -689,10 +650,7 @@ class TimeManager:
     # ========================================================================
     
     def calc_age_ms(self, recent_ts_ms: int, reference_ts_ms: Optional[int] = None) -> int:
-        """
-        Calcula idade (age_ms) de um timestamp até referência (padrão: agora).
-        Nunca retorna negativo.
-        """
+        """Calcula idade (age_ms) de um timestamp até referência (padrão: agora)."""
         if reference_ts_ms is None:
             reference_ts_ms = self.now()
         

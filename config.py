@@ -126,10 +126,11 @@ CVD_RESET_INTERVAL_HOURS = 4  # ✅ REDUZIDO: 4 horas (era 24 HORAS!)
 WHALE_TRADE_THRESHOLD = 5.0
 
 # -- Buckets de tamanho de ordem (retail/mid/whale) usados na segmentação por players
+# DEPOIS (unificado com WHALE_TRADE_THRESHOLD = 5.0)
 ORDER_SIZE_BUCKETS = {
     "retail": (0, 0.5),      # até 0.5 BTC
-    "mid": (0.5, 2.0),       # de 0.5 a 2 BTC
-    "whale": (2.0, 9999.0)   # acima de 2 BTC
+    "mid": (0.5, 5.0),       # de 0.5 a 5 BTC
+    "whale": (5.0, 9999.0)   # >= 5 BTC
 }
 
 # -- Bursts (microtempo)
