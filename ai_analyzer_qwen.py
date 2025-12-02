@@ -1,4 +1,4 @@
-# ai_analyzer_qwen.py v2.3.0 - COM SUPORTE GROQCLOUD + STRUCTURED OUTPUT
+# ai_analyzer_qwen.py v2.3.0 - COM SUPORTE GROQCLOUD + STRUCTURED OUTPUT + HEARTBEAT
 """
 AI Analyzer para eventos de mercado com validação de dados.
 
@@ -31,6 +31,12 @@ AI Analyzer para eventos de mercado com validação de dados.
   ✅ Logs mais claros sobre fonte dos dados
   ✅ Fallback para múltiplos caminhos de dados
   ✅ System prompt melhorado
+
+🔹 NOVIDADE v2.3.x (ESTA VERSÃO):
+  ✅ Integração com HealthMonitor via heartbeat periódico:
+     - AIAnalyzer pode receber um HealthMonitor externo
+     - Envia heartbeat("ai") a cada 30s enquanto ativo
+     - Fecha a thread de heartbeat no close()
 """
 
 import logging
@@ -38,7 +44,8 @@ import os
 import random
 import time
 import asyncio
-from typing import Any, Dict, Optional, Literal
+import threading
+from typing import Any, Dict, Optional, Literal, TYPE_CHECKING
 
 from dotenv import load_dotenv
 
@@ -56,6 +63,11 @@ try:
     import config as app_config
 except Exception:
     app_config = None
+
+# Import opcional do HealthMonitor (para type hint e uso de heartbeat)
+if TYPE_CHECKING:
+    # Import usado apenas para type checking (Pylance, mypy etc.)
+    from health_monitor import HealthMonitor
 
 # OpenAI / Groq (cliente síncrono + assíncrono)
 try:
@@ -235,14 +247,30 @@ def _extract_dashscope_text(resp) -> str:
 
 
 class AIAnalyzer:
-    """Analisador de IA com validação robusta de dados e suporte GroqCloud + structured output."""
+    """Analisador de IA com validação robusta de dados e suporte GroqCloud + structured output + heartbeat."""
     
-    def __init__(self):
+    def __init__(
+        self,
+        health_monitor: Optional["HealthMonitor"] = None,
+        module_name: str = "ai",
+    ):
+        """
+        health_monitor: instância de HealthMonitor (opcional).
+        module_name: nome usado para registrar heartbeat (default: 'ai').
+
+        Compatível com chamadas antigas: AIAnalyzer() continua funcionando.
+        """
         self.client: Optional[Any] = None        # cliente síncrono
         self.client_async: Optional[Any] = None  # cliente assíncrono (AsyncOpenAI)
         self.enabled = False
         self.mode: Optional[str] = None
         self.time_manager = TimeManager()
+
+        # Integração com HealthMonitor
+        self.health_monitor = health_monitor
+        self.module_name = module_name
+        self._hb_stop = threading.Event()
+        self._hb_thread: Optional[threading.Thread] = None
 
         # Modelo padrão (será sobrescrito se Groq estiver ativo)
         self.model_name = (
@@ -256,13 +284,55 @@ class AIAnalyzer:
         self.connection_failed_count = 0
         self.max_failures_before_mock = 3
 
-        logging.info("🧠 IA Analyzer v2.3.0 inicializada - GroqCloud + Structured Output focado em regiões de entrada")
+        logging.info(
+            "🧠 IA Analyzer v2.3.0 inicializada - GroqCloud + Structured Output focado em regiões de entrada"
+        )
         try:
             self._initialize_api()
         except Exception as e:
             logging.warning(f"Falha ao inicializar provedores de IA: {e}. Usando mock.")
             self.mode = None
             self.enabled = True
+
+        # Se existir HealthMonitor, envia um primeiro heartbeat e inicia thread periódica
+        if self.health_monitor is not None:
+            try:
+                self.health_monitor.heartbeat(self.module_name)
+            except Exception:
+                pass
+
+            self._hb_thread = threading.Thread(
+                target=self._heartbeat_loop,
+                name=f"AIAnalyzerHeartbeat-{self.module_name}",
+                daemon=True,
+            )
+            self._hb_thread.start()
+            logging.info("🫀 Heartbeat do módulo '%s' iniciado (AIAnalyzer).", self.module_name)
+
+    # ---------------- HEARTBEAT LOOP ----------------
+    def _heartbeat_loop(self):
+        """
+        Envia heartbeat periódico para o HealthMonitor enquanto o AIAnalyzer estiver ativo.
+        Se o processo travar de verdade, esta thread também pára, e o HealthMonitor detecta.
+        """
+        # Intervalo padrão de heartbeat: 30s (pode ser ajustado lendo do config.py)
+        interval = getattr(app_config, "HEALTH_CHECK_INTERVAL", 30)
+        interval = max(5, min(interval, 60))  # mantém entre 5s e 60s para segurança
+
+        while not self._hb_stop.is_set():
+            try:
+                if self.health_monitor is not None:
+                    self.health_monitor.heartbeat(self.module_name)
+            except Exception:
+                # Nunca deixe exceção matar a thread de heartbeat
+                pass
+            # Espera até o próximo ciclo ou parada
+            for _ in range(int(interval * 10)):  # subdivide em passos de 0.1s para reação rápida ao stop
+                if self._hb_stop.is_set():
+                    break
+                time.sleep(0.1)
+
+    # ------------------------------------------------
 
     def _initialize_api(self):
         """
@@ -1041,6 +1111,14 @@ class AIAnalyzer:
 
         if not raw:
             raw = self._generate_mock_analysis(event_data)
+
+        # Refresca heartbeat no final de uma análise bem-sucedida (se monitor disponível)
+        try:
+            if self.health_monitor is not None:
+                self.health_monitor.heartbeat(self.module_name)
+        except Exception:
+            pass
+
         return raw, structured
 
     # ====================================================================
@@ -1112,7 +1190,15 @@ class AIAnalyzer:
             }
 
     def close(self):
-        """Fecha conexão com IA."""
+        """Fecha conexão com IA e encerra heartbeat, se houver."""
+        # Para heartbeat
+        try:
+            self._hb_stop.set()
+            if self._hb_thread is not None and self._hb_thread.is_alive():
+                self._hb_thread.join(timeout=5)
+        except Exception:
+            pass
+
         if self.mode == "groq":
             logging.info("🔌 Desconectando GroqCloud...")
         self.client = None
@@ -1126,7 +1212,7 @@ class AIAnalyzer:
 
 
 # ====================================================================
-# 🧪 TESTE DE VALIDAÇÃO (executar diretamente)
+    # 🧪 TESTE DE VALIDAÇÃO (executar diretamente)
 # ====================================================================
 
 if __name__ == "__main__":

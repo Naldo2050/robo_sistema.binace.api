@@ -47,7 +47,7 @@ HISTORY_SIZE = 50  # Número de janelas anteriores para calcular a média de vol
 
 # -- Absorção --
 # O threshold de delta para absorção será calculado dinamicamente.
-# Formula: média(delta) + (fator * desvio_padrão(delta))
+# Fórmula: média(delta) + (fator * desvio_padrão(delta))
 DELTA_STD_DEV_FACTOR = 2.5
 
 # -- Média Móvel de Contexto (SMA) --
@@ -99,10 +99,11 @@ ORDERBOOK_MIN_DEPTH_USD = 5_000.0      # ✅ AUMENTADO: $5,000 mínimo (era $500
 ORDERBOOK_ALLOW_PARTIAL = False        # ✅ DESATIVADO: Exige bid E ask válidos (era True)
 ORDERBOOK_MIN_LEVELS = 10              # ✅ AUMENTADO: Mínimo 10 níveis (era 3)
 
-# ===== FALLBACK - MAIS CONSERVADOR =====
+# ===== FALLBACK / EMERGENCY MODE =====
+# Mantém fallback ativado, mas com limites rigorosos e modo emergência ligado.
 ORDERBOOK_USE_FALLBACK = True          # Mantém, mas com limites rigorosos
-ORDERBOOK_FALLBACK_MAX_AGE = 120       # ✅ REDUZIDO: 2 minutos (era 10 MINUTOS!)
-ORDERBOOK_EMERGENCY_MODE = False       # ✅ DESATIVADO: Sem emergency mode (era True)
+ORDERBOOK_FALLBACK_MAX_AGE = 300       # ✅ 5 minutos (coerente com seção de reconexão v2.3.0)
+ORDERBOOK_EMERGENCY_MODE = True        # ✅ Ativa modo emergência para falhas leves do orderbook
 
 # ===== 🆕 VALIDAÇÃO DE TIMESTAMP (NOVOS PARÂMETROS) =====
 ORDERBOOK_MAX_AGE_MS = 30000           # ✅ NOVO: Rejeita dados com mais de 30 segundos
@@ -458,8 +459,7 @@ PIPELINE_MIN_ABSOLUTE_TRADES = 3       # ✅ Mínimo absoluto (erro fatal se men
 PIPELINE_ALLOW_LIMITED_DATA = True     # ✅ Permite processar com aviso se >= 3 trades
 
 # ===== CORREÇÕES ESPECÍFICAS PARA ORDERBOOK =====
-ORDERBOOK_EMERGENCY_MODE = True        # ✅ CORRIGIDO: Ativa modo emergência (estava False)
-ORDERBOOK_FALLBACK_MAX_AGE = 300       # ✅ AUMENTADO: 5 minutos (estava 120s)
+# (já integradas acima em ORDERBOOK_EMERGENCY_MODE e ORDERBOOK_FALLBACK_MAX_AGE)
 
 # ===== CONFIGURAÇÕES DE CLEANUP =====
 CLEANUP_TIMEOUT = 5.0                  # ✅ Timeout para cleanup de recursos

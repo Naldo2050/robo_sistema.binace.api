@@ -81,8 +81,11 @@ class RobustConnectionManager:
         self.last_successful_message_time: Optional[datetime] = None
         self.connection_start_time: Optional[datetime] = None
 
-        # Evento para parar conexões e heartbeat
+           # Evento global para encerrar a conexão (usado por disconnect / KeyboardInterrupt)
         self.stop_event = threading.Event()
+
+        # Evento separado só para controlar o thread de heartbeat
+        self.heartbeat_stop = threading.Event()
 
         # Thread de heartbeat
         self.heartbeat_thread: Optional[threading.Thread] = None
@@ -212,8 +215,8 @@ class RobustConnectionManager:
     # ============================================================
 
     def _start_heartbeat(self) -> None:
-        """Inicia o thread de heartbeat, usando stop_event em vez de bool."""
-        self.stop_event.clear()
+        """Inicia o thread de heartbeat (controle próprio, não mexe no stop_event global)."""
+        self.heartbeat_stop.clear()
 
         if self.heartbeat_thread and self.heartbeat_thread.is_alive():
             return
@@ -224,18 +227,24 @@ class RobustConnectionManager:
         )
         self.heartbeat_thread.start()
 
+        self.heartbeat_thread = threading.Thread(
+            target=self._heartbeat_monitor,
+            daemon=True,
+        )
+        self.heartbeat_thread.start()
+
     def _stop_heartbeat(self) -> None:
-        """Sinaliza parada ao heartbeat e tenta aguardar seu término."""
-        self.stop_event.set()
+        """Para apenas o thread de heartbeat (não encerra o loop de conexão)."""
+        self.heartbeat_stop.set()
         t = getattr(self, "heartbeat_thread", None)
         if t and t.is_alive():
             t.join(timeout=1.0)
 
     def _heartbeat_monitor(self) -> None:
         """Monitora a saúde da conexão."""
-        while self.is_connected and not self.stop_event.is_set():
+        while self.is_connected and not self.heartbeat_stop.is_set():
 
-            if self.stop_event.wait(20.0):
+            if self.heartbeat_stop.wait(20.0):
                 break
 
             if not self.is_connected:

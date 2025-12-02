@@ -28,6 +28,9 @@ def initialize_ai_async(bot) -> None:
     """
     Inicializa a IA em uma thread separada, exatamente como no método
     EnhancedMarketBot._initialize_ai_async original.
+
+    v2.3.x: agora passa o HealthMonitor do bot para o AIAnalyzer,
+    permitindo heartbeat periódico do módulo 'ai'.
     """
 
     def ai_init_worker() -> None:
@@ -40,7 +43,17 @@ def initialize_ai_async(bot) -> None:
             logging.info("=" * 30 + " INICIALIZANDO IA " + "=" * 30)
             logging.info("🧠 Tentando inicializar AI Analyzer...")
 
-            bot.ai_analyzer = AIAnalyzer()
+            # Integração com HealthMonitor:
+            # Se o bot tiver um health_monitor, passamos para o AIAnalyzer.
+            try:
+                hm = getattr(bot, "health_monitor", None)
+            except Exception:
+                hm = None
+
+            bot.ai_analyzer = AIAnalyzer(
+                health_monitor=hm,
+                module_name="ai",
+            )
 
             logging.info(
                 "✅ Módulo da IA carregado. Realizando teste de análise..."
@@ -159,6 +172,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                     event_data.get("resultado_da_batalha", "N/A"),
                 )
 
+                # Heartbeat extra (além do heartbeat periódico do AIAnalyzer)
                 try:
                     bot.health_monitor.heartbeat("ai")
                 except Exception:

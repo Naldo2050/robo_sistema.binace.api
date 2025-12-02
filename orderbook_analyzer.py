@@ -1,12 +1,20 @@
-# orderbook_analyzer.py v2.1.0 - ASYNC COM SESSÃO HTTP REUTILIZÁVEL
+# orderbook_analyzer.py v2.2.0 - ASYNC COM SESSÃO HTTP REUTILIZÁVEL + MELHORIAS
 """
 OrderBook Analyzer para Binance Futures com validação robusta e fetch assíncrono.
 
+🔹 v2.2.0 (MELHORIAS INTERNAS, API EXTERNA IGUAL v2.1.0):
+  ✅ Locks assíncronos para sessão HTTP e cache (sem race conditions)
+  ✅ Timeout de request usa ORDERBOOK_REQUEST_TIMEOUT (sem 5.0 hardcoded)
+  ✅ Corrigido market impact SELL (usava ordem errada dos bids)
+  ✅ Iceberg detection mais robusto usando agregação por preço (_price_map)
+  ✅ Walls detection usando quantil 90% (menos falsos positivos)
+  ✅ Mantida API pública e estrutura de retorno da v2.1.0
+
 🔹 v2.1.0 (PERFORMANCE: SESSÃO REUTILIZÁVEL):
-  ✅ Reintroduz ClientSession reutilizável por OrderBookAnalyzer
-  ✅ Permite injetar uma sessão externa (parâmetro `session=...`)
+  ✅ ClientSession reutilizável por OrderBookAnalyzer
+  ✅ Permite injetar sessão externa (parâmetro `session=...`)
   ✅ Evita criar/fechar sessão + handshake TCP/SSL a cada requisição
-  ✅ Continua compatível com asyncio.run(...), desde que o loop seja bem gerenciado
+  ✅ Compatível com asyncio.run(...), desde que o loop seja bem gerenciado
 
 🔹 BREAKING CHANGES v2.0.0 (mantidos):
   ✅ Migrado de requests (bloqueante) para aiohttp (assíncrono)
@@ -27,7 +35,6 @@ OrderBook Analyzer para Binance Futures com validação robusta e fetch assíncr
   ✅ Flags de qualidade mais claras
   ✅ Logs informativos sem poluir
   ✅ Validação de timestamp obrigatória
-
 """
 
 import logging
@@ -35,6 +42,8 @@ import time
 import asyncio
 from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime, timedelta
+from collections import deque
+
 import aiohttp  # ✅ async HTTP client
 import numpy as np
 
@@ -95,7 +104,7 @@ except Exception as e:
 # ===== 🆕 VALIDAÇÃO DE IDADE MÁXIMA =====
 ORDERBOOK_MAX_AGE_MS = 60000  # ✅ 60 segundos máximo
 
-SCHEMA_VERSION = "2.1.0"  # ✅ ATUALIZADO
+SCHEMA_VERSION = "2.1.0"  # Mantido para compatibilidade externa
 
 
 # ===== EXCEÇÃO CUSTOMIZADA =====
@@ -213,6 +222,7 @@ class OrderBookAnalyzer:
     """
     Analisador de Order Book para Binance Futures com validação robusta e fetch assíncrono.
 
+    ✅ v2.2.0: Locks para sessão/cache, market impact SELL corrigido, iceberg/walls melhorados
     ✅ v2.1.0: Sessão HTTP reutilizável por analyzer (ou injetada), sem overhead por chamada
     ✅ v2.0.0: 100% async, zero bloqueio
     ✅ v1.6.0: Validação rigorosa, não modifica dados, fallback conservador
@@ -249,6 +259,10 @@ class OrderBookAnalyzer:
         # True se a sessão foi criada pelo próprio Analyzer (nesse caso, ele fecha)
         self._owns_session: bool = session is None
 
+        # Locks para evitar race conditions (NOVO v2.2.0)
+        self._session_lock = asyncio.Lock()
+        self._cache_lock = asyncio.Lock()
+
         # Cache
         self._cached_snapshot: Optional[Dict[str, Any]] = None
         self._cache_timestamp: float = 0.0
@@ -257,6 +271,9 @@ class OrderBookAnalyzer:
         self._last_valid_snapshot: Optional[Dict[str, Any]] = None
         self._last_valid_timestamp: float = 0.0
         self._last_valid_exchange_ts: Optional[int] = None
+
+        # Pequeno histórico para iceberg (NOVO v2.2.0, uso interno)
+        self._history = deque(maxlen=4)
 
         # Rate limiting
         self._request_times: List[float] = []
@@ -304,11 +321,12 @@ class OrderBookAnalyzer:
         responsável por fechá-la.
         """
         try:
-            if self._owns_session and self._session and not self._session.closed:
-                await self._session.close()
+            async with self._session_lock:
+                if self._owns_session and self._session and not self._session.closed:
+                    await self._session.close()
+                self._session = None
         except Exception:
-            pass
-        self._session = None
+            self._session = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """
@@ -317,27 +335,31 @@ class OrderBookAnalyzer:
         - Se o usuário injetou uma sessão no __init__, ela é usada.
         - Caso contrário, criamos uma ClientSession própria (lazy) e
           reaproveitamos até close().
+
+        ✅ v2.2.0: protegido por lock para evitar race na criação.
         """
-        if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(
-                total=ORDERBOOK_REQUEST_TIMEOUT,
-                connect=5.0,
-                sock_read=ORDERBOOK_REQUEST_TIMEOUT,
-            )
-            connector = aiohttp.TCPConnector(
-                limit=10,
-                limit_per_host=5,
-                ttl_dns_cache=300,
-                force_close=False,
-                enable_cleanup_closed=True,
-            )
-            self._session = aiohttp.ClientSession(
-                timeout=timeout,
-                connector=connector,
-                raise_for_status=False,
-            )
-            self._owns_session = True
-        return self._session
+        async with self._session_lock:
+            if self._session is None or self._session.closed:
+                timeout = aiohttp.ClientTimeout(
+                    total=ORDERBOOK_REQUEST_TIMEOUT,
+                    connect=5.0,
+                    sock_read=ORDERBOOK_REQUEST_TIMEOUT,
+                )
+                connector = aiohttp.TCPConnector(
+                    limit=10,
+                    limit_per_host=5,
+                    ttl_dns_cache=300,
+                    force_close=False,
+                    enable_cleanup_closed=True,
+                )
+                self._session = aiohttp.ClientSession(
+                    timeout=timeout,
+                    connector=connector,
+                    raise_for_status=False,
+                )
+                self._owns_session = True
+            session = self._session
+        return session
 
     # ===== ✅ VALIDAÇÃO (NÃO MUDOU, COM PATCH 3) =====
     def _validate_snapshot(
@@ -512,7 +534,32 @@ class OrderBookAnalyzer:
         """Registra request para tracking."""
         self._request_times.append(time.time())
 
-    # ===== ✅ FETCH ASYNC v2.1.0 (SESSÃO REUTILIZÁVEL, PATCHES 1 e 2) =====
+    # ===== UTILIDADE: MAPA DE PREÇOS PARA ICEBERG (NOVO v2.2.0) =====
+    def _price_map(self, levels: List[Tuple[float, float]]) -> Dict[float, float]:
+        """
+        Converte lista:
+            [(price, qty), ...]
+        em:
+            {price: soma_qty}
+
+        Somando quantidades em níveis duplicados de preço.
+        """
+        out: Dict[float, float] = {}
+        if not levels:
+            return out
+
+        for lv in levels:
+            try:
+                p = float(lv[0])
+                q = float(lv[1])
+            except Exception:
+                continue
+            if q <= 0 or p <= 0:
+                continue
+            out[p] = out.get(p, 0.0) + q
+        return out
+
+    # ===== ✅ FETCH ASYNC v2.2.0 (SESSÃO REUTILIZÁVEL + LOCKS) =====
     async def _fetch_orderbook(
         self,
         limit: Optional[int] = None,
@@ -522,18 +569,10 @@ class OrderBookAnalyzer:
         """
         Busca orderbook com retry, validação e fallback conservador.
 
-        ✅ v2.1.0:
-        - Usa uma ClientSession reutilizável por OrderBookAnalyzer (ou injetada)
-        - Evita overhead de criar/fechar sessão + handshake a cada chamada
-        - Continua compatível com asyncio.run(...) (desde que o loop não seja recriado o tempo todo)
-
-        ✅ v2.0.0:
-        - Usa aiohttp (não bloqueia event loop)
-        - await asyncio.sleep() ao invés de time.sleep()
-
-        ✅ Patches:
-        - Verificação de sessão antes de cada uso
-        - Timeout com cancelamento explícito da request (evita requests órfãs)
+        ✅ v2.2.0:
+        - Usa ClientSession reutilizável (ou injetada) com lock de criação
+        - Usa ORDERBOOK_REQUEST_TIMEOUT para request e wait_for
+        - Acesso a cache/fallback protegido por lock (_cache_lock)
 
         Returns:
             Snapshot válido (convertido) ou None
@@ -543,13 +582,20 @@ class OrderBookAnalyzer:
 
         self._total_fetches += 1
 
-        # 1. CACHE
-        if use_cache and self._cached_snapshot is not None:
-            cache_age = time.time() - self._cache_timestamp
-            if cache_age < self.cache_ttl_seconds:
-                self._cache_hits += 1
-                logging.debug(f"📦 Cache hit (age={cache_age:.2f}s)")
-                return self._cached_snapshot
+        # 1. CACHE (leitura protegida)
+        if use_cache:
+            cached_snapshot = None
+            cache_ts = 0.0
+            async with self._cache_lock:
+                cached_snapshot = self._cached_snapshot
+                cache_ts = self._cache_timestamp
+
+            if cached_snapshot is not None:
+                cache_age = time.time() - cache_ts
+                if cache_age < self.cache_ttl_seconds:
+                    self._cache_hits += 1
+                    logging.debug(f"📦 Cache hit (age={cache_age:.2f}s)")
+                    return cached_snapshot
 
         # 2. RATE LIMITING
         if self._check_rate_limit():
@@ -575,7 +621,8 @@ class OrderBookAnalyzer:
                 # Verifica se foi fechada externamente
                 if session.closed:
                     logging.warning("⚠️ Sessão fechada, recriando...")
-                    self._session = None
+                    async with self._session_lock:
+                        self._session = None
                     session = await self._get_session()
 
                 self._register_request()
@@ -585,16 +632,17 @@ class OrderBookAnalyzer:
                 )
 
                 # Cria task para poder cancelar
+                client_timeout = aiohttp.ClientTimeout(total=ORDERBOOK_REQUEST_TIMEOUT)
                 task = asyncio.create_task(
                     session.get(
                         url,
-                        timeout=aiohttp.ClientTimeout(total=5.0)  # Timeout no nível da request
+                        timeout=client_timeout  # ✅ timeout consistente
                     )
                 )
 
                 try:
-                    # Timeout com cancelamento explícito
-                    r = await asyncio.wait_for(task, timeout=5.0)
+                    # Timeout real na operação de GET
+                    r = await asyncio.wait_for(task, timeout=ORDERBOOK_REQUEST_TIMEOUT)
 
                     async with r:
                         # Rate limiting
@@ -646,17 +694,19 @@ class OrderBookAnalyzer:
                             else:
                                 break
 
-                        # ✅ SUCESSO - Salva snapshot CONVERTIDO
-                        self._cached_snapshot = converted
-                        self._cache_timestamp = time.time()
+                        # ✅ SUCESSO - Salva snapshot CONVERTIDO (protegido por lock)
+                        now_ts = time.time()
+                        async with self._cache_lock:
+                            self._cached_snapshot = converted
+                            self._cache_timestamp = now_ts
 
-                        self._last_valid_snapshot = converted.copy()
-                        self._last_valid_timestamp = time.time()
+                            self._last_valid_snapshot = converted.copy()
+                            self._last_valid_timestamp = now_ts
 
-                        # ✅ SALVA TIMESTAMP ORIGINAL
-                        exchange_ts = converted.get("E") or converted.get("T")
-                        if exchange_ts:
-                            self._last_valid_exchange_ts = int(exchange_ts)
+                            # ✅ SALVA TIMESTAMP ORIGINAL
+                            exchange_ts = converted.get("E") or converted.get("T")
+                            if exchange_ts:
+                                self._last_valid_exchange_ts = int(exchange_ts)
 
                         logging.debug(
                             f"✅ Orderbook obtido: "
@@ -674,14 +724,10 @@ class OrderBookAnalyzer:
                         except asyncio.CancelledError:
                             pass
 
-                    # Repassa para o bloco externo tratar retry
-                    raise
-
-            except asyncio.TimeoutError:
-                self._fetch_errors += 1
-                logging.error(f"⏱️ Timeout (attempt {attempt + 1})")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(base_delay * (attempt + 1))
+                    self._fetch_errors += 1
+                    logging.error(f"⏱️ Timeout (attempt {attempt + 1})")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(base_delay * (attempt + 1))
 
             except aiohttp.ClientError as e:
                 self._fetch_errors += 1
@@ -700,35 +746,46 @@ class OrderBookAnalyzer:
                 if task and not task.done():
                     task.cancel()
 
-        # 5. ✅ FALLBACK CONSERVADOR
-        if allow_stale and self._last_valid_snapshot is not None:
-            age = time.time() - self._last_valid_timestamp
+        # 5. ✅ FALLBACK CONSERVADOR (leitura protegida)
+        if allow_stale:
+            last_valid = None
+            last_valid_ts = 0.0
+            last_exchange_ts = None
 
-            if age < ORDERBOOK_FALLBACK_MAX_AGE:
-                # ✅ VALIDA IDADE DO DADO ORIGINAL
-                if self._last_valid_exchange_ts:
-                    now_ms = self.tm.now_ms()
-                    data_age_ms = now_ms - self._last_valid_exchange_ts
+            async with self._cache_lock:
+                last_valid = self._last_valid_snapshot
+                last_valid_ts = self._last_valid_timestamp
+                last_exchange_ts = self._last_valid_exchange_ts
 
-                    if data_age_ms > ORDERBOOK_MAX_AGE_MS:
-                        self._old_data_rejected += 1
-                        logging.error(
-                            f"❌ Snapshot fallback muito antigo "
-                            f"(data_age={data_age_ms}ms > {ORDERBOOK_MAX_AGE_MS}ms)"
-                        )
-                        return None
+            if last_valid is not None:
+                age = time.time() - last_valid_ts
 
-                self._stale_data_uses += 1
+                if age < ORDERBOOK_FALLBACK_MAX_AGE:
+                    # ✅ VALIDA IDADE DO DADO ORIGINAL
+                    if last_exchange_ts:
+                        now_ms = self.tm.now_ms()
+                        data_age_ms = now_ms - last_exchange_ts
 
-                logging.warning(
-                    f"⚠️ Usando snapshot antigo (cache_age={age:.1f}s)"
-                )
+                        if data_age_ms > ORDERBOOK_MAX_AGE_MS:
+                            self._old_data_rejected += 1
+                            logging.error(
+                                f"❌ Snapshot fallback muito antigo "
+                                f"(data_age={data_age_ms}ms > {ORDERBOOK_MAX_AGE_MS}ms)"
+                            )
+                            return None
 
-                return self._last_valid_snapshot.copy()
-            else:
-                logging.error(
-                    f"❌ Snapshot muito velho ({age:.1f}s > {ORDERBOOK_FALLBACK_MAX_AGE}s)"
-                )
+                    self._stale_data_uses += 1
+
+                    logging.warning(
+                        f"⚠️ Usando snapshot antigo (cache_age={age:.1f}s)"
+                    )
+
+                    # cópia para evitar mutação externa
+                    return last_valid.copy()
+                else:
+                    logging.error(
+                        f"❌ Snapshot muito velho ({age:.1f}s > {ORDERBOOK_FALLBACK_MAX_AGE}s)"
+                    )
 
         # 💀 FALHA TOTAL
         error_rate = 100 * self._fetch_errors / max(1, self._total_fetches)
@@ -740,7 +797,7 @@ class OrderBookAnalyzer:
 
         return None
 
-    # ===== MÉTRICAS (NÃO MUDARAM) =====
+    # ===== MÉTRICAS (NÃO MUDARAM, COM AJUSTES INTERNOS) =====
     def _spread_and_depth(
         self,
         bids: List[Tuple[float, float]],
@@ -809,19 +866,32 @@ class OrderBookAnalyzer:
         side_levels: List[Tuple[float, float]],
         side: str
     ) -> List[Dict[str, Any]]:
-        """Detecta paredes de liquidez."""
+        """
+        Detecta paredes de liquidez.
+
+        ✅ v2.2.0: usa quantil 90% dos volumes como base, multiplicado por self.wall_std,
+                   reduzindo falsos positivos em relação a média+desvio.
+        Mantém retorno compatível: lista de dicts com side/price/qty/limit_threshold.
+        """
         if not side_levels:
             return []
 
         levels = side_levels[:self.top_n]
-        qtys = np.array([q for _, q in levels], dtype=float)
+        qtys = np.array([q for _, q in levels if q > 0], dtype=float)
 
         if qtys.size == 0:
             return []
 
-        mean = float(np.mean(qtys))
-        std = float(np.std(qtys))
-        threshold = mean * 1.5 if std <= 1e-12 else mean + self.wall_std * std
+        try:
+            if qtys.size >= 3:
+                base = float(np.quantile(qtys, 0.90))
+            else:
+                base = float(qtys.max())
+            threshold = base * max(1.0, self.wall_std)  # fator multiplicativo
+        except Exception:
+            mean = float(np.mean(qtys))
+            std = float(np.std(qtys))
+            threshold = mean * 1.5 if std <= 1e-12 else mean + self.wall_std * std
 
         walls: List[Dict[str, Any]] = []
         for p, q in levels:
@@ -842,34 +912,44 @@ class OrderBookAnalyzer:
         curr: Dict[str, Any],
         tol: float = 0.75
     ) -> Tuple[bool, float]:
-        """Detecta possível recarga de ordens iceberg."""
+        """
+        Detecta possível recarga de ordens iceberg.
+
+        ✅ v2.2.0:
+        - Usa _price_map para somar níveis no mesmo preço (corrige falso/negativo e falso/positivo)
+        - Compara quantidades por preço entre prev e curr
+        - Score baseado em deltas relativos; bool indica se score > 0.5
+
+        Mantém assinatura (bool, score) para compatibilidade.
+        """
         try:
             if not prev:
                 return False, 0.0
 
-            prev_bids = dict(prev.get("bids", []))
-            prev_asks = dict(prev.get("asks", []))
-            curr_bids = dict(curr.get("bids", []))
-            curr_asks = dict(curr.get("asks", []))
+            prev_bids_map = self._price_map(prev.get("bids", []))
+            prev_asks_map = self._price_map(prev.get("asks", []))
+            curr_bids_map = self._price_map(curr.get("bids", []))
+            curr_asks_map = self._price_map(curr.get("asks", []))
 
             score = 0.0
 
-            for side_label, pbook_prev, pbook_curr in [
-                ("bid", prev_bids, curr_bids),
-                ("ask", prev_asks, curr_asks),
+            for side_label, pm_prev, pm_curr in [
+                ("bid", prev_bids_map, curr_bids_map),
+                ("ask", prev_asks_map, curr_asks_map),
             ]:
-                if not pbook_prev or not pbook_curr:
+                if not pm_prev or not pm_curr:
                     continue
 
-                p_prev = max(pbook_prev.keys()) if side_label == "bid" else min(pbook_prev.keys())
-                p_curr = max(pbook_curr.keys()) if side_label == "bid" else min(pbook_curr.keys())
+                for price, qty_now in pm_curr.items():
+                    qty_prev = pm_prev.get(price, 0.0)
+                    if qty_prev <= 0:
+                        continue
 
-                if p_prev == p_curr:
-                    q_prev = float(pbook_prev[p_prev])
-                    q_curr = float(pbook_curr[p_curr])
-
-                    if q_curr >= tol * max(q_prev, 1e-9) and q_curr > q_prev:
-                        score += min(1.0, (q_curr - q_prev) / max(q_prev, 1e-9))
+                    delta = qty_now - qty_prev
+                    # threshold absoluto de recarga + fator relativo
+                    if delta >= 3.0 and qty_now >= tol * max(qty_prev, 1e-9):
+                        contrib = min(1.0, delta / max(qty_prev, 1e-9))
+                        score += contrib
 
             return (score > 0.5), float(round(score, 4))
 
@@ -989,7 +1069,7 @@ class OrderBookAnalyzer:
             "health_stats": self.get_stats(),
         }
 
-    # ===== ✅ ANÁLISE PRINCIPAL ASYNC v2.0.0 =====
+    # ===== ✅ ANÁLISE PRINCIPAL ASYNC =====
     async def analyze(
         self,
         current_snapshot: Optional[Dict[str, Any]] = None,
@@ -1000,8 +1080,7 @@ class OrderBookAnalyzer:
         """
         Analisa orderbook e retorna evento padronizado.
 
-        ✅ v2.0.0:
-        - async (use: await oba.analyze())
+        async (use: await oba.analyze())
 
         Returns:
             Dict com evento. Sempre checar event['is_valid'] antes de usar!
@@ -1067,11 +1146,11 @@ class OrderBookAnalyzer:
             {"bids": bids, "asks": asks}
         )
 
-        # 6. Market impact
+        # 6. Market impact (CORRIGIDO SELL v2.2.0: não reverte bids)
         mi_buy_100k = _simulate_market_impact(asks[:self.top_n], 100_000.0, "buy", mid)
         mi_buy_1m = _simulate_market_impact(asks[:self.top_n], 1_000_000.0, "buy", mid)
-        mi_sell_100k = _simulate_market_impact(bids[:self.top_n][::-1], 100_000.0, "sell", mid)
-        mi_sell_1m = _simulate_market_impact(bids[:self.top_n][::-1], 1_000_000.0, "sell", mid)
+        mi_sell_100k = _simulate_market_impact(bids[:self.top_n], 100_000.0, "sell", mid)
+        mi_sell_1m = _simulate_market_impact(bids[:self.top_n], 1_000_000.0, "sell", mid)
 
         # 7. Histórico de spread
         if sm.get("spread_percent") is not None and sm["spread_percent"] >= 0:
@@ -1331,9 +1410,14 @@ class OrderBookAnalyzer:
             "health_stats": self.get_stats(),
         }
 
-        # 16. Atualiza memória
+        # 16. Atualiza memória / histórico
         self.prev_snapshot = {"bids": bids, "asks": asks}
         self.last_event_ts_ms = ts_ms
+
+        try:
+            self._history.append({"bids": bids, "asks": asks})
+        except Exception:
+            pass
 
         return event
 
@@ -1398,6 +1482,23 @@ class OrderBookAnalyzer:
     async def analyze_orderbook(self, *args, **kwargs) -> Dict[str, Any]:
         return await self.analyze(*args, **kwargs)
 
+    # ===== DESTRUCTOR (OPCIONAL, CUIDADO COM EVENT LOOP) =====
+    def __del__(self):
+        """
+        Tenta fechar a sessão HTTP se ainda estiver aberta e se foi criada internamente.
+        Evita vazamento de conexões em cenários de GC, sem quebrar se não houver loop rodando.
+        """
+        try:
+            if self._owns_session and hasattr(self, "_session") and self._session and not self._session.closed:
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(self._session.close())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
 
 # ===== TESTE =====
 async def main_test():
@@ -1408,7 +1509,7 @@ async def main_test():
     )
 
     print("\n" + "=" * 80)
-    print("🧪 TESTE DE ORDERBOOK ANALYZER v2.1.0 (ASYNC, SESSÃO REUTILIZÁVEL)")
+    print("🧪 TESTE DE ORDERBOOK ANALYZER v2.2.0 (ASYNC, SESSÃO REUTILIZÁVEL + MELHORIAS)")
     print("=" * 80 + "\n")
 
     oba = OrderBookAnalyzer(symbol="BTCUSDT")
@@ -1464,7 +1565,7 @@ async def main_test():
         await oba.close()
 
     print("\n" + "=" * 80)
-    print("✅ TESTES CONCLUÍDOS - ORDERBOOK v2.1.0 ASYNC (SESSÃO REUTILIZÁVEL)")
+    print("✅ TESTES CONCLUÍDOS - ORDERBOOK v2.2.0 ASYNC (SESSÃO REUTILIZÁVEL + MELHORIAS)")
     print("=" * 80 + "\n")
 
 
