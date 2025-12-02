@@ -130,24 +130,27 @@ class RateLimiter:
 
     def acquire(self) -> None:
         """Adquire permissão para fazer chamada (bloqueia se necessário)."""
-        with self.lock:
-            now = time.time()
+        while True:
+            sleep_time = 0.0
 
-            # Remove chamadas antigas
-            while self.calls and self.calls[0] < now - self.period:
-                self.calls.popleft()
+            with self.lock:
+                now = time.time()
 
-            # Se atingiu limite, aguarda
-            if len(self.calls) >= self.max_calls:
-                sleep_time = self.calls[0] + self.period - now
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                    return self.acquire()
+                # Remove chamadas antigas
+                while self.calls and self.calls[0] < now - self.period:
+                    self.calls.popleft()
 
-            self.calls.append(now)
+                # Se atingiu limite, calcula tempo restante
+                if len(self.calls) >= self.max_calls:
+                    sleep_time = max(0.0, self.calls[0] + self.period - now)
+                else:
+                    self.calls.append(now)
+                    return
+
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
 
-# ===== GESTOR DE CONEXÃO WEBSOCKET =====
 class RobustConnectionManager:
     """Gerenciador robusto de conexão WebSocket com reconnect automático."""
 
@@ -175,8 +178,13 @@ class RobustConnectionManager:
         self.last_successful_message_time: Optional[datetime] = None
         self.connection_start_time: Optional[datetime] = None
 
+       
+
+        # CORREÇÃO 1: event thread-safe para parar conexões e heartbeat
+        self.stop_event = threading.Event()
+                # Thread de heartbeat inicializada sob demanda
         self.heartbeat_thread: Optional[threading.Thread] = None
-        self.should_stop = False
+
 
         self.on_message_callback = None
         self.on_open_callback = None
@@ -189,6 +197,10 @@ class RobustConnectionManager:
         self.external_heartbeat_cb = None
 
         self.on_reconnect_callback = None
+                # Referência para o WebSocket atual (para fechar em disconnect)
+        self._ws: Optional[websocket.WebSocketApp] = None
+                # Referência para o WebSocket atual (para poder fechar em disconnect)
+        self._ws: Optional[websocket.WebSocketApp] = None
 
     def set_callbacks(
         self,
@@ -281,7 +293,14 @@ class RobustConnectionManager:
             self.on_error_callback(ws, error)
 
     def _start_heartbeat(self) -> None:
-        self.should_stop = False
+        """Inicia o thread de heartbeat, usando stop_event em vez de bool."""
+        # Garante que o evento de parada está limpo
+        self.stop_event.clear()
+
+        # Evita criar múltiplos heartbeats simultâneos
+        if self.heartbeat_thread and self.heartbeat_thread.is_alive():
+            return
+
         self.heartbeat_thread = threading.Thread(
             target=self._heartbeat_monitor,
             daemon=True,
@@ -289,13 +308,28 @@ class RobustConnectionManager:
         self.heartbeat_thread.start()
 
     def _stop_heartbeat(self) -> None:
-        self.should_stop = True
-        if self.heartbeat_thread:
-            self.heartbeat_thread.join(timeout=1)
+        """Sinaliza parada ao heartbeat e tenta aguardar seu término."""
+        self.stop_event.set()
+        t = getattr(self, "heartbeat_thread", None)
+        if t and t.is_alive():
+            t.join(timeout=1.0)
 
     def _heartbeat_monitor(self) -> None:
-        while not self.should_stop and self.is_connected:
-            time.sleep(20)
+        """
+        Monitora a saúde da conexão enquanto não houver pedido de parada.
+
+        Usa stop_event.wait(20) em vez de time.sleep(20), para que o thread
+        acorde imediatamente quando disconnect() for chamado.
+        """
+        while self.is_connected and not self.stop_event.is_set():
+            # Espera até 20s, mas sai antes se stop_event for acionado
+            if self.stop_event.wait(20.0):
+                # stop_event foi setado durante a espera → encerrar loop
+                break
+
+            # Pode ter sido desconectado no meio do caminho
+            if not self.is_connected:
+                break
 
             if self.last_message_time:
                 gap = (
@@ -328,9 +362,12 @@ class RobustConnectionManager:
         ping_interval = getattr(config, "WS_PING_INTERVAL", 15)
         ping_timeout = getattr(config, "WS_PING_TIMEOUT", 8)
 
+        # Garante que vamos iniciar em estado "ativo"
+        self.stop_event.clear()
+
         while (
             self.reconnect_count < self.max_reconnect_attempts
-            and not self.should_stop
+            and not self.stop_event.is_set()
         ):
             try:
                 if self.external_heartbeat_cb:
@@ -348,7 +385,7 @@ class RobustConnectionManager:
                         f"{self.reconnect_count + 1}/{self.max_reconnect_attempts}"
                     )
 
-                ws = websocket.WebSocketApp(
+                    ws = websocket.WebSocketApp(
                     self.stream_url,
                     on_message=self._on_message,
                     on_error=self._on_error,
@@ -356,18 +393,27 @@ class RobustConnectionManager:
                     on_open=self._on_open,
                 )
 
+                # Guarda referência ao WebSocket atual
+                self._ws = ws
+
                 ws.run_forever(
                     ping_interval=ping_interval,
                     ping_timeout=ping_timeout,
                     skip_utf8_validation=True,
                 )
 
-                if self.should_stop:
+                # Quando run_forever termina, limpa a referência
+                self._ws = None
+
+                # Quando run_forever sai, limpa a referência
+                self._ws = None
+
+                if self.stop_event.is_set():
                     break
 
             except KeyboardInterrupt:
                 logging.info("⏹️ Interrompido pelo usuário")
-                self.should_stop = True
+                self.stop_event.set()
                 break
 
             except Exception as e:
@@ -384,7 +430,10 @@ class RobustConnectionManager:
                     logging.info(f"⏳ Reconectando em {delay:.1f}s...")
 
                     t0 = time.time()
-                    while time.time() - t0 < delay and not self.should_stop:
+                    while (
+                        time.time() - t0 < delay
+                        and not self.stop_event.is_set()
+                    ):
                         if self.external_heartbeat_cb:
                             try:
                                 self.external_heartbeat_cb()
@@ -401,8 +450,32 @@ class RobustConnectionManager:
 
     def disconnect(self) -> None:
         logging.info("🛑 Iniciando desconexão...")
-        self.should_stop = True
+        # Sinaliza parada para loops de reconexão e heartbeat
+        self.stop_event.set()
 
+        # Fecha explicitamente o WebSocket atual, se existir
+        ws = getattr(self, "_ws", None)
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+        # Fecha explicitamente o WebSocket atual, se existir
+        ws = getattr(self, "_ws", None)
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+        # Fecha explicitamente o WebSocket atual, se existir
+        ws = getattr(self, "_ws", None)
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
 
 # ===== ANALISADOR DE TRADE FLOW =====
 class TradeFlowAnalyzer:
@@ -457,8 +530,11 @@ class TradeFlowAnalyzer:
 
 
 # ===== GET CURRENT PRICE VIA REST =====
-def get_current_price(symbol: str) -> float:
-    """Obtém preço atual via REST API com retry."""
+def get_current_price(symbol: str) -> Optional[float]:
+    """Obtém preço atual via REST API com retry.
+
+    Levanta RuntimeError se não for possível obter o preço após todas as tentativas.
+    """
     max_retries = 3
     base_delay = 1.0
 
@@ -489,11 +565,12 @@ def get_current_price(symbol: str) -> float:
             if attempt < max_retries - 1:
                 time.sleep(base_delay * (2**attempt))
 
-    logging.critical(
+    message = (
         "💀 FALHA CRÍTICA: Não foi possível obter preço via REST "
         "após todas as tentativas"
     )
-    return 0.0
+    logging.critical(message)
+    raise RuntimeError(message)
 
 
 # ===== BOT PRINCIPAL =====
@@ -519,7 +596,9 @@ class EnhancedMarketBot:
         self.should_stop = False
         self.is_cleaning_up = False
 
+        # Locks e sinalização de shutdown/cleanup
         self._cleanup_lock = threading.Lock()
+        self._cleanup_started = threading.Event()
         self._ai_init_lock = threading.Lock()
 
         self.warming_up = False
@@ -664,10 +743,27 @@ class EnhancedMarketBot:
             )
         except Exception:
             self._missing_field_log_step = None
+                    # Contadores de mensagens inválidas para monitorar ruído de feed
+        self._invalid_json_count = 0
+        self._invalid_trade_count = 0
+        try:
+            self._invalid_json_log_step = int(
+                getattr(config, "INVALID_JSON_LOG_STEP", 100)
+            )
+        except Exception:
+            self._invalid_json_log_step = 100
+
+        try:
+            self._invalid_trade_log_step = int(
+                getattr(config, "INVALID_TRADE_LOG_STEP", 100)
+            )
+        except Exception:
+            self._invalid_trade_log_step = 100
 
         self._last_price: Optional[float] = None
         self._last_alert_ts: Dict[str, float] = {}
         self._sent_triggers: set = set()
+        self._last_trade_ts_ms: Optional[int] = None
 
         self._last_ai_analysis_ts = 0.0
         self._ai_min_interval_sec = getattr(
@@ -687,14 +783,25 @@ class EnhancedMarketBot:
     # HANDLER DE RECONEXÃO
     # ========================================
     def _on_reconnect(self) -> None:
+        """
+        Handler chamado pelo ConnectionManager quando há reconexão.
+
+        Coloca o bot em modo de aquecimento (warmup) por N janelas.
+        Usa o mesmo lock de warmup para evitar condições de corrida
+        com o processamento de janelas.
+        """
         logging.warning(
             "🔄 RECONEXÃO DETECTADA - Iniciando período de aquecimento..."
         )
 
-        self.warming_up = True
-        self.warmup_windows_remaining = self.warmup_windows_required
-        self.window_data = []
-        self.window_end_ms = None
+        with self._warmup_lock:
+            # Ativa modo de aquecimento e reseta contagem de janelas
+            self.warming_up = True
+            self.warmup_windows_remaining = self.warmup_windows_required
+
+            # Zera dados de janela atual, para evitar misturar antes/depois da reconexão
+            self.window_data = []
+            self.window_end_ms = None
 
         logging.info(
             f"⏳ Aguardando {self.warmup_windows_required} janelas "
@@ -712,7 +819,7 @@ class EnhancedMarketBot:
                         return
                     self.ai_initialization_attempted = True
 
-                print("\n" + "=" * 30 + " INICIALIZANDO IA " + "=" * 30)
+                logging.info("=" * 30 + " INICIALIZANDO IA " + "=" * 30)
                 logging.info("🧠 Tentando inicializar AI Analyzer...")
 
                 self.ai_analyzer = AIAnalyzer()
@@ -757,181 +864,177 @@ class EnhancedMarketBot:
                     self.ai_test_passed = True
                     logging.info("✅ Teste da IA bem-sucedido!")
 
-                    print(
-                        "\n"
-                        + "═" * 25
-                        + " RESULTADO DO TESTE DA IA "
-                        + "═" * 25
-                    )
-                    print(analysis.get("raw_response", ""))
-                    print("═" * 75 + "\n")
+                    logging.info("═" * 25 + " RESULTADO DO TESTE DA IA " + "═" * 25)
+                    logging.info(analysis.get("raw_response", ""))
+                    logging.info("═" * 75)
                 else:
                     self.ai_test_passed = True
                     logging.warning(
                         "⚠️ Teste da IA retornou resultado inesperado. "
                         "Prosseguindo em modo fallback."
                     )
-                    print(f"Resultado recebido: {analysis}")
-                    print("═" * 75 + "\n")
+                    logging.warning(f"Resultado recebido: {analysis}")
+                    logging.info("═" * 75)
 
             except Exception as e:
                 self.ai_analyzer = None
                 self.ai_test_passed = False
 
-                print("=" * 30 + " ERRO NA IA " + "=" * 30)
+                logging.error("=" * 30 + " ERRO NA IA " + "=" * 30)
                 logging.error(
                     f"❌ Falha crítica ao inicializar a IA: {e}",
                     exc_info=True,
                 )
-                print("═" * 75 + "\n")
-
+                logging.error("═" * 75)
         threading.Thread(target=ai_init_worker, daemon=True).start()
 
-    # ========================================
+        # ========================================
     # CLEANUP
     # ========================================
     def _cleanup_handler(self, signum=None, frame=None) -> None:
-        acquired = self._cleanup_lock.acquire(blocking=False)
-        if not acquired:
-            logging.debug("Cleanup já em andamento, ignorando chamada duplicada")
-            return
+        """
+        Handler de limpeza global do bot.
 
-        try:
-            if self.is_cleaning_up:
+        Garante que o cleanup rode apenas uma vez, mesmo que seja chamado
+        por múltiplos sinais (SIGINT/SIGTERM) e por atexit.
+        """
+        # Garante execução única
+        with self._cleanup_lock:
+            if self._cleanup_started.is_set():
+                logging.debug("Cleanup já em andamento, ignorando chamada duplicada")
                 return
+            self._cleanup_started.set()
             self.is_cleaning_up = True
-        finally:
-            self._cleanup_lock.release()
 
         logging.info("🧹 Iniciando limpeza dos recursos...")
-        self.should_stop = True
+        self.should_stop = True  # sinal interno para o bot
 
-        cleanup_timeout = 5.0
-        cleanup_threads: List[threading.Thread] = []
+        # Aguarda término das threads de IA (evita leaks/zombies)
+        try:
+            self._wait_for_ai_threads(timeout_per_thread=2.0)
+        except Exception as e:
+            logging.debug(f"Falha ao aguardar threads de IA no cleanup: {e}")
 
-        def cleanup_context() -> None:
-            try:
-                if self.context_collector:
-                    self.context_collector.stop()
-                    logging.info("✅ Context Collector parado.")
-            except Exception as e:
-                logging.error(f"❌ Erro ao parar Context Collector: {e}")
+        # Agora faz shutdown dos demais componentes, em sequência
+        try:
+            if self.context_collector:
+                self.context_collector.stop()
+                logging.info("✅ Context Collector parado.")
+        except Exception as e:
+            logging.error(f"❌ Erro ao parar Context Collector: {e}")
 
-        def cleanup_ai() -> None:
-            try:
-                if self.ai_analyzer and hasattr(self.ai_analyzer, "close"):
-                    self.ai_analyzer.close()
-                    logging.info("✅ AI Analyzer fechado.")
-            except Exception as e:
-                logging.error(f"❌ Erro ao fechar AI Analyzer: {e}")
+        try:
+            if self.ai_analyzer and hasattr(self.ai_analyzer, "close"):
+                self.ai_analyzer.close()
+                logging.info("✅ AI Analyzer fechado.")
+        except Exception as e:
+            logging.error(f"❌ Erro ao fechar AI Analyzer: {e}")
 
-        def cleanup_connection() -> None:
-            try:
-                if self.connection_manager:
-                    self.connection_manager.disconnect()
-                    logging.info("✅ Connection Manager desconectado.")
-            except Exception as e:
-                logging.error(
-                    f"❌ Erro ao desconectar Connection Manager: {e}"
-                )
+        try:
+            if self.connection_manager:
+                self.connection_manager.disconnect()
+                logging.info("✅ Connection Manager desconectado.")
+        except Exception as e:
+            logging.error(f"❌ Erro ao desconectar Connection Manager: {e}")
 
-        def cleanup_event_bus() -> None:
-            try:
-                if hasattr(self, "event_bus"):
-                    self.event_bus.shutdown()
-                    logging.info("✅ Event Bus encerrado.")
-            except Exception as e:
-                logging.error(f"❌ Erro ao encerrar Event Bus: {e}")
+        try:
+            if hasattr(self, "event_bus"):
+                self.event_bus.shutdown()
+                logging.info("✅ Event Bus encerrado.")
+        except Exception as e:
+            logging.error(f"❌ Erro ao encerrar Event Bus: {e}")
 
-        def cleanup_health_monitor() -> None:
-            try:
-                if hasattr(self, "health_monitor"):
-                    self.health_monitor.stop()
-                    logging.info("✅ Health Monitor parado.")
-            except Exception as e:
-                logging.error(f"❌ Erro ao parar Health Monitor: {e}")
+        try:
+            if hasattr(self, "health_monitor"):
+                self.health_monitor.stop()
+                logging.info("✅ Health Monitor parado.")
+        except Exception as e:
+            logging.error(f"❌ Erro ao parar Health Monitor: {e}")
 
-        def cleanup_clock_sync() -> None:
-            try:
-                if self.clock_sync and hasattr(self.clock_sync, "stop"):
-                    self.clock_sync.stop()
-                    logging.info("✅ Clock Sync parado.")
-            except Exception as e:
-                logging.error(f"❌ Erro ao parar Clock Sync: {e}")
+        try:
+            if self.clock_sync and hasattr(self.clock_sync, "stop"):
+                self.clock_sync.stop()
+                logging.info("✅ Clock Sync parado.")
+        except Exception as e:
+            logging.error(f"❌ Erro ao parar Clock Sync: {e}")
 
-        def cleanup_executor() -> None:
-            try:
-                if hasattr(self, "_async_executor"):
-                    self._async_executor.shutdown(wait=True)
-                    logging.info("✅ Async Executor encerrado.")
-            except Exception as e:
-                logging.error(f"❌ Erro ao encerrar Async Executor: {e}")
+        try:
+            if hasattr(self, "_async_executor"):
+                self._async_executor.shutdown(wait=True)
+                logging.info("✅ Async Executor encerrado.")
+        except Exception as e:
+            logging.error(f"❌ Erro ao encerrar Async Executor: {e}")
 
-        def cleanup_async_loop() -> None:
-            """Encerra o loop asyncio dedicado do OrderBookAnalyzer com segurança."""
-            try:
-                if hasattr(self, "_async_loop"):
-                    # Fecha o OrderBookAnalyzer dentro do loop
-                    try:
-                        if (
-                            hasattr(self, "orderbook_analyzer")
-                            and self.orderbook_analyzer
-                            and hasattr(self.orderbook_analyzer, "close")
-                        ):
-                            fut = asyncio.run_coroutine_threadsafe(
-                                self.orderbook_analyzer.close(),
-                                self._async_loop,
-                            )
-                            try:
-                                fut.result(timeout=2.0)
-                            except FutureTimeoutError:
-                                logging.debug(
-                                    "Timeout ao fechar OrderBookAnalyzer; "
-                                    "cancelando tarefa pendente"
-                                )
-                                fut.cancel()
-                            except Exception:
-                                # Já estamos em shutdown, não queremos travar aqui
-                                pass
-                    except Exception as e:
-                        logging.debug(f"Falha ao fechar OrderBookAnalyzer: {e}")
-
-                    # Pede para o loop parar e aguarda a thread
-                    try:
-                        self._async_loop.call_soon_threadsafe(
-                            self._async_loop.stop
+        # Encerrar o loop asyncio dedicado do OrderBookAnalyzer
+        try:
+            if hasattr(self, "_async_loop"):
+                try:
+                    if (
+                        hasattr(self, "orderbook_analyzer")
+                        and self.orderbook_analyzer
+                        and hasattr(self.orderbook_analyzer, "close")
+                    ):
+                        fut = asyncio.run_coroutine_threadsafe(
+                            self.orderbook_analyzer.close(),
+                            self._async_loop,
                         )
-                    except Exception:
-                        pass
+                        try:
+                            fut.result(timeout=2.0)
+                        except FutureTimeoutError:
+                            logging.debug(
+                                "Timeout ao fechar OrderBookAnalyzer; cancelando tarefa"
+                            )
+                            fut.cancel()
+                        except Exception:
+                            # já estamos em shutdown, não propagar
+                            pass
+                except Exception as e:
+                    logging.debug(f"Falha ao fechar OrderBookAnalyzer: {e}")
 
-                    try:
-                        if hasattr(self, "_async_loop_thread"):
-                            self._async_loop_thread.join(timeout=2.0)
-                    except Exception:
-                        pass
+                # Pede para o loop parar e aguarda a thread
+                try:
+                    self._async_loop.call_soon_threadsafe(self._async_loop.stop)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, "_async_loop_thread"):
+                        self._async_loop_thread.join(timeout=2.0)
+                except Exception:
+                    pass
 
-                    logging.info("✅ Loop assíncrono do OrderBookAnalyzer encerrado.")
-            except Exception as e:
-                logging.error(f"❌ Erro ao encerrar loop assíncrono: {e}")
-
-        for cleanup_func in [
-            cleanup_context,
-            cleanup_ai,
-            cleanup_connection,
-            cleanup_event_bus,
-            cleanup_health_monitor,
-            cleanup_clock_sync,
-            cleanup_executor,
-            cleanup_async_loop,
-        ]:
-            t = threading.Thread(target=cleanup_func, daemon=True)
-            t.start()
-            cleanup_threads.append(t)
-
-        for t in cleanup_threads:
-            t.join(timeout=cleanup_timeout)
+                logging.info("✅ Loop assíncrono do OrderBookAnalyzer encerrado.")
+        except Exception as e:
+            logging.error(f"❌ Erro ao encerrar loop assíncrono: {e}")
 
         logging.info("✅ Bot encerrado com segurança.")
+
+    def _register_cleanup_handlers(self) -> None:
+        """Registra handlers de sinal e atexit para chamar _cleanup_handler."""
+        try:
+            signal.signal(signal.SIGINT, self._cleanup_handler)
+            signal.signal(signal.SIGTERM, self._cleanup_handler)
+        except Exception:
+            # Em alguns ambientes (ex: Windows com threads) isso pode falhar
+            pass
+
+        try:
+            atexit.register(self._cleanup_handler)
+        except Exception:
+            pass
+
+    def _register_cleanup_handlers(self) -> None:
+        """Registra handlers de sinal e atexit para chamar _cleanup_handler."""
+        try:
+            signal.signal(signal.SIGINT, self._cleanup_handler)
+            signal.signal(signal.SIGTERM, self._cleanup_handler)
+        except Exception:
+            # Em alguns ambientes (ex: Windows com threads) isso pode falhar
+            pass
+
+        try:
+            atexit.register(self._cleanup_handler)
+        except Exception:
+            pass
 
     def _register_cleanup_handlers(self) -> None:
         try:
@@ -949,6 +1052,9 @@ class EnhancedMarketBot:
         Roda em uma thread separada e permite que as corotinas do
         OrderBookAnalyzer sejam executadas via asyncio.run_coroutine_threadsafe
         sem recriar event loops.
+
+        No finally, tenta encerrar o loop de forma graciosa, mas com timeouts
+        para evitar travar o shutdown caso alguma task não responda ao cancel().
         """
         asyncio.set_event_loop(self._async_loop)
         try:
@@ -957,32 +1063,47 @@ class EnhancedMarketBot:
             # Tentativa de encerramento gracioso
             try:
                 try:
-                    pending = asyncio.all_tasks()
+                    # Python 3.7+: all_tasks(loop=...)
+                    pending = asyncio.all_tasks(loop=self._async_loop)
                 except TypeError:
                     # Compatibilidade com versões mais antigas
-                    pending = asyncio.Task.all_tasks()
+                    pending = asyncio.Task.all_tasks(loop=self._async_loop)
             except Exception:
                 pending = []
 
+            # Cancela todas as tasks pendentes
             for task in pending:
-                task.cancel()
-
-            if pending:
                 try:
-                    self._async_loop.run_until_complete(
-                        asyncio.gather(*pending, return_exceptions=True)
-                    )
+                    task.cancel()
                 except Exception:
                     pass
 
+            # Aguarda, mas com timeout, para não travar se alguma task ignorar o cancel()
+            if pending:
+                try:
+                    group = asyncio.gather(*pending, return_exceptions=True)
+                    # Timeout curto para evitar hangs no shutdown
+                    self._async_loop.run_until_complete(
+                        asyncio.wait_for(group, timeout=2.0)
+                    )
+                except Exception:
+                    # Se der timeout ou outro erro, seguimos adiante
+                    pass
+
+            # Tenta encerrar async generators com timeout também
             try:
+                shutdown_coro = self._async_loop.shutdown_asyncgens()
                 self._async_loop.run_until_complete(
-                    self._async_loop.shutdown_asyncgens()
+                    asyncio.wait_for(shutdown_coro, timeout=1.0)
                 )
             except Exception:
                 pass
 
-            self._async_loop.close()
+            # Por fim, fecha o loop
+            try:
+                self._async_loop.close()
+            except Exception:
+                pass
 
     # ========================================
     # JANELA DE TEMPO
@@ -997,8 +1118,31 @@ class EnhancedMarketBot:
         if self.should_stop:
             return
 
+        # 1) Decodificação de JSON (isolada)
         try:
             raw = json.loads(message)
+        except json.JSONDecodeError as e:
+            self._invalid_json_count += 1
+            # Loga apenas a cada N ocorrências para evitar spam
+            step = self._invalid_json_log_step or 100
+            if step > 0 and self._invalid_json_count % step == 0:
+                logging.error(
+                    "Erro ao decodificar mensagem JSON (amostra %d, total=%d): %s",
+                    step,
+                    self._invalid_json_count,
+                    e,
+                )
+            return
+        except Exception as e:
+            # Falha inesperada ao decodificar JSON - log único
+            logging.error(
+                f"Erro inesperado ao decodificar mensagem JSON: {e}",
+                exc_info=True,
+            )
+            return
+
+        # 2) Extração e normalização de campos
+        try:
             trade = raw.get("data", raw)
 
             p = trade.get("p") or trade.get("P") or trade.get("price")
@@ -1006,14 +1150,19 @@ class EnhancedMarketBot:
             T = trade.get("T") or trade.get("E") or trade.get("tradeTime")
             m = trade.get("m")
 
+            # Fallback para mensagens de kline, se presentes
             if (p is None or q is None or T is None) and isinstance(
                 trade.get("k"), dict
             ):
                 k = trade["k"]
-                p = p if p is not None else k.get("c")
-                q = q if q is not None else k.get("v")
-                T = T if T is not None else k.get("T") or raw.get("E")
+                if p is None:
+                    p = k.get("c")
+                if q is None:
+                    q = k.get("v")
+                if T is None:
+                    T = k.get("T") or raw.get("E")
 
+            # 3) Verificação de campos obrigatórios
             missing: List[str] = []
             if p is None:
                 missing.append("p")
@@ -1042,20 +1191,61 @@ class EnhancedMarketBot:
                             self._missing_field_counts["q"],
                             self._missing_field_counts["T"],
                         )
+                # Não processa trades sem os campos essenciais
                 return
 
+            # 4) Conversão de tipos
             try:
                 p = float(p)
                 q = float(q)
                 T = int(T)
             except (TypeError, ValueError):
-                logging.error("Trade inválido (tipos): %s", trade)
+                self._invalid_trade_count += 1
+                step = self._invalid_trade_log_step or 100
+                if step > 0 and self._invalid_trade_count % step == 0:
+                    logging.error(
+                        "Trade inválido (tipos) - amostra %d, total=%d: %s",
+                        step,
+                        self._invalid_trade_count,
+                        trade,
+                    )
                 return
 
+            # 5) Validação de valores básicos (não negativos / não zero)
+            if p <= 0 or q <= 0 or T <= 0:
+                self._invalid_trade_count += 1
+                step = self._invalid_trade_log_step or 100
+                if step > 0 and self._invalid_trade_count % step == 0:
+                    logging.warning(
+                        "Trade descartado por valores não positivos (amostra %d, total=%d): p=%s q=%s T=%s",
+                        step,
+                        self._invalid_trade_count,
+                        p,
+                        q,
+                        T,
+                    )
+                return
+                        # 5.1) Normalização de T para garantir monotonicidade
+            last_T = self._last_trade_ts_ms
+            if last_T is not None and T < last_T:
+                # Trade chegou com timestamp menor que o último aceito → ajusta para manter ordem
+                logging.debug(
+                    "Timestamp de trade fora de ordem detectado: T_atual=%d < T_ultimo=%d (normalizando para T=%d)",
+                    T,
+                    last_T,
+                    last_T,
+                )
+                T = last_T
+            else:
+                # Atualiza último timestamp conhecido se for o primeiro ou se avançou
+                self._last_trade_ts_ms = T
+
+            # 6) Inferência de agressor (m) se ausente, sem tocar last_price ainda
             if m is None:
                 last_price = self._last_price
                 m = (p <= last_price) if last_price is not None else False
 
+            # 7) Somente agora atualizamos estados compartilhados
             self._last_price = p
 
             norm = {"p": p, "q": q, "T": T, "m": bool(m)}
@@ -1067,8 +1257,10 @@ class EnhancedMarketBot:
             except Exception as hb_err:
                 logging.debug("Falha ao enviar heartbeat: %s", hb_err)
 
+            # Envia trade normalizado para o FlowAnalyzer
             self.flow_analyzer.process_trade(norm)
 
+            # 8) Controle de janelas (Problema 7 tratará monotonicidade de T)
             if self.window_end_ms is None:
                 self.window_end_ms = self._next_boundary_ms(T)
 
@@ -1079,10 +1271,8 @@ class EnhancedMarketBot:
             else:
                 self.window_data.append(norm)
 
-        except json.JSONDecodeError as e:
-            logging.error(f"Erro ao decodificar mensagem JSON: {e}")
         except Exception as e:
-            logging.error(f"Erro ao processar mensagem: {e}")
+            logging.error(f"Erro ao processar mensagem: {e}", exc_info=True)
 
     # ========================================
     # HANDLERS DE EVENTOS / IA
@@ -1194,22 +1384,22 @@ class EnhancedMarketBot:
         )
 
         def _print_ai_report_clean(report_text: str) -> None:
+            if not report_text:
+                return
+
             header = "ANÁLISE PROFISSIONAL DA IA"
             start = (report_text or "")[:200].upper()
-
-            YELLOW = "\033[33m"
-            RESET = "\033[0m"
             sep = "═" * 75
 
             if header in start:
-                print("\n" + report_text.rstrip())
+                logging.info("\n" + report_text.rstrip())
             else:
-                print(
+                logging.info(
                     "\n" + "═" * 25 + " " + header + " " + "═" * 25
                 )
-                print(report_text)
+                logging.info(report_text)
 
-            print(f"{YELLOW}{sep}{RESET}\n")
+            logging.info(sep)
 
         def ai_worker() -> None:
             try:
@@ -1289,12 +1479,17 @@ class EnhancedMarketBot:
             self.ai_thread_pool.append(t)
 
         t.start()
+        
+           
+
 
     # ========================================
     # PROCESSAMENTO DE VP FEATURES
     # ========================================
     def _process_vp_features(
-        self, historical_profile: Dict[str, Any], preco_atual: float
+        self,
+        historical_profile: Dict[str, Any],
+        preco_atual: float,
     ) -> Dict[str, Any]:
         try:
             if not preco_atual or preco_atual <= 0:
@@ -1353,6 +1548,8 @@ class EnhancedMarketBot:
         except Exception as e:
             logging.error(f"Erro ao gerar vp_features: {e}")
             return {"status": "error"}
+
+    
 
     # ========================================
     # LOG DE EVENTOS
@@ -1702,8 +1899,9 @@ class EnhancedMarketBot:
         Roda em uma thread separada e permite que as corotinas do
         OrderBookAnalyzer sejam executadas via asyncio.run_coroutine_threadsafe
         sem recriar event loops.
-        Garante também que, em caso de timeout, a coroutine seja cancelada
-        explicitamente para não ficar rodando como "zumbi" no loop.
+
+        Para evitar tasks "zumbis", a chamada a analyze() é envolvida em
+        asyncio.wait_for dentro do próprio loop, com timeout interno.
         """
         # Se o bot está em processo de shutdown, não agendar novas corotinas
         if self.should_stop or getattr(self, "is_cleaning_up", False):
@@ -1725,31 +1923,55 @@ class EnhancedMarketBot:
             return None
 
         # Verifica se thread do loop está viva
-        if not getattr(self, "_async_loop_thread", None) or not self._async_loop_thread.is_alive():
+        if (
+            not getattr(self, "_async_loop_thread", None)
+            or not self._async_loop_thread.is_alive()
+        ):
             logging.error("❌ Thread do loop assíncrono não está rodando")
             return None
 
         try:
-            coro = self.orderbook_analyzer.analyze(
-                current_snapshot=None,
-                event_epoch_ms=close_ms,
-                window_id=f"W{self.window_count:04d}",
-            )
+            # Wrapper assíncrono com timeout interno via asyncio.wait_for
+            async def _wrapped_analyze() -> Optional[Dict[str, Any]]:
+                try:
+                    inner_coro = self.orderbook_analyzer.analyze(
+                        current_snapshot=None,
+                        event_epoch_ms=close_ms,
+                        window_id=f"W{self.window_count:04d}",
+                    )
 
-            # Envia a coroutine para o loop assíncrono dedicado (em outra thread)
+                    # Timeout interno da coroutine dentro do loop
+                    coro_timeout = float(
+                        getattr(config, "ORDERBOOK_CORO_TIMEOUT_SEC", 4.0)
+                    )
+                    return await asyncio.wait_for(
+                        inner_coro,
+                        timeout=coro_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    logging.error(
+                        "⏱️ Timeout interno na coroutine de orderbook "
+                        "(asyncio.wait_for); resultado será None"
+                    )
+                    return None
+
+            # Envia a coroutine wrapper para o loop assíncrono dedicado (em outra thread)
             future = asyncio.run_coroutine_threadsafe(
-                coro,
+                _wrapped_analyze(),
                 loop,
             )
 
             try:
-                # Espera o resultado com timeout (mesmo 5s que você já usava)
-                return future.result(timeout=5.0)
+                # Timeout externo ao aguardar o Future (seguro contra loop travado)
+                outer_timeout = float(
+                    getattr(config, "ORDERBOOK_FUTURE_TIMEOUT_SEC", 5.0)
+                )
+                return future.result(timeout=outer_timeout)
             except FutureTimeoutError:
-                # ⚠️ Ponto crítico: cancela explicitamente a tarefa no loop
+                # Se nem o wrapper respondeu, cancelamos o future explicitamente
                 logging.error(
-                    "⏱️ Timeout ao buscar orderbook (async loop) - "
-                    "cancelando coroutine pendente"
+                    "⏱️ Timeout ao aguardar resultado do orderbook "
+                    "(async loop) - cancelando Future"
                 )
                 future.cancel()
                 return None
@@ -2192,6 +2414,18 @@ class EnhancedMarketBot:
             # Spread analysis completo
             if "spread_analysis" in ob_event:
                 signal["spread_analysis"] = ob_event["spread_analysis"]
+            # Qualidade de dados do orderbook (live/cache/emergency)
+            dq = ob_event.get("data_quality") or {}
+            if dq:
+                signal["orderbook_data_quality"] = dq
+
+                src = dq.get("data_source")
+                if src == "emergency":
+                    signal["orderbook_quality"] = "emergency"
+                elif src == "cache":
+                    signal["orderbook_quality"] = "cache"
+                else:
+                    signal["orderbook_quality"] = "live"
 
             # Market impact → market_impact (schema final)
             try:
@@ -2301,6 +2535,7 @@ class EnhancedMarketBot:
         order_book_depth_block = signal.get("order_book_depth") or {}
         spread_analysis_block = signal.get("spread_analysis") or {}
         market_impact_block = signal.get("market_impact") or {}
+        order_book_dq = signal.get("orderbook_data_quality") or {}
         hist_vp = signal.get("historical_vp") or {}
         vp_daily = hist_vp.get("daily") or {}
         participants = fluxo.get("participant_analysis") or {}
@@ -2450,6 +2685,7 @@ class EnhancedMarketBot:
                     "ask_depth_usd", orderbook.get("ask_depth_usd")
                 ),
             },
+            "data_quality": order_book_dq,
         }
 
         # --------- ORDER FLOW / PARTICIPANTES ---------
@@ -2830,9 +3066,9 @@ class EnhancedMarketBot:
             clusters = liquidity_data.get("clusters", [])
 
             if clusters:
-                print(
-                    f"\n📊 LIQUIDITY HEATMAP - "
-                    f"Janela #{self.window_count}:"
+                logging.info(
+                    "📊 LIQUIDITY HEATMAP - Janela #%s:",
+                    self.window_count,
                 )
 
                 for i, cluster in enumerate(clusters[:3]):
@@ -2848,12 +3084,14 @@ class EnhancedMarketBot:
                     )
                     age_fmt = format_time_seconds(cluster.get("age_ms", 0))
 
-                    print(
-                        f"  Cluster {i+1}: ${center_fmt} | "
-                        f"Vol: {vol_fmt} | "
-                        f"Imb: {imb_fmt} | "
-                        f"Trades: {trades_fmt} | "
-                        f"Age: {age_fmt}"
+                    logging.info(
+                        "  Cluster %d: $%s | Vol: %s | Imb: %s | Trades: %s | Age: %s",
+                        i + 1,
+                        center_fmt,
+                        vol_fmt,
+                        imb_fmt,
+                        trades_fmt,
+                        age_fmt,
                     )
         except Exception as e:
             logging.error(f"Erro ao logar liquidity heatmap: {e}")
@@ -2880,13 +3118,17 @@ class EnhancedMarketBot:
                     mf.get("flow_imbalance", 0.0), decimals=3
                 )
 
-                print(
-                    f"  ML: ret5={ret5_fmt} vol5={vol5_fmt} "
-                    f"V/SMA={vsma_fmt} BSpress={bs_fmt} "
-                    f"OBslope={obs_fmt} FlowImb={flow_fmt}"
+                logging.info(
+                    "  ML: ret5=%s vol5=%s V/SMA=%s BSpress=%s OBslope=%s FlowImb=%s",
+                    ret5_fmt,
+                    vol5_fmt,
+                    vsma_fmt,
+                    bs_fmt,
+                    obs_fmt,
+                    flow_fmt,
                 )
         except Exception:
-            pass
+            pass   
 
     def _log_health_check(self) -> None:
         if self.window_count % 10 == 0:
@@ -2919,11 +3161,16 @@ class EnhancedMarketBot:
         delta_fmt = format_delta(window_delta)
         vol_fmt = format_large_number(window_volume)
 
-        print(
-            f"[{datetime.now(self.ny_tz).strftime('%H:%M:%S')} NY] "
-            f"🟡 Janela #{self.window_count} | Delta: {delta_fmt} | Vol: {vol_fmt}"
+        # Linha principal do resumo de janela
+        logging.info(
+            "[%s NY] 🟡 Janela #%s | Delta: %s | Vol: %s",
+            datetime.now(self.ny_tz).strftime("%H:%M:%S"),
+            self.window_count,
+            delta_fmt,
+            vol_fmt,
         )
 
+        # Macro context (tendências multi-timeframe)
         if macro_context:
             trends = macro_context.get("mtf_trends", {})
             parts: List[str] = []
@@ -2934,20 +3181,23 @@ class EnhancedMarketBot:
                     parts.append(f"{tf.upper()}: {data}")
             trends_str = ", ".join(parts)
             if trends_str:
-                print(f"  Macro Context: {trends_str}")
+                logging.info("  Macro Context: %s", trends_str)
 
+        # Volume Profile diário
         if historical_profile and historical_profile.get("daily"):
             vp = historical_profile["daily"]
             poc_fmt = format_price(vp.get("poc", 0.0))
             val_fmt = format_price(vp.get("val", 0.0))
             vah_fmt = format_price(vp.get("vah", 0.0))
 
-            print(
-                f"  VP Diário: POC @ {poc_fmt} | "
-                f"VAL: {val_fmt} | VAH: {vah_fmt}"
+            logging.info(
+                "  VP Diário: POC @ %s | VAL: %s | VAH: %s",
+                poc_fmt,
+                val_fmt,
+                vah_fmt,
             )
 
-        print("─" * 80)
+        logging.info("─" * 80)
 
     # ========================================
     # ALERTAS INSTITUCIONAIS

@@ -793,7 +793,7 @@ class EventSaver:
                         
                         try:
                             lock_file = open(lock_file_path, 'w')
-                            lock_acquired = acquire_file_lock(lock_file, blocking=True, timeout=3.0)
+                            lock_acquired = acquire_file_lock(lock_file, blocking=True, timeout=10.0)
                             
                             if not lock_acquired:
                                 self.logger.warning(f"Timeout ao adquirir lock (tentativa {attempt+1})")
@@ -1120,7 +1120,7 @@ class EventSaver:
             try:
                 lock_file_path = self.visual_log_file.with_suffix('.lock')
                 lock_file = open(lock_file_path, 'w')
-                lock_acquired = acquire_file_lock(lock_file, blocking=True, timeout=3.0)
+                lock_acquired = acquire_file_lock(lock_file, blocking=True, timeout=10.0)
                 
                 if lock_acquired:
                     with open(self.visual_log_file, "a", encoding="utf-8") as f:
@@ -1259,7 +1259,7 @@ class EventSaver:
             lock_file_path = self.visual_log_file.with_suffix('.lock')
             try:
                 lock_file = open(lock_file_path, 'w')
-                lock_acquired = acquire_file_lock(lock_file, blocking=True, timeout=3.0)
+                lock_acquired = acquire_file_lock(lock_file, blocking=True, timeout=10.0)
                 if lock_acquired:
                     with open(self.visual_log_file, "a", encoding="utf-8") as f:
                         f.write(entry)

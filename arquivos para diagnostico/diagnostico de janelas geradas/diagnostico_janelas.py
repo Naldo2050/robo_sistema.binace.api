@@ -52,11 +52,11 @@ class DiagnosticoJanelas:
             conteudo = f.read()
         
         # Regex para separadores
-        separador_pattern = re.compile(
+            separador_pattern = re.compile(
             r'={70,}\n'
             r'🗓️\s+JANELA\s+(\d+)\n'
-            r'⏰\s+(.+?)\n'
-            r'📍\s+NY:\s+(.+?)\n'
+            r'🕒\s+UTC:\s+(.+?)\n'
+            r'🗽\s+New York:\s+(.+?)\n'
             r'📍\s+São Paulo:\s+(.+?)\n'
             r'📊\s+Contexto:\s+(.+?)\n'
             r'={70,}'

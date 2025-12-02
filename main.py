@@ -8,6 +8,7 @@ Correções:
   - Validação de config mais específica
   - Try/finally para recursos
   - Logging melhorado (usa LOG_LEVEL do config)
+  - _validate_required_config para validar parâmetros obrigatórios (existência e valor básico)
 """
 
 import sys
@@ -35,6 +36,59 @@ load_dotenv()
 
 import config
 from market_orchestrator import EnhancedMarketBot
+
+
+def _validate_required_config() -> None:
+    """
+    Valida a presença e os valores básicos dos parâmetros obrigatórios.
+
+    Regras:
+      - O atributo precisa existir em config
+      - Não pode ser None
+      - Se for string, não pode ser vazia/apenas espaços
+
+    Lança ValueError em caso de problema.
+    """
+    required_params = [
+        "STREAM_URL",
+        "SYMBOL",
+        "WINDOW_SIZE_MINUTES",
+        "VOL_FACTOR_EXH",
+        "HISTORY_SIZE",
+        "DELTA_STD_DEV_FACTOR",
+        "CONTEXT_SMA_PERIOD",
+        "LIQUIDITY_FLOW_ALERT_PERCENTAGE",
+        "WALL_STD_DEV_FACTOR",
+    ]
+
+    missing = []
+    invalid_values = []
+
+    for param in required_params:
+        # Falta de atributo
+        if not hasattr(config, param):
+            missing.append(param)
+            continue
+
+        value = getattr(config, param)
+
+        # Valor inválido básico
+        if value is None:
+            invalid_values.append(f"{param}=None")
+        elif isinstance(value, str) and not value.strip():
+            invalid_values.append(f"{param} vazio")
+
+    messages = []
+    if missing:
+        messages.append(f"parâmetros faltando em config: {', '.join(missing)}")
+    if invalid_values:
+        messages.append(
+            f"parâmetros com valores inválidos: {', '.join(invalid_values)}"
+        )
+
+    if messages:
+        # Vai ser capturado pelo except ValueError no main()
+        raise ValueError("❌ " + " | ".join(messages))
 
 
 def main() -> int:
@@ -66,22 +120,8 @@ def main() -> int:
                 logging.warning(f"⚠️ Erro na validação de config: {e}")
                 # Continua mesmo com erro de validação (pode ser não-crítico)
 
-        # ✅ Validação de parâmetros obrigatórios usados no construtor
-        required_params = [
-            "STREAM_URL",
-            "SYMBOL",
-            "WINDOW_SIZE_MINUTES",
-            "VOL_FACTOR_EXH",
-            "HISTORY_SIZE",
-            "DELTA_STD_DEV_FACTOR",
-            "CONTEXT_SMA_PERIOD",
-            "LIQUIDITY_FLOW_ALERT_PERCENTAGE",
-            "WALL_STD_DEV_FACTOR",
-        ]
-        
-        missing = [p for p in required_params if not hasattr(config, p)]
-        if missing:
-            raise ValueError(f"❌ Parâmetros faltando em config: {', '.join(missing)}")
+        # ✅ Validação rigorosa de parâmetros obrigatórios usados no construtor
+        _validate_required_config()
 
         logging.info(f"🚀 Iniciando bot para {config.SYMBOL}...")
 
