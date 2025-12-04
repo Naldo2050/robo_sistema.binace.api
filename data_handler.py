@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import logging
 import hashlib
+from flow_analyzer import FlowAnalyzer, _guard_absorcao  # usado para recalcular rótulo e validação
 from typing import Dict, Any, List, Optional, Tuple
 import math
 
@@ -959,9 +960,16 @@ def validate_window_data(window_data: list) -> tuple[bool, list]:
 # HELPERS DE EVENTO
 # ===============================
 
-def _mk_event_id(symbol: str, tipo_evento: str, window_close_ms: int, resultado: str, delta_btc: float, volume_total_btc: float) -> str:
-    base = f"{symbol}|{tipo_evento}|{window_close_ms}|{resultado}|{delta_btc:.8f}|{volume_total_btc:.8f}"
-    return hashlib.sha1(base.encode("utf-8")).hexdigest()
+def _mk_event_id(symbol: str, tipo_evento: str, window_open_ms: int, delta_btc: float) -> str:
+    """
+    Gera um ID único para um evento de trading.
+
+    O ID é baseado em campos críticos que identificam uma janela de evento e
+    seus parâmetros principais (tempo de abertura, símbolo, tipo e delta). Usamos
+    SHA-256 para reduzir a probabilidade de colisões.
+    """
+    base = f"{window_open_ms}|{symbol}|{tipo_evento}|{delta_btc:.8f}"
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
 def _attach_time_index(event: Dict[str, Any], tm: TimeManager, epoch_ms: int) -> Dict[str, Any]:
@@ -1124,6 +1132,30 @@ def create_absorption_event(
             absorption_side = "sell"
             descricao = f"Agressão compradora absorvida. Δ={delta_btc:.2f}, índice={indice_absorcao:.2f}"
 
+            # ========================
+            # Revalidação de rótulo
+            # ========================
+            # Garante consistência entre delta_btc e o rótulo calculado.
+            try:
+                eps = float(getattr(config, "ABSORCAO_DELTA_EPS", 1.0))
+            except Exception:
+                eps = 1.0
+            rotulo_recalc = FlowAnalyzer.classificar_absorcao_por_delta(delta_btc, eps)
+            if rotulo_recalc != "Neutra" and resultado != rotulo_recalc:
+                logging.warning(
+                    f"[ABSORCAO_RECALC] Inconsistência de rótulo: "
+                    f"delta={delta_btc:.4f}, original='{resultado}', recalculado='{rotulo_recalc}'"
+                )
+                resultado = rotulo_recalc
+                # Ajusta absorption_side de acordo com rótulo recalculado
+                absorption_side = "sell" if rotulo_recalc == "Absorção de Compra" else (
+                    "buy" if rotulo_recalc == "Absorção de Venda" else None
+                )
+                descricao = f"Rótulo recalculado. Δ={delta_btc:.2f}"
+
+            # Validação final via guard
+            _guard_absorcao(delta_btc, resultado, eps, getattr(config, "ABSORCAO_GUARD_MODE", "warn"))
+
         # Time index e janela
         window_open_ms = int(times.min())
         window_close_ms = int(times.max())
@@ -1266,14 +1298,12 @@ def create_absorption_event(
         # Timestamps coerentes
         _attach_time_index(event, tm, event_ms)
 
-        # event_id
+        # event_id (novo formato baseado em window_open_ms e delta)
         event["event_id"] = _mk_event_id(
             symbol,
             "Absorção",
-            window_close_ms,
-            resultado,
+            window_open_ms,
             delta_btc,
-            volume_total_btc,
         )
 
         # Checagem simples de unidades
@@ -1569,14 +1599,12 @@ def create_exhaustion_event(
         # Timestamps coerentes
         _attach_time_index(event, tm, event_ms)
 
-        # event_id
+        # event_id (novo formato)
         event["event_id"] = _mk_event_id(
             symbol,
             "Exaustão",
-            window_close_ms,
-            resultado,
+            window_open_ms,
             0.0,
-            volume_total_btc,
         )
 
         # Contagens

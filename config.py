@@ -313,7 +313,14 @@ AGGRESSIVE_ORDER_SIZE_THRESHOLD = 0.0
 ABSORCAO_DELTA_EPS = 1.0
 
 # Modo de guarda: "off", "warn", "raise"
-ABSORCAO_GUARD_MODE = "warn"
+# Definir ABSORCAO_GUARD_MODE dinamicamente. Por padrão, em ambiente de
+# desenvolvimento (ENVIRONMENT=dev) o modo é "raise" para destacar
+# inconsistências; em produção o padrão continua "warn". Isso pode ser
+# sobrescrito via variável de ambiente ABSORCAO_GUARD_MODE.
+ABSORCAO_GUARD_MODE = os.getenv(
+    "ABSORCAO_GUARD_MODE",
+    "raise" if os.getenv("ENVIRONMENT", "dev").lower() == "dev" else "warn"
+)
 
 # ==============================================================================
 # PARÂMETROS DE DETECÇÃO DE WHALES

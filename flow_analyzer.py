@@ -105,10 +105,16 @@ def _guard_absorcao(delta: float, rotulo: str, eps: float, mode: str = "warn"):
     if mode == "off":
         return
 
-    # Corrigido: delta negativo => Absorção de Compra ; delta positivo => Absorção de Venda
-    mismatch = (delta < -eps and rotulo != "Absorção de Compra") or \
-               (delta >  eps and rotulo != "Absorção de Venda")
-    
+    rotulo = (rotulo or "").strip()
+
+    # Só valida quando o rótulo indica absorção explícita.
+    # Rótulos "Neutra", None, etc. são ignorados.
+    if "Absorção" not in rotulo:
+        return
+
+    mismatch = (delta < -eps and "Compra" not in rotulo) or \
+               (delta >  eps and "Venda" not in rotulo)
+
     if mismatch:
         msg = (
             f"[ABSORCAO_GUARD] delta={delta:.4f} eps={eps} "
@@ -484,15 +490,28 @@ class FlowAnalyzer:
 
     @staticmethod
     def classificar_absorcao_por_delta(delta: float, eps: float = 1.0) -> str:
-        """Classificador simples de absorção por sinal do delta."""
+        """
+        Classificador simples de absorção por sinal do delta.
+
+        Semântica (deve bater com _guard_absorcao):
+          - delta < -eps → Absorção de Compra
+          - delta >  eps → Absorção de Venda
+        """
         try:
             d = float(delta)
         except Exception:
+            logging.warning(
+                "Falha na classificação de absorção por delta: %s", delta,
+                exc_info=True
+            )
+            guard_mode = getattr(config, "ABSORCAO_GUARD_MODE", "warn").lower()
+            if guard_mode == "raise":
+                raise
             return "Neutra"
         
-        if d > eps:
-            return "Absorção de Compra"
         if d < -eps:
+            return "Absorção de Compra"
+        if d > eps:
             return "Absorção de Venda"
         return "Neutra"
 
@@ -1096,8 +1115,8 @@ class FlowAnalyzer:
                         start_ms = now_ms - window_ms
                         
                         relevant = [
-                            t for t in self.flow_trades 
-                            if t['ts'] >= start_ms
+                            t for t in self.flow_trades
+                            if start_ms <= t['ts'] <= now_ms
                         ]
 
                         total_delta_usd = sum(t['delta_usd'] for t in relevant)
@@ -1428,8 +1447,8 @@ class FlowAnalyzer:
                         start_ms_p = now_ms - analysis_window * 60 * 1000
                         
                         all_trades = [
-                            t for t in self.flow_trades 
-                            if t['ts'] >= start_ms_p
+                            t for t in self.flow_trades
+                            if start_ms_p <= t['ts'] <= now_ms
                         ]
                         
                         total_qty_all = sum(t['qty'] for t in all_trades)
