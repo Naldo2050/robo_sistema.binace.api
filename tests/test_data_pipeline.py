@@ -5,13 +5,17 @@ import numpy as np
 from unittest.mock import MagicMock, patch
 from typing import List, Dict, Any
 from types import SimpleNamespace
+import os
+import sys
+
+# Garante que a raiz do projeto esteja no sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Importa DataPipeline do mesmo jeito que o código de produção faz.
-# O EnhancedMarketBot usa: from data_pipeline import DataPipeline
-# Mantemos um fallback para a versão em pacote, caso você migre no futuro.
 try:
     from data_pipeline import DataPipeline
 except ImportError:
+    # Fallback se, no futuro, você mover para data_pipeline/pipeline.py
     from data_pipeline.pipeline import DataPipeline
 
 # ==========================================

@@ -23,6 +23,9 @@ from format_utils import (
     format_delta,
 )
 
+# [AI_PAYLOAD_BUILDER] Importa o novo construtor de payload
+from .ai_payload_builder import build_ai_input
+
 
 def initialize_ai_async(bot) -> None:
     """
@@ -195,6 +198,37 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                 except Exception:
                     pass
 
+                # [AI_PAYLOAD_BUILDER] Construção do payload estruturado para IA
+                try:
+                    enriched = event_data.get("enriched_snapshot", {})
+                    flow_metrics = event_data.get("fluxo_continuo", {})
+                    historical_profile = event_data.get("historical_vp", {})
+                    macro_ctx = event_data.get("market_context", {})
+                    market_env = event_data.get("market_environment", {})
+                    ob_data = event_data.get("orderbook_data", {})
+                    ml_feats = event_data.get("ml_features", {})
+
+                    ai_payload = build_ai_input(
+                        symbol=bot.symbol,
+                        signal=event_data,
+                        enriched=enriched,
+                        flow_metrics=flow_metrics,
+                        historical_profile=historical_profile,
+                        macro_context=macro_ctx,
+                        market_environment=market_env,
+                        orderbook_data=ob_data,
+                        ml_features=ml_feats,
+                    )
+
+                    # Anexa ao evento original, sem mudar o formato que a IA já espera
+                    event_data["ai_payload"] = ai_payload
+
+                except Exception as e:
+                    logging.debug(
+                        f"Falha ao construir ai_payload: {e}",
+                        exc_info=True,
+                    )
+
                 analysis_result = bot.ai_analyzer.analyze(event_data)
 
                 if analysis_result and not bot.should_stop:
@@ -204,6 +238,37 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                         )
                         _print_ai_report_clean(raw_response)
                         logging.info("✅ Análise da IA concluída com sucesso")
+
+                        # [AI_EVENT_SAVE] Salva evento de análise da IA
+                        try:
+                            ai_payload = event_data.get("ai_payload")
+                            ai_event = {
+                                "tipo_evento": "AI_ANALYSIS",
+                                "resultado_da_batalha": analysis_result.get("action")
+                                    or analysis_result.get("sentiment")
+                                    or "N/A",
+                                "descricao": (
+                                    "Análise de IA gerada a partir de sinal de fluxo/orderbook."
+                                ),
+                                "symbol": event_data.get("ativo")
+                                    or event_data.get("symbol")
+                                    or bot.symbol,
+                                "timestamp_ms": int(time.time() * 1000),
+                                # Mantém referência ao evento original e aos dados da IA
+                                "source_event": event_data,
+                                "ai_payload": ai_payload,
+                                "ai_result": analysis_result,
+                            }
+
+                            if hasattr(bot, "event_saver") and bot.event_saver:
+                                bot.event_saver.save_event(ai_event)
+
+                        except Exception as e:
+                            logging.debug(
+                                f"Falha ao salvar evento de análise da IA: {e}",
+                                exc_info=True,
+                            )
+
                     except Exception as e:
                         logging.error(
                             f"❌ Erro ao processar resposta da IA: {e}",

@@ -674,6 +674,41 @@ class FlowAnalyzer:
             return "Neutra"
 
     # ============================
+    # VALIDATE INVARIANTS
+    # ============================
+
+    def _validate_invariants(self, metrics: Dict[str, Any]) -> None:
+        """Checa consistência matemática das métricas de fluxo acumuladas."""
+        try:
+            # Tolerância fina para BTC (satoshi level floating point noise)
+            TOLERANCE_BTC = 1e-6
+
+            # 1. Validação Whale Delta
+            # whale_delta deve ser igual a whale_buy - whale_sell
+            w_buy = float(metrics.get("whale_buy_volume", 0.0))
+            w_sell = float(metrics.get("whale_sell_volume", 0.0))
+            w_delta_stored = float(metrics.get("whale_delta", 0.0))
+
+            w_delta_calc = w_buy - w_sell
+
+            if abs(w_delta_calc - w_delta_stored) > TOLERANCE_BTC:
+                logging.warning(
+                    f"⚠️ INVARIANTE VIOLADA (Whale Delta): "
+                    f"Calc={w_delta_calc:.6f} vs Stored={w_delta_stored:.6f} "
+                    f"(Buy={w_buy:.4f} Sell={w_sell:.4f})"
+                )
+
+            # 2. Validação Sector Flow (Soma dos deltas setoriais ≈ CVD? Nem sempre, mas soma de buy/sell sim)
+            # Se você tiver o total absoluto, pode validar se a soma dos setores bate com o total.
+
+            # Flag de qualidade
+            metrics["invariants_ok"] = True
+
+        except Exception as e:
+            logging.debug(f"Erro na validação de invariantes do Flow: {e}")
+            metrics["invariants_ok"] = False
+
+    # ============================
     # RESET / PODA
     # ============================
 
@@ -1678,6 +1713,9 @@ class FlowAnalyzer:
                     "negative_age_count": self.negative_age_count,
                     "timestamp_adjustments": self.timestamp_adjustments,
                 }
+
+                # Validação de invariantes
+                self._validate_invariants(metrics)
 
                 return metrics
 

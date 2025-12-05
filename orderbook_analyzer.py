@@ -214,6 +214,7 @@ def _simulate_market_impact(
         "bps": round(bps, 4),
         "levels": levels_crossed,
         "vwap": vwap,
+        "final_price": terminal_price,
     }
 
 
@@ -1419,7 +1420,53 @@ class OrderBookAnalyzer:
         except Exception:
             pass
 
+        # Validação de invariantes
+        if event.get("is_valid"):
+            self._validate_invariants(event)
+            event["invariants_checked"] = True
+
         return event
+
+    # ===== VALIDATE INVARIANTS =====
+    def _validate_invariants(self, ob_event: Dict[str, Any]) -> None:
+        """
+        Verifica consistência matemática do evento de OrderBook gerado.
+        Não altera o evento, apenas loga warnings.
+        """
+        try:
+            ob_data = ob_event.get("orderbook_data") or {}
+            spread_metrics = ob_event.get("spread_metrics") or {}
+
+            # 1) Spread positivo (usa spread presente em orderbook_data ou spread_metrics)
+            spread = None
+            if "spread" in ob_data:
+                spread = float(ob_data["spread"])
+            elif "spread" in spread_metrics:
+                spread = float(spread_metrics["spread"])
+
+            if spread is not None and spread < 0:
+                logging.warning(
+                    f"⚠️ INVARIANTE VIOLADA (Spread): spread negativo={spread} em {self.symbol}"
+                )
+
+            # 2) Imbalance consistente com bid/ask depth
+            bid_usd = float(ob_data.get("bid_depth_usd", 0.0))
+            ask_usd = float(ob_data.get("ask_depth_usd", 0.0))
+            stored_imbalance = float(
+                ob_data.get("imbalance", spread_metrics.get("imbalance", 0.0))
+            )
+
+            total_liq = bid_usd + ask_usd
+            if total_liq > 0:
+                calc_imbalance = (bid_usd - ask_usd) / total_liq
+                if abs(calc_imbalance - stored_imbalance) > 0.01:
+                    logging.warning(
+                        f"⚠️ INVARIANTE VIOLADA (Imbalance): "
+                        f"calc={calc_imbalance:.4f} vs stored={stored_imbalance:.4f} "
+                        f"(bid_usd={bid_usd:.0f}, ask_usd={ask_usd:.0f}) em {self.symbol}"
+                    )
+        except Exception as e:
+            logging.debug(f"Erro na validação de invariantes do OrderBook: {e}", exc_info=True)
 
     # ===== HEALTH MONITORING =====
     def get_stats(self) -> Dict[str, Any]:

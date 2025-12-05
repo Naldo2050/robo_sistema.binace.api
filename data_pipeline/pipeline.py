@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import logging
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 import pandas as pd
@@ -314,6 +315,10 @@ class DataPipeline:
             self._cache.set(cache_key, enriched, force_fresh=True)
             self.enriched_data = enriched
 
+            # Validação de invariantes
+            if self.enriched_data:
+                self._validate_invariants(self.enriched_data, context="enrich")
+
             self.logger.runtime_info("✅ Camada Enriched gerada")
             return enriched
 
@@ -446,6 +451,7 @@ class DataPipeline:
                         "epoch_ms",
                         default_ts_ms
                     )
+                    self._validate_invariants(absorption_event, context="signal")
                     signals.append(absorption_event)
             except Exception as e:
                 self.logger.runtime_error(
@@ -464,6 +470,7 @@ class DataPipeline:
                         "epoch_ms",
                         default_ts_ms
                     )
+                    self._validate_invariants(exhaustion_event, context="signal")
                     signals.append(exhaustion_event)
             except Exception as e:
                 self.logger.runtime_error(
@@ -475,6 +482,7 @@ class DataPipeline:
             try:
                 ob_event = orderbook_data.copy()
                 ob_event["epoch_ms"] = ob_event.get("epoch_ms", default_ts_ms)
+                self._validate_invariants(ob_event, context="signal")
                 signals.append(ob_event)
             except Exception as e:
                 self.logger.runtime_error(
@@ -491,6 +499,7 @@ class DataPipeline:
                 "volume_total": self.enriched_data.get("volume_total", 0),
                 "preco_fechamento": self.enriched_data.get("ohlc", {}).get("close", 0),
             }
+            self._validate_invariants(analysis_trigger, context="signal")
             signals.append(analysis_trigger)
         except Exception as e:
             self.logger.runtime_error(f"❌ Erro análise: {e}")
@@ -502,6 +511,66 @@ class DataPipeline:
         )
 
         return signals
+
+    # ============================
+    # VALIDATE INVARIANTS
+    # ============================
+
+    def _validate_invariants(self, data: Dict[str, Any], context: str = "enrich") -> None:
+        """
+        Valida invariantes.
+
+        Contexto 'enrich': Valida OHLC básico.
+        Contexto 'signal': Valida consistência de volumes de compra/venda e delta.
+        """
+        try:
+            TOLERANCE_BTC = 1e-6
+
+            if context == "enrich":
+                # Validação OHLC
+                ohlc = data.get("ohlc", {})
+                if ohlc:
+                    h = float(ohlc.get("high", 0))
+                    l = float(ohlc.get("low", 0))
+                    c = float(ohlc.get("close", 0))
+                    o = float(ohlc.get("open", 0))
+
+                    if l > h:
+                        logging.warning(f"⚠️ INVARIANTE VIOLADA (OHLC): Low ({l}) > High ({h}) em {self.symbol}")
+
+                    if not (l <= c <= h) or not (l <= o <= h):
+                        logging.warning(f"⚠️ INVARIANTE VIOLADA (OHLC): Open/Close fora dos limites High/Low")
+
+            elif context == "signal":
+                # Validação de Volumes de Sinal (onde temos a quebra Buy/Sell)
+                vol_buy = float(data.get("volume_compra", 0.0))
+                vol_sell = float(data.get("volume_venda", 0.0))
+                vol_total = float(data.get("volume_total", 0.0))
+                delta = float(data.get("delta", 0.0))
+
+                # 1. Soma dos volumes
+                vol_sum = vol_buy + vol_sell
+                # Nota: volume_total às vezes vem direto do candle original e buy/sell são inferidos
+                # Uma divergência grande indica perda de dados na inferência de agressão 'm'
+                if abs(vol_sum - vol_total) > TOLERANCE_BTC:
+                    # Apenas loga se a diferença for relevante (> 0.0001 BTC por exemplo)
+                    if abs(vol_sum - vol_total) > 0.0001:
+                        logging.warning(
+                            f"⚠️ INVARIANTE VIOLADA (Vol Sum): "
+                            f"Buy({vol_buy:.4f}) + Sell({vol_sell:.4f}) != Total({vol_total:.4f}) "
+                            f"[Diff: {vol_sum - vol_total:.6f}] em {self.symbol}"
+                        )
+
+                # 2. Consistência do Delta
+                delta_calc = vol_buy - vol_sell
+                if abs(delta_calc - delta) > TOLERANCE_BTC:
+                    logging.warning(
+                        f"⚠️ INVARIANTE VIOLADA (Delta): "
+                        f"Buy - Sell ({delta_calc:.4f}) != Delta Armazenado ({delta:.4f}) "
+                        f"em {self.symbol}"
+                    )
+        except Exception as e:
+            logging.debug(f"Erro na validação de invariantes Pipeline ({context}): {e}", exc_info=True)
 
     def extract_features(self) -> Dict[str, Any]:
         """
