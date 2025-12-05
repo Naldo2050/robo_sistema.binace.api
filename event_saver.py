@@ -1,18 +1,16 @@
 # -*- coding: utf-8 -*-
-# event_saver.py - v4.6.0 - DUAL WRITE (SQLite + Files)
+# event_saver.py - v5.0.0 - SQLITE MIGRATION COMPLETE
 """
-EventSaver v4.6.0 - Sistema de salvamento de eventos de trading
+EventSaver v5.0.0 - Sistema de salvamento de eventos de trading
 
-🔹 NOVIDADE v4.6.0 (Etapa 2):
-  ✅ Escrita Dupla: Salva eventos no SQLite (EventStore) E nos arquivos JSON/Log.
-  ✅ Inicialização segura do DB: Falhas no banco não derrubam o robô.
-  ✅ Batch saving: Usa transações otimizadas do SQLite.
+🔹 MUDANÇAS v5.0.0 (Etapa 3.2):
+  ✅ Remoção de arquivos JSON/JSONL legados.
+  ✅ Persistência exclusiva via SQLite (EventStore).
+  ✅ Log visual mantido para debug.
 
-🔹 CORREÇÕES ANTERIORES:
-  ✅ Thread-safe em _janelas_processadas.
-  ✅ Timezone robusto (UTC base).
-  ✅ File locking multiplataforma.
-  ✅ Clock Sync integrado.
+🔹 HISTÓRICO:
+  ✅ v4.6.0: Dual Write (SQLite + Files)
+  ✅ v4.5.5: Lock em _janelas_processadas + timezone mais robusto
 """
 
 import json
@@ -63,7 +61,6 @@ except ImportError:
 
 # ===== CONFIGURAÇÕES =====
 MAX_BUFFER_SIZE = 10000  # Limite máximo de eventos no buffer
-MAX_JSON_FILE_SIZE = 50 * 1024 * 1024  # 50MB máximo
 CLEANUP_INTERVAL = 300  # Limpa cache a cada 5 min
 SEEN_BLOCK_TTL = 3600  # Mantém seen_in_block por 1h
 
@@ -268,7 +265,7 @@ DATA_DIR = Path("dados")
 DATA_DIR.mkdir(exist_ok=True)
 
 
-# ===== FUNÇÕES HELPER DE FILE LOCKING =====
+# ===== FUNÇÕES HELPER DE FILE LOCKING (Mantidas para log visual) =====
 def acquire_file_lock(file_obj, blocking=True, timeout=5.0):
     """
     Adquire lock de arquivo multiplataforma.
@@ -332,14 +329,13 @@ class EventSaver:
     """
     Classe responsável por salvar e formatar eventos de trading.
     
+    ✅ v5.0.0: Migração completa para SQLite (JSON/JSONL removidos)
     ✅ v4.6.0: Dual Write (SQLite + Files)
     ✅ v4.5.5: Lock em _janelas_processadas + timezone mais robusto
     """
 
     def __init__(self, sound_alert: bool = True):
         self.sound_alert = sound_alert
-        self.snapshot_file = DATA_DIR / "eventos-fluxo.json"
-        self.history_file = DATA_DIR / "eventos_fluxo.jsonl"
         self.visual_log_file = DATA_DIR / "eventos_visuais.log"
         self.last_window_id = None  # compat legada
         self.time_manager = TimeManager()
@@ -348,12 +344,12 @@ class EventSaver:
         # Logger
         self.logger = logging.getLogger(__name__)
 
-        # ✅ Inicializa Banco de Dados (SQLite) - Etapa 2
+        # ✅ Inicializa Banco de Dados (SQLite)
         self.db = None
         if HAS_SQLITE_STORE:
             try:
                 self.db = EventStore()
-                self.logger.info("✅ SQLite EventStore inicializado com sucesso (Dual Write Ativo)")
+                self.logger.info("✅ SQLite EventStore inicializado com sucesso")
             except Exception as e:
                 self.logger.error(f"❌ Falha ao inicializar SQLite EventStore: {e}")
                 self.db = None
@@ -426,7 +422,7 @@ class EventSaver:
         lock_type = f"({LOCK_METHOD})" if LOCK_METHOD else ""
         
         self.logger.info(
-            "✅ EventSaver v4.6.0 inicializado | "
+            "✅ EventSaver v5.0.0 inicializado | "
             "Buffer max: %d | Cleanup: %ds | File locking: %s %s",
             MAX_BUFFER_SIZE,
             CLEANUP_INTERVAL,
@@ -736,16 +732,16 @@ class EventSaver:
                 self._flush_buffer(buffer_copy)
 
     def _flush_buffer(self, events: List[Dict]):
-        """Escreve eventos em lote nos arquivos e banco de dados."""
+        """Escreve eventos em lote no banco de dados e log visual."""
         
-        # 1. Escrita no SQLite (Dual Write - Prioridade)
+        # 1. Escrita no SQLite (Principal)
         if self.db:
             try:
                 self.db.save_batch(events)
             except Exception as e:
                 self.logger.error(f"Erro ao salvar batch no SQLite: {e}")
 
-        # 2. Escrita em arquivos (Legacy)
+        # 2. Escrita no Log Visual (Debug)
         for event in events:
             try:
                 # Adiciona separador ANTES de processar evento, se necessário
@@ -755,158 +751,9 @@ class EventSaver:
                 
                 cleaned_event = self._clean_event_data(event)
                 if cleaned_event:
-                    self._save_to_json(cleaned_event)
-                    self._save_to_jsonl(cleaned_event)
                     self._add_visual_log_entry(cleaned_event)
             except Exception as e:
-                self.logger.error(f"Erro ao processar evento no flush de arquivos: {e}")
-
-    def _save_to_json(self, event: Dict):
-        """Salva evento em arquivo JSON com retry e file locking."""
-        max_retries = 3
-        retry_delay = 0.5
-        
-        for attempt in range(max_retries):
-            lock_file = None
-            lock_acquired = False
-            
-            try:
-                # Validação de tamanho antes de ler
-                if self.snapshot_file.exists():
-                    file_size = self.snapshot_file.stat().st_size
-                    if file_size > MAX_JSON_FILE_SIZE:
-                        self.logger.error(
-                            f"❌ Arquivo JSON muito grande ({file_size/1024/1024:.1f}MB), "
-                            f"recriando..."
-                        )
-                        backup = self.snapshot_file.with_suffix('.backup')
-                        self.snapshot_file.rename(backup)
-                        events = []
-                    else:
-                        # File locking
-                        lock_file_path = self.snapshot_file.with_suffix('.lock')
-                        
-                        try:
-                            lock_file = open(lock_file_path, 'w')
-                            lock_acquired = acquire_file_lock(lock_file, blocking=True, timeout=10.0)
-                            
-                            if not lock_acquired:
-                                self.logger.warning(f"Timeout ao adquirir lock (tentativa {attempt+1})")
-                                self._lock_timeout_count += 1
-                                if lock_file:
-                                    lock_file.close()
-                                    lock_file = None
-                                raise IOError("Lock timeout")
-                                
-                        except Exception:
-                            if lock_file:
-                                lock_file.close()
-                                lock_file = None
-                            raise
-                        
-                        # Lê eventos existentes
-                        try:
-                            with open(self.snapshot_file, "r", encoding="utf-8") as f:
-                                content = f.read().strip()
-                                if content:
-                                    events = json.loads(content)
-                                else:
-                                    events = []
-                        except (json.JSONDecodeError, IOError) as e:
-                            self.logger.warning(f"JSON corrompido, recriando: {e}")
-                            events = []
-                else:
-                    events = []
-
-                # Adiciona novo evento
-                events.append(event)
-                
-                # Limita tamanho
-                max_events = 1000
-                if len(events) > max_events:
-                    events = events[-max_events:]
-
-                # Salva atomicamente
-                temp_file = self.snapshot_file.with_suffix('.tmp')
-                with open(temp_file, "w", encoding="utf-8") as f:
-                    json.dump(events, f, indent=2, ensure_ascii=False, default=str)
-                
-                temp_file.replace(self.snapshot_file)
-                
-                # Libera lock
-                if lock_file and lock_acquired:
-                    release_file_lock(lock_file)
-                    lock_file.close()
-                    try:
-                        lock_file_path.unlink(missing_ok=True)
-                    except:
-                        pass
-                    
-                return  # Sucesso
-                
-            except Exception as e:
-                self.logger.error(f"Erro ao salvar JSON (tentativa {attempt+1}): {e}")
-                
-                if lock_file:
-                    try:
-                        if lock_acquired:
-                            release_file_lock(lock_file)
-                        lock_file.close()
-                        lock_file_path = self.snapshot_file.with_suffix('.lock')
-                        lock_file_path.unlink(missing_ok=True)
-                    except:
-                        pass
-                
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (2 ** attempt))
-                else:
-                    self._save_fallback(event, "json")
-
-    def _save_to_jsonl(self, event: Dict):
-        """Salva evento em arquivo JSONL com retry."""
-        max_retries = 3
-        retry_delay = 0.5
-        
-        for attempt in range(max_retries):
-            try:
-                with open(self.history_file, "a", encoding="utf-8") as f:
-                    json_line = json.dumps(event, ensure_ascii=False, default=str)
-                    f.write(json_line + "\n")
-                    f.flush()
-                return
-            except Exception as e:
-                self.logger.error(f"Erro ao salvar JSONL (tentativa {attempt+1}): {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (2 ** attempt))
-                else:
-                    self._save_fallback(event, "jsonl")
-
-    def _save_fallback(self, event: Dict, format_type: str):
-        """Salva em diretório de fallback."""
-        try:
-            fallback_dir = Path("./fallback_events")
-            fallback_dir.mkdir(exist_ok=True)
-            
-            if format_type == "json":
-                fallback_file = fallback_dir / f"eventos_{datetime.now().strftime('%Y%m%d')}.json"
-                events = []
-                if fallback_file.exists():
-                    try:
-                        with open(fallback_file, "r", encoding="utf-8") as f:
-                            events = json.load(f)
-                    except:
-                        events = []
-                events.append(event)
-                with open(fallback_file, "w", encoding="utf-8") as f:
-                    json.dump(events, f, indent=2, ensure_ascii=False, default=str)
-            else:
-                fallback_file = fallback_dir / f"eventos_{datetime.now().strftime('%Y%m%d')}.jsonl"
-                with open(fallback_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
-                    
-            self.logger.warning(f"⚠️ Evento salvo em fallback: {fallback_file}")
-        except Exception as e:
-            self.logger.critical(f"💀 FALHA em fallback: {e}")
+                self.logger.error(f"Erro ao processar evento no flush visual: {e}")
 
     def save_event(self, event: Dict):
         """
@@ -1414,27 +1261,27 @@ if __name__ == "__main__":
     )
     
     print("\n" + "="*80)
-    print("🧪 TESTE DO EVENTSAVER v4.6.0 - DUAL WRITE (SQLite + JSON)")
+    print("🧪 TESTE DO EVENTSAVER v5.0.0 - SQLITE ONLY")
     print("="*80 + "\n")
     
     saver = EventSaver(sound_alert=False)
     
     now_ms = int(time.time() * 1000)
     test_event = {
-        "tipo_evento": "TesteDualWrite",
+        "tipo_evento": "TesteSQLiteOnly",
         "is_signal": True,
         "epoch_ms": now_ms,
-        "janela_numero": 100,
-        "volume_total": 50.0,
-        "msg": "Este evento deve aparecer no SQLite e no JSON"
+        "janela_numero": 500,
+        "volume_total": 100.0,
+        "msg": "Este evento deve ir APENAS para SQLite e Log Visual"
     }
     saver.save_event(test_event)
     
-    print("1. Evento enviado para buffer. Aguardando flush...")
+    print("1. Evento enviado. Aguardando flush...")
     time.sleep(6)
     
     stats = saver.get_stats()
     print("\n2. Estatísticas:", stats)
     
     saver.stop()
-    print("\n✅ Teste concluído. Verifique se 'dados/trading_bot.db' contém o evento.")
+    print("\n✅ Teste concluído. Verifique 'dados/trading_bot.db' e 'dados/eventos_visuais.log'.")
