@@ -4,11 +4,15 @@ import pandas as pd
 import numpy as np
 from unittest.mock import MagicMock, patch
 from typing import List, Dict, Any
+from types import SimpleNamespace
 
-# Importa as classes do pipeline
-# Ajuste o import conforme sua estrutura de diretórios, assumindo que data_pipeline é um pacote acessível
-from data_pipeline.pipeline import DataPipeline
-from data_pipeline.config import PipelineConfig
+# Importa DataPipeline do mesmo jeito que o código de produção faz.
+# O EnhancedMarketBot usa: from data_pipeline import DataPipeline
+# Mantemos um fallback para a versão em pacote, caso você migre no futuro.
+try:
+    from data_pipeline import DataPipeline
+except ImportError:
+    from data_pipeline.pipeline import DataPipeline
 
 # ==========================================
 # FIXTURES (Dados de Exemplo)
@@ -27,11 +31,38 @@ def sample_trades() -> List[Dict[str, Any]]:
 
 @pytest.fixture
 def mock_config():
-    """Configuração de teste relaxada."""
-    config = PipelineConfig()
+    """Configuração de teste relaxada (stub simples, sem depender de PipelineConfig real)."""
+    config = SimpleNamespace()
+    # Atributos básicos
     config.min_trades_pipeline = 3
     config.min_absolute_trades = 2
+    config.allow_limited_data = True
+    config.max_price_variance_pct = 10.0
+    # Adaptação
     config.enable_adaptive_thresholds = False
+    config.adaptive_learning_rate = 0.1
+    config.adaptive_confidence = 0.7
+    # Cache
+    config.cache_ttl_seconds = 3600
+    config.cache_max_items = 1000
+    config.cache_allow_expired = True
+    # Performance
+    config.enable_vectorized_validation = True
+    config.validation_chunk_size = 10000
+    # Price scales
+    config.price_scales = {
+        'BTCUSDT': 10,
+        'ETHUSDT': 100,
+        'BNBUSDT': 100,
+        'SOLUSDT': 1000,
+        'XRPUSDT': 10000,
+        'DOGEUSDT': 100000,
+        'ADAUSDT': 10000,
+        'DEFAULT': 10
+    }
+    # Methods
+    config.get_price_scale = lambda symbol: config.price_scales.get(symbol, config.price_scales['DEFAULT'])
+    config.get_price_precision = lambda symbol: len(str(config.get_price_scale(symbol))) - 1
     return config
 
 # ==========================================
