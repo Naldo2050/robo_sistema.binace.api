@@ -32,8 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger("AIEvaluator")
 
 # Caminhos
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-DB_PATH = os.path.join(BASE_DIR, "dados", "trading_bot.db")
+DB_PATH = "dados/trading_bot.db"
 OUTPUT_CSV = "ai_performance_report.csv"
 
 # Horizontes de tempo para avaliação (em minutos)
@@ -213,9 +212,10 @@ class AIPerformanceEvaluator:
         if df_prices.empty:
             return None
             
-        # Preço de entrada (assumido como o preço no momento do sinal ou primeiro tick futuro)
-        # Idealmente, usar o 'price' do primeiro candle retornado
-        entry_price = df_prices.iloc[0]['price']
+        # Preço de entrada: tenta usar anchor_price vindo do evento; se não existir, usa o primeiro preço futuro
+        entry_price = data.get("anchor_price")
+        if entry_price is None:
+            entry_price = df_prices.iloc[0]['price']
         
         metrics = {
             "timestamp_iso": datetime.fromtimestamp(ts_ms/1000).isoformat(),
@@ -224,11 +224,21 @@ class AIPerformanceEvaluator:
             "sentiment": sentiment,
             "confidence": confidence,
             "entry_price": entry_price,
-            
+
             # Contexto Extra
             "regime": macro_ctx.get("regime", {}).get("structure", "N/A"),
             "net_flow": flow_ctx.get("net_flow", 0),
-            "whale_delta": flow_ctx.get("whale_activity", {}).get("whale_delta", 0)
+            "whale_delta": flow_ctx.get("whale_activity", {}).get("whale_delta", 0),
+
+            # Novos campos de contexto de mercado
+            "anchor_price": data.get("anchor_price"),
+            "anchor_window_id": data.get("anchor_window_id"),
+            "trend_1h": macro_ctx.get("trend_1h"),
+            "trend_4h": macro_ctx.get("trend_4h"),
+            "regime_4h": macro_ctx.get("regime_4h"),
+            "flow_imbalance": flow_ctx.get("flow_imbalance"),
+            "net_flow_1m": flow_ctx.get("net_flow_1m"),
+            "absorption_type": ai_payload.get("absorption_type")
         }
         
         # Direção do trade

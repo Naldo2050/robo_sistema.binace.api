@@ -12,6 +12,7 @@ que recebem `bot` como argumento.
 import threading
 import logging
 import time
+import json
 from typing import Any, Dict
 
 import config
@@ -241,23 +242,36 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
 
                         # [AI_EVENT_SAVE] Salva evento de análise da IA
                         try:
-                            ai_payload = event_data.get("ai_payload")
+                            ai_payload = event_data.get("ai_payload", {})
+                            symbol = event_data.get("ativo") or event_data.get("symbol") or bot.symbol
+                            anchor_ts_ms = (
+                                event_data.get("epoch_ms")
+                                or event_data.get("timestamp_ms")
+                                or int(time.time() * 1000)
+                            )
+                            anchor_price = event_data.get("preco_fechamento") or event_data.get("preco_atual")
+                            anchor_window_id = event_data.get("window_id") or event_data.get("janela_numero")
+
+                            # ai_result: usa structured se disponível, senão raw_response parseada
+                            ai_result_json = analysis_result.get("structured")
+                            if ai_result_json is None:
+                                try:
+                                    ai_result_json = json.loads(analysis_result.get("raw_response", "{}"))
+                                except:
+                                    ai_result_json = {"raw_response": analysis_result.get("raw_response", "")}
+
                             ai_event = {
                                 "tipo_evento": "AI_ANALYSIS",
-                                "resultado_da_batalha": analysis_result.get("action")
-                                    or analysis_result.get("sentiment")
-                                    or "N/A",
-                                "descricao": (
-                                    "Análise de IA gerada a partir de sinal de fluxo/orderbook."
-                                ),
-                                "symbol": event_data.get("ativo")
-                                    or event_data.get("symbol")
-                                    or bot.symbol,
-                                "timestamp_ms": int(time.time() * 1000),
-                                # Mantém referência ao evento original e aos dados da IA
-                                "source_event": event_data,
-                                "ai_payload": ai_payload,
-                                "ai_result": analysis_result,
+                                "symbol": symbol,
+                                "timestamp_ms": anchor_ts_ms,
+                                "anchor_price": anchor_price,
+                                "anchor_window_id": anchor_window_id,
+                                "ai_result": ai_result_json,
+                                "ai_payload": {
+                                    "flow_context": ai_payload.get("flow_context", {}),
+                                    "macro_context": ai_payload.get("macro_context", {}),
+                                    # adicione outros campos de contexto se fácil
+                                },
                             }
 
                             if hasattr(bot, "event_saver") and bot.event_saver:
