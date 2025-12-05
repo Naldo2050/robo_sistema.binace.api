@@ -10,6 +10,14 @@ import os
 from pathlib import Path
 import logging
 
+# 🔹 IMPORTAÇÃO DO EVENT STORE (SQLITE)
+try:
+    from database.event_store import EventStore
+    HAS_DB = True
+except ImportError:
+    HAS_DB = False
+    logging.warning("⚠️ Módulo database.event_store não encontrado.")
+
 # Configuração do logging (opcional, para debug)
 logging.basicConfig(level=logging.WARNING)
 
@@ -58,13 +66,12 @@ def convert_to_sao_paulo_tz(timestamp_str):
             return dt.tz_localize('UTC').tz_convert('America/Sao_Paulo')
             
     except Exception as e:
-        st.warning(f"⚠️ Erro ao converter timestamp: {e}")
+        # st.warning(f"⚠️ Erro ao converter timestamp: {e}") # Silenciado para evitar poluição visual
         return pd.NaT
 
-# Função para carregar eventos do JSONL
-@st.cache_data(ttl=60)  # Cache por 60 segundos
-def load_events():
-    """Carrega todos os eventos do arquivo eventos_fluxo.jsonl."""
+# --- FUNÇÃO LEGADA (BACKUP) ---
+def load_events_from_file_legacy():
+    """(LEGADO) Carrega todos os eventos do arquivo eventos_fluxo.jsonl."""
     if not EVENTS_FILE.exists():
         st.warning(f"⚠️ Arquivo de eventos não encontrado: `{EVENTS_FILE}`")
         return pd.DataFrame()
@@ -94,11 +101,74 @@ def load_events():
         df = df.dropna(subset=["timestamp"])
         # Ordena por timestamp
         df = df.sort_values("timestamp").reset_index(drop=True)
-        st.success(f"✅ Carregados {len(df)} eventos com sucesso.")
-    else:
-        st.info("ℹ️ Nenhum evento válido encontrado no arquivo.")
     
     return df
+
+# --- NOVA FUNÇÃO PRINCIPAL (SQLITE) ---
+@st.cache_data(ttl=30)  # Cache reduzido para 30s para maior agilidade
+def load_events():
+    """Carrega os eventos mais recentes diretamente do SQLite."""
+    if not HAS_DB:
+        st.error("❌ Módulo de Banco de Dados não disponível. Tentando fallback para arquivo...")
+        return load_events_from_file_legacy()
+
+    try:
+        # Instancia o store e busca os últimos 2000 eventos
+        db = EventStore()
+        events = db.get_recent_events(limit=2000)
+        
+        if not events:
+            st.info("ℹ️ Nenhum evento encontrado no banco de dados.")
+            # Tenta fallback se banco estiver vazio (durante migração)
+            if EVENTS_FILE.exists():
+                return load_events_from_file_legacy()
+            return pd.DataFrame()
+
+        # Processamento similar ao original para garantir compatibilidade
+        processed_events = []
+        for event in events:
+            # Garante que temos um timestamp utilizável
+            if "timestamp" in event and isinstance(event["timestamp"], str):
+                event["timestamp"] = convert_to_sao_paulo_tz(event["timestamp"])
+            elif "timestamp_utc" in event:
+                 event["timestamp"] = convert_to_sao_paulo_tz(event["timestamp_utc"])
+            elif "epoch_ms" in event:
+                # Fallback para epoch se string não existir
+                try:
+                    ts = pd.to_datetime(event["epoch_ms"], unit='ms', utc=True).tz_convert('America/Sao_Paulo')
+                    event["timestamp"] = ts
+                except:
+                    event["timestamp"] = pd.NaT
+            else:
+                event["timestamp"] = pd.NaT
+            
+            processed_events.append(event)
+
+        df = pd.DataFrame(processed_events)
+
+        # Normalização de colunas para compatibilidade
+        if not df.empty:
+            # Garante coluna 'ativo'
+            if "ativo" not in df.columns:
+                if "symbol" in df.columns:
+                    df["ativo"] = df["symbol"]
+                elif "par" in df.columns:
+                    df["ativo"] = df["par"]
+                else:
+                    df["ativo"] = None
+
+        if not df.empty:
+            # Limpeza e ordenação padrão
+            df = df.dropna(subset=["timestamp"])
+            df = df.sort_values("timestamp").reset_index(drop=True)
+            st.success(f"✅ Carregados {len(df)} eventos do Banco de Dados.")
+        
+        return df
+
+    except Exception as e:
+        st.error(f"❌ Erro ao ler do SQLite: {e}")
+        # Em caso de erro grave no banco, tenta o arquivo como último recurso
+        return load_events_from_file_legacy()
 
 def safe_timezone_convert(series):
     """
@@ -123,7 +193,7 @@ def safe_timezone_convert(series):
     
     return pd.Series(converted_series)
 
-# Carregar eventos
+# Carregar eventos (AGORA VIA SQLITE)
 df_events = load_events()
 
 # Sidebar de filtros
@@ -139,7 +209,9 @@ with st.sidebar:
     selected_type = st.selectbox("Tipo de Evento", tipos_evento)
     
     # Filtro por resultado da batalha
-    resultados = ["Todos"] + sorted(df_events["resultado_da_batalha"].dropna().unique().tolist()) if not df_events.empty else ["Todos"]
+    resultados = ["Todos"]
+    if not df_events.empty and "resultado_da_batalha" in df_events.columns:
+        resultados += sorted(df_events["resultado_da_batalha"].dropna().unique().tolist())
     selected_result = st.selectbox("Resultado da Batalha", resultados)
     
     # Slider de quantidade máxima de eventos a mostrar
@@ -162,7 +234,11 @@ if not df_events.empty:
         filtered_df = filtered_df[filtered_df["resultado_da_batalha"] == selected_result]
     
     # Ordena novamente após filtragem (garantia adicional)
-    filtered_df = filtered_df.sort_values("timestamp", ascending=False).head(max_events).reset_index(drop=True)
+    # Garante que timestamp existe antes de ordenar
+    if "timestamp" in filtered_df.columns:
+        filtered_df = filtered_df.sort_values("timestamp", ascending=False).head(max_events).reset_index(drop=True)
+    else:
+        st.warning("Coluna 'timestamp' não encontrada nos dados filtrados.")
 else:
     filtered_df = pd.DataFrame()
 
@@ -212,7 +288,7 @@ else:
 # --- GRÁFICO 2: TIPOS DE EVENTO ---
 st.subheader("🎯 Distribuição de Tipos de Evento")
 
-if not filtered_df.empty:
+if not filtered_df.empty and "tipo_evento" in filtered_df.columns:
     type_counts = filtered_df["tipo_evento"].value_counts()
     fig_type = px.pie(
         names=type_counts.index,
@@ -228,18 +304,31 @@ else:
 st.subheader("🔥 Mapa de Calor de Liquidez (Clusters)")
 
 if not filtered_df.empty:
-    # Verifica se o campo existe e é string
+    # Verifica se o campo existe
     if "liquidity_heatmap" not in filtered_df.columns:
         st.warning("⚠️ Campo 'liquidity_heatmap' não encontrado. Verifique se o FlowAnalyzer está ativado.")
     else:
-        filtered_df["liquidity_heatmap"] = filtered_df["liquidity_heatmap"].astype(str)
+        # Converte para string se necessário para garantir que não quebre
+        filtered_df["liquidity_heatmap_str"] = filtered_df["liquidity_heatmap"].astype(str)
         
         clusters_list = []
         for idx, row in filtered_df.iterrows():
-            if pd.isna(row["liquidity_heatmap"]) or not isinstance(row["liquidity_heatmap"], str):
+            heatmap_raw = row.get("liquidity_heatmap")
+            
+            # Tenta fazer parse se for string, ou usa direto se for dict
+            heatmap_data = {}
+            if isinstance(heatmap_raw, dict):
+                heatmap_data = heatmap_raw
+            elif isinstance(heatmap_raw, str):
+                try:
+                    heatmap_data = json.loads(heatmap_raw)
+                except:
+                    continue
+            
+            if not heatmap_data:
                 continue
+
             try:
-                heatmap_data = json.loads(row["liquidity_heatmap"])
                 clusters = heatmap_data.get("clusters", [])
                 for cluster in clusters:
                     clusters_list.append({
@@ -249,10 +338,10 @@ if not filtered_df.empty:
                         "trades_count": cluster.get("trades_count", 0),
                         "age_ms": cluster.get("age_ms", 0),
                         "timestamp": row["timestamp"],
-                        "symbol": row["ativo"]
+                        "symbol": row.get("ativo", "Unknown")
                     })
             except Exception as e:
-                st.warning(f"⚠️ Erro ao processar cluster: {e}")
+                # st.warning(f"⚠️ Erro ao processar cluster: {e}")
                 continue
         
         if clusters_list:
@@ -265,7 +354,8 @@ if not filtered_df.empty:
                 df_clusters["total_volume"] = pd.to_numeric(df_clusters["total_volume"], errors="coerce").round(3)
             
             # Conversão segura dos timestamps dos clusters
-            df_clusters["timestamp"] = safe_timezone_convert(df_clusters["timestamp"])
+            if "timestamp" in df_clusters.columns:
+                df_clusters["timestamp"] = safe_timezone_convert(df_clusters["timestamp"])
             
             # Criar gráfico de dispersão
             fig_cluster = px.scatter(
@@ -315,7 +405,9 @@ if not filtered_df.empty:
         
         # Formatação segura do timestamp
         if "timestamp" in df_display.columns:
-            df_display["timestamp"] = df_display["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+            df_display["timestamp"] = df_display["timestamp"].apply(
+                lambda x: x.strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(x) else "N/A"
+            )
         
         # Formatação segura de colunas numéricas
         if "delta" in df_display.columns:
@@ -377,9 +469,8 @@ if not filtered_df.empty:
 # --- RODAPÉ ---
 st.divider()
 st.caption("""
-    💡 Este dashboard lê os eventos salvos pelo `EventSaver` em `./dados/eventos_fluxo.jsonl`.  
-    Para atualizar os dados, execute seu bot de trading.  
-    Recarregue esta página para ver novos eventos.
+    💡 Este dashboard lê os eventos salvos no **SQLite (trading_bot.db)**.  
+    Recarregue esta página para ver novos eventos em tempo real.
 """)
 
 # Nota de rodapé sobre desempenho

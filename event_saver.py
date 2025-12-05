@@ -1,45 +1,18 @@
 # -*- coding: utf-8 -*-
-# event_saver.py - v4.5.5 - CORREÇÕES: Thread-safety/Timezone
+# event_saver.py - v4.6.0 - DUAL WRITE (SQLite + Files)
 """
-EventSaver v4.5.5 - Sistema de salvamento de eventos de trading
+EventSaver v4.6.0 - Sistema de salvamento de eventos de trading
 
-🔹 CORREÇÕES v4.5.5:
-  ✅ Thread-safe em _janelas_processadas (lock dedicado)
-  ✅ Conversão de timezone com fallback seguro (não silencioso, força UTC em caso de erro)
+🔹 NOVIDADE v4.6.0 (Etapa 2):
+  ✅ Escrita Dupla: Salva eventos no SQLite (EventStore) E nos arquivos JSON/Log.
+  ✅ Inicialização segura do DB: Falhas no banco não derrubam o robô.
+  ✅ Batch saving: Usa transações otimizadas do SQLite.
 
-🔹 CORREÇÕES v4.5.4:
-  ✅ Sempre parte de epoch_ms/UTC para construir timestamps
-  ✅ Separador visual usa UTC → NY/SP, sem datetime.now() ingênuo
-  ✅ Usa TimeManager.build_time_index quando disponível (mesma lógica do data_handler)
-  ✅ Não sobrescreve timestamps já presentes no evento
-
-🔹 CORREÇÕES v4.5.3:
-  ✅ Somente eventos que já trazem `janela_numero` geram separador de janela
-  ✅ Nenhum fallback baseado em minuto cria novas janelas
-  ✅ Garante alinhamento 1:1 com `window_count` do EnhancedMarketBot
-
-🔹 CORREÇÕES v4.5.2:
-  ✅ Se o evento já trouxer `janela_numero`, o EventSaver usa esse número
-
-🔹 CORREÇÕES v4.5.1:
-  ✅ FIX: Janelas vazias corrigidas (separador agora é processado no flush)
-  ✅ FIX: Race condition entre separador e evento resolvida
-  ✅ FIX: File lock adicionado ao separador visual
-
-🔹 v4.5.0:
-  ✅ Clock Sync integrado (compensa drift automático)
-  ✅ Timestamps sempre sincronizados com servidor Binance
-  ✅ Logs informativos de sincronização
-
-🔹 v4.4.1:
-  ✅ File locking multiplataforma (Windows/Linux/macOS)
-  ✅ Import condicional de fcntl/msvcrt
-  
-🔹 v4.4.0:
-  ✅ Memory leak corrigido
-  ✅ Timezone NY com detecção de DST (EDT/EST)
-  ✅ Buffer com limite máximo
-  ✅ Validação robusta de epoch_ms
+🔹 CORREÇÕES ANTERIORES:
+  ✅ Thread-safe em _janelas_processadas.
+  ✅ Timezone robusto (UTC base).
+  ✅ File locking multiplataforma.
+  ✅ Clock Sync integrado.
 """
 
 import json
@@ -52,6 +25,14 @@ import atexit
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Union, Tuple
 import re
+
+# ===== IMPORT DO NOVO BACKEND SQLITE =====
+try:
+    from database.event_store import EventStore
+    HAS_SQLITE_STORE = True
+except ImportError:
+    HAS_SQLITE_STORE = False
+    logging.warning("⚠️ Módulo database.event_store não encontrado. Escrita no SQLite desabilitada.")
 
 # ===== FILE LOCKING MULTIPLATAFORMA =====
 LOCK_METHOD = None
@@ -351,11 +332,8 @@ class EventSaver:
     """
     Classe responsável por salvar e formatar eventos de trading.
     
+    ✅ v4.6.0: Dual Write (SQLite + Files)
     ✅ v4.5.5: Lock em _janelas_processadas + timezone mais robusto
-    ✅ v4.5.4: Timezone unificado (epoch_ms/UTC) e uso de TimeManager quando disponível
-    ✅ v4.5.3: Separadores só são escritos se o evento trouxer janela_numero
-    ✅ v4.5.2: Usa janela_numero do bot
-    ✅ v4.5.1: Correção de janelas vazias e race conditions
     """
 
     def __init__(self, sound_alert: bool = True):
@@ -367,10 +345,23 @@ class EventSaver:
         self.time_manager = TimeManager()
         self._window_counter = 0   # pode ser usado por código legado sem janela_numero
 
+        # Logger
+        self.logger = logging.getLogger(__name__)
+
+        # ✅ Inicializa Banco de Dados (SQLite) - Etapa 2
+        self.db = None
+        if HAS_SQLITE_STORE:
+            try:
+                self.db = EventStore()
+                self.logger.info("✅ SQLite EventStore inicializado com sucesso (Dual Write Ativo)")
+            except Exception as e:
+                self.logger.error(f"❌ Falha ao inicializar SQLite EventStore: {e}")
+                self.db = None
+
         # Controle de janelas processadas
         self._janelas_processadas = set()      # Rastreia janelas que já tiveram separador
         self._last_janela_numero = None        # Última janela com separador escrito
-        self._janelas_lock = threading.Lock()  # NOVO: lock dedicado para _janelas_processadas
+        self._janelas_lock = threading.Lock()  # lock dedicado para _janelas_processadas
         
         # _seen_in_block com timestamp para limpeza
         self._seen_in_block: Dict[Tuple, float] = {}
@@ -387,9 +378,6 @@ class EventSaver:
         # Thread de cleanup
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
-        
-        # Logger
-        self.logger = logging.getLogger(__name__)
         
         # Stats
         self._buffer_overflow_count = 0
@@ -438,7 +426,7 @@ class EventSaver:
         lock_type = f"({LOCK_METHOD})" if LOCK_METHOD else ""
         
         self.logger.info(
-            "✅ EventSaver v4.5.5 inicializado | "
+            "✅ EventSaver v4.6.0 inicializado | "
             "Buffer max: %d | Cleanup: %ds | File locking: %s %s",
             MAX_BUFFER_SIZE,
             CLEANUP_INTERVAL,
@@ -477,7 +465,6 @@ class EventSaver:
     def _convert_timezone(self, dt: datetime, target_tz) -> datetime:
         """
         Converte datetime para timezone alvo de forma segura.
-        v4.5.5: em caso de erro, força tzinfo = UTC e loga como erro.
         """
         try:
             # Suporte para DynamicNYTZ
@@ -509,12 +496,11 @@ class EventSaver:
                     else:
                         return dt_utc.astimezone(target_tz)
         except Exception as e:
-            # Antes era debug + retorno silencioso do dt original (possivelmente naive)
             self.logger.error(
                 f"❌ FALHA na conversão de timezone: {e}",
                 exc_info=True
             )
-            # Fallback: garante pelo menos tzinfo=UTC para evitar datetime "naive" em logs
+            # Fallback: garante pelo menos tzinfo=UTC para evitar datetime "naive"
             if isinstance(dt, datetime) and dt.tzinfo is None:
                 return dt.replace(tzinfo=UTC_TZ)
             return dt
@@ -750,7 +736,16 @@ class EventSaver:
                 self._flush_buffer(buffer_copy)
 
     def _flush_buffer(self, events: List[Dict]):
-        """Escreve eventos em lote nos arquivos."""
+        """Escreve eventos em lote nos arquivos e banco de dados."""
+        
+        # 1. Escrita no SQLite (Dual Write - Prioridade)
+        if self.db:
+            try:
+                self.db.save_batch(events)
+            except Exception as e:
+                self.logger.error(f"Erro ao salvar batch no SQLite: {e}")
+
+        # 2. Escrita em arquivos (Legacy)
         for event in events:
             try:
                 # Adiciona separador ANTES de processar evento, se necessário
@@ -764,7 +759,7 @@ class EventSaver:
                     self._save_to_jsonl(cleaned_event)
                     self._add_visual_log_entry(cleaned_event)
             except Exception as e:
-                self.logger.error(f"Erro ao processar evento no flush: {e}")
+                self.logger.error(f"Erro ao processar evento no flush de arquivos: {e}")
 
     def _save_to_json(self, event: Dict):
         """Salva evento em arquivo JSON com retry e file locking."""
@@ -916,31 +911,23 @@ class EventSaver:
     def save_event(self, event: Dict):
         """
         API pública para salvar um evento.
-        
-        ✅ v4.5.4: Timestamps sempre derivados de epoch_ms/UTC;
-                   TimeManager usado quando disponível;
-                   conversões NY/SP apenas para apresentação.
-        ✅ v4.5.3: Separador só é disparado se o evento trouxer janela_numero
         """
         if not isinstance(event, dict):
             self.logger.error("Evento inválido: não é um dicionário")
             return
 
         try:
-            # ==== TIMESTAMPS / CLOCK SYNC / UTC COMO FONTE DE VERDADE ====
+            # ==== TIMESTAMPS / CLOCK SYNC ====
             epoch_ms = event.get("epoch_ms")
             timestamp_str = event.get("timestamp")
             dt_utc: Optional[datetime] = None
             epoch_ms_int: Optional[int] = None
 
-            # Clock Sync: se sincronizado e evento não trouxe epoch_ms, usa tempo de servidor
             if HAS_CLOCK_SYNC and _clock_sync_instance and _clock_sync_instance.is_synced():
                 if not epoch_ms:
                     epoch_ms = _clock_sync_instance.get_server_time_ms()
                     event["epoch_ms"] = epoch_ms
-                    self.logger.debug(f"Timestamp criado com Clock Sync: {epoch_ms}")
 
-            # Tenta construir dt_utc a partir de epoch_ms (preferência total)
             if epoch_ms is not None and isinstance(epoch_ms, (int, float, str)):
                 try:
                     epoch_ms_int = int(epoch_ms)
@@ -949,9 +936,8 @@ class EventSaver:
                     else:
                         self.logger.error(f"epoch_ms fora de range plausível: {epoch_ms_int}")
                 except Exception as e:
-                    self.logger.error(f"Erro ao converter epoch_ms {epoch_ms} para datetime: {e}")
+                    self.logger.error(f"Erro ao converter epoch_ms: {e}")
 
-            # Se não conseguiu via epoch_ms, tenta via timestamp ISO
             if dt_utc is None and timestamp_str:
                 try:
                     dt_parsed = self._parse_iso8601(timestamp_str)
@@ -960,92 +946,59 @@ class EventSaver:
                         epoch_ms_int = int(dt_utc.timestamp() * 1000)
                         event.setdefault("epoch_ms", epoch_ms_int)
                 except Exception as e:
-                    self.logger.error(f"timestamp inválido {timestamp_str}: {e}")
+                    self.logger.error(f"timestamp inválido: {e}")
 
             if dt_utc is not None:
-                # Classificação de contexto (histórico vs tempo real) em UTC
                 now_utc = datetime.now(UTC_TZ)
                 time_diff = abs((dt_utc - now_utc).total_seconds())
                 event["data_context"] = "historical" if time_diff > 86400 else "real_time"
 
-                # Usa TimeManager.build_time_index se disponível
                 time_index = None
                 if epoch_ms_int is not None and hasattr(self.time_manager, "build_time_index"):
                     try:
                         time_index = self.time_manager.build_time_index(
-                            epoch_ms_int,
-                            include_local=True,
-                            timespec="milliseconds"
+                            epoch_ms_int, include_local=True, timespec="milliseconds"
                         )
-                    except Exception as e:
-                        self.logger.error(f"Erro ao gerar time_index com TimeManager: {e}")
+                    except Exception:
                         time_index = None
 
                 if isinstance(time_index, dict):
-                    # Não sobrescreve campos já existentes no evento
                     for k, v in time_index.items():
                         event.setdefault(k, v)
                     if "timestamp" not in event and "timestamp_utc" in time_index:
                         event["timestamp"] = time_index["timestamp_utc"]
                 else:
-                    # Fallback manual: mantém compatibilidade com versões anteriores
                     event.setdefault("timestamp_utc", dt_utc.strftime("%Y-%m-%d %H:%M:%S UTC"))
-
-                    if TIMEZONE_AVAILABLE or hasattr(NY_TZ, 'get_offset'):
-                        dt_ny = self._convert_timezone(dt_utc, NY_TZ)
-                        dt_sp = self._convert_timezone(dt_utc, SP_TZ)
-                        event.setdefault("timestamp_ny", dt_ny.strftime("%Y-%m-%d %H:%M:%S EST/EDT"))
-                        event.setdefault("timestamp_sp", dt_sp.strftime("%Y-%m-%d %H:%M:%S BRT"))
-                    else:
-                        dt_ny = dt_utc.replace(tzinfo=UTC_TZ).astimezone(NY_TZ)
-                        dt_sp = dt_utc.replace(tzinfo=UTC_TZ).astimezone(SP_TZ)
-                        event.setdefault("timestamp_ny", dt_ny.strftime("%Y-%m-%d %H:%M:%S") + " (EST)")
-                        event.setdefault("timestamp_sp", dt_sp.strftime("%Y-%m-%d %H:%M:%S") + " (BRT)")
-
                     if "timestamp" not in event:
                         event["timestamp"] = dt_utc.isoformat(timespec="milliseconds")
             else:
                 event.setdefault("data_context", "unknown")
-                self.logger.warning("Evento sem timestamp válido (epoch_ms/timestamp ausentes ou inválidos)")
 
-            # Enriquece eventos simples (mesmo que antes)
+            # Enriquece eventos simples
             if event.get("tipo_evento") == "Alerta" and "context" in event:
                 context = event["context"]
                 enriched = {
                     "price_data": {
-                        "current": {
-                            "last": context.get("price"),
-                            "volume": context.get("volume")
-                        }
+                        "current": {"last": context.get("price"), "volume": context.get("volume")}
                     },
-                    "volatility_metrics": {
-                        "realized_vol_24h": context.get("volatility")
-                    },
-                    "market_context": {
-                        "trading_session": "NY_OVERLAP",
-                        "session_phase": "ACTIVE"
-                    }
+                    "volatility_metrics": {"realized_vol_24h": context.get("volatility")},
+                    "market_context": {"trading_session": "NY_OVERLAP", "session_phase": "ACTIVE"}
                 }
                 event.update(enriched)
 
-            # ==== DETECÇÃO DE NOVA JANELA (ALINHADA COM O BOT) ====
+            # ==== DETECÇÃO DE NOVA JANELA ====
             if "janela_numero" in event:
                 janela_num = event["janela_numero"]
-                # Só dispara separador se mudar de janela
                 if janela_num != self._last_janela_numero:
                     event["_needs_separator"] = True
                     self._last_janela_numero = janela_num
-            else:
-                # Não cria janela nova automaticamente.
-                pass
 
             # Buffer com limite
             with self._buffer_lock:
                 if len(self._write_buffer) >= MAX_BUFFER_SIZE:
                     self._buffer_overflow_count += 1
                     self.logger.warning(
-                        f"⚠️ Buffer overflow ({len(self._write_buffer)}/{MAX_BUFFER_SIZE}), "
-                        f"forçando flush..."
+                        f"⚠️ Buffer overflow ({len(self._write_buffer)}/{MAX_BUFFER_SIZE}), forçando flush..."
                     )
                     buffer_copy = self._write_buffer.copy()
                     self._write_buffer.clear()
@@ -1064,15 +1017,11 @@ class EventSaver:
         """Adiciona separador visual para nova janela de tempo."""
         janela_num = event.get('janela_numero')
         if not janela_num:
-            # Segurança: nunca escreve separador sem número de janela
             return
         
-        # THREAD-SAFE: checagem e marcação atômica
         with self._janelas_lock:
             if janela_num in self._janelas_processadas:
-                self.logger.warning(f"⚠️ Separador para janela {janela_num} já foi escrito, pulando")
                 return
-            # Marca como processada ANTES de escrever, para evitar duplicatas em race
             self._janelas_processadas.add(janela_num)
 
         try:
@@ -1083,10 +1032,9 @@ class EventSaver:
                 try:
                     epoch_ms_int = int(epoch_ms)
                     dt_utc = datetime.fromtimestamp(epoch_ms_int / 1000, tz=UTC_TZ)
-                except Exception as e:
-                    self.logger.debug(f"Erro ao converter epoch_ms no separador: {e}")
+                except Exception:
+                    pass
 
-            # Fallback seguro: agora em UTC, nunca datetime.now() local com rótulo "UTC"
             if dt_utc is None:
                 dt_utc = datetime.now(UTC_TZ)
 
@@ -1104,8 +1052,6 @@ class EventSaver:
                 timestamp_sp = dt_sp.strftime("%Y-%m-%d %H:%M:%S") + " (BRT)"
 
             window_num = janela_num
-
-            # Cabeçalho por janela com horários completos e ícones
             separator = f"\n{'='*100}\n"
             separator += f"🗓️  JANELA {window_num}\n"
             separator += f"🕒 UTC: {timestamp_utc}\n"
@@ -1126,14 +1072,10 @@ class EventSaver:
                     with open(self.visual_log_file, "a", encoding="utf-8") as f:
                         f.write(separator)
                         f.flush()
-
-                    self.logger.info(f"✅ Separador escrito e janela {janela_num} marcada como processada")
                 else:
                     self.logger.warning("Timeout ao adquirir lock do visual log")
-                    
             except Exception as e:
                 self.logger.error(f"Erro ao escrever separador: {e}")
-                
             finally:
                 if lock_file:
                     if lock_acquired:
@@ -1188,7 +1130,6 @@ class EventSaver:
             timestamp = event.get("timestamp")
             dt_utc: Optional[datetime] = None
 
-            # Determina dt_utc a partir de epoch_ms ou timestamp ISO
             if epoch_ms and isinstance(epoch_ms, (int, float, str)):
                 try:
                     epoch_ms_int = int(epoch_ms)
@@ -1199,7 +1140,6 @@ class EventSaver:
             if dt_utc is None and timestamp:
                 try:
                     dt = self._parse_iso8601(timestamp)
-                    # Normaliza para UTC
                     if dt.tzinfo is None:
                         dt_utc = dt.replace(tzinfo=UTC_TZ)
                     else:
@@ -1210,7 +1150,6 @@ class EventSaver:
             if dt_utc is None:
                 dt_utc = datetime.now(UTC_TZ)
 
-            # Constrói timestamps nas outras timezones para cabeçalho
             if TIMEZONE_AVAILABLE or hasattr(NY_TZ, 'get_offset'):
                 dt_ny = self._convert_timezone(dt_utc, NY_TZ)
                 dt_sp = self._convert_timezone(dt_utc, SP_TZ)
@@ -1242,7 +1181,6 @@ class EventSaver:
 
             header = "\n".join(header_lines) + "\n"
 
-            # Prepara evento para visualização (remove campos redundantes, compacta arrays, etc.)
             visual_event = self._prepare_visual_event(event)
             try:
                 json_block = json.dumps(visual_event, indent=2, ensure_ascii=False, default=str)
@@ -1250,10 +1188,8 @@ class EventSaver:
                 json_block = str(visual_event)
 
             json_block = self._optimize_json_display(json_block)
-
             entry = header + json_block + "\n"
 
-            # Escreve no arquivo de log visual com file locking
             lock_file = None
             lock_acquired = False
             lock_file_path = self.visual_log_file.with_suffix('.lock')
@@ -1280,52 +1216,29 @@ class EventSaver:
             self.logger.error(f"Erro ao adicionar entrada no log visual: {e}", exc_info=True)
 
     def _compress_volume_nodes_for_visual(self, event: Dict) -> Dict:
-        """
-        Compacta QUALQUER campo 'volume_nodes' (hvn_nodes / lvn_nodes), mesmo aninhado,
-        apenas para o log visual, transformando [[p,v,s], ...] em uma string:
-        'preco|volume|score; preco|volume|score; ...'.
-
-        Isso afeta SOMENTE o arquivo eventos_visuais.log.
-        Os arquivos JSON/JSONL brutos continuam com o array completo.
-        """
-
+        """Compacta 'volume_nodes' para log visual."""
         def _compress_vn_dict(vn: Dict):
-            """Aplica a compactação em um dicionário volume_nodes específico."""
             for key in ("hvn_nodes", "lvn_nodes"):
                 nodes = vn.get(key)
                 if not isinstance(nodes, list) or not nodes:
                     continue
-
-                # Limita o número de nós só para reduzir tamanho no log visual
                 max_nodes = 10
                 display_nodes = nodes
                 if len(nodes) > max_nodes:
                     display_nodes = nodes[:5] + [["...", "...", "..."]] + nodes[-5:]
-
                 parts = []
                 for triplet in display_nodes:
-                    if (
-                        isinstance(triplet, (list, tuple))
-                        and len(triplet) == 3
-                        and all(isinstance(x, (int, float, str)) for x in triplet)
-                    ):
+                    if (isinstance(triplet, (list, tuple)) and len(triplet) == 3 and all(isinstance(x, (int, float, str)) for x in triplet)):
                         p, v, s = triplet
                         try:
-                            p_f = float(p)
-                            v_f = float(v)
-                            s_f = float(s)
-                            # Formato compacto: preco|volume|score
-                            parts.append(f"{p_f:.0f}|{v_f:.2f}|{s_f:.2f}")
+                            parts.append(f"{float(p):.0f}|{float(v):.2f}|{float(s):.2f}")
                         except Exception:
                             parts.append(str(triplet))
                     else:
                         parts.append(str(triplet))
-
-                # Resultado final: tudo em UMA linha, em forma de string
                 vn[key] = "; ".join(parts)
 
         def _walk(obj):
-            """Percorre recursivamente o evento em busca de 'volume_nodes'."""
             if isinstance(obj, dict):
                 for k, v in obj.items():
                     if k == "volume_nodes" and isinstance(v, dict):
@@ -1340,7 +1253,6 @@ class EventSaver:
             _walk(event)
         except Exception as e:
             self.logger.debug(f"Erro ao compactar volume_nodes para visual: {e}")
-
         return event
 
     def _optimize_json_display(self, json_str: str) -> str:
@@ -1348,23 +1260,18 @@ class EventSaver:
         def optimize_arrays(match):
             array_content = match.group(1)
             numbers = [x.strip() for x in array_content.split(',')]
-            
             if len(numbers) > 10 and all(NUMBER_PATTERN.match(n) for n in numbers):
                 if len(numbers) > 6:
                     optimized = numbers[:3] + ['...'] + numbers[-3:]
                     return '[' + ', '.join(optimized) + ']'
             return match.group(0)
-        
         json_str = re.sub(r'\[([^\[\]]*)\]', optimize_arrays, json_str)
         return json_str
 
     def _prepare_visual_event(self, event: Dict) -> Dict:
         """Prepara evento para visualização removendo redundâncias."""
         clean = dict(event)
-
-        # Compacta volume_nodes só no log visual
         clean = self._compress_volume_nodes_for_visual(clean)
-        
         fields_to_remove = ['time_ny', 'time_sp', 'time_utc', '_id', '_rev', '_key']
         for field in fields_to_remove:
             clean.pop(field, None)
@@ -1407,11 +1314,7 @@ class EventSaver:
             elif system == "Darwin":
                 try:
                     import subprocess
-                    subprocess.run(
-                        ["afplay", "/System/Library/Sounds/Glass.aiff"], 
-                        capture_output=True, 
-                        timeout=2
-                    )
+                    subprocess.run(["afplay", "/System/Library/Sounds/Glass.aiff"], capture_output=True, timeout=2)
                 except:
                     print("\n🔔 ALERTA: Sinal detectado! 🔔\n")
             elif system == "Linux":
@@ -1463,6 +1366,9 @@ class EventSaver:
         else:
             stats["clock_sync"] = {"enabled": False}
         
+        if self.db:
+            stats["sqlite"] = self.db.get_stats()
+        
         return stats
 
 
@@ -1483,19 +1389,15 @@ def install_dependencies():
     """Helper para instalar dependências opcionais."""
     import subprocess
     import sys
-    
     packages = []
-    
     try:
         import pytz
     except ImportError:
         packages.append("pytz")
-    
     try:
         import numpy
     except ImportError:
         packages.append("numpy")
-    
     if packages:
         print(f"Instalando dependências opcionais: {', '.join(packages)}")
         subprocess.check_call([sys.executable, "-m", "pip", "install"] + packages)
@@ -1512,24 +1414,27 @@ if __name__ == "__main__":
     )
     
     print("\n" + "="*80)
-    print("🧪 TESTE DO EVENTSAVER v4.5.5 - JANELAS ALINHADAS + TIMEZONE UTC")
+    print("🧪 TESTE DO EVENTSAVER v4.6.0 - DUAL WRITE (SQLite + JSON)")
     print("="*80 + "\n")
     
     saver = EventSaver(sound_alert=False)
     
     now_ms = int(time.time() * 1000)
     test_event = {
-        "tipo_evento": "TesteJanela",
+        "tipo_evento": "TesteDualWrite",
         "is_signal": True,
         "epoch_ms": now_ms,
-        "janela_numero": 1,
-        "volume_total": 10.0,
+        "janela_numero": 100,
+        "volume_total": 50.0,
+        "msg": "Este evento deve aparecer no SQLite e no JSON"
     }
     saver.save_event(test_event)
     
+    print("1. Evento enviado para buffer. Aguardando flush...")
     time.sleep(6)
     
     stats = saver.get_stats()
-    print("Stats:", stats)
+    print("\n2. Estatísticas:", stats)
+    
     saver.stop()
-    print("✅ Teste concluído.")
+    print("\n✅ Teste concluído. Verifique se 'dados/trading_bot.db' contém o evento.")
