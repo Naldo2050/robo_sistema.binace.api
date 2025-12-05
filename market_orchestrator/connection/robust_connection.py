@@ -1,67 +1,98 @@
-# connection/robust_connection.py
+# market_orchestrator/connection/robust_connection.py
 # -*- coding: utf-8 -*-
 
 """
-Gerenciador robusto de conexão WebSocket + RateLimiter.
+Gerenciador robusto de conexão WebSocket usando AIOHTTP (Asyncio).
 
-Código equivalente ao que existia em market_orchestrator.py original,
-com pequenas limpezas (remoção de duplicações) mas mesma lógica.
+Substitui a versão antiga baseada em 'websocket-client' (threading).
+Gerencia reconexão automática, heartbeats e backoff exponencial.
 """
 
 import logging
-import time
+import asyncio
+import json
 import socket
-import random
-import threading
 from datetime import datetime, timezone
-from typing import Optional
-from urllib.parse import urlparse
-from collections import deque
+from typing import Optional, Callable, Any
 
-import websocket
+import aiohttp
+from aiohttp import ClientWebSocketResponse, WSMsgType
+
 import config
+import time
+import threading
+
+logger = logging.getLogger(__name__)
 
 
 class RateLimiter:
-    """Rate limiter thread-safe para controle de requisições."""
+    """
+    Rate limiter thread-safe.
+
+    - acquire(): versão síncrona (bloqueia a thread que chamou)
+    - acquire_async(): versão assíncrona (para uso opcional em corrotinas)
+    """
 
     def __init__(self, max_calls: int, period_seconds: float) -> None:
         self.max_calls = max_calls
         self.period = period_seconds
-        self.calls: deque[float] = deque()
-        self.lock = threading.Lock()
+        self.timestamps: list[float] = []
+        self._lock = threading.Lock()
+
+    def _prune_and_get_sleep(self, now: float) -> float:
+        """
+        Remove timestamps antigos e calcula quanto tempo precisamos esperar
+        para liberar a próxima chamada.
+        """
+        with self._lock:
+            # mantém apenas chamadas dentro da janela
+            self.timestamps = [
+                t for t in self.timestamps if now - t < self.period
+            ]
+
+            if len(self.timestamps) >= self.max_calls:
+                sleep_time = self.timestamps[0] + self.period - now
+            else:
+                sleep_time = 0.0
+
+        return max(0.0, sleep_time)
 
     def acquire(self) -> None:
-        """Adquire permissão para fazer chamada (bloqueia se necessário)."""
+        """Versão síncrona: bloqueia a thread até poder prosseguir."""
         while True:
-            sleep_time = 0.0
+            now = time.monotonic()
+            sleep_time = self._prune_and_get_sleep(now)
+            if sleep_time <= 0:
+                break
+            time.sleep(sleep_time)
 
-            with self.lock:
-                now = time.time()
+        with self._lock:
+            self.timestamps.append(time.monotonic())
 
-                # Remove chamadas antigas
-                while self.calls and self.calls[0] < now - self.period:
-                    self.calls.popleft()
+    async def acquire_async(self) -> None:
+        """Versão assíncrona opcional (para uso futuro em corrotinas)."""
+        while True:
+            now = time.monotonic()
+            sleep_time = self._prune_and_get_sleep(now)
+            if sleep_time <= 0:
+                break
+            await asyncio.sleep(sleep_time)
 
-                # Se atingiu limite, calcula tempo restante
-                if len(self.calls) >= self.max_calls:
-                    sleep_time = max(0.0, self.calls[0] + self.period - now)
-                else:
-                    self.calls.append(now)
-                    return
-
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+        with self._lock:
+            self.timestamps.append(time.monotonic())
 
 
 class RobustConnectionManager:
-    """Gerenciador robusto de conexão WebSocket com reconnect automático."""
+    """
+    Gerenciador de WebSocket assíncrono (aiohttp).
+    Mantém a conexão viva e reconecta automaticamente em caso de queda.
+    """
 
     def __init__(
         self,
         stream_url: str,
         symbol: str,
-        max_reconnect_attempts: int = 10,
+        max_reconnect_attempts: int = 15,
         initial_delay: float = 1.0,
         max_delay: float = 60.0,
         backoff_factor: float = 1.5,
@@ -76,38 +107,24 @@ class RobustConnectionManager:
         self.current_delay = initial_delay
         self.reconnect_count = 0
         self.is_connected = False
+        self.should_stop = False
 
-        self.last_message_time: Optional[datetime] = None
-        self.last_successful_message_time: Optional[datetime] = None
-        self.connection_start_time: Optional[datetime] = None
-
-           # Evento global para encerrar a conexão (usado por disconnect / KeyboardInterrupt)
-        self.stop_event = threading.Event()
-
-        # Evento separado só para controlar o thread de heartbeat
-        self.heartbeat_stop = threading.Event()
-
-        # Thread de heartbeat
-        self.heartbeat_thread: Optional[threading.Thread] = None
-
-        # Callbacks externos
-        self.on_message_callback = None
-        self.on_open_callback = None
-        self.on_close_callback = None
-        self.on_error_callback = None
-        self.on_reconnect_callback = None
-
+        # Estatísticas
         self.total_messages_received = 0
         self.total_reconnects = 0
+        self.last_message_time: Optional[datetime] = None
+        self.connection_start_time: Optional[datetime] = None
 
-        self.external_heartbeat_cb = None
+        # Callbacks (podem ser async ou sync)
+        self.on_message_callback: Optional[Callable] = None
+        self.on_open_callback: Optional[Callable] = None
+        self.on_close_callback: Optional[Callable] = None
+        self.on_error_callback: Optional[Callable] = None
+        self.on_reconnect_callback: Optional[Callable] = None
+        self.external_heartbeat_cb: Optional[Callable] = None
 
-        # Referência para o WebSocket atual
-        self._ws: Optional[websocket.WebSocketApp] = None
-
-    # ============================================================
-    #   CALLBACKS / CONFIGURAÇÃO
-    # ============================================================
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._ws: Optional[ClientWebSocketResponse] = None
 
     def set_callbacks(
         self,
@@ -126,255 +143,150 @@ class RobustConnectionManager:
     def set_heartbeat_cb(self, cb) -> None:
         self.external_heartbeat_cb = cb
 
-    # ============================================================
-    #   TESTE DE CONECTIVIDADE TCP
-    # ============================================================
+    async def connect(self) -> None:
+        """
+        Inicia o loop de conexão principal.
+        Bloqueia a execução enquanto a conexão estiver ativa.
+        """
+        self.should_stop = False
+        
+        # Configurações de timeout
+        ping_interval = getattr(config, "WS_PING_INTERVAL", 20)
+        # aiohttp usa heartbeat para enviar pings automáticos
+        
+        logger.info(f"🚀 Iniciando conexão Async (aiohttp) para {self.symbol}...")
 
-    def _test_connection(self) -> bool:
-        """Testa conectividade TCP antes de tentar WebSocket."""
-        try:
-            parsed = urlparse(self.stream_url)
-            host = parsed.hostname
-            port = parsed.port or (443 if parsed.scheme == "wss" else 80)
-
-            socket.getaddrinfo(host, port)
-
-            with socket.create_connection((host, port), timeout=3):
-                return True
-        except Exception as e:
-            logging.error(f"Erro ao testar conexão TCP: {e}")
-            return False
-
-    # ============================================================
-    #   CALLBACKS INTERNOS DO WEBSOCKET
-    # ============================================================
-
-    def _on_message(self, ws, message: str) -> None:
-        """Callback interno para mensagens recebidas."""
-        try:
-            self.last_message_time = datetime.now(timezone.utc)
-            self.total_messages_received += 1
-
-            if self.on_message_callback:
-                self.on_message_callback(ws, message)
-
-            self.last_successful_message_time = self.last_message_time
-
-            # Relaxa o delay quando o fluxo volta ao normal
-            if self.current_delay > self.initial_delay:
-                self.current_delay = max(
-                    self.initial_delay,
-                    self.current_delay * 0.9,
-                )
-        except Exception as e:
-            logging.error(f"Erro no processamento da mensagem: {e}")
-
-    def _on_open(self, ws) -> None:
-        """Callback interno para conexão aberta."""
-        self.is_connected = True
-
-        if self.reconnect_count > 0 and self.on_reconnect_callback:
+        while not self.should_stop:
             try:
-                self.on_reconnect_callback()
-            except Exception as e:
-                logging.error(f"Erro no callback de reconexão: {e}")
+                async with aiohttp.ClientSession() as session:
+                    self._session = session
+                    
+                    # Tentativa de conexão
+                    try:
+                        async with session.ws_connect(
+                            self.stream_url,
+                            heartbeat=ping_interval,
+                            autoping=True
+                        ) as ws:
+                            self._ws = ws
+                            await self._handle_connection_success(ws)
+                            
+                            # Loop de mensagens
+                            async for msg in ws:
+                                if self.should_stop:
+                                    break
+                                await self._handle_message(msg)
 
+                            # Se saiu do loop, a conexão fechou
+                            if not self.should_stop:
+                                logger.warning("🔌 Conexão fechada pelo servidor.")
+                                await self._handle_reconnect()
+                    
+                    except (aiohttp.ClientError, socket.gaierror) as e:
+                        logger.error(f"❌ Erro de conexão/rede: {e}")
+                        await self._handle_reconnect()
+                    except Exception as e:
+                        logger.error(f"❌ Erro inesperado no WebSocket: {e}", exc_info=True)
+                        await self._handle_reconnect()
+
+            except Exception as e:
+                logger.critical(f"💀 Erro crítico na sessão aiohttp: {e}")
+                await asyncio.sleep(self.initial_delay)
+
+            if self.reconnect_count >= self.max_reconnect_attempts:
+                logger.critical("⛔ Máximo de tentativas de reconexão atingido. Parando.")
+                break
+
+    async def disconnect(self) -> None:
+        """Fecha a conexão graciosamente."""
+        logger.info("🛑 Desconectando...")
+        self.should_stop = True
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+    # ============================================================
+    # HANDLERS INTERNOS
+    # ============================================================
+
+    async def _handle_connection_success(self, ws) -> None:
+        """Chamado quando a conexão é estabelecida com sucesso."""
+        self.is_connected = True
         self.reconnect_count = 0
         self.current_delay = self.initial_delay
-
-        now = datetime.now(timezone.utc)
-        self.connection_start_time = now
-        self.last_message_time = now
-        self.last_successful_message_time = now
-
-        logging.info(f"✅ Conexão estabelecida com {self.symbol}")
-
-        self._start_heartbeat()
-
+        self.connection_start_time = datetime.now(timezone.utc)
+        
+        logger.info(f"✅ Conexão estabelecida (Async) | {self.symbol}")
+        
         if self.on_open_callback:
-            self.on_open_callback(ws)
+            # Suporta callbacks sync e async
+            if asyncio.iscoroutinefunction(self.on_open_callback):
+                await self.on_open_callback(ws)
+            else:
+                self.on_open_callback(ws)
 
-    def _on_close(self, ws, close_status_code, close_msg) -> None:
+    async def _handle_message(self, msg) -> None:
+        """Processa mensagens recebidas."""
+        if msg.type == WSMsgType.TEXT:
+            self.last_message_time = datetime.now(timezone.utc)
+            self.total_messages_received += 1
+            
+            # Chama heartbeat externo se configurado
+            if self.external_heartbeat_cb:
+                self.external_heartbeat_cb()
+
+            if self.on_message_callback:
+                try:
+                    if asyncio.iscoroutinefunction(self.on_message_callback):
+                        await self.on_message_callback(self._ws, msg.data)
+                    else:
+                        # Executa callback síncrono (cuidado para não bloquear o loop)
+                        self.on_message_callback(self._ws, msg.data)
+                except Exception as e:
+                    logger.error(f"Erro no callback on_message: {e}")
+        
+        elif msg.type == WSMsgType.ERROR:
+            logger.error(f"Erro no WebSocket: {msg.data}")
+            if self.on_error_callback:
+                if asyncio.iscoroutinefunction(self.on_error_callback):
+                    await self.on_error_callback(self._ws, msg.data)
+                else:
+                    self.on_error_callback(self._ws, msg.data)
+
+    async def _handle_reconnect(self) -> None:
+        """Gerencia a lógica de backoff e reconexão."""
         self.is_connected = False
-        logging.warning(
-            f"🔌 Conexão fechada - Código: {close_status_code}, Msg: {close_msg}"
-        )
-
-        self._stop_heartbeat()
-
+        self.reconnect_count += 1
+        self.total_reconnects += 1
+        
         if self.on_close_callback:
-            self.on_close_callback(ws, close_status_code, close_msg)
+             # Passamos códigos genéricos pois aiohttp abstrai isso no loop
+            if asyncio.iscoroutinefunction(self.on_close_callback):
+                await self.on_close_callback(self._ws, -1, "Connection Lost")
+            else:
+                self.on_close_callback(self._ws, -1, "Connection Lost")
 
-    def _on_error(self, ws, error) -> None:
-        logging.error(f"❌ Erro WebSocket: {error}")
-        if self.on_error_callback:
-            self.on_error_callback(ws, error)
-
-    # ============================================================
-    #   HEARTBEAT
-    # ============================================================
-
-    def _start_heartbeat(self) -> None:
-        """Inicia o thread de heartbeat (controle próprio, não mexe no stop_event global)."""
-        self.heartbeat_stop.clear()
-
-        if self.heartbeat_thread and self.heartbeat_thread.is_alive():
+        if self.should_stop:
             return
 
-        self.heartbeat_thread = threading.Thread(
-            target=self._heartbeat_monitor,
-            daemon=True,
-        )
-        self.heartbeat_thread.start()
-
-        self.heartbeat_thread = threading.Thread(
-            target=self._heartbeat_monitor,
-            daemon=True,
-        )
-        self.heartbeat_thread.start()
-
-    def _stop_heartbeat(self) -> None:
-        """Para apenas o thread de heartbeat (não encerra o loop de conexão)."""
-        self.heartbeat_stop.set()
-        t = getattr(self, "heartbeat_thread", None)
-        if t and t.is_alive():
-            t.join(timeout=1.0)
-
-    def _heartbeat_monitor(self) -> None:
-        """Monitora a saúde da conexão."""
-        while self.is_connected and not self.heartbeat_stop.is_set():
-
-            if self.heartbeat_stop.wait(20.0):
-                break
-
-            if not self.is_connected:
-                break
-
-            if self.last_message_time:
-                gap = (datetime.now(timezone.utc) - self.last_message_time).total_seconds()
-                if gap > 60:
-                    logging.warning(f"⚠️ Sem mensagens há {gap:.0f}s. Forçando reconexão.")
-                    self.is_connected = False
-                    break
-
-            if self.last_successful_message_time:
-                valid_gap = (
-                    datetime.now(timezone.utc)
-                    - self.last_successful_message_time
-                ).total_seconds()
-                if valid_gap > 120:
-                    logging.critical(
-                        f"💀 SEM MENSAGENS VÁLIDAS HÁ {valid_gap:.0f}s!"
-                    )
-
-    # ============================================================
-    #   CICLO DE CONEXÃO + RECONEXÃO
-    # ============================================================
-
-    def _calculate_next_delay(self) -> float:
-        delay = min(self.current_delay * self.backoff_factor, self.max_delay)
-        jitter = delay * 0.2 * (random.random() - 0.5)
-        self.current_delay = max(self.initial_delay, delay + jitter)
-        return self.current_delay
-
-    def connect(self) -> None:
-        ping_interval = getattr(config, "WS_PING_INTERVAL", 15)
-        ping_timeout = getattr(config, "WS_PING_TIMEOUT", 8)
-
-        self.stop_event.clear()
-
-        while (
-            self.reconnect_count < self.max_reconnect_attempts
-            and not self.stop_event.is_set()
-        ):
-            try:
-                if self.external_heartbeat_cb:
-                    try:
-                        self.external_heartbeat_cb()
-                    except Exception:
-                        pass
-
-                if not self._test_connection():
-                    raise ConnectionError("Falha no teste de conectividade")
-
-                if self.reconnect_count > 0:
-                    logging.info(
-                        f"🔄 Tentativa de reconexão "
-                        f"{self.reconnect_count + 1}/{self.max_reconnect_attempts}"
-                    )
-
-                ws = websocket.WebSocketApp(
-                    self.stream_url,
-                    on_message=self._on_message,
-                    on_error=self._on_error,
-                    on_close=self._on_close,
-                    on_open=self._on_open,
-                )
-
-                self._ws = ws
-
-                ws.run_forever(
-                    ping_interval=ping_interval,
-                    ping_timeout=ping_timeout,
-                    skip_utf8_validation=True,
-                )
-
-                self._ws = None
-
-                if self.stop_event.is_set():
-                    break
-
-            except KeyboardInterrupt:
-                logging.info("⏹️ Interrompido pelo usuário")
-                self.stop_event.set()
-                break
-
-            except Exception as e:
-                self.reconnect_count += 1
-                self.total_reconnects += 1
-
-                logging.error(
-                    f"❌ Erro na conexão "
-                    f"({self.reconnect_count}/{self.max_reconnect_attempts}): {e}"
-                )
-
-                if self.reconnect_count < self.max_reconnect_attempts:
-                    delay = self._calculate_next_delay()
-                    logging.info(f"⏳ Reconectando em {delay:.1f}s...")
-
-                    t0 = time.time()
-                    while (
-                        time.time() - t0 < delay
-                        and not self.stop_event.is_set()
-                    ):
-                        if self.external_heartbeat_cb:
-                            try:
-                                self.external_heartbeat_cb()
-                            except Exception:
-                                pass
-                        time.sleep(1.0)
+        if self.reconnect_count <= self.max_reconnect_attempts:
+            logger.info(
+                f"⏳ Reconectando em {self.current_delay:.1f}s "
+                f"(Tentativa {self.reconnect_count}/{self.max_reconnect_attempts})..."
+            )
+            await asyncio.sleep(self.current_delay)
+            
+            # Backoff exponencial com jitter
+            import random
+            jitter = random.uniform(0, 0.1 * self.current_delay)
+            self.current_delay = min(
+                self.current_delay * self.backoff_factor + jitter, 
+                self.max_delay
+            )
+            
+            if self.on_reconnect_callback:
+                if asyncio.iscoroutinefunction(self.on_reconnect_callback):
+                    await self.on_reconnect_callback()
                 else:
-                    logging.error(
-                        "💀 Máximo de tentativas atingido. Encerrando."
-                    )
-                    break
-
-        self._stop_heartbeat()
-
-    # ============================================================
-    #   DESCONECTAR
-    # ============================================================
-
-    def disconnect(self) -> None:
-        logging.info("🛑 Iniciando desconexão...")
-        self.stop_event.set()
-
-        ws = getattr(self, "_ws", None)
-        if ws is not None:
-            try:
-                ws.close()
-            except Exception:
-                pass
-
-        # No código original havia closes duplicados; aqui um único
-        # close explícito já é suficiente para manter o comportamento.
+                    self.on_reconnect_callback()

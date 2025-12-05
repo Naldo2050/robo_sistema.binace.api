@@ -14,6 +14,7 @@ Correções:
 import sys
 import io
 import logging
+import asyncio
 
 from dotenv import load_dotenv
 
@@ -137,7 +138,8 @@ def main() -> int:
             wall_std_dev_factor=config.WALL_STD_DEV_FACTOR,
         )
 
-        bot.run()
+        # Executa o loop assíncrono principal do bot
+        asyncio.run(bot.run())
         return 0
 
     except KeyboardInterrupt:

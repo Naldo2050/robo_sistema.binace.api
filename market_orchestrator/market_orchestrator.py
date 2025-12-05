@@ -382,10 +382,15 @@ class EnhancedMarketBot:
 
         try:
             if self.connection_manager:
-                self.connection_manager.disconnect()
-                logging.info("✅ Connection Manager desconectado.")
+                # A conexão WebSocket já deve ter sido encerrada em run().
+                # Aqui garantimos apenas que qualquer loop interno pare.
+                try:
+                    self.connection_manager.should_stop = True
+                except Exception:
+                    pass
+                logging.info("✅ Connection Manager sinalizada para parada.")
         except Exception as e:
-            logging.error(f"❌ Erro ao desconectar Connection Manager: {e}")
+            logging.error(f"❌ Erro ao sinalizar parada da Connection Manager: {e}")
 
         try:
             if hasattr(self, "event_bus"):
@@ -1694,19 +1699,25 @@ class EnhancedMarketBot:
             self._process_window()
 
     # ========================================
-    # RUN
+    # RUN (versão assíncrona)
     # ========================================
-    def run(self) -> None:
+    async def run(self) -> None:
+        """
+        Loop principal assíncrono do bot.
+
+        Fica bloqueado enquanto o WebSocket estiver ativo.
+        """
         try:
             self.context_collector.start()
 
             logging.info(
                 "🎯 Iniciando Enhanced Market Bot v2.3.2 "
-                "(refatorado em módulos)..."
+                "(modo assíncrono, refatorado em módulos)..."
             )
             print("═" * 80)
 
-            self.connection_manager.connect()
+            # RobustConnectionManager agora é totalmente assíncrono (aiohttp)
+            await self.connection_manager.connect()
 
         except KeyboardInterrupt:
             logging.info("⏹️ Bot interrompido pelo usuário.")
@@ -1716,4 +1727,20 @@ class EnhancedMarketBot:
                 exc_info=True,
             )
         finally:
+            # Garante que o gerenciador de conexão pare e feche o WS
+            try:
+                self.connection_manager.should_stop = True
+            except Exception:
+                pass
+
+            try:
+                # disconnect é async; aqui ainda estamos dentro do event loop
+                await self.connection_manager.disconnect()
+            except Exception as e:
+                logging.error(
+                    f"❌ Erro ao desconectar Connection Manager no run(): {e}",
+                    exc_info=True,
+                )
+
+            # Limpeza de todos os demais recursos (threads, IA, etc.)
             self._cleanup_handler()
