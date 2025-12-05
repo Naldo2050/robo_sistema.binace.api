@@ -591,8 +591,20 @@ class AIAnalyzer:
 
     def _create_prompt(self, event_data: Dict[str, Any]) -> str:
         """
-        Cria prompt para IA com validação de dados.
+        Cria prompt para IA.
+        [MODIFICADO] Verifica se existe 'ai_payload' estruturado antes de usar lógica legada.
         """
+        ai_payload = event_data.get("ai_payload")
+        if ai_payload and isinstance(ai_payload, dict):
+            try:
+                logging.debug("Usando ai_payload estruturado para montar o prompt")
+                return self._build_structured_prompt(ai_payload)
+            except Exception as e:
+                logging.error(
+                    f"Erro ao construir prompt estruturado: {e}. "
+                    f"Usando fallback legado.",
+                    exc_info=True,
+                )
         tipo_evento = event_data.get("tipo_evento", "N/A")
         ativo = event_data.get("ativo") or event_data.get("symbol") or "N/A"
         descricao = event_data.get("descricao", "Sem descrição.")
@@ -830,6 +842,115 @@ class AIAnalyzer:
             "prob_neutral": prob_neutral,
         }
         return self._render_template("default", context)
+
+    def _build_structured_prompt(self, payload: Dict[str, Any]) -> str:
+        """
+        Constrói o prompt usando o payload padronizado (ai_payload_builder).
+        Se algum campo estiver faltando, faz fallback para 'N/A' ou valores simples.
+        """
+        meta = payload.get("signal_metadata", {}) or {}
+        price = payload.get("price_context", {}) or {}
+        flow = payload.get("flow_context", {}) or {}
+        ob = payload.get("orderbook_context", {}) or {}
+        macro = payload.get("macro_context", {}) or {}
+        ml = payload.get("ml_features", {}) or {}
+        hist = payload.get("historical_stats", {}) or {}
+
+        symbol = payload.get("symbol") or meta.get("symbol") or "N/A"
+        timestamp = payload.get("timestamp") or meta.get("timestamp") or "N/A"
+
+        # Preço atual e OHLC
+        ohlc = price.get("ohlc", {}) or {}
+        current_price = format_price(price.get("current_price"))
+        open_p = format_price(ohlc.get("open"))
+        high_p = format_price(ohlc.get("high"))
+        low_p = format_price(ohlc.get("low"))
+        close_p = format_price(ohlc.get("close"))
+
+        vp = price.get("volume_profile_daily", {}) or {}
+        poc = format_price(vp.get("poc"))
+        vah = format_price(vp.get("vah"))
+        val = format_price(vp.get("val"))
+
+        lines = []
+
+        # Cabeçalho
+        lines.append(f"Análise Institucional – {symbol}")
+        lines.append(f"{timestamp} | Tipo: {meta.get('type', 'N/A')}")
+        lines.append(f"Descrição: {meta.get('description', 'Sem descrição')}")
+        lines.append(f"Resultado da Batalha: {meta.get('battle_result', 'N/A')}")
+        lines.append("")
+
+        # Preço
+        lines.append("CONTEXTO DE PREÇO")
+        lines.append(f"  • Preço Atual: {current_price}")
+        lines.append(f"  • OHLC: O:{open_p} H:{high_p} L:{low_p} C:{close_p}")
+        lines.append(f"  • VP Diário: POC {poc} | VAH {vah} | VAL {val}")
+        lines.append("")
+
+        # Fluxo básico (adapte conforme chaves reais do seu builder)
+        net_flow = flow.get("net_flow")
+        cvd_acc = flow.get("cvd_accumulated")
+        if net_flow is not None or cvd_acc is not None:
+            lines.append("CONTEXTO DE FLUXO")
+            if net_flow is not None:
+                lines.append(f"  • Net Flow (janela): {format_delta(net_flow)}")
+            if cvd_acc is not None:
+                lines.append(f"  • CVD acumulado: {format_delta(cvd_acc)}")
+            lines.append("")
+
+        # Orderbook (simplificado, adapte conforme builder)
+        bid_usd = ob.get("bid_depth_usd")
+        ask_usd = ob.get("ask_depth_usd")
+        imbalance = ob.get("imbalance")
+        if bid_usd is not None or ask_usd is not None:
+            lines.append("ORDERBOOK / LIQUIDEZ")
+            lines.append(
+                f"  • Bids: {format_large_number(bid_usd)} | "
+                f"Asks: {format_large_number(ask_usd)}"
+            )
+            if imbalance is not None:
+                lines.append(f"  • Imbalance: {format_delta(imbalance)}")
+            lines.append("")
+
+        # Macro (simplificado)
+        if macro:
+            lines.append("MACRO / REGIME")
+            session = macro.get("session") or macro.get("session_name")
+            if session:
+                lines.append(f"  • Sessão: {session}")
+            trends = macro.get("multi_timeframe_trends") or {}
+            if trends:
+                lines.append("  • Tendências multi-timeframe:")
+                for tf, tr in trends.items():
+                    val = tr.get("tendencia") if isinstance(tr, dict) else tr
+                    lines.append(f"    - {tf}: {val}")
+            lines.append("")
+
+        # Histórico (simplificado)
+        if hist:
+            lp = hist.get("long_prob")
+            sp = hist.get("short_prob")
+            np_ = hist.get("neutral_prob")
+            lines.append("ESTATÍSTICA HISTÓRICA")
+            lines.append(
+                f"  • Probabilidades: Long={lp} | Short={sp} | Neutro={np_}"
+            )
+            lines.append("")
+
+        # Instruções
+        lines.append("TAREFA DA IA:")
+        lines.append(
+            "Analise os dados de preço, fluxo, book e contexto macro e determine:"
+        )
+        lines.append("1) Viés direcional (alta, baixa ou neutro).")
+        lines.append("2) Região de entrada ideal (se houver setup claro).")
+        lines.append("3) Zona de invalidação (stop técnico).")
+        lines.append(
+            "Se os dados forem conflitantes ou fracos, recomende aguardar."
+        )
+
+        return "\n".join(lines)
 
     # ====================================================================
     # CALLERS (SYNC + ASYNC / STRUCTURED)
