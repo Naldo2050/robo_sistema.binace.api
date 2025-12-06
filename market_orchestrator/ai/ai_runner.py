@@ -260,6 +260,13 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                 except:
                                     ai_result_json = {"raw_response": analysis_result.get("raw_response", "")}
 
+                            # Filtro de confiança: se < 0.7, força action para "wait"
+                            if isinstance(ai_result_json, dict):
+                                action = ai_result_json.get("action", "wait")
+                                confidence = ai_result_json.get("confidence", 0.0)
+                                if confidence < 0.7:
+                                    ai_result_json["action"] = "wait"
+
                             ai_event = {
                                 "tipo_evento": "AI_ANALYSIS",
                                 "symbol": symbol,

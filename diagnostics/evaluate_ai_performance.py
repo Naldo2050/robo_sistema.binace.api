@@ -200,6 +200,10 @@ class AIPerformanceEvaluator:
         sentiment = ai_result.get("sentiment", "neutral")
         confidence = ai_result.get("confidence", 0.0)
         
+        # Filtro de confiança: abaixo de 0.7, não avaliamos o sinal (equivalente a "wait")
+        if confidence < 0.7:
+            return None
+                
         # Extrai contexto (opcional, para análise de correlação)
         ai_payload = data.get("ai_payload", {})
         flow_ctx = ai_payload.get("flow_context", {})

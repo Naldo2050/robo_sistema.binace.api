@@ -66,3 +66,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Relatórios de performance de IA (não versionar)
+diagnostics/ai_performance_report.csv
