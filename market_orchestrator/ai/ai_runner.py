@@ -277,7 +277,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                 "ai_payload": {
                                     "flow_context": ai_payload.get("flow_context", {}),
                                     "macro_context": ai_payload.get("macro_context", {}),
-                                    # adicione outros campos de contexto se fácil
+                                    "liquidity_heatmap": ai_payload.get("fluxo_continuo", {}).get("liquidity_heatmap", {}),
                                 },
                             }
 

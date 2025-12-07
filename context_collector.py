@@ -1,27 +1,26 @@
-# context_collector.py v2.1.0 - MELHORADO
+# context_collector.py v3.1.0 - ASYNC MIGRATION
 """
-Context Collector com otimizações e validações.
+Context Collector com migração para assíncrono.
+Mantém interface síncrona externa, mas usa asyncio internamente.
 
-🔹 MELHORIAS v2.1.0:
-  ✅ Cache LRU mais eficiente
-  ✅ Validação de API keys
-  ✅ Retry com backoff exponencial
-  ✅ Logs estruturados
-  ✅ Todas as funcionalidades originais mantidas
+🔹 MIGRAÇÃO v3.1.0:
+   ✅ Interface pública síncrona mantida
+   ✅ Internamente assíncrono com aiohttp + yfinance
+   ✅ Loop dedicado em thread separada
+   ✅ Compatibilidade com chaves v2.1.0
 """
 
-import requests
+import asyncio
+import aiohttp
+import yfinance as yf
 import pandas as pd
 import logging
-import time
 import threading
 import os
 import random
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Any
 from datetime import datetime, timedelta
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from functools import lru_cache
 
 from config import (
@@ -59,18 +58,17 @@ except Exception:
 from historical_profiler import HistoricalVolumeProfiler
 from time_manager import TimeManager
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("ContextCollector")
 
 
 class ContextCollector:
     """
-    Coletor de contexto macro com melhorias de performance.
+    Coletor de contexto macro assíncrono internamente, síncrono externamente.
     
-    🆕 v2.1.0:
-      - Cache LRU
-      - Validação de API keys
-      - Retry resiliente
-      - Logs estruturados
+    🆕 v3.1.0:
+       - Assíncrono com aiohttp/yfinance
+       - Thread dedicada para event loop
+       - Interface compatível v2.1.0
     """
 
     def __init__(self, symbol):
@@ -81,7 +79,7 @@ class ContextCollector:
         self.update_interval = CONTEXT_UPDATE_INTERVAL_SECONDS
         self.intermarket_symbols = INTERMARKET_SYMBOLS
         self.derivatives_symbols = DERIVATIVES_SYMBOLS
-        
+         
         # Endpoints Binance
         self.klines_api_url = "https://api.binance.com/api/v3/klines"
         self.funding_api_url = "https://fapi.binance.com/fapi/v1/fundingRate"
@@ -89,33 +87,30 @@ class ContextCollector:
         self.long_short_ratio_api_url = "https://fapi.binance.com/futures/data/globalLongShortAccountRatio"
         self.liquidations_api_url = "https://fapi.binance.com/fapi/v1/allForceOrders"
         self.mark_price_api_url = "https://fapi.binance.com/fapi/v1/premiumIndex"
-        
+         
         # Volume Profile
         self.historical_profiler = HistoricalVolumeProfiler(
             symbol=self.symbol,
             num_days=VP_NUM_DAYS_HISTORY,
             value_area_percent=VP_VALUE_AREA_PERCENT
         )
-        
-        self.context_data = {}
-        self._lock = threading.Lock()
-        self.should_stop = False
-        self.thread = threading.Thread(target=self._update_loop, daemon=True)
+         
+        self._context_data = {}
         self.time_manager = TimeManager()
-        
+         
         # Cache simples
         self._api_cache = {}
         self._cache_ttl = 60  # s
-        
+         
         # Alpha Vantage
         self.alpha_vantage_api_key = os.getenv("ALPHAVANTAGE_API_KEY", "KC4IE0MBOEXK88Y3")
         self.alpha_vantage_url = "https://www.alphavantage.co/query"
-        
+         
         # 🆕 VALIDAÇÃO DE API KEY
         if ENABLE_ALPHAVANTAGE:
             if not self.alpha_vantage_api_key or self.alpha_vantage_api_key == "demo":
                 logger.warning("⚠️ Alpha Vantage habilitado mas API key inválida/demo!")
-        
+         
         # Fallbacks
         self._dxy_candidates = ["DXY"]
         self._fallback_map = {
@@ -125,38 +120,31 @@ class ContextCollector:
             "GOLD": ["GC", "XAUUSD"],
             "WTI": ["CL", "BZ"],
         }
-        
+         
+        # Async internals
+        self._loop = None
+        self._thread = None
+        self._update_task = None
+         
         logger.info(
             "✅ ContextCollector inicializado | Symbol: %s | Alpha Vantage: %s",
             symbol, "ENABLED" if ENABLE_ALPHAVANTAGE else "DISABLED"
         )
 
-    # ---------- Helpers Alpha Vantage ----------
+    # ---------- Helpers Alpha Vantage (async) ----------
     
-    def _build_retrying_session(self) -> requests.Session:
-        sess = requests.Session()
-        sess.headers.update({
+    async def _build_retrying_session(self) -> aiohttp.ClientSession:
+        headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             )
-        })
-        retry = Retry(
-            total=3,
-            connect=3,
-            read=3,
-            backoff_factor=0.6,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS"]
-        )
-        adapter = HTTPAdapter(max_retries=retry)
-        sess.mount("https://", adapter)
-        sess.mount("http://", adapter)
-        return sess
+        }
+        return aiohttp.ClientSession(headers=headers)
 
-    def _alpha_vantage_history(self, symbol: str, function: str = "ECONOMIC_INDICATORS", interval: str = "1min"):
-        """Wrapper resiliente para Alpha Vantage com retry."""
+    async def _alpha_vantage_history(self, session: aiohttp.ClientSession, symbol: str, function: str = "ECONOMIC_INDICATORS", interval: str = "1min"):
+        """Wrapper resiliente para Alpha Vantage com retry (async)."""
         try_count = 2
         for i in range(try_count):
             try:
@@ -174,130 +162,133 @@ class ContextCollector:
                 elif function == "FX_DAILY":
                     params["from_symbol"] = symbol.split("/")[0]
                     params["to_symbol"] = symbol.split("/")[1]
-                    
-                res = requests.get(self.alpha_vantage_url, params=params, timeout=10)
-                if res.status_code == 200:
-                    data = res.json()
-                    if "Error Message" in data:
-                        logger.debug(f"Alpha Vantage erro {symbol}: {data['Error Message']}")
-                        return pd.DataFrame()
-                    if "Time Series (1min)" in data:
-                        df = pd.DataFrame(data["Time Series (1min)"]).T
-                        df.index = pd.to_datetime(df.index)
-                        df.columns = ["open", "high", "low", "close", "volume"]
-                        df = df.astype(float)
-                        return df
-                    elif "Time Series (Daily)" in data:
-                        df = pd.DataFrame(data["Time Series (Daily)"]).T
-                        df.index = pd.to_datetime(df.index)
-                        df.columns = ["open", "high", "low", "close", "volume"]
-                        df = df.astype(float)
-                        return df
-                    elif "Time Series (Monthly)" in data:
-                        df = pd.DataFrame(data["Time Series (Monthly)"]).T
-                        df.index = pd.to_datetime(df.index)
-                        df.columns = ["open", "high", "low", "close", "volume"]
-                        df = df.astype(float)
-                        return df
-                    elif "Data" in data:
-                        df = pd.DataFrame(data["Data"]).T
-                        df.index = pd.to_datetime(df.index)
-                        df.columns = ["value"]
-                        df = df.astype(float)
-                        return df
-                    elif "Time Series FX (Daily)" in data:
-                        df = pd.DataFrame(data["Time Series FX (Daily)"]).T
-                        df.index = pd.to_datetime(df.index)
-                        df.columns = ["open", "high", "low", "close"]
-                        df = df.astype(float)
-                        return df
+                     
+                async with session.get(self.alpha_vantage_url, params=params, timeout=10) as res:
+                    if res.status == 200:
+                        data = await res.json()
+                        if "Error Message" in data:
+                            logger.debug(f"Alpha Vantage erro {symbol}: {data['Error Message']}")
+                            return pd.DataFrame()
+                        if "Time Series (1min)" in data:
+                            df = pd.DataFrame(data["Time Series (1min)"]).T
+                            df.index = pd.to_datetime(df.index)
+                            df.columns = ["open", "high", "low", "close", "volume"]
+                            df = df.astype(float)
+                            return df
+                        elif "Time Series (Daily)" in data:
+                            df = pd.DataFrame(data["Time Series (Daily)"]).T
+                            df.index = pd.to_datetime(df.index)
+                            df.columns = ["open", "high", "low", "close", "volume"]
+                            df = df.astype(float)
+                            return df
+                        elif "Time Series (Monthly)" in data:
+                            df = pd.DataFrame(data["Time Series (Monthly)"]).T
+                            df.index = pd.to_datetime(df.index)
+                            df.columns = ["open", "high", "low", "close", "volume"]
+                            df = df.astype(float)
+                            return df
+                        elif "Data" in data:
+                            df = pd.DataFrame(data["Data"]).T
+                            df.index = pd.to_datetime(df.index)
+                            df.columns = ["value"]
+                            df = df.astype(float)
+                            return df
+                        elif "Time Series FX (Daily)" in data:
+                            df = pd.DataFrame(data["Time Series FX (Daily)"]).T
+                            df.index = pd.to_datetime(df.index)
+                            df.columns = ["open", "high", "low", "close"]
+                            df = df.astype(float)
+                            return df
+                        else:
+                            logger.debug(f"Resposta Alpha Vantage inesperada {symbol}: {str(data)[:160]}")
+                            return pd.DataFrame()
                     else:
-                        logger.debug(f"Resposta Alpha Vantage inesperada {symbol}: {str(data)[:160]}")
-                        return pd.DataFrame()
-                else:
-                    logger.debug(f"Alpha Vantage status {res.status_code} para {symbol}: {res.text[:160]}")
+                        logger.debug(f"Alpha Vantage status {res.status} para {symbol}: {(await res.text())[:160]}")
             except Exception as e:
                 logger.debug(f"Alpha Vantage erro {symbol} (tentativa {i+1}/{try_count}): {e}")
-            
+             
             if i < try_count - 1:
-                time.sleep(0.6 + random.uniform(0, 0.5))
+                await asyncio.sleep(0.6 + random.uniform(0, 0.5))
         return pd.DataFrame()
 
-    # ---------- Cache genérico ----------
-    
-    def _fetch_with_cache(self, cache_key: str, fetch_fn, ttl_seconds: int = None):
+    # ---------- Cache genérico (async) ----------
+
+    async def _async_fetch_with_cache(self, cache_key: str, fetch_fn, ttl_seconds: int = None):
         ttl = ttl_seconds or self._cache_ttl
-        now = time.time()
+        now = asyncio.get_event_loop().time()
         if cache_key in self._api_cache:
             cached_data, timestamp = self._api_cache[cache_key]
             if now - timestamp < ttl:
                 return cached_data
-        data = fetch_fn()
+        data = await fetch_fn()
         self._api_cache[cache_key] = (data, now)
         return data
 
-    # ---------- Binance ----------
+    # ---------- Binance (async) ----------
     
-    def _fetch_klines_uncached(self, symbol, timeframe, limit=200):
+    async def _fetch_klines_uncached(self, session: aiohttp.ClientSession, symbol, timeframe, limit=200):
         max_retries = 3
         base_delay = 1.0
         for attempt in range(max_retries):
             try:
                 params = {"symbol": symbol, "interval": timeframe, "limit": limit}
-                res = requests.get(self.klines_api_url, params=params, timeout=10)
-                if res.status_code == 429:
-                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
-                    logger.warning(
-                        f"Rate limit klines {symbol} {timeframe}. Retry {attempt+1}/{max_retries} em {delay:.1f}s..."
-                    )
-                    time.sleep(delay)
-                    continue
-                res.raise_for_status()
-                data = res.json()
-                if not isinstance(data, list):
-                    logger.debug(f"Resposta inesperada klines {symbol} {timeframe}: {str(data)[:160]}")
-                    return pd.DataFrame()
-                df = pd.DataFrame(data, columns=[
-                    'open_time','open','high','low','close','volume',
-                    'close_time','qav','num_trades','tbbav','tbqav','ignore'
-                ])
-                for col in ['open','high','low','close','volume']:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-                return df
-            except requests.exceptions.RequestException as e:
+                async with session.get(self.klines_api_url, params=params, timeout=10) as res:
+                    if res.status == 429:
+                        delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                        logger.warning(
+                            f"Rate limit klines {symbol} {timeframe}. Retry {attempt+1}/{max_retries} em {delay:.1f}s..."
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    res.raise_for_status()
+                    data = await res.json()
+                    if not isinstance(data, list):
+                        logger.debug(f"Resposta inesperada klines {symbol} {timeframe}: {str(data)[:160]}")
+                        return pd.DataFrame()
+                    df = pd.DataFrame(data, columns=[
+                        'open_time','open','high','low','close','volume',
+                        'close_time','qav','num_trades','tbbav','tbqav','ignore'
+                    ])
+                    for col in ['open','high','low','close','volume']:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    return df
+            except aiohttp.ClientError as e:
                 logger.error(f"Req klines {symbol} {timeframe} ({attempt+1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(base_delay * (2 ** attempt))
+                    await asyncio.sleep(base_delay * (2 ** attempt))
             except Exception as e:
                 logger.error(f"Inesperado klines {symbol} {timeframe} ({attempt+1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(base_delay * (2 ** attempt))
+                    await asyncio.sleep(base_delay * (2 ** attempt))
         logger.error(f"Falha persistente klines {symbol} {timeframe}. Retornando vazio.")
         return pd.DataFrame()
 
-    def _fetch_klines(self, symbol, timeframe, limit=200):
+    async def _fetch_klines(self, session: aiohttp.ClientSession, symbol, timeframe, limit=200):
         cache_key = f"klines_{symbol}_{timeframe}_{limit}"
-        return self._fetch_with_cache(cache_key, lambda: self._fetch_klines_uncached(symbol, timeframe, limit))
+        return await self._async_fetch_with_cache(cache_key, lambda: self._fetch_klines_uncached(session, symbol, timeframe, limit))
 
-    def _fetch_symbol_price(self, symbol: str) -> float:
+    async def _fetch_symbol_price(self, session: aiohttp.ClientSession, symbol: str) -> float:
         cache_key = f"mark_price_{symbol}"
-        def _do_fetch():
+        async def _do_fetch():
             try:
-                r = requests.get(self.mark_price_api_url, params={"symbol": symbol}, timeout=5)
-                r.raise_for_status()
-                data = r.json()
-                return float(data.get("markPrice", 0.0))
+                async with session.get(self.mark_price_api_url, params={"symbol": symbol}, timeout=5) as r:
+                    r.raise_for_status()
+                    data = await r.json()
+                    return float(data.get("markPrice", 0.0))
             except Exception as e:
                 logger.debug(f"Falha markPrice {symbol}: {e}")
                 return 0.0
-        return float(self._fetch_with_cache(cache_key, _do_fetch, ttl_seconds=15) or 0.0)
+        return float(await self._async_fetch_with_cache(cache_key, _do_fetch, ttl_seconds=15) or 0.0)
 
     # ---------- Tempo ----------
     
     def _get_binance_server_time(self) -> int:
+        # Keep sync for simplicity, as it's fast
+        import time
         max_retries = 3
         for attempt in range(max_retries):
             try:
+                import requests
                 res = requests.get("https://fapi.binance.com/fapi/v1/time", timeout=5)
                 res.raise_for_status()
                 server_time_ms = res.json().get("serverTime")
@@ -314,7 +305,7 @@ class ContextCollector:
                 time.sleep(0.5)
         return self.time_manager.now()
 
-    # ---------- Cálculos técnicos ----------
+    # ---------- Cálculos técnicos (sync, wrap if needed) ----------
     
     def _calculate_atr(self, df: pd.DataFrame, period: int) -> float:
         if df is None or df.empty:
@@ -350,8 +341,6 @@ class ContextCollector:
         else:
             return "Acumulação"
 
-    # ---------- Indicadores técnicos ----------
-    
     def _calculate_rsi(self, series: pd.Series, period: int) -> float:
         try:
             delta = series.diff()
@@ -440,7 +429,7 @@ class ContextCollector:
                 close_dt = now_ny.replace(hour=13, minute=0, second=0, microsecond=0)
 
             time_to_close = max(0, int((close_dt - now_ny).total_seconds()))
-            
+             
             return {
                 "trading_session": session,
                 "session_phase": phase,
@@ -455,7 +444,7 @@ class ContextCollector:
 
     # ---------- Ambiente de mercado ----------
     
-    def _calculate_market_environment(self) -> dict:
+    async def _calculate_market_environment(self, session: aiohttp.ClientSession) -> dict:
         env = {
             "volatility_regime": None,
             "trend_direction": None,
@@ -467,7 +456,7 @@ class ContextCollector:
             "correlation_gold": None,
         }
         try:
-            df_daily = self._fetch_klines(self.symbol, '1d', limit=CORRELATION_LOOKBACK + 10)
+            df_daily = await self._fetch_klines(session, self.symbol, '1d', limit=CORRELATION_LOOKBACK + 10)
             if not df_daily.empty:
                 df_daily = df_daily.copy()
                 df_daily['close'] = pd.to_numeric(df_daily['close'], errors='coerce')
@@ -479,8 +468,8 @@ class ContextCollector:
                     env["volatility_regime"] = "HIGH"
                 else:
                     env["volatility_regime"] = "NORMAL"
-            
-            mtf = self._analyze_mtf_trends()
+             
+            mtf = await self._analyze_mtf_trends(session)
             ups = sum(1 for v in mtf.values() if v.get("tendencia") == "Alta")
             downs = sum(1 for v in mtf.values() if v.get("tendencia") == "Baixa")
             if ups > downs:
@@ -489,7 +478,7 @@ class ContextCollector:
                 env["trend_direction"] = "DOWN"
             else:
                 env["trend_direction"] = "SIDEWAYS"
-            
+             
             regimes = [v.get("regime") for v in mtf.values()]
             if any(r == "Range" for r in regimes):
                 env["market_structure"] = "RANGE_BOUND"
@@ -497,23 +486,23 @@ class ContextCollector:
                 env["market_structure"] = "TRENDING"
             else:
                 env["market_structure"] = "ACCUMULATION"
-            
+             
             env["liquidity_environment"] = "NORMAL"
-            
+             
             if ENABLE_ALPHAVANTAGE:
                 try:
-                    env["correlation_spy"] = self._compute_correlation("SP500", EXTERNAL_MARKETS.get("SP500", ""))
+                    env["correlation_spy"] = await self._compute_correlation(session, "SP500", EXTERNAL_MARKETS.get("SP500", ""))
                 except Exception:
                     pass
                 try:
-                    env["correlation_dxy"] = self._compute_correlation("DXY", "DXY")
+                    env["correlation_dxy"] = await self._compute_correlation(session, "DXY", "DXY")
                 except Exception:
                     pass
                 try:
-                    env["correlation_gold"] = self._compute_correlation("GOLD", EXTERNAL_MARKETS.get("GOLD", ""))
+                    env["correlation_gold"] = await self._compute_correlation(session, "GOLD", EXTERNAL_MARKETS.get("GOLD", ""))
                 except Exception:
                     pass
-            
+             
             corr_spy = env.get("correlation_spy")
             corr_dxy = env.get("correlation_dxy")
             if corr_spy is not None and corr_dxy is not None:
@@ -529,21 +518,21 @@ class ContextCollector:
             logger.debug(f"Falha ao calcular ambiente de mercado: {e}")
         return env
 
-    def _compute_correlation(self, name: str, ticker: str) -> Optional[float]:
+    async def _compute_correlation(self, session: aiohttp.ClientSession, name: str, ticker: str) -> Optional[float]:
         try:
             if not ticker:
                 return None
-            
-            sym_df = self._fetch_klines(self.symbol, '1d', limit=CORRELATION_LOOKBACK + 10)
+             
+            sym_df = await self._fetch_klines(session, self.symbol, '1d', limit=CORRELATION_LOOKBACK + 10)
             if sym_df.empty:
                 return None
             sym_series = pd.to_numeric(sym_df['close'], errors='coerce')
             sym_returns = sym_series.pct_change().dropna()
-            
+             
             if name == "DXY":
-                ext_hist = self._alpha_vantage_history(ticker, function="ECONOMIC_INDICATORS")
+                ext_hist = await self._alpha_vantage_history(session, ticker, function="ECONOMIC_INDICATORS")
                 if ext_hist.empty:
-                    ext_hist = self._alpha_vantage_history(ticker, function="TIME_SERIES_DAILY")
+                    ext_hist = await self._alpha_vantage_history(session, ticker, function="TIME_SERIES_DAILY")
                     if 'value' in ext_hist.columns:
                         ext_series = ext_hist['value'].astype(float)
                     else:
@@ -551,18 +540,18 @@ class ContextCollector:
                 else:
                     ext_series = ext_hist['value'].astype(float)
             else:
-                ext_hist = self._alpha_vantage_history(ticker, function="TIME_SERIES_DAILY")
+                ext_hist = await self._alpha_vantage_history(session, ticker, function="TIME_SERIES_DAILY")
                 if 'close' in ext_hist.columns:
                     ext_series = ext_hist['close'].astype(float)
                 elif 'value' in ext_hist.columns:
                     ext_series = ext_hist['value'].astype(float)
                 else:
                     return None
-            
+             
             if ext_hist.empty:
                 return None
             ext_returns = ext_series.pct_change().dropna()
-            
+             
             sym_aligned = sym_returns.tail(CORRELATION_LOOKBACK)
             ext_aligned = ext_returns.tail(CORRELATION_LOOKBACK)
             merged = pd.concat([sym_aligned, ext_aligned], axis=1, join='inner')
@@ -574,18 +563,18 @@ class ContextCollector:
             logger.debug(f"Erro ao calcular correlação {name}: {e}")
             return None
 
-    def _analyze_mtf_trends(self):
+    async def _analyze_mtf_trends(self, session: aiohttp.ClientSession):
         mtf_context = {}
         for tf in self.timeframes:
             limit_needed = max(self.ema_period, self.atr_period) * 3 + 20
-            df = self._fetch_klines(self.symbol, tf, limit=limit_needed)
+            df = await self._fetch_klines(session, self.symbol, tf, limit=limit_needed)
             if not df.empty:
                 df = df.copy()
                 df['ema'] = df['close'].ewm(span=self.ema_period, adjust=False).mean()
                 last_close = float(df['close'].iloc[-1])
                 last_ema = float(df['ema'].iloc[-1])
                 tendencia = "Alta" if last_close > last_ema else "Baixa"
-                
+                 
                 rsi_short = self._calculate_rsi(df['close'], RSI_PERIODS.get('short', 14))
                 rsi_long = self._calculate_rsi(df['close'], RSI_PERIODS.get('long', 21))
                 macd_val, macd_sig = self._calculate_macd(
@@ -598,7 +587,7 @@ class ContextCollector:
                 realized_vol = self._calculate_realized_volatility(df['close'])
                 atr = self._calculate_atr(df, self.atr_period)
                 regime = self._classify_regime(df, atr)
-                
+                 
                 mtf_context[tf] = {
                     "tendencia": tendencia,
                     "preco_atual": last_close,
@@ -616,21 +605,21 @@ class ContextCollector:
 
     # ---------- Intermarket / External ----------
     
-    def _fetch_intermarket_data(self):
+    async def _fetch_intermarket_data(self, session: aiohttp.ClientSession):
         data = {}
         for sym in self.intermarket_symbols:
-            df = self._fetch_klines(sym, '5m', limit=2)
+            df = await self._fetch_klines(session, sym, '5m', limit=2)
             if not df.empty:
                 last, prev = float(df['close'].iloc[-1]), float(df['close'].iloc[-2])
                 data[sym] = {"preco_atual": last, "movimento": "Alta" if last > prev else "Baixa"}
-        
+         
         if not ENABLE_ALPHAVANTAGE:
             return data
-        
+         
         dxy_got = False
         for tkr in self._dxy_candidates:
             try:
-                hist = self._alpha_vantage_history(tkr, function="ECONOMIC_INDICATORS")
+                hist = await self._alpha_vantage_history(session, tkr, function="ECONOMIC_INDICATORS")
                 if not hist.empty:
                     last, prev = float(hist["value"].iloc[-1]), float(hist["value"].iloc[-2])
                     data["DXY"] = {
@@ -642,20 +631,20 @@ class ContextCollector:
                     break
             except Exception as e:
                 logger.debug(f"DXY fallback {tkr} falhou: {e}")
-        
+         
         if not dxy_got:
             logger.debug("DXY indisponível em todos os fallbacks.")
-        
+         
         return data
 
-    def _fetch_external_markets(self):
+    async def _fetch_external_markets(self, session: aiohttp.ClientSession):
         ext_data = {}
         if not ENABLE_ALPHAVANTAGE:
             return ext_data
-        
+         
         for name, ticker in EXTERNAL_MARKETS.items():
             if "/" in ticker:
-                hist = self._alpha_vantage_history(ticker, function="FX_DAILY")
+                hist = await self._alpha_vantage_history(session, ticker, function="FX_DAILY")
                 if not hist.empty:
                     last, prev = float(hist["close"].iloc[-1]), float(hist["close"].iloc[-2])
                     ext_data[name] = {
@@ -664,12 +653,12 @@ class ContextCollector:
                         "ticker": ticker
                     }
                     continue
-            
+             
             for alt in self._fallback_map.get(name, []):
                 if "/" in alt:
-                    hist = self._alpha_vantage_history(alt, function="FX_DAILY")
+                    hist = await self._alpha_vantage_history(session, alt, function="FX_DAILY")
                 else:
-                    hist = self._alpha_vantage_history(alt, function="TIME_SERIES_DAILY")
+                    hist = await self._alpha_vantage_history(session, alt, function="TIME_SERIES_DAILY")
                 if not hist.empty:
                     last, prev = float(hist["close"].iloc[-1]), float(hist["close"].iloc[-2])
                     ext_data[name] = {
@@ -678,15 +667,15 @@ class ContextCollector:
                         "ticker": alt
                     }
                     break
-            
+             
             if name not in ext_data:
                 logger.debug(f"Sem dados para {name} ({ticker}) e fallbacks.")
-        
+         
         return ext_data
 
     # ---------- Derivativos ----------
     
-    def _fetch_liquidations_data(self, symbol, lookback_minutes=5):
+    async def _fetch_liquidations_data(self, session: aiohttp.ClientSession, symbol, lookback_minutes=5):
         max_retries = 3
         base_delay = 1.0
         for attempt in range(max_retries):
@@ -699,26 +688,26 @@ class ContextCollector:
                 if end_ms > now_ms + 5_000:
                     end_ms = now_ms
                 params = {"symbol": symbol, "startTime": start_ms, "endTime": end_ms, "limit": 1000}
-                r = requests.get(self.liquidations_api_url, params=params, timeout=5)
-                if r.status_code == 204 or not r.text:
+                async with session.get(self.liquidations_api_url, params=params, timeout=5) as r:
+                    if r.status == 204 or not await r.text():
+                        return []
+                    if r.status == 200:
+                        return await r.json()
+                    logger.debug(f"ForceOrders {r.status}: {(await r.text())[:200]}")
+                    if r.status == 429 and attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                        logger.warning(f"Rate limit liquidations. Retry {attempt+1}/{max_retries} em {delay:.1f}s...")
+                        await asyncio.sleep(delay)
+                        continue
                     return []
-                if r.status_code == 200:
-                    return r.json()
-                logger.debug(f"ForceOrders {r.status_code}: {r.text[:200]}")
-                if r.status_code == 429 and attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
-                    logger.warning(f"Rate limit liquidations. Retry {attempt+1}/{max_retries} em {delay:.1f}s...")
-                    time.sleep(delay)
-                    continue
-                return []
-            except requests.exceptions.RequestException as e:
+            except aiohttp.ClientError as e:
                 logger.error(f"Req liquidations ({attempt+1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(base_delay * (2 ** attempt))
+                    await asyncio.sleep(base_delay * (2 ** attempt))
             except Exception as e:
                 logger.debug(f"ForceOrders exception ({attempt+1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(base_delay * (2 ** attempt))
+                    await asyncio.sleep(base_delay * (2 ** attempt))
         logger.error(f"Falha persistente liquidations {symbol}. Retornando [].")
         return []
 
@@ -743,26 +732,32 @@ class ContextCollector:
                 continue
         return {str(k): v for k, v in sorted(heatmap.items())}
 
-    def _fetch_derivatives_data(self):
+    async def _fetch_derivatives_data(self, session: aiohttp.ClientSession):
         derivatives_data = {}
         for sym in self.derivatives_symbols:
             try:
-                fr = requests.get(self.funding_api_url, params={'symbol': sym}, timeout=5).json()
-                funding_rate = float(fr[0]["fundingRate"]) * 100 if fr else 0.0
-                oi = requests.get(self.open_interest_api_url, params={'symbol': sym}, timeout=5).json()
-                open_interest = float(oi.get("openInterest", 0))
-                ls = requests.get(
+                async with session.get(self.funding_api_url, params={'symbol': sym}, timeout=5) as fr:
+                    fr.raise_for_status()
+                    fr_data = await fr.json()
+                    funding_rate = float(fr_data[0]["fundingRate"]) * 100 if fr_data else 0.0
+                async with session.get(self.open_interest_api_url, params={'symbol': sym}, timeout=5) as oi:
+                    oi.raise_for_status()
+                    oi_data = await oi.json()
+                    open_interest = float(oi_data.get("openInterest", 0))
+                async with session.get(
                     self.long_short_ratio_api_url,
                     params={'symbol': sym, 'period': '5m', 'limit': 1}, timeout=5
-                ).json()
-                long_short_ratio = float(ls[0]["longShortRatio"]) if ls else 0.0
-                liq = self._fetch_liquidations_data(sym, lookback_minutes=int(self.update_interval / 60))
+                ) as ls:
+                    ls.raise_for_status()
+                    ls_data = await ls.json()
+                    long_short_ratio = float(ls_data[0]["longShortRatio"]) if ls_data else 0.0
+                liq = await self._fetch_liquidations_data(session, sym, lookback_minutes=int(self.update_interval / 60))
                 heatmap = self._build_liquidation_heatmap(liq)
                 totals = {
                     "longs_usd": sum(v["longs"] for v in heatmap.values()),
                     "shorts_usd": sum(v["shorts"] for v in heatmap.values())
                 }
-                price = self._fetch_symbol_price(sym)
+                price = await self._fetch_symbol_price(session, sym)
                 open_interest_usd = open_interest * price if price else open_interest
                 derivatives_data[sym] = {
                     "funding_rate_percent": round(funding_rate, 4),
@@ -778,7 +773,7 @@ class ContextCollector:
 
     # ---------- On-chain / Sentimento ----------
     
-    def _fetch_onchain_sentiment(self):
+    async def _fetch_onchain_sentiment(self):
         sentiment = {"onchain": {}, "funding_agg": {}}
         try:
             if ENABLE_ONCHAIN:
@@ -803,41 +798,73 @@ class ContextCollector:
 
     # ---------- Consolidação ----------
     
-    def _build_full_context(self):
+    async def _async_build_full_context(self, session: aiohttp.ClientSession):
         return {
-            "mtf_trends": self._analyze_mtf_trends(),
-            "intermarket": self._fetch_intermarket_data(),
-            "external": self._fetch_external_markets(),
-            "derivatives": self._fetch_derivatives_data(),
-            "sentiment": self._fetch_onchain_sentiment(),
-            "historical_vp": self.historical_profiler.update_profiles(),
+            "mtf": await self._analyze_mtf_trends(session),
+            "intermarket": await self._fetch_intermarket_data(session),
+            "external": await self._fetch_external_markets(session),
+            "derivatives": await self._fetch_derivatives_data(session),
+            "sentiment": await self._fetch_onchain_sentiment(),
+            "profile": await asyncio.to_thread(self.historical_profiler.update_profiles),
             "market_context": self._calculate_market_context(),
-            "market_environment": self._calculate_market_environment(),
+            "market_environment": await self._calculate_market_environment(session),
             "timestamp": self.time_manager.now_iso(),
         }
 
-    def _update_loop(self):
-        logger.info("✅ Coletor de Contexto iniciado.")
-        while not self.should_stop:
-            try:
-                ctx = self._build_full_context()
-                with self._lock:
-                    self.context_data = ctx
-                logger.info("✅ Contexto Macro atualizado.")
-            except Exception as e:
-                logger.error(f"❌ Erro crítico loop: {e}", exc_info=True)
-            time.sleep(self.update_interval)
+    async def _async_update_loop(self):
+        logger.info("✅ Coletor de Contexto iniciado (async).")
+        async with await self._build_retrying_session() as session:
+            while True:
+                try:
+                    ctx = await self._async_build_full_context(session)
+                    # Adapt to v2.1.0 keys
+                    final_ctx = ctx
+                    final_ctx["mtf_trends"] = final_ctx.get("mtf", {})
+                    final_ctx["historical_vp"] = final_ctx.get("profile", {})
+                    final_ctx.setdefault("intermarket", {})
+                    final_ctx.setdefault("sentiment", {})
+                    self._context_data = final_ctx
+                    logger.info("✅ Contexto Macro atualizado.")
+                except Exception as e:
+                    logger.error(f"❌ Erro crítico loop: {e}", exc_info=True)
+                await asyncio.sleep(self.update_interval)
 
-    def get_context(self):
-        with self._lock:
-            return self.context_data.copy()
+    async def _async_start(self):
+        self._update_task = self._loop.create_task(self._async_update_loop())
+
+    async def _async_stop(self):
+        if self._update_task:
+            self._update_task.cancel()
+            try:
+                await self._update_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _async_get_context(self):
+        return self._context_data.copy()
 
     def start(self):
-        if not self.thread.is_alive():
-            self.thread.start()
+        if self._thread and self._thread.is_alive():
+            return
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
+
+    def _run_loop(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._async_start())
+        self._loop.run_forever()
 
     def stop(self):
-        if self.thread.is_alive():
-            logger.info("🛑 Parando Coletor de Contexto...")
-            self.should_stop = True
-            self.thread.join(timeout=5)
+        if not self._loop:
+            return
+        fut = asyncio.run_coroutine_threadsafe(self._async_stop(), self._loop)
+        fut.result(timeout=5)
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=5)
+
+    def get_context(self) -> dict:
+        if not self._loop:
+            return {}
+        fut = asyncio.run_coroutine_threadsafe(self._async_get_context(), self._loop)
+        return fut.result(timeout=2) or {}

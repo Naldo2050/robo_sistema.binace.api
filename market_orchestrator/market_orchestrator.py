@@ -1032,6 +1032,10 @@ class EnhancedMarketBot:
                     signal["flow_data_quality"] = "incomplete"
             signal["fluxo_continuo"] = flow_metrics
 
+            # Add liquidity_heatmap directly to payload for dashboard compatibility
+            if "liquidity_heatmap" in flow_metrics:
+                signal["liquidity_heatmap"] = flow_metrics["liquidity_heatmap"]
+
         if (
             signal.get("volume_compra", 0) == 0
             and signal.get("volume_venda", 0) == 0
