@@ -152,7 +152,7 @@ class EnhancedMarketBot:
 
         self.health_monitor = HealthMonitor()
         self.event_bus = EventBus()
-        self.feature_store = FeatureStore()
+        self.feature_store = FeatureStore(base_dir="features")
         self.levels = LevelRegistry(self.symbol)
 
         self.health_monitor.heartbeat("main")
@@ -458,6 +458,12 @@ class EnhancedMarketBot:
                 logging.info("✅ Loop assíncrono do OrderBookAnalyzer encerrado.")
         except Exception as e:
             logging.error(f"❌ Erro ao encerrar loop assíncrono: {e}")
+
+        try:
+            if hasattr(self, "feature_store") and self.feature_store is not None:
+                self.feature_store.close()
+        except Exception as e:
+            logging.warning(f"Falha ao fechar FeatureStore: {e}")
 
         logging.info("✅ Bot encerrado com segurança.")
 

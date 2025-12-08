@@ -222,6 +222,11 @@ def process_window(bot) -> None:
             market_environment=macro_context.get("market_environment", {}),
         )
 
+        try:
+            from ml.model_inference import predict_up_probability
+        except ImportError:
+            predict_up_probability = None
+
         # ----------------------------
         # Detecção de sinais
         # ----------------------------
@@ -250,6 +255,34 @@ def process_window(bot) -> None:
             orderbook_data=ob_event,
         )
 
+        # ----------------------------
+        # IA Quantitativa: gera features finais + probabilidade de alta
+        # ----------------------------
+        final_features = None
+        ml_prob_up = None
+
+        try:
+            # Gera dicionário completo de features (enriched + contextual + signals + ml_features)
+            final_features = pipeline.get_final_features()
+        except Exception as e:
+            logging.error(f"Erro ao gerar features finais para ML: {e}", exc_info=True)
+
+        # Executa inferência quantitativa se o módulo estiver disponível
+        if final_features is not None and predict_up_probability is not None:
+            try:
+                ml_prob_up = predict_up_probability(final_features)
+            except Exception as e:
+                logging.error(f"Erro ao executar predição do modelo de ML: {e}", exc_info=True)
+
+        # Injeta a probabilidade quantitativa no macro_context para consumo da IA generativa
+        if ml_prob_up is not None:
+            try:
+                quant_ctx = macro_context.setdefault("quant_model", {})
+                quant_ctx["prob_up"] = float(ml_prob_up)
+                logging.info(f"[QUANT] prob_up={ml_prob_up:.3f} para janela {bot.window_count}")
+            except Exception as e:
+                logging.error(f"Erro ao atualizar macro_context com probabilidade quantitativa: {e}", exc_info=True)
+
         # Encaminha para o processador de sinais original
         bot._process_signals(
             signals,
@@ -264,6 +297,20 @@ def process_window(bot) -> None:
             total_sell_volume,
             valid_window_data,
         )
+
+        # ----------------------------
+        # Persistência de features para ML / backtesting
+        # ----------------------------
+        try:
+            feature_store = getattr(bot, "feature_store", None)
+            if feature_store is not None and final_features is not None:
+                window_id = f"{bot.symbol}_{close_ms}"
+                feature_store.save_features(window_id, final_features)
+        except Exception as e:
+            logging.error(
+                f"Erro ao salvar features no FeatureStore: {e}",
+                exc_info=True,
+            )
 
     except Exception as e:
         logging.error(

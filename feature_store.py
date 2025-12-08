@@ -57,6 +57,21 @@ class FeatureStore:
         except Exception:
             return str(v)
 
+    @staticmethod
+    def safe_to_numeric(series):
+        """Converte série para numérico de forma segura"""
+        try:
+            # Primeiro tenta converter diretamente
+            return pd.to_numeric(series)
+        except (ValueError, TypeError):
+            # Se falhar, tenta converter strings
+            try:
+                return pd.to_numeric(series.astype(str).str.replace(',', '.'))
+            except:
+                # Se ainda falhar, mantém como está
+                return series
+
+
     def save_features(self, window_id: str, features: Dict[str, Any]) -> None:
         """
         Salva uma linha de features referente à window_id.
@@ -84,7 +99,7 @@ class FeatureStore:
         df = pd.DataFrame(self.buffer)
         for col in df.columns:
             if df[col].dtype == "object":
-                df[col] = pd.to_numeric(df[col], errors="ignore")
+                df[col] = self.safe_to_numeric(df[col])
 
         df["saved_at"] = pd.to_datetime(df["saved_at"])
         df["date"] = df["saved_at"].dt.strftime("%Y-%m-%d")
