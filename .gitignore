@@ -28,7 +28,6 @@ ENV/
 .env.local
 .env.*.local
 
-
 # ==============================
 # Playwright
 # ==============================
@@ -40,18 +39,26 @@ playwright_user_data/
 # ==============================
 # Local Data Folders (NÃO DEVEM SER COMMITADOS)
 # ==============================
-dados/
+dados/                  # DBs, logs locais etc.
 firefox_data/
 gemini_data/
-features/                  # <-- Pasta inteira ignorada
+features/               # FeatureStore em Parquet (produção)
+test_output/            # Saída de testes do FeatureStore
+ml/models/              # Modelos treinados (XGBoost, metadados, scalers)
 
 # ==============================
-# Arquivos de Dados Específicos (redundantes se a pasta já for ignorada, mas mantidos por segurança)
+# Arquivos de Dados Específicos
+# (redundantes se a pasta já for ignorada, mas mantidos por segurança)
 # ==============================
 features.csv
 levels_BTCUSDT.json
 eventos_fluxo.jsonl
 eventos-fluxo.json
+
+# Artefatos de ML adicionais
+ml/*.log
+ml/models/*.json
+ml/models/*.pkl
 
 # ==============================
 # Sistema Operacional
