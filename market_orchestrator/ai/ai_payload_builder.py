@@ -19,7 +19,8 @@ def build_ai_input(
     macro_context: Dict[str, Any],
     market_environment: Dict[str, Any],
     orderbook_data: Dict[str, Any],
-    ml_features: Dict[str, Any]
+    ml_features: Dict[str, Any],
+    ml_prediction: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Constrói um dicionário estruturado e limpo para o analisador de IA.
@@ -37,11 +38,18 @@ def build_ai_input(
         market_environment (dict): Regime de mercado, correlações.
         orderbook_data (dict): Snapshot e métricas do livro de ofertas.
         ml_features (dict): Features quantitativas para ML.
+        ml_prediction (Optional[dict]): Previsão do modelo ML (injetada pelo ai_runner).
 
     Returns:
         dict: Payload completo e organizado para a IA.
     """
-    
+
+    # Garante que ml_features sempre seja um dicionário
+    if not isinstance(ml_features, dict):
+        ml_features = {}
+    else:
+        ml_features = ml_features or {}
+
     # 1. Contexto de Preço (Price Context)
     ohlc = enriched.get("ohlc", {})
     vp_daily = historical_profile.get("daily", {})
@@ -151,7 +159,67 @@ def build_ai_input(
     ai_payload["historical_vp"] = historical_profile
     ai_payload["multi_tf"] = macro_context.get("mtf_trends", {})
     ai_payload["event_history"] = signal.get("event_history", []) # Se houver memória injetada
-    
+
+    # === SEÇÃO DE INTELIGÊNCIA QUANTITATIVA ===
+    # Se houver previsão ML, adiciona ao contexto
+    quant_context = {}
+
+    # Usa a previsão passada como parâmetro, com fallback para o próprio sinal (compatibilidade)
+    ml_prediction = ml_prediction or signal.get("ml_prediction") or {}
+
+    if ml_prediction and ml_prediction.get("status") == "ok":
+        prob = ml_prediction.get("prob_up", 0.5)
+        confidence = ml_prediction.get("confidence", 0.0)
+
+        # Traduz probabilidade para texto
+        if prob > 0.75:
+            sentiment = "BULLISH FORTE (Alta Probabilidade)"
+            action_bias = "compra"
+        elif prob > 0.60:
+            sentiment = "BULLISH (Moderado)"
+            action_bias = "compra"
+        elif prob < 0.25:
+            sentiment = "BEARISH FORTE (Alta Probabilidade)"
+            action_bias = "venda"
+        elif prob < 0.40:
+            sentiment = "BEARISH (Moderado)"
+            action_bias = "venda"
+        else:
+            sentiment = "NEUTRO / INDEFINIDO"
+            action_bias = "aguardar"
+
+        quant_context = {
+            "model_probability_up": float(prob),
+            "model_probability_down": 1.0 - float(prob),
+            "model_sentiment": sentiment,
+            "action_bias": action_bias,
+            "confidence_score": float(confidence),
+            "features_used": ml_prediction.get("features_used", 0),
+            "total_features": ml_prediction.get("total_features", 0),
+        }
+
+    # Adiciona ao payload principal
+    ai_payload["quant_model"] = quant_context
+
+    # String formatada para templates legacy
+    if quant_context:
+        prob_pct = quant_context['model_probability_up'] * 100
+        confidence_pct = quant_context['confidence_score'] * 100
+
+        # Adiciona ao contexto de ML (para compatibilidade)
+        ai_payload["ml_str"] = (
+            f"\n🤖 **INTELIGÊNCIA QUANTITATIVA (XGBoost)**\n"
+            f"   📈 Probabilidade de Alta: {prob_pct:.1f}%\n"
+            f"   📉 Probabilidade de Baixa: {(100-prob_pct):.1f}%\n"
+            f"   🎯 Viés Matemático: {quant_context['model_sentiment']}\n"
+            f"   📊 Confiança do Modelo: {confidence_pct:.1f}%\n"
+            f"   🔍 Features: {quant_context['features_used']}/{quant_context['total_features']}\n"
+        )
+    else:
+        # Fallback para compatibilidade
+        if "ml_str" not in ai_payload:
+            ai_payload["ml_str"] = ""
+
     return ai_payload
 
 def _check_in_range(price, low, high):

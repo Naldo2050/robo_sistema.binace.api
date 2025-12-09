@@ -59,6 +59,30 @@ def initialize_ai_async(bot) -> None:
                 module_name="ai",
             )
 
+            # ============================================
+            # Inicializa Motor de Inferência Quantitativa
+            # ============================================
+            try:
+                from ml.inference_engine import MLInferenceEngine
+                bot.ml_engine = MLInferenceEngine()
+                logging.info("🤖 Motor de Inferência Quantitativa (XGBoost) inicializado")
+
+                # Teste rápido do ML Engine
+                test_result = bot.ml_engine.predict({
+                    "delta": 0.5,
+                    "volume_total": 10000,
+                    "fluxo_continuo": {"microstructure": {"tick_rule_sum": 0.2}}
+                })
+
+                if test_result.get("status") == "ok":
+                    logging.info(f"✅ ML Engine testado: {test_result.get('prob_up', 0):.1%}")
+                else:
+                    logging.warning(f"⚠️ ML Engine teste falhou: {test_result.get('status')}")
+
+            except Exception as e:
+                logging.error(f"❌ Falha ao inicializar ML Engine: {e}", exc_info=True)
+                bot.ml_engine = None
+
             logging.info(
                 "✅ Módulo da IA carregado. Realizando teste de análise..."
             )
@@ -176,6 +200,44 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                     event_data.get("resultado_da_batalha", "N/A"),
                 )
 
+                # ============================================
+                # [INTELIGÊNCIA HÍBRIDA] Inferência Quantitativa
+                # ============================================
+                ml_prediction = {}
+                if hasattr(bot, 'ml_engine') and bot.ml_engine:
+                    try:
+                        # Executa previsão do modelo XGBoost
+                        ml_prediction = bot.ml_engine.predict(event_data)
+
+                        if ml_prediction.get("status") == "ok":
+                            prob = ml_prediction.get("prob_up", 0.5)
+                            confidence = ml_prediction.get("confidence", 0.0)
+
+                            # Log da previsão quantitativa
+                            if prob > 0.6:
+                                bias = "📈 ALTISTA"
+                            elif prob < 0.4:
+                                bias = "📉 BAIXISTA"
+                            else:
+                                bias = "⚖️  NEUTRO"
+
+                            logging.info(
+                                f"🤖 ML Prediction: {bias} "
+                                f"(Prob: {prob:.1%}, Conf: {confidence:.1%})"
+                            )
+
+                            # Injeta no event_data para uso no builder
+                            event_data["ml_prediction"] = ml_prediction
+
+                        else:
+                            logging.warning(f"⚠️ ML Engine retornou status: {ml_prediction.get('status')}")
+
+                    except Exception as e:
+                        logging.error(f"❌ Erro na inferência ML: {e}", exc_info=True)
+                        ml_prediction = {"status": "error", "msg": str(e)}
+                else:
+                    logging.debug("🤖 ML Engine não disponível - usando apenas IA Generativa")
+
                 # Heartbeat extra (além do heartbeat periódico do AIAnalyzer)
                 try:
                     bot.health_monitor.heartbeat("ai")
@@ -207,7 +269,24 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                     macro_ctx = event_data.get("market_context", {})
                     market_env = event_data.get("market_environment", {})
                     ob_data = event_data.get("orderbook_data", {})
-                    ml_feats = event_data.get("ml_features", {})
+                    ml_feats = event_data.get("ml_features") or {}
+
+                    # Se não houver ml_features explícitas, tenta extrair via MLInferenceEngine
+                    if not ml_feats and getattr(bot, "ml_engine", None):
+                        try:
+                            ml_feats = bot.ml_engine.extract_ml_features(event_data)
+                        except Exception as e:
+                            logging.debug(
+                                f"Falha ao extrair ml_features via MLInferenceEngine: {e}",
+                                exc_info=True,
+                            )
+                            ml_feats = {}
+
+                    if not ml_feats:
+                        logging.warning(
+                            "⚠️ Nenhuma ml_feature disponível para este evento; "
+                            "IA Generativa operará com menos contexto quantitativo."
+                        )
 
                     ai_payload = build_ai_input(
                         symbol=bot.symbol,
@@ -219,6 +298,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                         market_environment=market_env,
                         orderbook_data=ob_data,
                         ml_features=ml_feats,
+                        ml_prediction=ml_prediction,
                     )
 
                     # Anexa ao evento original, sem mudar o formato que a IA já espera
