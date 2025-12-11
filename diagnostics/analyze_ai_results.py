@@ -13,6 +13,13 @@ import numpy as np
 import sys
 import os
 
+# Import das métricas avançadas
+from performance_metrics import (
+    calculate_profit_factor,
+    calculate_max_drawdown,
+    calculate_sharpe_ratio,
+)
+
 # Caminho do relatório gerado
 SCRIPT_DIR = os.path.dirname(__file__)
 BASE_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
@@ -29,9 +36,9 @@ def load_data():
     return df
 
 def print_header(title):
-    print(f"\n{'='*60}")
+    print(f"\n{'='*70}")
     print(f"📊 {title}")
-    print(f"{'='*60}")
+    print(f"{'='*70}")
 
 def analyze_general_performance(df):
     print_header("PERFORMANCE GERAL")
@@ -45,18 +52,34 @@ def analyze_general_performance(df):
 
     horizons = [c for c in df.columns if c.startswith('ret_') and c.endswith('m')]
     
+    # Tabela de métricas
+    print(f"\n{'Horizonte':<12} {'Trades':>7} {'Win Rate':>10} {'Avg Ret':>10} {'PF':>8} {'Max DD':>10} {'Sharpe':>8}")
+    print("-"*70)
+    
     for h in horizons:
         horizon_name = h.replace('ret_', '').replace('m', ' min')
+        returns = df_trades[h].dropna().values
         
-        # Win Rate (> 0.05% para cobrir taxas, por exemplo)
-        win_rate = (df_trades[h] > 0.05).mean() * 100
-        avg_ret = df_trades[h].mean()
-        med_ret = df_trades[h].median()
+        if len(returns) == 0:
+            continue
         
-        print(f"\nHorizonte {horizon_name}:")
-        print(f"  • Win Rate:      {win_rate:.2f}%")
-        print(f"  • Retorno Médio: {avg_ret:.4f}%")
-        print(f"  • Mediana:       {med_ret:.4f}%")
+        # Métricas básicas
+        win_rate = (returns > 0.05).mean() * 100
+        avg_ret = np.mean(returns)
+        
+        # Métricas avançadas
+        pf = calculate_profit_factor(returns)
+        mdd, _, _ = calculate_max_drawdown(returns)
+        sharpe = calculate_sharpe_ratio(returns)
+        
+        # Formata valores
+        pf_str = f"{pf:.2f}" if pf is not None else "N/A"
+        mdd_str = f"{mdd:.2f}%" if mdd is not None else "N/A"
+        sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "N/A"
+        
+        print(f"{horizon_name:<12} {len(returns):>7} {win_rate:>9.1f}% {avg_ret:>9.3f}% {pf_str:>8} {mdd_str:>10} {sharpe_str:>8}")
+    
+    print("-"*70)
         
     # Taxa de Invalidação Global
     inval_rate = df_trades['hit_invalidation'].mean() * 100

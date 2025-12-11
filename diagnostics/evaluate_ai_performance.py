@@ -24,6 +24,14 @@ import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 
+# Import das métricas avançadas
+from performance_metrics import (
+    calculate_profit_factor,
+    calculate_max_drawdown,
+    calculate_sharpe_ratio,
+    calculate_all_metrics,
+)
+
 # Configuração de Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -359,9 +367,9 @@ class AIPerformanceEvaluator:
 
     def print_summary(self, df: pd.DataFrame):
         """Imprime um resumo estatístico no console."""
-        print("\n" + "="*60)
+        print("\n" + "="*70)
         print("📊 RESUMO DE PERFORMANCE DA IA")
-        print("="*60)
+        print("="*70)
         
         print(f"Total de recomendações avaliadas: {len(df)}")
         
@@ -374,31 +382,85 @@ class AIPerformanceEvaluator:
 
         print(f"\nTrades Ativos (Buy/Sell): {len(df_active)}")
         
-        # Estatísticas por horizonte
+        # Tabela de métricas por horizonte
+        print("\n" + "-"*70)
+        print("MÉTRICAS POR HORIZONTE")
+        print("-"*70)
+        print(f"{'Horizonte':<12} {'Trades':>7} {'Win Rate':>10} {'Avg Ret':>10} {'PF':>8} {'Max DD':>10} {'Sharpe':>8}")
+        print("-"*70)
+        
         for m in HORIZONS:
             col = f"ret_{m}m"
             if col not in df_active.columns: continue
             
-            avg_ret = df_active[col].mean()
-            median_ret = df_active[col].median()
-            win_rate = (df_active[col] > 0).mean() * 100
+            returns = df_active[col].dropna().values
             
-            print(f"\nHorizonte {m} min:")
-            print(f"  Média Retorno:   {avg_ret:.4f}%")
-            print(f"  Mediana Retorno: {median_ret:.4f}%")
-            print(f"  Win Rate (>0%):  {win_rate:.1f}%")
+            if len(returns) == 0:
+                continue
             
-            # Distribuição
-            big_wins = (df_active[col] > 0.5).sum()
-            big_loss = (df_active[col] < -0.5).sum()
-            print(f"  Big Wins (>0.5%): {big_wins}")
-            print(f"  Big Loss (<-0.5%): {big_loss}")
+            # Métricas básicas
+            avg_ret = np.mean(returns)
+            win_rate = (returns > 0).mean() * 100
+            
+            # Métricas avançadas
+            pf = calculate_profit_factor(returns)
+            mdd, _, _ = calculate_max_drawdown(returns)
+            sharpe = calculate_sharpe_ratio(returns)
+            
+            # Formata valores
+            pf_str = f"{pf:.2f}" if pf is not None else "N/A"
+            mdd_str = f"{mdd:.2f}%" if mdd is not None else "N/A"
+            sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "N/A"
+            
+            print(f"{m:>4} min     {len(returns):>7} {win_rate:>9.1f}% {avg_ret:>9.3f}% {pf_str:>8} {mdd_str:>10} {sharpe_str:>8}")
+        
+        print("-"*70)
+        
+        # Tabela por bucket de confiança (horizonte 15min)
+        target_col = 'ret_15m' if 'ret_15m' in df_active.columns else 'ret_60m'
+        if target_col in df_active.columns and 'confidence' in df_active.columns:
+            print("\n" + "-"*70)
+            print(f"MÉTRICAS POR BUCKET DE CONFIANÇA ({target_col})")
+            print("-"*70)
+            print(f"{'Confiança':<15} {'Trades':>7} {'Win Rate':>10} {'Avg Ret':>10} {'PF':>8} {'Sharpe':>8}")
+            print("-"*70)
+            
+            # Define buckets
+            buckets = [(0.0, 0.5), (0.5, 0.7), (0.7, 0.9), (0.9, 1.0)]
+            
+            for low, high in buckets:
+                mask = (df_active['confidence'] >= low) & (df_active['confidence'] < high)
+                returns = df_active.loc[mask, target_col].dropna().values
+                
+                if len(returns) < 2:
+                    continue
+                
+                avg_ret = np.mean(returns)
+                win_rate = (returns > 0).mean() * 100
+                pf = calculate_profit_factor(returns)
+                sharpe = calculate_sharpe_ratio(returns)
+                
+                pf_str = f"{pf:.2f}" if pf is not None else "N/A"
+                sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "N/A"
+                
+                print(f"{low:.1f} - {high:.1f}      {len(returns):>7} {win_rate:>9.1f}% {avg_ret:>9.3f}% {pf_str:>8} {sharpe_str:>8}")
+            
+            print("-"*70)
 
         # Invalidação
         inval_rate = df_active['hit_invalidation'].mean() * 100
-        print(f"\nTaxa de Invalidação (Stop Loss atingido): {inval_rate:.1f}%")
+        print(f"\n🚫 Taxa de Invalidação (Stop Loss atingido): {inval_rate:.1f}%")
         
-        print("="*60)
+        # Distribuição
+        print("\n📈 Distribuição de Resultados (15min):")
+        if 'ret_15m' in df_active.columns:
+            ret_15 = df_active['ret_15m'].dropna()
+            big_wins = (ret_15 > 0.5).sum()
+            big_loss = (ret_15 < -0.5).sum()
+            print(f"   Big Wins (>0.5%):  {big_wins}")
+            print(f"   Big Loss (<-0.5%): {big_loss}")
+        
+        print("="*70)
 
 
 if __name__ == "__main__":

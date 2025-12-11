@@ -751,6 +751,9 @@ class EventSaver:
                 
                 cleaned_event = self._clean_event_data(event)
                 if cleaned_event:
+                    # 🆕 Injeta ID no log visual para facilitar grep
+                    if "event_id" in event:
+                         cleaned_event["_log_id"] = event["event_id"]
                     self._add_visual_log_entry(cleaned_event)
             except Exception as e:
                 self.logger.error(f"Erro ao processar evento no flush visual: {e}")
@@ -774,6 +777,12 @@ class EventSaver:
                 if not epoch_ms:
                     epoch_ms = _clock_sync_instance.get_server_time_ms()
                     event["epoch_ms"] = epoch_ms
+            
+            # 🆕 Garante ID único para rastreabilidade
+            if "event_id" not in event:
+                # Gera ID determinístico baseado em timestamp e tipo se possível, ou aleatório
+                import uuid
+                event["event_id"] = str(uuid.uuid4())[:8]
 
             if epoch_ms is not None and isinstance(epoch_ms, (int, float, str)):
                 try:

@@ -1,4 +1,4 @@
-# ai_analyzer_qwen.py v2.3.0 - COM SUPORTE GROQCLOUD + STRUCTURED OUTPUT + HEARTBEAT
+# ai_analyzer_qwen.py v2.4.0 - COM INTELIGÊNCIA QUANTITATIVA COMO BASE PRINCIPAL
 """
 AI Analyzer para eventos de mercado com validação de dados.
 
@@ -148,6 +148,70 @@ if JINJA_AVAILABLE:
     _jinja_env = Environment(loader=BaseLoader(), trim_blocks=True, lstrip_blocks=True)
 else:
     _jinja_env = None
+
+# ========================
+# SYSTEM PROMPT (v2.4.0)
+# ========================
+SYSTEM_PROMPT = """Você é analista institucional de fluxo, suporte/resistência e regiões de defesa.
+
+🔹 HORIZONTE DE ANÁLISE: Focado em entradas rápidas de 5-15 minutos (scalp), com validação em horizontes maiores se disponível.
+
+🔹 OBJETIVO: Identificar regiões de entrada claras para trades curtos, priorizando defesa institucional (absorção) e pontos de invalidação técnicos. Não force trades em ruído.
+
+═══════════════════════════════════════════════════════
+🧠 REGRA FUNDAMENTAL: INTELIGÊNCIA QUANTITATIVA É A BASE
+═══════════════════════════════════════════════════════
+
+O modelo XGBoost fornece probabilidades matemáticas (prob_up, prob_down) e um action_bias (compra/venda/aguardar).
+
+✅ USE A INTELIGÊNCIA QUANTITATIVA COMO BASE PRINCIPAL:
+   - O action_bias deve guiar sua decisão inicial
+   - A confiança do modelo (confidence_score) indica força da previsão
+
+⚠️ SÓ VÁ CONTRA O VIÉS MATEMÁTICO SE:
+   - Houver absorção MASSIVA no orderbook contrária ao viés
+   - Whale activity significativa na direção oposta
+   - CVD/Net Flow em forte divergência
+   - Evidência EXTREMA de exaustão/reversão no fluxo
+
+Se não houver evidência MUITO FORTE, SIGA o action_bias do modelo.
+
+═══════════════════════════════════════════════════════
+
+REGRAS GERAIS:
+1) Use SOMENTE dados fornecidos explicitamente.
+2) Se marcado 'Indisponível' ou '⚠️', NÃO use.
+3) Orderbook zerado? Use fluxo (net_flow, flow_imbalance, tick_rule).
+4) Contradições? Ignore dado contraditório.
+5) Foque em identificar REGIÕES IMPORTANTES:
+   - Suportes e resistências relevantes (use VP: POC/VAH/VAL)
+   - Regiões de absorção (defesa) e exaustão (fraqueza) via fluxo/whales
+   - Falta de demanda/oferta (breaks, buracos de liquidez)
+6) Só sugira ENTRADA quando houver região CLARA e bem defendida,
+   descrevendo preço aproximado e zona de invalidação.
+7) Em contexto de RUÍDO (range estreito, fluxo misto, confiança baixa):
+   - Reduza sinais; prefira action='wait' ou 'avoid'.
+8) Incentive action='wait' se confiança do modelo < 50% ou edge não claro.
+9) Se o cenário não estiver claro, prefira recomendar 'aguardar'.
+10) Seja sucinto, objetivo e profissional.
+"""
+
+SYSTEM_PROMPT_STRUCTURED = SYSTEM_PROMPT + """
+Responda APENAS em JSON com os campos:
+sentiment (bullish/bearish/neutral),
+confidence (0-1),
+action (buy/sell/hold/flat/wait/avoid),
+rationale (string),
+entry_zone (string ou null),
+invalidation_zone (string ou null),
+region_type (string ou null, ex: 'suporte', 'resistência', 'absorção', 'exaustão').
+
+⚠️ IMPORTANTE:
+- action DEVE estar alinhado com action_bias do modelo, a menos que haja evidência MUITO FORTE contrária.
+- Só indique entry_zone se houver uma região CLARA.
+- Se confiança quantitativa < 50%, use action='wait' ou 'avoid'.
+- Não inclua texto fora do JSON.
+"""
 
 ORDERBOOK_TEMPLATE = """
 🧠 **Análise Institucional – {{ ativo }} | {{ tipo_evento }}**
@@ -589,6 +653,111 @@ class AIAnalyzer:
                 "4) Se não houver entrada clara, recomende aguardar (wait/avoid) e explique o porquê.\n"
             )
 
+    def _build_structured_prompt(self, payload: Dict[str, Any]) -> str:
+        """
+        Constrói um prompt estruturado usando o novo formato AI Payload v2.
+        Foca em Price Action, Profundidade de Orderbook e Fluxo.
+        """
+        # Extração Segura
+        symbol = payload.get("symbol", "N/A")
+        ts = payload.get("timestamp", "N/A")
+        
+        # 1. Price Context & Action
+        pc = payload.get("price_context", {})
+        pa = pc.get("price_action", {})
+        price = format_price(pc.get("current_price"))
+        
+        # Formata Price Action
+        pa_str = "Indisponível"
+        if pa:
+            cp = pa.get('close_position')
+            bp = pa.get('candle_body_pct', 0)
+            rng = pa.get('candle_range_pct', 0)
+            
+            # Interpretação textual rápida para ajudar o modelo
+            candle_type = "Neutro"
+            if bp < 0.05:
+                candle_type = "Doji/Indecisão"
+            elif cp is not None:
+                if cp > 0.66: candle_type = "Fechamento Forte (Topo)"
+                elif cp < 0.33: candle_type = "Fechamento Fraco (Fundo)"
+                else: candle_type = "Fechamento Misto (Meio)"
+                
+            pa_str = (
+                f"   - Preço Atual: {price}\n"
+                f"   - Posição Fechamento: {cp:.2f} (0=Low, 1=High) -> {candle_type}\n"
+                f"   - Corpo Candle: {bp:.2f}% do range ({rng:.2f}% variação total)"
+            )
+        
+        # 2. Orderbook Depth
+        oc = payload.get("orderbook_context", {})
+        dm = oc.get("depth_metrics", {})
+        ob_str = "Indisponível"
+        
+        if dm or oc.get("bid_depth_usd"):
+            bid5 = dm.get("bid_liquidity_top5") or oc.get("bid_depth_usd", 0)
+            ask5 = dm.get("ask_liquidity_top5") or oc.get("ask_depth_usd", 0)
+            imb = dm.get("depth_imbalance") or oc.get("imbalance", 0)
+            
+            ob_str = (
+                f"   - Liquidez Bid (Sup): ${format_large_number(bid5)}\n"
+                f"   - Liquidez Ask (Res): ${format_large_number(ask5)}\n"
+                f"   - Imbalance Profundidade: {imb:.2f} (>0 Compra, <0 Venda)\n"
+                f"   - Paredes Detectadas: {'Sim' if oc.get('walls_detected') else 'Não'}"
+            )
+
+        # 3. Flow Context
+        fc = payload.get("flow_context", {})
+        whale = fc.get("whale_activity", {})
+        flow_str = (
+            f"   - Net Flow (1m): {format_delta(fc.get('net_flow'))}\n"
+            f"   - Agressão Compra: {fc.get('aggressive_buyers', 0):.1f}%\n"
+            f"   - Whale Delta: {format_delta(whale.get('whale_delta'))}\n"
+            f"   - Absorção: {fc.get('absorption_type', 'Nenhuma')}"
+        )
+
+        # 4. Quant/ML Context
+        quant = payload.get("quant_model", {})
+        ml_str = "Dados Indisponíveis"
+        if quant:
+            ml_str = (
+                f"   - Sentimento Modelo: {quant.get('model_sentiment')}\n"
+                f"   - Probabilidade Alta: {quant.get('model_probability_up', 0):.1%}\n"
+                f"   - Action Bias Base: {quant.get('action_bias', 'N/A').upper()}\n"
+                f"   - Confiança: {quant.get('confidence_score', 0):.1%}"
+            )
+
+        # Montagem do Prompt
+        prompt = f"""
+🧠 **ANÁLISE INSTITUCIONAL AVANÇADA - {symbol}**
+
+📝 **CENÁRIO ATUAL ({ts})**
+
+1️⃣ **PRICE ACTION (Estrutura do Candle)**
+{pa_str}
+*Instrução: Use 'Posição Fechamento' para validar força. Fechamento no topo = força compradora real.*
+
+2️⃣ **ORDERBOOK DEPTH (Liquidez Passiva)**
+{ob_str}
+*Instrução: 'Imbalance Profundidade' positivo indica suporte passivo forte abaixo do preço.*
+
+3️⃣ **FLUXO & WHALES (Agressão)**
+{flow_str}
+*Instrução: Whale Delta positivo confirma intenção institucional de compra.*
+
+4️⃣ **INTELIGÊNCIA QUANTITATIVA (Viés Matemático)**
+{ml_str}
+
+🔎 **PROCESSAMENTO DE DECISÃO**
+Avalie a confluência dos 4 fatores acima.
+
+Regras de Decisão:
+- **COMPRA FORTE**: Action Bias Compra + Whale Delta Positivo + Candle Fechamento Alto + Depth Support.
+- **VENDA FORTE**: Action Bias Venda + Whale Delta Negativo + Candle Fechamento Baixo + Depth Resistance.
+- **AGUARDAR (WAIT)**: Se houver divergência clara (ex: Modelo diz Venda mas Whales estão comprando forte).
+"""
+        return prompt
+
     def _create_prompt(self, event_data: Dict[str, Any]) -> str:
         """
         Cria prompt para IA.
@@ -938,17 +1107,66 @@ class AIAnalyzer:
             )
             lines.append("")
 
+        # ============================================================
+        # 🆕 INTELIGÊNCIA QUANTITATIVA (quant_model + ml_str)
+        # ============================================================
+        quant = payload.get("quant_model", {}) or {}
+        ml_str_raw = payload.get("ml_str", "") or ""
+
+        if quant:
+            prob_up = quant.get("model_probability_up")
+            prob_down = quant.get("model_probability_down")
+            sentiment_model = quant.get("model_sentiment", "Indefinido")
+            action_bias = quant.get("action_bias", "aguardar")
+            confidence_model = quant.get("confidence_score", 0.0)
+            features_used = quant.get("features_used", 0)
+            total_features = quant.get("total_features", 0)
+
+            lines.append("═══════════════════════════════════════════════════════")
+            lines.append("🧠 INTELIGÊNCIA QUANTITATIVA (XGBoost) – USO OBRIGATÓRIO")
+            lines.append("═══════════════════════════════════════════════════════")
+            if prob_up is not None:
+                lines.append(f"  📈 Probabilidade de Alta: {prob_up * 100:.1f}%")
+            if prob_down is not None:
+                lines.append(f"  📉 Probabilidade de Baixa: {prob_down * 100:.1f}%")
+            lines.append(f"  🎯 Viés Matemático: {sentiment_model}")
+            lines.append(f"  🔒 Action Bias (viés sugerido): {action_bias.upper()}")
+            lines.append(f"  📊 Confiança do Modelo: {confidence_model * 100:.1f}%")
+            lines.append(f"  🔍 Features usadas: {features_used}/{total_features}")
+            lines.append("")
+            lines.append("⚠️ REGRA CRÍTICA:")
+            lines.append("   Esta inteligência quantitativa é sua BASE PRINCIPAL de decisão.")
+            lines.append("   Só vá CONTRA o action_bias se o fluxo ou orderbook mostrarem")
+            lines.append("   evidência MUITO FORTE (ex: absorção massiva, whale dump) na")
+            lines.append("   direção oposta. Caso contrário, SIGA o viés matemático.")
+            lines.append("")
+        elif ml_str_raw:
+            # Fallback: usa ml_str formatado se quant_model não existir
+            lines.append(ml_str_raw.strip())
+            lines.append("")
+
         # Instruções
-        lines.append("TAREFA DA IA:")
-        lines.append(
-            "Analise os dados de preço, fluxo, book e contexto macro e determine:"
-        )
-        lines.append("1) Viés direcional (alta, baixa ou neutro).")
-        lines.append("2) Região de entrada ideal (se houver setup claro).")
-        lines.append("3) Zona de invalidação (stop técnico).")
-        lines.append(
-            "Se os dados forem conflitantes ou fracos, recomende aguardar."
-        )
+        lines.append("═══════════════════════════════════════════════════════")
+        lines.append("📋 TAREFA DA IA")
+        lines.append("═══════════════════════════════════════════════════════")
+        lines.append("")
+        lines.append("1) USE A INTELIGÊNCIA QUANTITATIVA COMO BASE PRINCIPAL.")
+        lines.append("   O viés matemático (action_bias) deve guiar sua decisão inicial.")
+        lines.append("")
+        lines.append("2) CONFIRME OU INVALIDE com dados de fluxo e orderbook:")
+        lines.append("   - CVD/Net Flow alinhados com o viés? → CONFIRMA")
+        lines.append("   - Orderbook com absorção forte? → Pode indicar defesa/reversão")
+        lines.append("   - Whale activity oposta ao viés? → Sinal de alerta")
+        lines.append("")
+        lines.append("3) SÓ CONTRARIE O VIÉS QUANTITATIVO se houver evidência MUITO FORTE:")
+        lines.append("   - Absorção massiva contrária")
+        lines.append("   - Whale dump/pump significativo")
+        lines.append("   - Divergência grave fluxo vs preço")
+        lines.append("")
+        lines.append("4) Defina região de entrada e zona de invalidação (se houver setup).")
+        lines.append("")
+        lines.append("5) Se dados forem conflitantes ou confiança quantitativa baixa (<50%),")
+        lines.append("   recomende aguardar com action='wait' ou 'avoid'.")
 
         return "\n".join(lines)
 
@@ -966,27 +1184,7 @@ class AIAnalyzer:
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            "Você é analista institucional de fluxo, suporte/resistência e regiões de defesa.\n"
-                            "HORIZONTE DE ANÁLISE: Focado em entradas rápidas de 5-15 minutos (scalp), com validação em horizontes maiores se disponível.\n"
-                            "OBJETIVO: Identificar regiões de entrada claras para trades curtos, priorizando defesa institucional (absorção) e pontos de invalidação técnicos. Não force trades em ruído.\n"
-                            "REGRAS:\n"
-                            "1) Use SOMENTE dados fornecidos explicitamente.\n"
-                            "2) Se marcado 'Indisponível' ou '⚠️', NÃO use.\n"
-                            "3) Orderbook zerado? Use fluxo (net_flow, flow_imbalance, tick_rule).\n"
-                            "4) Contradições? Ignore dado contraditório.\n"
-                            "5) Foque em identificar REGIÕES IMPORTANTES:\n"
-                            "   - Suportes e resistências relevantes (use VP: POC/VAH/VAL)\n"
-                            "   - Regiões de absorção (defesa) e exaustão (fraqueza) via fluxo/whales\n"
-                            "   - Falta de demanda/oferta (breaks, buracos de liquidez)\n"
-                            "6) Só sugira ENTRADA (compra/venda) quando houver uma região CLARA e bem defendida,\n"
-                            "   descrevendo preço aproximado da entrada e uma zona de invalidação.\n"
-                            "7) Em contexto de RUÍDO (range estreito, fluxo misto, baixa confiança histórica):\n"
-                            "   - Reduza sinais; prefira action='wait' ou 'avoid'.\n"
-                            "8) Incentive action='wait' se confiança baixa (<0.7) ou edge não claro.\n"
-                            "9) Se o cenário não estiver claro, prefira recomendar 'aguardar' e explique o porquê.\n"
-                            "10) Seja sucinto, objetivo e profissional."
-                        ),
+                        "content": SYSTEM_PROMPT,
                     },
                     {"role": "user", "content": prompt},
                 ],
@@ -1018,38 +1216,7 @@ class AIAnalyzer:
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            "Você é analista institucional de fluxo, suporte/resistência e regiões de defesa.\n"
-                            "HORIZONTE DE ANÁLISE: Focado em entradas rápidas de 5-15 minutos (scalp), com validação em horizontes maiores se disponível.\n"
-                            "OBJETIVO: Identificar regiões de entrada claras para trades curtos, priorizando defesa institucional (absorção) e pontos de invalidação técnicos. Não force trades em ruído.\n"
-                            "Responda APENAS em JSON com os campos:\n"
-                            "sentiment (bullish/bearish/neutral),\n"
-                            "confidence (0-1),\n"
-                            "action (buy/sell/hold/flat/wait/avoid),\n"
-                            "rationale (string),\n"
-                            "entry_zone (string ou null),\n"
-                            "invalidation_zone (string ou null),\n"
-                            "region_type (string ou null, ex: 'suporte', 'resistência', 'absorção', 'exaustão').\n"
-                            "REGRAS:\n"
-                            "1) Use SOMENTE dados fornecidos explicitamente.\n"
-                            "2) Se marcado 'Indisponível' ou '⚠️', NÃO use.\n"
-                            "3) Orderbook zerado? Use fluxo (net_flow, flow_imbalance, tick_rule).\n"
-                            "4) Contradições? Ignore dado contraditório.\n"
-                            "5) Foque em identificar REGIÕES IMPORTANTES:\n"
-                            "   - Suportes e resistências relevantes (use VP: POC/VAH/VAL)\n"
-                            "   - Regiões de absorção (defesa) e exaustão (fraqueza) via fluxo/whales\n"
-                            "   - Falta de demanda/oferta (breaks, buracos de liquidez)\n"
-                            "6) Só sugira ENTRADA (compra/venda) quando houver uma região CLARA e bem defendida,\n"
-                            "   descrevendo preço aproximado da entrada e uma zona de invalidação.\n"
-                            "7) Em contexto de RUÍDO (range estreito, fluxo misto, baixa confiança histórica):\n"
-                            "   - Reduza sinais; prefira action='wait' ou 'avoid'.\n"
-                            "8) Incentive action='wait' se confiança baixa (<0.7) ou edge não claro.\n"
-                            "9) Se o cenário não estiver claro, prefira recomendar 'aguardar' e explique o porquê.\n"
-                            "10) Seja sucinto, objetivo e profissional.\n"
-                            "- Só indique entry_zone se houver uma região CLARA de entrada (defesa institucional, suporte/resistência relevante, absorção/exaustão bem formadas).\n"
-                            "- Se o cenário não estiver claro, use action='wait' ou 'avoid' e entry_zone=null.\n"
-                            "- Não inclua texto fora do JSON."
-                        ),
+                        "content": SYSTEM_PROMPT_STRUCTURED,
                     },
                     {"role": "user", "content": prompt},
                 ],
@@ -1090,27 +1257,7 @@ class AIAnalyzer:
                     messages=[
                         {
                             "role": "system",
-                            "content": (
-                                "Você é analista institucional de fluxo, suporte/resistência e regiões de defesa.\n"
-                                "HORIZONTE DE ANÁLISE: Focado em entradas rápidas de 5-15 minutos (scalp), com validação em horizontes maiores se disponível.\n"
-                                "OBJETIVO: Identificar regiões de entrada claras para trades curtos, priorizando defesa institucional (absorção) e pontos de invalidação técnicos. Não force trades em ruído.\n"
-                                "REGRAS:\n"
-                                "1) Use SOMENTE dados fornecidos explicitamente.\n"
-                                "2) Se marcado 'Indisponível' ou '⚠️', NÃO use.\n"
-                                "3) Orderbook zerado? Use fluxo (net_flow, flow_imbalance, tick_rule).\n"
-                                "4) Contradições? Ignore dado contraditório.\n"
-                                "5) Foque em identificar REGIÕES IMPORTANTES:\n"
-                                "   - Suportes e resistências relevantes (use VP: POC/VAH/VAL)\n"
-                                "   - Regiões de absorção (defesa) e exaustão (fraqueza) via fluxo/whales\n"
-                                "   - Falta de demanda/oferta (breaks, buracos de liquidez)\n"
-                                "6) Só sugira ENTRADA (compra/venda) quando houver uma região CLARA e bem defendida,\n"
-                                "   descrevendo preço aproximado da entrada e uma zona de invalidação.\n"
-                                "7) Em contexto de RUÍDO (range estreito, fluxo misto, baixa confiança histórica):\n"
-                                "   - Reduza sinais; prefira action='wait' ou 'avoid'.\n"
-                                "8) Incentive action='wait' se confiança baixa (<0.7) ou edge não claro.\n"
-                                "9) Se o cenário não estiver claro, prefira recomendar 'aguardar' e explique o porquê.\n"
-                                "10) Seja sucinto, objetivo e profissional."
-                            ),
+                            "content": SYSTEM_PROMPT,
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -1143,27 +1290,7 @@ class AIAnalyzer:
                     messages=[
                         {
                             "role": "system",
-                            "content": (
-                                "Você é analista institucional de fluxo, suporte/resistência e regiões de defesa.\n"
-                                "HORIZONTE DE ANÁLISE: Focado em entradas rápidas de 5-15 minutos (scalp), com validação em horizontes maiores se disponível.\n"
-                                "OBJETIVO: Identificar regiões de entrada claras para trades curtos, priorizando defesa institucional (absorção) e pontos de invalidação técnicos. Não force trades em ruído.\n"
-                                "REGRAS:\n"
-                                "1) Use SOMENTE dados fornecidos explicitamente.\n"
-                                "2) Se marcado 'Indisponível' ou '⚠️', NÃO use.\n"
-                                "3) Orderbook zerado? Use fluxo (net_flow, flow_imbalance, tick_rule).\n"
-                                "4) Contradições? Ignore dado contraditório.\n"
-                                "5) Foque em identificar REGIÕES IMPORTANTES:\n"
-                                "   - Suportes e resistências relevantes (use VP: POC/VAH/VAL)\n"
-                                "   - Regiões de absorção (defesa) e exaustão (fraqueza) via fluxo/whales\n"
-                                "   - Falta de demanda/oferta (breaks, buracos de liquidez)\n"
-                                "6) Só sugira ENTRADA (compra/venda) quando houver uma região CLARA e bem defendida,\n"
-                                "   descrevendo preço aproximado da entrada e uma zona de invalidação.\n"
-                                "7) Em contexto de RUÍDO (range estreito, fluxo misto, baixa confiança histórica):\n"
-                                "   - Reduza sinais; prefira action='wait' ou 'avoid'.\n"
-                                "8) Incentive action='wait' se confiança baixa (<0.7) ou edge não claro.\n"
-                                "9) Se o cenário não estiver claro, prefira recomendar 'aguardar' e explique o porquê.\n"
-                                "10) Seja sucinto, objetivo e profissional."
-                            ),
+                            "content": SYSTEM_PROMPT,
                         },
                         {"role": "user", "content": prompt},
                     ],

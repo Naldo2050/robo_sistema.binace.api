@@ -54,6 +54,46 @@ def build_ai_input(
     ohlc = enriched.get("ohlc", {})
     vp_daily = historical_profile.get("daily", {})
     
+    # Cálculos de Price Action (Candle)
+    pa_metrics = {
+        "candle_range_pct": 0.0,
+        "candle_body_pct": 0.0,
+        "upper_shadow_pct": 0.0,
+        "lower_shadow_pct": 0.0,
+        "close_position": 0.5
+    }
+    
+    try:
+        op = ohlc.get("open")
+        hi = ohlc.get("high")
+        lo = ohlc.get("low")
+        cl = ohlc.get("close")
+        
+        if all(x is not None and x > 0 for x in [op, hi, lo, cl]):
+            # Range total
+            rng = hi - lo
+            if op > 0:
+                pa_metrics["candle_range_pct"] = (rng / op) * 100
+                
+            # Corpo
+            body = abs(cl - op)
+            if op > 0:
+                pa_metrics["candle_body_pct"] = (body / op) * 100
+            
+            # Posição do fechamento (0.0 = Low, 1.0 = High)
+            if rng > 0:
+                pa_metrics["close_position"] = (cl - lo) / rng
+            
+            # Sombras
+            upper_shadow = hi - max(op, cl)
+            lower_shadow = min(op, cl) - lo
+            if rng > 0: # percentual do range total
+                 pa_metrics["upper_shadow_pct"] = (upper_shadow / rng) * 100
+                 pa_metrics["lower_shadow_pct"] = (lower_shadow / rng) * 100
+                 
+    except Exception:
+        pass # Mantém defaults seguros
+
     price_context = {
         "current_price": signal.get("preco_fechamento", ohlc.get("close")),
         "ohlc": {
@@ -63,6 +103,7 @@ def build_ai_input(
             "close": ohlc.get("close"),
             "vwap": ohlc.get("vwap")
         },
+        "price_action": pa_metrics, # 🆕 Bloco de Price Action explícito
         "volume_profile_daily": {
             "poc": vp_daily.get("poc"),
             "vah": vp_daily.get("vah"),
@@ -97,13 +138,22 @@ def build_ai_input(
     # 3. Contexto de Orderbook (Liquidez)
     # Tenta normalizar dados que podem vir de estruturas diferentes
     spread_metrics = signal.get("spread_metrics", {})
+    # 🆕 Tenta extrair depth completo se disponível
+    depth_metrics = orderbook_data.get("depth_metrics", {})
+    
     ob_context = {
         "bid_depth_usd": orderbook_data.get("bid_depth_usd") or spread_metrics.get("bid_depth_usd"),
         "ask_depth_usd": orderbook_data.get("ask_depth_usd") or spread_metrics.get("ask_depth_usd"),
         "imbalance": orderbook_data.get("imbalance"),
         "spread_percent": orderbook_data.get("spread_percent") or spread_metrics.get("spread_percent"),
         "market_impact_score": orderbook_data.get("pressure"), # Proxy se existir
-        "walls_detected": len(signal.get("order_book_depth", {})) > 0 # Simplificação
+        "walls_detected": len(signal.get("order_book_depth", {})) > 0, # Simplificação
+        # 🆕 Métricas de profundidade explícitas
+        "depth_metrics": {
+             "bid_liquidity_top5": depth_metrics.get("bid_liquidity_top5", 0),
+             "ask_liquidity_top5": depth_metrics.get("ask_liquidity_top5", 0),
+             "depth_imbalance": depth_metrics.get("depth_imbalance", 0)
+        }
     }
 
     # 4. Contexto Macro e Regime

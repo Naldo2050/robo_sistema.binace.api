@@ -1083,6 +1083,13 @@ class EnhancedMarketBot:
                 signal["order_book_depth"] = ob_event["order_book_depth"]
             if "spread_analysis" in ob_event:
                 signal["spread_analysis"] = ob_event["spread_analysis"]
+            
+            # 🆕 Garante que depth_metrics esteja DENTRO de orderbook_data para o AI Payload Builder
+            if "depth_metrics" in ob_event and "orderbook_data" in signal:
+                # Cria cópia para não poluir referência externa
+                if isinstance(signal["orderbook_data"], dict):
+                    signal["orderbook_data"] = signal["orderbook_data"].copy()
+                    signal["orderbook_data"]["depth_metrics"] = ob_event["depth_metrics"]
 
             dq = ob_event.get("data_quality") or {}
             if dq:

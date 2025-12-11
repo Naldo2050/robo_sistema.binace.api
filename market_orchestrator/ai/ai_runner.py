@@ -27,6 +27,19 @@ from format_utils import (
 # [AI_PAYLOAD_BUILDER] Importa o novo construtor de payload
 from .ai_payload_builder import build_ai_input
 
+# [HYBRID_DECISION] Importa módulo de decisão híbrida
+try:
+    from ml.hybrid_decision import (
+        fuse_decisions,
+        decision_to_ai_result,
+        HybridDecisionMaker,
+    )
+    HYBRID_AVAILABLE = True
+except ImportError:
+    HYBRID_AVAILABLE = False
+    fuse_decisions = None
+    decision_to_ai_result = None
+
 
 def initialize_ai_async(bot) -> None:
     """
@@ -340,6 +353,29 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                 except:
                                     ai_result_json = {"raw_response": analysis_result.get("raw_response", "")}
 
+                            # ============================================
+                            # [HYBRID_DECISION] Fusão de Decisão Híbrida
+                            # ============================================
+                            if HYBRID_AVAILABLE and getattr(config, "HYBRID_ENABLED", True):
+                                try:
+                                    # Obtém previsão do modelo (já calculada anteriormente)
+                                    ml_pred = ml_prediction if ml_prediction.get("status") == "ok" else None
+                                    
+                                    # Faz fusão de decisões
+                                    hybrid_result = fuse_decisions(ml_pred, ai_result_json)
+                                    
+                                    # Converte para formato compatível com AITradeAnalysis
+                                    ai_result_json = decision_to_ai_result(hybrid_result)
+                                    
+                                    logging.info(
+                                        f"🧠 Decisão Final: {hybrid_result.action.upper()} "
+                                        f"(conf={hybrid_result.confidence:.0%}, source={hybrid_result.source})"
+                                    )
+                                    
+                                except Exception as e:
+                                    logging.warning(f"⚠️ Erro na fusão híbrida, usando IA pura: {e}")
+                                    # Mantém ai_result_json original
+                            
                             # Filtro de confiança: se < 0.7, força action para "wait"
                             if isinstance(ai_result_json, dict):
                                 action = ai_result_json.get("action", "wait")
@@ -355,7 +391,9 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                 "anchor_window_id": anchor_window_id,
                                 "ai_result": ai_result_json,
                                 "ai_payload": {
+                                    "price_context": ai_payload.get("price_context", {}),
                                     "flow_context": ai_payload.get("flow_context", {}),
+                                    "orderbook_context": ai_payload.get("orderbook_context", {}),
                                     "macro_context": ai_payload.get("macro_context", {}),
                                     "liquidity_heatmap": ai_payload.get("fluxo_continuo", {}).get("liquidity_heatmap", {}),
                                 },

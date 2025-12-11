@@ -1,12 +1,19 @@
 # -*- coding: utf-8 -*-
-# data_validator.py v2.3.2 - SUPER-VALIDATOR (CORRECTED + PRECISION FIX + WHALE CHECK FIX)
+# data_validator.py v2.3.3 - SUPER-VALIDATOR + QUALITY METRICS
 
 import time
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import hashlib
 import logging
 import numpy as np
+
+# Importar métricas de qualidade (opcional, sem quebrar se não existir)
+try:
+    from data_pipeline.metrics.data_quality_metrics import get_quality_metrics
+    _QUALITY_METRICS_AVAILABLE = True
+except ImportError:
+    _QUALITY_METRICS_AVAILABLE = False
 
 class DataValidator:
     """
@@ -74,7 +81,11 @@ class DataValidator:
 
     def validate_and_clean(self, data: Dict) -> Optional[Dict]:
         """Pipeline completo de validação e limpeza de dados."""
+        start_time = time.perf_counter()
+        corrections_applied: List[str] = []
+        
         if not data:
+            self._record_quality_metric("discarded", [], start_time)
             return None
             
         # 1. Correções primárias (antes da validação)
@@ -84,14 +95,17 @@ class DataValidator:
         # 2. Validar e corrigir timestamps ANTES de outras validações
         data = self._validate_and_fix_timestamps(data)
         if data is None:
+            self._record_quality_metric("discarded", ["timestamp_validation_failed"], start_time)
             return None
         
         # 3. Validar estrutura e remover duplicatas
-        if not self._validate_structure(data): 
+        if not self._validate_structure(data):
+            self._record_quality_metric("discarded", ["structure_invalid"], start_time)
             return None
         event_id = self._generate_event_id(data)
         if event_id in self.seen_events:
             self.logger.debug(f"Evento duplicado ignorado: {event_id}")
+            self._record_quality_metric("discarded", ["duplicate"], start_time)
             return None
         self.seen_events.add(event_id)
         
@@ -99,10 +113,13 @@ class DataValidator:
         self._cleanup_old_cache()
         
         # 5. Correções de inconsistências lógicas
+        corrections_before = self._get_correction_snapshot()
         data = self._correct_all_inconsistencies(data)
+        corrections_applied = self._get_corrections_since(corrections_before)
         
         # 6. Validação de dados pós-correção
         if not self._validate_data_integrity(data):
+            self._record_quality_metric("discarded", ["integrity_failed"], start_time)
             return None
             
         # 7. Normalização final COM PRECISÃO CORRETA
@@ -111,7 +128,43 @@ class DataValidator:
         # 8. Log de estatísticas
         self._log_correction_stats()
         
+        # 9. Registrar métrica de qualidade
+        status = "corrected" if corrections_applied else "valid"
+        self._record_quality_metric(status, corrections_applied, start_time)
+        
         return data
+    
+    def _record_quality_metric(
+        self,
+        status: str,
+        correction_types: List[str],
+        start_time: float
+    ) -> None:
+        """Registra métrica de qualidade de dados."""
+        if not _QUALITY_METRICS_AVAILABLE:
+            return
+        
+        try:
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            get_quality_metrics().record_event(
+                status=status,
+                correction_types=correction_types,
+                latency_ms=latency_ms
+            )
+        except Exception:
+            pass  # Não falhar validação por erro de métricas
+    
+    def _get_correction_snapshot(self) -> Dict[str, int]:
+        """Retorna snapshot dos contadores de correção."""
+        return self.corrections_count.copy()
+    
+    def _get_corrections_since(self, snapshot: Dict[str, int]) -> List[str]:
+        """Retorna tipos de correção aplicados desde o snapshot."""
+        corrections = []
+        for key, current_val in self.corrections_count.items():
+            if current_val > snapshot.get(key, 0):
+                corrections.append(key)
+        return corrections
 
     # ========================================================================
     # VALIDAÇÃO E CORREÇÃO DE TIMESTAMPS

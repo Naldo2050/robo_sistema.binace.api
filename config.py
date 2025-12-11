@@ -192,6 +192,26 @@ ML_MIN_SAMPLE_SIZE = 100
 ML_UPDATE_INTERVAL = 60 * 10  # 10 minutos
 
 # ==============================================================================
+# INTELIGÊNCIA HÍBRIDA (XGBoost + LLM)
+# ==============================================================================
+
+# Habilita sistema híbrido de decisão
+HYBRID_ENABLED = True
+
+# Modo de operação:
+# - "llm_primary": IA decide, modelo como contexto (default - use quando não tiver dados)
+# - "model_primary": Modelo decide, IA comenta (use quando modelo for confiável)
+# - "ensemble": Ponderação de ambos (use em produção estável)
+HYBRID_MODE = "llm_primary"
+
+# Pesos para modo ensemble (devem somar 1.0)
+HYBRID_MODEL_WEIGHT = 0.6  # Peso do modelo XGBoost
+HYBRID_LLM_WEIGHT = 0.4    # Peso da IA generativa
+
+# Confiança mínima do modelo para ele decidir (em model_primary)
+HYBRID_MODEL_MIN_CONFIDENCE = 0.6
+
+# ==============================================================================
 # PARÂMETROS DE SENTIMENTO / ON-CHAIN
 # ==============================================================================
 

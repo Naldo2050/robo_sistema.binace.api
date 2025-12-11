@@ -107,6 +107,7 @@ def main() -> int:
         level=log_level,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
+    logging.info(f"📊 Nível de log configurado: {log_level_name}")
 
     bot = None  # ✅ Inicializa fora do try
     
@@ -117,9 +118,12 @@ def main() -> int:
             try:
                 validate()
                 logging.info("✅ Configuração validada com sucesso")
+            except ValueError as e:
+                # ValueError indica erro crítico de configuração - deve parar
+                raise
             except Exception as e:
-                logging.warning(f"⚠️ Erro na validação de config: {e}")
-                # Continua mesmo com erro de validação (pode ser não-crítico)
+                logging.warning(f"⚠️ Erro inesperado na validação de config: {e}")
+                # Continua apenas para exceções não-críticas
 
         # ✅ Validação rigorosa de parâmetros obrigatórios usados no construtor
         _validate_required_config()
@@ -161,10 +165,15 @@ def main() -> int:
 
     finally:
         # ✅ GARANTE CLEANUP MESMO EM CASO DE ERRO
-        if bot is not None and hasattr(bot, "_cleanup_handler"):
+        if bot is not None:
             try:
                 logging.info("🧹 Iniciando cleanup de recursos...")
-                bot._cleanup_handler()
+                if hasattr(bot, "_cleanup_handler"):
+                    # Verifica se o cleanup é assíncrono
+                    if asyncio.iscoroutinefunction(bot._cleanup_handler):
+                        asyncio.run(bot._cleanup_handler())
+                    else:
+                        bot._cleanup_handler()
                 logging.info("✅ Cleanup concluído")
             except Exception as cleanup_err:
                 logging.error(

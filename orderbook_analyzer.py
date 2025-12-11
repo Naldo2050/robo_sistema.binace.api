@@ -483,6 +483,27 @@ class OrderBookAnalyzer:
             bid_depth_usd = _sum_depth_usd(bids, 5)
             ask_depth_usd = _sum_depth_usd(asks, 5)
 
+            # 🆕 Calculation of deeper metrics for AI Payload
+            bid_depth_top5 = bid_depth_usd # Alias
+            ask_depth_top5 = ask_depth_usd # Alias
+            
+            # Additional deeper check
+            bid_depth_top20 = _sum_depth_usd(bids, 20)
+            ask_depth_top20 = _sum_depth_usd(asks, 20)
+            
+            depth_imbalance = 0.0
+            if (bid_depth_top5 + ask_depth_top5) > 0:
+                depth_imbalance = (bid_depth_top5 - ask_depth_top5) / (bid_depth_top5 + ask_depth_top5)
+            
+            # Store in converted snap for later use
+            converted_snap["depth_metrics"] = {
+                "bid_liquidity_top5": bid_depth_top5,
+                "ask_liquidity_top5": ask_depth_top5,
+                "bid_liquidity_top20": bid_depth_top20,
+                "ask_liquidity_top20": ask_depth_top20,
+                "depth_imbalance": depth_imbalance
+            }
+
             min_depth = ORDERBOOK_MIN_DEPTH_USD
 
             # SEMPRE rejeita se zero
@@ -1397,6 +1418,8 @@ class OrderBookAnalyzer:
                 "volume_ratio": round(ratio, 4) if ratio not in (None, float("inf")) else None,
                 "pressure": round(pressure, 4),
             },
+
+            "depth_metrics": snap.get("depth_metrics", {}),
 
             "data_quality": {
                 "is_valid": True,
