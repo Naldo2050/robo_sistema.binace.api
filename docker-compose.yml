@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  market-bot:
+    build: .
+    container_name: market_bot_prod
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - ENVIRONMENT=production
+      - LOG_FORMAT=json
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./features:/app/features
+    # Configuração de recursos (ajuste conforme instância OCI)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"

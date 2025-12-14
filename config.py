@@ -13,17 +13,27 @@ from dotenv import load_dotenv
 # OPENAI_API_KEY=...  (opcional)
 load_dotenv()
 
+# ✅ OCI Vault Integration
+try:
+    from infrastructure.oci.vault_helper import get_vault_secret
+except ImportError:
+    # Fallback caso a pasta infrastructure não esteja no path ou em dev
+    def get_vault_secret(x): return x
+
+# OCI Configuration
+OCI_COMPARTMENT_ID = os.getenv("OCI_COMPARTMENT_ID")
+
 # -- Ativo e Conexão --
 SYMBOL = "BTCUSDT"
 STREAM_URL = f"wss://fstream.binance.com/ws/{SYMBOL.lower()}@aggTrade"
 
 # === Credenciais de IA (GroqCloud + DashScope/Qwen) ===
 # ✅ PRIORIDADE 1: GroqCloud (rápido e eficiente)
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = get_vault_secret(os.getenv("GROQ_API_KEY"))
 GROQ_MODEL = "llama-3.3-70b-versatile"  # ✅ CORRIGIDO: era llama-3.1-70b-versatile (descontinuado)
 
 # FALLBACK: DashScope
-DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+DASHSCOPE_API_KEY = get_vault_secret(os.getenv("DASHSCOPE_API_KEY"))
 
 AI_KEYS = {
     "groq": GROQ_API_KEY,           # ✅ Prioridade 1
@@ -31,7 +41,7 @@ AI_KEYS = {
 }
 
 # (Opcional) OpenAI
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = get_vault_secret(os.getenv("OPENAI_API_KEY"))
 
 # -- Janela de Análise (Candle) --
 WINDOW_SIZE_MINUTES = 1  # Tamanho da janela de tempo para agrupar trades (em minutos)

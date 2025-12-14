@@ -5,6 +5,11 @@ import logging
 
 from config import HEALTH_CHECK_TIMEOUT, HEALTH_CHECK_CRITICAL, HEALTH_CHECK_INTERVAL
 
+# Tenta importar monitor OCI, falha graciosamente se não existir
+try:
+    from infrastructure.oci.monitoring import OCIMonitor
+except ImportError:
+    OCIMonitor = None
 
 class HealthMonitor:
     def __init__(
@@ -28,6 +33,15 @@ class HealthMonitor:
         # guarda nível já alertado: "warning" ou "critical"
         self.alerted_level: dict[str, str] = {}
         self._lock = threading.Lock()
+        
+        # OCI Monitoring
+        self.oci_monitor = None
+        if OCIMonitor:
+            try:
+                self.oci_monitor = OCIMonitor()
+                logging.info(f"☁️ OCI Monitoring habilitado: {self.oci_monitor.enabled}")
+            except Exception as e:
+                logging.warning(f"⚠️ Falha ao iniciar OCI Monitor: {e}")
 
         # Inicia thread de verificação
         self._stop_event = threading.Event()
@@ -52,11 +66,15 @@ class HealthMonitor:
                 self.alerted_level.pop(module_name, None)
 
     def _monitor_loop(self):
-        """Verifica periodicamente se algum módulo está travado."""
+        """Verifica periodicamente se algum módulo está travado e envia métricas."""
+        last_metric_push = 0
+        metric_push_interval = 60  # Enviar métricas a cada 60s
+
         while not self._stop_event.is_set():
             time.sleep(self.check_interval)
             now = time.time()
-
+            
+            # 1. Verificação de Liveness (Logs locais)
             with self._lock:
                 for module, last_beat in list(self.last_heartbeat.items()):
                     silence = now - last_beat
@@ -78,6 +96,44 @@ class HealthMonitor:
                             silence,
                         )
                         self.alerted_level[module] = "warning"
+
+            # 2. Envio de Métricas OCI (se habilitado)
+            if self.oci_monitor and self.oci_monitor.enabled:
+                if now - last_metric_push >= metric_push_interval:
+                    try:
+                        self._push_oci_metrics(now)
+                        last_metric_push = now
+                    except Exception as e:
+                        logging.error(f"❌ Erro no envio de métricas OCI: {e}")
+
+    def _push_oci_metrics(self, now):
+        """Coleta e envia métricas customizadas para OCI."""
+        # Métricas de Sistema
+        metrics = self.oci_monitor.collect_system_metrics()
+        
+        # Status Geral (1 = OK, 0 = Algum Erro Crítico)
+        status_val = 1
+        critical_count = 0
+        warning_count = 0
+        
+        with self._lock:
+            for lvl in self.alerted_level.values():
+                if lvl == "critical":
+                    status_val = 0
+                    critical_count += 1
+                elif lvl == "warning":
+                    warning_count += 1
+                    
+            # Lag dos módulos (latência de heartbeat)
+            for module, last_beat in self.last_heartbeat.items():
+                lag = now - last_beat
+                metrics[f"{module}_Lag"] = lag
+        
+        metrics["BotHealthStatus"] = status_val
+        metrics["ActiveCriticalAlerts"] = critical_count
+        metrics["ActiveWarningAlerts"] = warning_count
+        
+        self.oci_monitor.post_metrics(metrics)
 
     def stop(self):
         """Para o monitor de saúde."""

@@ -1,0 +1,18 @@
+[Unit]
+Description=Market Bot Service (Docker Compose)
+Requires=docker.service
+After=docker.service network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/market-bot
+# Roda como root para ter acesso ao docker socket sem problemas, 
+# mas os containers rodam com usuario definido no Dockerfile/compose
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose stop
+# Reiniciar se falhar (embora restart: unless-stopped do docker cuide disso, 
+# isso garante que o COMANDO suba no boot)
+
+[Install]
+WantedBy=multi-user.target
