@@ -22,6 +22,9 @@ import config
 import time
 import threading
 
+from orderbook_core.structured_logging import StructuredLogger
+from orderbook_core.tracing_utils import TracerWrapper
+
 logger = logging.getLogger(__name__)
 
 
@@ -126,6 +129,14 @@ class RobustConnectionManager:
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[ClientWebSocketResponse] = None
 
+        # Logging estruturado e tracing para a conexão
+        self.slog = StructuredLogger("robust_connection", self.symbol)
+        self.tracer = TracerWrapper(
+            service_name="enhanced_market_bot",
+            component="connection",
+            symbol=self.symbol,
+        )
+
     def set_callbacks(
         self,
         on_message=None,
@@ -149,57 +160,84 @@ class RobustConnectionManager:
         Bloqueia a execução enquanto a conexão estiver ativa.
         """
         self.should_stop = False
-        
+
         # Configurações de timeout
         ping_interval = getattr(config, "WS_PING_INTERVAL", 20)
-        # aiohttp usa heartbeat para enviar pings automáticos
-        
         logger.info(f"🚀 Iniciando conexão Async (aiohttp) para {self.symbol}...")
 
-        while not self.should_stop:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    self._session = session
-                    
-                    # Tentativa de conexão
+        with self.tracer.start_span(
+            "ws_connect_loop",
+            {
+                "symbol": self.symbol,
+                "max_reconnect_attempts": self.max_reconnect_attempts,
+                "ping_interval": ping_interval,
+            },
+        ):
+            while not self.should_stop:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        self._session = session
+
+                        # Tentativa de conexão
+                        try:
+                            try:
+                                self.slog.info(
+                                    "ws_connect_attempt",
+                                    reconnect_count=self.reconnect_count,
+                                    current_delay=self.current_delay,
+                                )
+                            except Exception:
+                                pass
+
+                            async with session.ws_connect(
+                                self.stream_url,
+                                heartbeat=ping_interval,
+                                autoping=True
+                            ) as ws:
+                                self._ws = ws
+                                await self._handle_connection_success(ws)
+
+                                # Loop de mensagens
+                                async for msg in ws:
+                                    if self.should_stop:
+                                        break
+                                    await self._handle_message(msg)
+
+                                # Se saiu do loop, a conexão fechou
+                                if not self.should_stop:
+                                    logger.warning("🔌 Conexão fechada pelo servidor.")
+                                    await self._handle_reconnect()
+
+                        except (aiohttp.ClientError, socket.gaierror) as e:
+                            logger.error(f"❌ Erro de conexão/rede: {e}")
+                            await self._handle_reconnect()
+                        except Exception as e:
+                            logger.error(f"❌ Erro inesperado no WebSocket: {e}", exc_info=True)
+                            await self._handle_reconnect()
+
+                except Exception as e:
+                    logger.critical(f"💀 Erro crítico na sessão aiohttp: {e}")
+                    await asyncio.sleep(self.initial_delay)
+
+                if self.reconnect_count >= self.max_reconnect_attempts:
+                    logger.critical("⛔ Máximo de tentativas de reconexão atingido. Parando.")
                     try:
-                        async with session.ws_connect(
-                            self.stream_url,
-                            heartbeat=ping_interval,
-                            autoping=True
-                        ) as ws:
-                            self._ws = ws
-                            await self._handle_connection_success(ws)
-                            
-                            # Loop de mensagens
-                            async for msg in ws:
-                                if self.should_stop:
-                                    break
-                                await self._handle_message(msg)
-
-                            # Se saiu do loop, a conexão fechou
-                            if not self.should_stop:
-                                logger.warning("🔌 Conexão fechada pelo servidor.")
-                                await self._handle_reconnect()
-                    
-                    except (aiohttp.ClientError, socket.gaierror) as e:
-                        logger.error(f"❌ Erro de conexão/rede: {e}")
-                        await self._handle_reconnect()
-                    except Exception as e:
-                        logger.error(f"❌ Erro inesperado no WebSocket: {e}", exc_info=True)
-                        await self._handle_reconnect()
-
-            except Exception as e:
-                logger.critical(f"💀 Erro crítico na sessão aiohttp: {e}")
-                await asyncio.sleep(self.initial_delay)
-
-            if self.reconnect_count >= self.max_reconnect_attempts:
-                logger.critical("⛔ Máximo de tentativas de reconexão atingido. Parando.")
-                break
+                        self.slog.error(
+                            "ws_max_reconnect_reached",
+                            reconnect_count=self.reconnect_count,
+                            max_reconnect_attempts=self.max_reconnect_attempts,
+                        )
+                    except Exception:
+                        pass
+                    break
 
     async def disconnect(self) -> None:
         """Fecha a conexão graciosamente."""
         logger.info("🛑 Desconectando...")
+        try:
+            self.slog.info("ws_disconnect_called")
+        except Exception:
+            pass
         self.should_stop = True
         if self._ws and not self._ws.closed:
             await self._ws.close()
@@ -218,6 +256,15 @@ class RobustConnectionManager:
         self.connection_start_time = datetime.now(timezone.utc)
         
         logger.info(f"✅ Conexão estabelecida (Async) | {self.symbol}")
+
+        try:
+            self.slog.info(
+                "ws_connected",
+                reconnect_count=self.reconnect_count,
+                connection_start_time=self.connection_start_time.isoformat(),
+            )
+        except Exception:
+            pass
         
         if self.on_open_callback:
             # Suporta callbacks sync e async
@@ -259,6 +306,16 @@ class RobustConnectionManager:
         self.is_connected = False
         self.reconnect_count += 1
         self.total_reconnects += 1
+
+        try:
+            self.slog.warning(
+                "ws_reconnect_scheduled",
+                reconnect_count=self.reconnect_count,
+                delay_seconds=self.current_delay,
+                total_reconnects=self.total_reconnects,
+            )
+        except Exception:
+            pass
         
         if self.on_close_callback:
              # Passamos códigos genéricos pois aiohttp abstrai isso no loop
@@ -290,3 +347,33 @@ class RobustConnectionManager:
                     await self.on_reconnect_callback()
                 else:
                     self.on_reconnect_callback()
+
+    def get_stats(self) -> dict[str, Any]:
+        """
+        Retorna estatísticas básicas da conexão, para debug/observabilidade.
+        """
+        now = datetime.now(timezone.utc)
+        conn_uptime = None
+        if self.connection_start_time:
+            conn_uptime = (now - self.connection_start_time).total_seconds()
+        last_msg_age = None
+        if self.last_message_time:
+            last_msg_age = (now - self.last_message_time).total_seconds()
+
+        return {
+            "symbol": self.symbol,
+            "is_connected": self.is_connected,
+            "should_stop": self.should_stop,
+            "total_messages_received": self.total_messages_received,
+            "total_reconnects": self.total_reconnects,
+            "reconnect_count": self.reconnect_count,
+            "current_delay": self.current_delay,
+            "connection_start_time": self.connection_start_time.isoformat()
+            if self.connection_start_time
+            else None,
+            "last_message_time": self.last_message_time.isoformat()
+            if self.last_message_time
+            else None,
+            "connection_uptime_sec": conn_uptime,
+            "last_message_age_sec": last_msg_age,
+        }

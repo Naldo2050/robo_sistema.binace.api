@@ -130,6 +130,20 @@ def main() -> int:
 
         logging.info(f"🚀 Iniciando bot para {config.SYMBOL}...")
 
+        # ✅ PATCH 2.6: Iniciar servidor Prometheus para métricas
+        try:
+            from prometheus_client import start_http_server
+            import os
+            
+            # Porta configurável via env var (default 8000)
+            prometheus_port = int(os.getenv("PROMETHEUS_PORT", "8000"))
+            start_http_server(prometheus_port)
+            logging.info(f"📊 Servidor Prometheus iniciado na porta {prometheus_port} (/metrics)")
+        except ImportError:
+            logging.warning("⚠️ prometheus_client não disponível - métricas não serão exportadas")
+        except Exception as e:
+            logging.warning(f"⚠️ Erro ao iniciar servidor Prometheus: {e}")
+
         bot = EnhancedMarketBot(
             stream_url=config.STREAM_URL,
             symbol=config.SYMBOL,

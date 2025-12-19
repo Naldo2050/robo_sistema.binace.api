@@ -70,6 +70,10 @@ from event_bus import EventBus
 from data_pipeline import DataPipeline
 from feature_store import FeatureStore
 
+# ====== Structured Logging & Tracing ======
+from orderbook_core.structured_logging import StructuredLogger
+from orderbook_core.tracing_utils import TracerWrapper
+
 # ====== Alert engine (opcional) ======
 try:
     from alert_engine import generate_alerts
@@ -311,6 +315,14 @@ class EnhancedMarketBot:
             self._alert_cooldown_sec = 30
 
         self._register_cleanup_handlers()
+
+        # Logging estruturado e tracing para o bot
+        self.slog = StructuredLogger("enhanced_market_bot", self.symbol)
+        self.tracer = TracerWrapper(
+            service_name="enhanced_market_bot",
+            component="orchestrator",
+            symbol=self.symbol,
+        )
 
     # ========================================
     # HANDLER DE RECONEXÃO

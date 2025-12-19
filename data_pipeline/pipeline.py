@@ -243,7 +243,12 @@ class DataPipeline:
                 metricas = calcular_metricas_intra_candle(self.df)
                 for key, value in metricas.items():
                     if isinstance(value, (int, float)):
-                        enriched[key] = self._metrics.round_value(value, 2)
+                        # Use 4 decimals for volume/delta related metrics to avoid invariant violations
+                        # against Buy/Sell volume sums (which are 4 decimals)
+                        if "delta" in key or "volume" in key:
+                            enriched[key] = self._metrics.round_value(value, 4)
+                        else:
+                            enriched[key] = self._metrics.round_value(value, 2)
                     else:
                         enriched[key] = value
             except Exception as e:
@@ -497,6 +502,8 @@ class DataPipeline:
                 "epoch_ms": default_ts_ms,
                 "delta": self.enriched_data.get("delta_fechamento", 0),
                 "volume_total": self.enriched_data.get("volume_total", 0),
+                "volume_compra": self.enriched_data.get("volume_compra", 0),
+                "volume_venda": self.enriched_data.get("volume_venda", 0),
                 "preco_fechamento": self.enriched_data.get("ohlc", {}).get("close", 0),
             }
             self._validate_invariants(analysis_trigger, context="signal")

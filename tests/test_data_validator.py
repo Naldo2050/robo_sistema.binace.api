@@ -528,8 +528,8 @@ def test_temporal_consistency_out_of_order_exceeds_tolerance(validator):
     }
     
     event2 = {
-        "epoch_ms": 1733918399500,  # ❌ 500ms ANTES (excede tolerância de 200ms)
-        "timestamp": "2024-12-11T09:59:59.500Z",
+        "epoch_ms": 1733918395000,  # ❌ 5 segundos ANTES (excede tolerância de 2000ms)
+        "timestamp": "2024-12-11T09:59:55.000Z",
         "delta": 1.5,
         "volume_total": 12.0,
         "volume_compra": 7.0,
@@ -541,7 +541,7 @@ def test_temporal_consistency_out_of_order_exceeds_tolerance(validator):
     result2 = validator.validate_and_clean(event2)
     
     assert result1 is not None, "Primeiro evento deveria passar"
-    assert result2 is None, "Evento fora de ordem (500ms) deveria ser rejeitado (tolerância 200ms)"
+    assert result2 is None, "Evento fora de ordem (5s) deveria ser rejeitado (tolerância 2000ms)"
 
 
 # ==========================================

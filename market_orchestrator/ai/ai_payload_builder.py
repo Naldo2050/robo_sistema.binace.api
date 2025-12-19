@@ -20,7 +20,8 @@ def build_ai_input(
     market_environment: Dict[str, Any],
     orderbook_data: Dict[str, Any],
     ml_features: Dict[str, Any],
-    ml_prediction: Optional[Dict[str, Any]] = None
+    ml_prediction: Optional[Dict[str, Any]] = None,
+    pivots: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Constrói um dicionário estruturado e limpo para o analisador de IA.
@@ -156,6 +157,24 @@ def build_ai_input(
         }
     }
 
+    # 🆕 3.5. Indicadores Técnicos (Technical Indicators)
+    # Extrai indicadores chave do contexto MTF (prioriza 1h ou 4h para trend, 15m para tático)
+    mtf = macro_context.get("mtf_trends", {})
+    # Tenta pegar contexto de 1h para indicadores 'padrão', fallback para 15m
+    tf_tech = mtf.get("1h", {}) if "1h" in mtf else mtf.get("15m", {})
+    
+    technical_indicators = {
+        "rsi": tf_tech.get("rsi_short"), # 14 period default
+        "macd": {
+            "line": tf_tech.get("macd"),
+            "signal": tf_tech.get("macd_signal"),
+            "histogram": round((tf_tech.get("macd", 0) or 0) - (tf_tech.get("macd_signal", 0) or 0), 4)
+        },
+        "adx": tf_tech.get("adx"),
+        "stoch": tf_tech.get("stoch_k"), # Se existir no MTF
+        "pivots": pivots or {}
+    }
+
     # 4. Contexto Macro e Regime
     macro_full_context = {
         "session": macro_context.get("trading_session"),
@@ -188,8 +207,10 @@ def build_ai_input(
         "timestamp": signal.get("timestamp"),
         "signal_metadata": signal_metadata,
         "price_context": price_context,
+        "price_context": price_context,
         "flow_context": flow_context,
         "orderbook_context": ob_context,
+        "technical_indicators": technical_indicators, # 🆕
         "macro_context": macro_full_context,
         "ml_features": ml_features, # Repassa features brutas para análise quantitativa da IA
         "historical_stats": signal.get("historical_confidence", {})

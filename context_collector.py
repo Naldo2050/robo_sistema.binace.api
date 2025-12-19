@@ -30,6 +30,9 @@ from config import (
     EXTERNAL_MARKETS, ENABLE_ONCHAIN, ONCHAIN_PROVIDERS, STABLECOIN_FLOW_TRACKING
 )
 
+# [SUPPORT_RESISTANCE] Importa cálculo de Pivots
+from support_resistance import daily_pivot, weekly_pivot, monthly_pivot
+
 # Configurações opcionais
 try:
     from config import ENABLE_ALPHAVANTAGE
@@ -771,6 +774,33 @@ class ContextCollector:
                 logger.debug(f"Erro derivativos {sym}: {e}")
         return derivatives_data
 
+    # ---------- Pivots (Calculados) ----------
+
+    async def _calculate_pivots(self, session: aiohttp.ClientSession) -> dict:
+        """Calcula Pivot Points Clássicos (D/W/M) usando klines históricos."""
+        pivots = {"daily": {}, "weekly": {}, "monthly": {}}
+        try:
+            # Daily (últimos 5 dias para garantir)
+            df_d = await self._fetch_klines(session, self.symbol, '1d', limit=5)
+            if not df_d.empty:
+               # daily_pivot usa o último dia completo
+               pivots["daily"] = daily_pivot(df_d)
+
+            # Weekly
+            df_w = await self._fetch_klines(session, self.symbol, '1w', limit=5)
+            if not df_w.empty:
+               pivots["weekly"] = weekly_pivot(df_w)
+            
+            # Monthly
+            df_m = await self._fetch_klines(session, self.symbol, '1M', limit=5)
+            if not df_m.empty:
+               pivots["monthly"] = monthly_pivot(df_m)
+               
+        except Exception as e:
+            logger.debug(f"Falha calculo pivots: {e}")
+            
+        return pivots
+
     # ---------- On-chain / Sentimento ----------
     
     async def _fetch_onchain_sentiment(self):
@@ -808,6 +838,7 @@ class ContextCollector:
             "profile": await asyncio.to_thread(self.historical_profiler.update_profiles),
             "market_context": self._calculate_market_context(),
             "market_environment": await self._calculate_market_environment(session),
+            "pivots": await self._calculate_pivots(session),
             "timestamp": self.time_manager.now_iso(),
         }
 

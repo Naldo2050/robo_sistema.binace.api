@@ -17,3 +17,73 @@ pip install python-dotenv # ou pip install -r requirements.txt (se tiver)
 pip install dashscope     # Para DashScope
 pip install openai        # Para OpenAI (opcional)
 # ... outras dependências ...
+```
+
+## MarketOrchestrator
+
+O `MarketOrchestrator` é o componente principal que coordena todos os analisadores e processadores do sistema. Ele gerencia as conexões, processa os dados de mercado e coordena a análise entre diferentes componentes.
+
+```python
+from market_orchestrator import MarketOrchestrator
+
+# Inicialização do orchestrador
+orchestrator = MarketOrchestrator(config=config)
+await orchestrator.start()
+```
+
+## OrderBookAnalyzer – Uso recomendado
+
+O `OrderBookAnalyzer` é 100% assíncrono e deve ser usado assim:
+
+```python
+import asyncio
+from orderbook_analyzer import OrderBookAnalyzer
+
+async def main():
+    async with OrderBookAnalyzer(symbol="BTCUSDT") as oba:
+        event = await oba.analyze()
+        if event["is_valid"]:
+            print("Bid depth:", event["orderbook_data"]["bid_depth_usd"])
+            print("Ask depth:", event["orderbook_data"]["ask_depth_usd"])
+        else:
+            print("Erro de orderbook:", event.get("erro"))
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### Métodos deprecated
+
+Os métodos abaixo ainda existem apenas por compatibilidade, mas serão removidos futuramente:
+
+- `analyze_order_book(...)`
+- `analyzeOrderBook(...)`
+- `analyze_orderbook(...)`
+
+Use sempre:
+
+```python
+await oba.analyze(...)
+```
+
+em vez desses shims.
+
+Isso garante que qualquer desenvolvedor que abra o repo entenda o caminho certo, e veja que os outros nomes são apenas legados.
+
+## Evento de OrderBook – Contrato (Schema)
+
+O evento retornado por `OrderBookAnalyzer.analyze(...)` e pelo
+`orderbook_wrapper.fetch_orderbook_with_retry(...)` segue um contrato estável
+em `schema_version = "2.1.0"`.
+
+A descrição detalhada de todos os campos (incluindo `orderbook_data`,
+`spread_metrics`, `advanced_metrics`, `health_stats`, etc.) está em:
+
+- [`docs/orderbook_event_schema.md`](docs/orderbook_event_schema.md)
+
+### Guia de Operação do OrderBook
+
+Para entender como chamar o `OrderBookAnalyzer`, usar o wrapper no bot e
+monitorar o módulo via métricas, logs e Circuit Breaker, veja:
+
+- [`docs/orderbook_operational_guide.md`](docs/orderbook_operational_guide.md)

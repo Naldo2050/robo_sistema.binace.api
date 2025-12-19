@@ -41,7 +41,7 @@ class DataValidator:
     RATIO_PRECISION = 6     # Ratios e percentuais
     
     # 🆕 Tolerâncias por tipo
-    BTC_TOLERANCE = 1e-8    # 0.00000001 BTC
+    BTC_TOLERANCE = 1e-4    # 0.0001 BTC (Alinhado com MetricsProcessor)
     USD_TOLERANCE = 0.01    # $0.01
     
     # 🆕 Limites de timestamp válido
@@ -677,8 +677,7 @@ class DataValidator:
         
         v2.3.1 - Adiciona tolerância temporal.
         """
-        TEMPORAL_TOLERANCE_MS = 200
-        
+        TEMPORAL_TOLERANCE_MS = 2000  # 2 segundos (Realista para rede/processamento)
         current_timestamp_ms = data.get('epoch_ms')
         if current_timestamp_ms and self.last_event_timestamp_ms > 0:
             time_diff = self.last_event_timestamp_ms - current_timestamp_ms

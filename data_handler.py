@@ -41,7 +41,8 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import logging
 import hashlib
-from flow_analyzer import FlowAnalyzer, _guard_absorcao  # usado para recalcular rótulo e validação
+from flow_analyzer.core import FlowAnalyzer
+from flow_analyzer.validation import guard_absorcao as _guard_absorcao  # usado para recalcular rótulo e validação
 from typing import Dict, Any, List, Optional, Tuple
 import math
 

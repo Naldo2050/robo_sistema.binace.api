@@ -137,11 +137,32 @@ class MetricsProcessor:
         Returns:
             Dicionário com volumes
         """
-        base_volume = self.round_value(float(df["q"].sum()), 2)
+        base_volume = self.round_value(float(df["q"].sum()), 4)
         quote_volume = int(round(float((df["p"] * df["q"]).sum())))
+
+        # Calcula volumes de compra e venda
+        # m=True -> Maker=Buyer (Taker=Seller) -> VENDA
+        # m=False -> Maker=Seller (Taker=Buyer) -> COMPRA
+        
+        # Garante que 'm' existe e converte para boolean
+        if "m" in df.columns:
+            is_buyer_maker = df["m"].fillna(False).astype(bool)
+            
+            # Volume de VENDA (m=True)
+            vol_sell = df.loc[is_buyer_maker, "q"].sum()
+            
+            # Volume de COMPRA (m=False)
+            vol_buy = df.loc[~is_buyer_maker, "q"].sum()
+        else:
+            # Fallback se 'm' não existir (assume tudo neutro ou tenta lógica tick rule que devia estar no validator)
+            # Por segurança para evitar crash, zeramos. O ideal seria ter 'm' sempre.
+            vol_sell = 0.0
+            vol_buy = 0.0
 
         return {
             "volume_total": base_volume,
             "volume_total_usdt": quote_volume,
+            "volume_compra": self.round_value(float(vol_buy), 4),
+            "volume_venda": self.round_value(float(vol_sell), 4),
             "num_trades": len(df),
         }

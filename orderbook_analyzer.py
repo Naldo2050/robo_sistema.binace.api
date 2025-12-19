@@ -40,12 +40,22 @@ OrderBook Analyzer para Binance Futures com validação robusta e fetch assíncr
 import logging
 import time
 import asyncio
+import random
+import os
 from typing import List, Dict, Any, Tuple, Optional
-from datetime import datetime, timedelta
 from collections import deque
 
 import aiohttp  # ✅ async HTTP client
 import numpy as np
+
+# Import circuit breaker
+from orderbook_core.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, CircuitState
+from orderbook_core.constants import THRESHOLDS
+
+# Import EventFactory para eventos inválidos (PATCH 6.2)
+from orderbook_core.event_factory import build_invalid_orderbook_event
+from orderbook_core.structured_logging import StructuredLogger
+from orderbook_core.tracing_utils import TracerWrapper
 
 try:
     from zoneinfo import ZoneInfo
@@ -53,6 +63,9 @@ except Exception:
     ZoneInfo = None  # type: ignore
 
 from time_manager import TimeManager
+from orderbook_core.protocols import TimeManagerProtocol
+from orderbook_core.metrics import OrderBookMetrics, MetricsTracker
+from orderbook_core.orderbook_config import OrderBookConfig
 
 # ===== IMPORTA PARÂMETROS DE CONFIGURAÇÃO =====
 try:
@@ -74,6 +87,11 @@ try:
         ORDERBOOK_USE_FALLBACK,
         ORDERBOOK_FALLBACK_MAX_AGE,
         ORDERBOOK_EMERGENCY_MODE,
+        # Circuit Breaker Config
+        ORDERBOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+        ORDERBOOK_CIRCUIT_BREAKER_SUCCESS_THRESHOLD,
+        ORDERBOOK_CIRCUIT_BREAKER_TIMEOUT_SECONDS,
+        ORDERBOOK_CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS,
     )
     CONFIG_LOADED = True
 except Exception as e:
@@ -101,10 +119,20 @@ except Exception as e:
     ORDERBOOK_FALLBACK_MAX_AGE = 120
     ORDERBOOK_EMERGENCY_MODE = False
 
+    # Circuit Breaker Configuration (Safe defaults)
+    ORDERBOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 5
+    ORDERBOOK_CIRCUIT_BREAKER_SUCCESS_THRESHOLD = 2
+    ORDERBOOK_CIRCUIT_BREAKER_TIMEOUT_SECONDS = 30.0
+    ORDERBOOK_CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS = 3
+
 # ===== 🆕 VALIDAÇÃO DE IDADE MÁXIMA =====
 ORDERBOOK_MAX_AGE_MS = 60000  # ✅ 60 segundos máximo
 
 SCHEMA_VERSION = "2.1.0"  # Mantido para compatibilidade externa
+ENGINE_VERSION = "2.2.0"  # Nova: versão interna do engine (PATCH 4)
+
+# ===== 🆕 CONSTANTES DE CONFIGURAÇÃO DINÂMICA =====
+DEFAULT_HISTORY_MAXLEN = 50  # PATCH 6
 
 
 # ===== EXCEÇÃO CUSTOMIZADA =====
@@ -236,11 +264,13 @@ class OrderBookAnalyzer:
         wall_std_dev_factor: float = 3.0,
         top_n_levels: int = 20,
         ob_limit_fetch: int = 100,
-        time_manager: Optional[TimeManager] = None,
+        time_manager: Optional[TimeManagerProtocol] = None,
         cache_ttl_seconds: float = None,
         max_stale_seconds: float = None,
         rate_limit_threshold: int = None,
+        cfg: Optional[OrderBookConfig] = None,
         session: Optional[aiohttp.ClientSession] = None,
+        metrics: Optional[OrderBookMetrics] = None,
     ):
         self.symbol = symbol.upper()
         self.alert_threshold = float(liquidity_flow_alert_percentage)
@@ -250,10 +280,38 @@ class OrderBookAnalyzer:
         self.tz_ny = ZoneInfo("America/New_York") if ZoneInfo else None
         self.tm = time_manager or TimeManager()
 
-        # Config
-        self.cache_ttl_seconds = cache_ttl_seconds if cache_ttl_seconds is not None else ORDERBOOK_CACHE_TTL
-        self.max_stale_seconds = max_stale_seconds if max_stale_seconds is not None else ORDERBOOK_MAX_STALE
-        self.rate_limit_threshold = rate_limit_threshold if rate_limit_threshold is not None else ORDERBOOK_MAX_REQUESTS_PER_MIN
+        # ===== CONFIG ESTRUTURADA (OrderBookConfig) =====
+        if cfg is None:
+            # Usa os valores já importados de config.py ou os fallbacks
+            cfg = OrderBookConfig(
+                depth_levels=list(ORDER_BOOK_DEPTH_LEVELS),
+                spread_tight_threshold_bps=float(SPREAD_TIGHT_THRESHOLD_BPS),
+                spread_avg_windows_min=list(SPREAD_AVG_WINDOWS_MIN),
+
+                critical_imbalance=float(ORDERBOOK_CRITICAL_IMBALANCE),
+                min_dominant_usd=float(ORDERBOOK_MIN_DOMINANT_USD),
+                min_ratio_dom=float(ORDERBOOK_MIN_RATIO_DOM),
+
+                request_timeout=float(ORDERBOOK_REQUEST_TIMEOUT),
+                retry_delay=float(ORDERBOOK_RETRY_DELAY),
+                max_retries=int(ORDERBOOK_MAX_RETRIES),
+                max_requests_per_min=int(ORDERBOOK_MAX_REQUESTS_PER_MIN),
+
+                cache_ttl=float(ORDERBOOK_CACHE_TTL),
+                max_stale=float(ORDERBOOK_MAX_STALE),
+
+                min_depth_usd=float(ORDERBOOK_MIN_DEPTH_USD),
+                allow_partial=bool(ORDERBOOK_ALLOW_PARTIAL),
+                use_fallback=bool(ORDERBOOK_USE_FALLBACK),
+                fallback_max_age=float(ORDERBOOK_FALLBACK_MAX_AGE),
+                emergency_mode=bool(ORDERBOOK_EMERGENCY_MODE),
+            )
+        self.cfg = cfg
+
+        # Config derivada (mantém API atual do __init__)
+        self.cache_ttl_seconds = cache_ttl_seconds if cache_ttl_seconds is not None else self.cfg.cache_ttl
+        self.max_stale_seconds = max_stale_seconds if max_stale_seconds is not None else self.cfg.max_stale
+        self.rate_limit_threshold = rate_limit_threshold if rate_limit_threshold is not None else self.cfg.max_requests_per_min
 
         # Sessão HTTP (pode ser injetada ou criada lazy internamente)
         self._session: Optional[aiohttp.ClientSession] = session
@@ -264,20 +322,44 @@ class OrderBookAnalyzer:
         self._session_lock = asyncio.Lock()
         self._cache_lock = asyncio.Lock()
 
-        # Cache
+        # Cache (PATCH 14: usar monotonic para idade)
         self._cached_snapshot: Optional[Dict[str, Any]] = None
-        self._cache_timestamp: float = 0.0
+        self._cache_timestamp_mono: float = 0.0
 
         # Fallback
         self._last_valid_snapshot: Optional[Dict[str, Any]] = None
-        self._last_valid_timestamp: float = 0.0
+        self._last_valid_timestamp_mono: float = 0.0
         self._last_valid_exchange_ts: Optional[int] = None
 
-        # Pequeno histórico para iceberg (NOVO v2.2.0, uso interno)
-        self._history = deque(maxlen=4)
+        # PATCH 5: tracking de fonte de dados
+        self._last_fetch_source: str = "unknown"
+        self._last_fetch_age_seconds: float = 0.0
 
-        # Rate limiting
-        self._request_times: List[float] = []
+        # Histórico configurável (usa THRESHOLDS, não magic numbers soltos)
+        default_hist = THRESHOLDS.DEFAULT_HISTORY_SIZE
+        min_hist = THRESHOLDS.MIN_HISTORY_SIZE
+        max_hist = THRESHOLDS.MAX_HISTORY_SIZE
+
+        history_maxlen = int(os.getenv("ORDERBOOK_HISTORY_MAXLEN", str(default_hist)))
+        history_maxlen = max(min_hist, min(history_maxlen, max_hist))
+        self._history = deque(maxlen=history_maxlen)
+        self._history_maxlen = history_maxlen
+
+        # PATCH 15: rate-limit em deque (O(1))
+        self._request_times_mono = deque()
+
+        # PATCH 7: dynamic config via environment
+        self.dynamic_thresholds: Dict[str, float] = {}
+        self._min_depth_usd_override: Optional[float] = None
+        self._iceberg_tol_override: Optional[float] = None
+        self._wall_mult_override: Optional[float] = None
+        self._load_dynamic_config()
+
+        # Metrics
+        self.metrics = metrics or OrderBookMetrics.build_default()
+
+        # Controle interno para warnings de métodos deprecated
+        self._shims_deprecated_warned = False
 
         # Stats
         self._fetch_errors = 0
@@ -288,10 +370,25 @@ class OrderBookAnalyzer:
         self._emergency_uses = 0
         self._old_data_rejected = 0
 
+        # Circuit Breaker for API resilience
+        # Usa valores do cfg se disponíveis, senão fallbacks das constantes
+        failure_threshold = getattr(self.cfg, 'circuit_breaker_failure_threshold', ORDERBOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD)
+        success_threshold = getattr(self.cfg, 'circuit_breaker_success_threshold', ORDERBOOK_CIRCUIT_BREAKER_SUCCESS_THRESHOLD)
+        timeout_seconds = getattr(self.cfg, 'circuit_breaker_timeout_seconds', ORDERBOOK_CIRCUIT_BREAKER_TIMEOUT_SECONDS)
+        half_open_max_calls = getattr(self.cfg, 'circuit_breaker_half_open_max_calls', ORDERBOOK_CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS)
+        
+        cb_config = CircuitBreakerConfig(
+            failure_threshold=failure_threshold,
+            success_threshold=success_threshold,
+            timeout_seconds=timeout_seconds,
+            half_open_max_calls=half_open_max_calls,
+        )
+        self._circuit_breaker = CircuitBreaker(name=f"orderbook_{self.symbol}", config=cb_config)
+
         # Config adicionais
-        self.depth_levels: List[int] = list(ORDER_BOOK_DEPTH_LEVELS)
-        self.spread_tight_threshold_bps: float = float(SPREAD_TIGHT_THRESHOLD_BPS)
-        self.spread_avg_windows_min: List[int] = list(SPREAD_AVG_WINDOWS_MIN)
+        self.depth_levels: List[int] = list(self.cfg.depth_levels)
+        self.spread_tight_threshold_bps: float = float(self.cfg.spread_tight_threshold_bps)
+        self.spread_avg_windows_min: List[int] = list(self.cfg.spread_avg_windows_min)
         self.spread_history: List[Tuple[int, float]] = []
 
         # Memória para iceberg
@@ -299,20 +396,93 @@ class OrderBookAnalyzer:
         self.last_event_ts_ms: Optional[int] = None
 
         logging.info(
-            "✅ OrderBook Analyzer v%s inicializado (ASYNC) | "
+            "✅ OrderBook Analyzer v%s (engine %s) inicializado | "
             "Symbol: %s | Alert: %.0f%% | Wall STD: %.1fx | "
             "Top N: %s | Cache TTL: %.1fs | Max Stale: %.1fs | "
-            "Rate Limit: %s req/min | Config loaded: %s",
+            "Rate Limit: %s req/min | Config loaded: %s | History maxlen: %s | "
+            "Metrics: %s",
             SCHEMA_VERSION,
+            ENGINE_VERSION,
             self.symbol,
             self.alert_threshold * 100,
             self.wall_std,
             self.top_n,
-            self.cache_ttl_seconds,
-            self.max_stale_seconds,
-            self.rate_limit_threshold,
-            "✅" if CONFIG_LOADED else "❌ (usando defaults)"
+            self.cfg.cache_ttl,
+            self.cfg.max_stale,
+            self.cfg.max_requests_per_min,
+            "✅" if CONFIG_LOADED else "❌ (usando defaults)",
+            self._history_maxlen,
+            "✅" if self.metrics.enabled else "❌ (desabilitadas)",
         )
+
+        # Logger estruturado (para ELK/Splunk/JSON logs)
+        self.slog = StructuredLogger("orderbook_analyzer", self.symbol)
+
+        # Tracer distribuído (OpenTelemetry opcional)
+        self.tracer = TracerWrapper(
+            service_name="orderbook_service",
+            component="analyzer",
+            symbol=self.symbol,
+        )
+
+    # ===== PATCH 7: Dynamic config =====
+    def _load_dynamic_config(self) -> None:
+        """Carrega configurações dinâmicas de environment variables."""
+
+        def _f(name: str) -> Optional[float]:
+            v = os.getenv(name)
+            if not v:
+                return None
+            try:
+                return float(v)
+            except ValueError:
+                return None
+
+        def _i(name: str) -> Optional[int]:
+            v = os.getenv(name)
+            if not v:
+                return None
+            try:
+                return int(v)
+            except ValueError:
+                return None
+
+        env_top_n = _i("ORDERBOOK_TOP_N")
+        if env_top_n is not None:
+            self.top_n = max(1, min(env_top_n, 200))
+
+        wall_mult = _f("WALL_THRESHOLD_MULT")
+        iceberg_tol = _f("ICEBERG_TOL")
+        min_liq = _f("MIN_LIQUIDITY_USD")
+
+        if wall_mult is not None and wall_mult > 0:
+            self._wall_mult_override = wall_mult
+        if iceberg_tol is not None and 0 < iceberg_tol <= 1.0:
+            self._iceberg_tol_override = iceberg_tol
+        if min_liq is not None and min_liq > 0:
+            self._min_depth_usd_override = min_liq
+
+        self.dynamic_thresholds = {
+            "wall_threshold_multiplier": float(self._wall_mult_override or self.wall_std),
+            "iceberg_tolerance": float(self._iceberg_tol_override or 0.75),
+            "min_liquidity_usd": float(self._min_depth_usd_override or self.cfg.min_depth_usd),
+        }
+
+    # ===== PATCH 13: Snapshot copy helper =====
+    def _snapshot_copy(self, snap: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Cria cópia segura do snapshot para evitar mutação acidental.
+        """
+        if not snap:
+            return {}
+        out = dict(snap)
+        if "bids" in out and isinstance(out["bids"], list):
+            out["bids"] = list(out["bids"])
+        if "asks" in out and isinstance(out["asks"], list):
+            out["asks"] = list(out["asks"])
+        if "depth_metrics" in out and isinstance(out["depth_metrics"], dict):
+            out["depth_metrics"] = dict(out["depth_metrics"])
+        return out
 
     # ===== CLOSE =====
     async def close(self):
@@ -329,22 +499,36 @@ class OrderBookAnalyzer:
         except Exception:
             self._session = None
 
+    # ===== ASYNC CONTEXT MANAGER (ETAPA 4) =====
+    async def __aenter__(self) -> "OrderBookAnalyzer":
+        """
+        Permite uso com:
+            async with OrderBookAnalyzer(...) as oba:
+                ...
+        """
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        """
+        Garante cleanup via close() ao sair do bloco async with.
+        Retorna False para não suprimir exceções.
+        """
+        await self.close()
+        return False
+
+    # ===== PATCH 3: Timeout consistente =====
     async def _get_session(self) -> aiohttp.ClientSession:
         """
         Retorna uma sessão HTTP reutilizável.
-
-        - Se o usuário injetou uma sessão no __init__, ela é usada.
-        - Caso contrário, criamos uma ClientSession própria (lazy) e
-          reaproveitamos até close().
 
         ✅ v2.2.0: protegido por lock para evitar race na criação.
         """
         async with self._session_lock:
             if self._session is None or self._session.closed:
                 timeout = aiohttp.ClientTimeout(
-                    total=ORDERBOOK_REQUEST_TIMEOUT,
-                    connect=5.0,
-                    sock_read=ORDERBOOK_REQUEST_TIMEOUT,
+                    total=self.cfg.request_timeout,
+                    connect=self.cfg.request_timeout,  # PATCH 3: sem hardcode
+                    sock_read=self.cfg.request_timeout,
                 )
                 connector = aiohttp.TCPConnector(
                     limit=10,
@@ -362,7 +546,7 @@ class OrderBookAnalyzer:
             session = self._session
         return session
 
-    # ===== ✅ VALIDAÇÃO (NÃO MUDOU, COM PATCH 3) =====
+    # ===== ✅ VALIDAÇÃO (PATCH 17: ordenação) =====
     def _validate_snapshot(
         self,
         snap: Dict[str, Any],
@@ -376,6 +560,8 @@ class OrderBookAnalyzer:
         - Retorna snapshot convertido separadamente
         - Validação de idade de dados
         - Mais rigorosa com dados parciais
+
+        PATCH 17: Valida ordenação do book (bids desc, asks asc)
 
         Returns:
             (is_valid, list_of_issues, converted_snapshot)
@@ -413,9 +599,24 @@ class OrderBookAnalyzer:
             issues.append(f"orderbook vazio (bids={len(bids)}, asks={len(asks)})")
             return False, issues, converted_snap
 
+        # PATCH 17: Valida ordenação do book
+        max_depth = THRESHOLDS.ORDER_VALIDATION_DEPTH
+
+        # bids: preços devem ser não-crescentes
+        for i in range(1, min(len(bids), max_depth)):
+            if bids[i][0] > bids[i-1][0]:
+                issues.append("bids fora de ordem (preço subindo)")
+                return False, issues, converted_snap
+
+        # asks: preços devem ser não-decrescentes
+        for i in range(1, min(len(asks), max_depth)):
+            if asks[i][0] < asks[i-1][0]:
+                issues.append("asks fora de ordem (preço descendo)")
+                return False, issues, converted_snap
+
         # 3. ✅ VALIDAÇÃO DE IDADE
         if max_age_ms is None:
-            max_age_ms = ORDERBOOK_MAX_AGE_MS
+            max_age_ms = getattr(self.cfg, 'max_age_ms', ORDERBOOK_MAX_AGE_MS)
 
         exchange_ts = None
         for key in ("E", "T"):
@@ -466,8 +667,9 @@ class OrderBookAnalyzer:
                 spread_pct = 999.0
 
             # 6. Spread absurdo (> 10%)
-            if spread_pct > 10:
-                issues.append(f"spread absurdo ({spread_pct:.2f}%)")
+            max_spread = THRESHOLDS.MAX_SPREAD_PERCENT
+            if spread_pct > max_spread:
+                issues.append(f"spread absurdo ({spread_pct:.2f}% > {max_spread:.2f}%)")
                 return False, issues, converted_snap
 
             # 7. ✅ VOLUME MÍNIMO (MAIS RIGOROSO)
@@ -483,28 +685,8 @@ class OrderBookAnalyzer:
             bid_depth_usd = _sum_depth_usd(bids, 5)
             ask_depth_usd = _sum_depth_usd(asks, 5)
 
-            # 🆕 Calculation of deeper metrics for AI Payload
-            bid_depth_top5 = bid_depth_usd # Alias
-            ask_depth_top5 = ask_depth_usd # Alias
-            
-            # Additional deeper check
-            bid_depth_top20 = _sum_depth_usd(bids, 20)
-            ask_depth_top20 = _sum_depth_usd(asks, 20)
-            
-            depth_imbalance = 0.0
-            if (bid_depth_top5 + ask_depth_top5) > 0:
-                depth_imbalance = (bid_depth_top5 - ask_depth_top5) / (bid_depth_top5 + ask_depth_top5)
-            
-            # Store in converted snap for later use
-            converted_snap["depth_metrics"] = {
-                "bid_liquidity_top5": bid_depth_top5,
-                "ask_liquidity_top5": ask_depth_top5,
-                "bid_liquidity_top20": bid_depth_top20,
-                "ask_liquidity_top20": ask_depth_top20,
-                "depth_imbalance": depth_imbalance
-            }
-
-            min_depth = ORDERBOOK_MIN_DEPTH_USD
+            # PATCH 7: Dynamic min depth
+            min_depth = float(self._min_depth_usd_override or self.cfg.min_depth_usd)
 
             # SEMPRE rejeita se zero
             if bid_depth_usd == 0 or ask_depth_usd == 0:
@@ -521,22 +703,45 @@ class OrderBookAnalyzer:
                 )
 
                 # Só permite se >= 50% do mínimo E config permite
-                if ORDERBOOK_ALLOW_PARTIAL:
+                if self.cfg.allow_partial:
                     pct_bid = (bid_depth_usd / min_depth) * 100
                     pct_ask = (ask_depth_usd / min_depth) * 100
 
-                    if pct_bid >= 50.0 and pct_ask >= 50.0:
+                    min_ratio = THRESHOLDS.MIN_LIQUIDITY_PARTIAL_RATIO * 100.0  # em %
+                    if pct_bid >= min_ratio and pct_ask >= min_ratio:
                         logging.warning(
                             f"⚠️ Liquidez baixa mas aceita "
-                            f"(bid={pct_bid:.0f}%, ask={pct_ask:.0f}% do mínimo)"
+                            f"(bid={pct_bid:.0f}%, ask={pct_ask:.0f}% do mínimo, "
+                            f"limite={min_ratio:.0f}%)"
                         )
                     else:
                         issues.append(
-                            f"liquidez < 50% do mínimo (rejeitado mesmo com ALLOW_PARTIAL)"
+                            f"liquidez < {min_ratio:.0f}% do mínimo (rejeitado mesmo com ALLOW_PARTIAL)"
                         )
                         return False, issues, converted_snap
                 else:
                     return False, issues, converted_snap
+
+            # 🆕 Calculation of deeper metrics for AI Payload
+            bid_depth_top5 = bid_depth_usd  # Alias
+            ask_depth_top5 = ask_depth_usd  # Alias
+
+            # Additional deeper check
+            bid_depth_top20 = _sum_depth_usd(bids, 20)
+            ask_depth_top20 = _sum_depth_usd(asks, 20)
+
+            depth_imbalance = 0.0
+            if (bid_depth_top5 + ask_depth_top5) > 0:
+                depth_imbalance = (bid_depth_top5 - ask_depth_top5) / (bid_depth_top5 + ask_depth_top5)
+
+            # Store in converted snap for later use
+            converted_snap["depth_metrics"] = {
+                "bid_liquidity_top5": bid_depth_top5,
+                "ask_liquidity_top5": ask_depth_top5,
+                "bid_liquidity_top20": bid_depth_top20,
+                "ask_liquidity_top20": ask_depth_top20,
+                "depth_imbalance": depth_imbalance
+            }
 
             return True, issues, converted_snap
 
@@ -544,17 +749,76 @@ class OrderBookAnalyzer:
             issues.append(f"erro ao validar dados: {e}")
             return False, issues, converted_snap
 
-    # ===== RATE LIMITING =====
+    # ===== PATCH 15: Rate limiting com deque =====
     def _check_rate_limit(self) -> bool:
-        """Verifica se está próximo do rate limit."""
-        now = time.time()
-        self._request_times = [t for t in self._request_times if now - t < 60]
+        """Verifica se está próximo do rate limit usando deque O(1)."""
+        now = time.monotonic()
+        # Remove timestamps mais velhos que 60 segundos
+        while self._request_times_mono and (now - self._request_times_mono[0] > 60.0):
+            self._request_times_mono.popleft()
         buffer = 1
-        return len(self._request_times) >= (self.rate_limit_threshold - buffer)
+        return len(self._request_times_mono) >= (self.rate_limit_threshold - buffer)
 
     def _register_request(self):
         """Registra request para tracking."""
-        self._request_times.append(time.time())
+        self._request_times_mono.append(time.monotonic())
+
+    async def _get_stale_fallback(self) -> Optional[Dict[str, Any]]:
+        """Get stale data fallback when circuit breaker is open."""
+        last_valid = None
+        last_valid_ts = 0.0
+        last_exchange_ts = None
+
+        # Use synchronous lock acquisition for stale fallback
+        # (simpler approach since we're in an emergency scenario)
+        last_valid = self._last_valid_snapshot
+        last_valid_ts = self._last_valid_timestamp_mono
+        last_exchange_ts = self._last_valid_exchange_ts
+
+        if last_valid is not None:
+            now_m = time.monotonic()
+            age = now_m - last_valid_ts
+
+            if age < self.cfg.fallback_max_age:
+                # Validate original data age
+                if last_exchange_ts:
+                    now_ms = self.tm.now_ms()
+                    data_age_ms = now_ms - last_exchange_ts
+
+                    if data_age_ms > getattr(self.cfg, 'max_age_ms', ORDERBOOK_MAX_AGE_MS):
+                        self._old_data_rejected += 1
+                        logging.error(
+                            f"❌ Snapshot fallback muito antigo "
+                            f"(data_age={data_age_ms}ms > {getattr(self.cfg, 'max_age_ms', ORDERBOOK_MAX_AGE_MS)}ms)"
+                        )
+                        return None
+
+                self._stale_data_uses += 1
+                self._last_fetch_source = "stale"
+                self._last_fetch_age_seconds = float(age)
+
+                logging.warning(
+                    f"⚠️ Usando snapshot antigo (cache_age={age:.1f}s) - circuit breaker open"
+                )
+                
+                # Metrics for stale data
+                self.metrics.inc_fetch(symbol=self.symbol, status="ok", source="stale")
+                self.metrics.set_data_age(symbol=self.symbol, source="stale", age_seconds=float(age))
+
+                return self._snapshot_copy(last_valid)
+            else:
+                logging.error(
+                    f"❌ Snapshot muito velho ({age:.1f}s > {self.cfg.fallback_max_age}s)"
+                )
+        
+        return None
+
+    # ===== PATCH 18: Backoff com jitter =====
+    def _retry_sleep(self, base: float, attempt: int, cap: float = 10.0) -> float:
+        """Backoff exponencial com jitter para evitar thundering herd."""
+        delay = min(cap, base * (2 ** attempt))
+        jitter = random.uniform(0.0, delay * 0.25)
+        return delay + jitter
 
     # ===== UTILIDADE: MAPA DE PREÇOS PARA ICEBERG (NOVO v2.2.0) =====
     def _price_map(self, levels: List[Tuple[float, float]]) -> Dict[float, float]:
@@ -581,7 +845,7 @@ class OrderBookAnalyzer:
             out[p] = out.get(p, 0.0) + q
         return out
 
-    # ===== ✅ FETCH ASYNC v2.2.0 (SESSÃO REUTILIZÁVEL + LOCKS) =====
+    # ===== ✅ FETCH ASYNC v2.2.0 (PATCH 2: corrigir create_task) =====
     async def _fetch_orderbook(
         self,
         limit: Optional[int] = None,
@@ -596,11 +860,15 @@ class OrderBookAnalyzer:
         - Usa ORDERBOOK_REQUEST_TIMEOUT para request e wait_for
         - Acesso a cache/fallback protegido por lock (_cache_lock)
 
+        PATCH 2: Corrigido bug do asyncio.create_task(session.get(...))
+        PATCH 16: Tratar resposta não-JSON / content-type errado
+        PATCH A-02: Não retornar o MESMO objeto armazenado no cache
+
         Returns:
             Snapshot válido (convertido) ou None
         """
         if allow_stale is None:
-            allow_stale = ORDERBOOK_USE_FALLBACK
+            allow_stale = self.cfg.use_fallback
 
         self._total_fetches += 1
 
@@ -610,18 +878,40 @@ class OrderBookAnalyzer:
             cache_ts = 0.0
             async with self._cache_lock:
                 cached_snapshot = self._cached_snapshot
-                cache_ts = self._cache_timestamp
+                cache_ts = self._cache_timestamp_mono
 
             if cached_snapshot is not None:
-                cache_age = time.time() - cache_ts
+                now_m = time.monotonic()
+                cache_age = now_m - cache_ts
                 if cache_age < self.cache_ttl_seconds:
                     self._cache_hits += 1
+                    self._last_fetch_source = "cache"
+                    self._last_fetch_age_seconds = float(cache_age)
                     logging.debug(f"📦 Cache hit (age={cache_age:.2f}s)")
-                    return cached_snapshot
+                    
+                    # ✅ Métricas de cache hit
+                    self.metrics.inc_cache_hit(symbol=self.symbol)
+                    self.metrics.inc_fetch(symbol=self.symbol, status="ok", source="cache")
+                    self.metrics.set_data_age(symbol=self.symbol, source="cache", age_seconds=float(cache_age))
+                    
+                    return self._snapshot_copy(cached_snapshot)
+
+        # ===== CIRCUIT BREAKER: controlar se vamos tentar LIVE =====
+        skip_live_fetch = False
+        live_attempted = False  # vamos marcar True quando realmente tentar rede
+
+        if not self._circuit_breaker.allow_request():
+            # circuito OPEN: não faz request live
+            self._last_fetch_source = "circuit_open"
+            self._last_fetch_age_seconds = 0.0
+            skip_live_fetch = True
+
+            # (opcional) log curto
+            logging.warning(f"🔌 Circuit OPEN para {self.symbol} - pulando fetch live")
 
         # 2. RATE LIMITING
         if self._check_rate_limit():
-            wait_time = max(1.0, ORDERBOOK_RETRY_DELAY * 0.5)
+            wait_time = max(1.0, self.cfg.retry_delay * 0.5)
             logging.warning(
                 f"⏳ Rate limit preventivo - aguardando {wait_time}s..."
             )
@@ -631,142 +921,171 @@ class OrderBookAnalyzer:
         lim = limit or self.ob_limit_fetch
         url = f"https://fapi.binance.com/fapi/v1/depth?symbol={self.symbol}&limit={lim}"
 
-        max_retries = ORDERBOOK_MAX_RETRIES
-        base_delay = ORDERBOOK_RETRY_DELAY
+        max_retries = self.cfg.max_retries
+        base_delay = self.cfg.retry_delay
 
-        for attempt in range(max_retries):
-            task: Optional[asyncio.Task] = None
-
-            try:
-                session = await self._get_session()
-
-                # Verifica se foi fechada externamente
-                if session.closed:
-                    logging.warning("⚠️ Sessão fechada, recriando...")
-                    async with self._session_lock:
-                        self._session = None
+        if not skip_live_fetch:
+            for attempt in range(max_retries):
+                try:
                     session = await self._get_session()
 
-                self._register_request()
+                    # Verifica se foi fechada externamente
+                    if session.closed:
+                        logging.warning("⚠️ Sessão fechada, recriando...")
+                        async with self._session_lock:
+                            self._session = None
+                        session = await self._get_session()
 
-                logging.debug(
-                    f"📡 Fetching orderbook (attempt {attempt + 1}/{max_retries})..."
-                )
+                    self._register_request()
 
-                # Cria task para poder cancelar
-                client_timeout = aiohttp.ClientTimeout(total=ORDERBOOK_REQUEST_TIMEOUT)
-                task = asyncio.create_task(
-                    session.get(
-                        url,
-                        timeout=client_timeout  # ✅ timeout consistente
+                    logging.debug(
+                        f"📡 Fetching orderbook (attempt {attempt + 1}/{max_retries})..."
                     )
-                )
 
-                try:
-                    # Timeout real na operação de GET
-                    r = await asyncio.wait_for(task, timeout=ORDERBOOK_REQUEST_TIMEOUT)
+                    # PATCH 2: async with session.get(...) as r (sem create_task)
+                    # ✅ PATCH 2.4: Medir latência manualmente para operações async
+                    # 2.4) Registrar live_attempted = True antes de tentar rede
+                    live_attempted = True
+                    fetch_start = time.perf_counter()
+                    client_timeout = aiohttp.ClientTimeout(total=self.cfg.request_timeout)
+                    try:
+                        async with session.get(url, timeout=client_timeout) as r:
+                            fetch_duration = time.perf_counter() - fetch_start
+                            self.metrics.observe_latency(symbol=self.symbol, seconds=float(fetch_duration))
+                            if r.status == 429:
+                                retry_after = int(r.headers.get("Retry-After", 60))
+                                self._fetch_errors += 1
+                                logging.error(f"🚫 RATE LIMIT (429) - Retry após {retry_after}s")
+                                
+                                # ✅ PATCH 2.4: Métricas de rate limit
+                                self.metrics.inc_fetch(symbol=self.symbol, status="rate_limited", source="live")
 
-                    async with r:
-                        # Rate limiting
-                        if r.status == 429:
-                            retry_after = int(r.headers.get('Retry-After', 60))
-                            self._fetch_errors += 1
-
-                            logging.error(
-                                f"🚫 RATE LIMIT (429) - Retry após {retry_after}s"
-                            )
-
-                            if attempt < max_retries - 1:
-                                await asyncio.sleep(min(retry_after, base_delay * 3))
-                                continue
-                            else:
+                                if attempt < max_retries - 1:
+                                    await asyncio.sleep(min(retry_after, base_delay * 3))
+                                    continue
                                 break
 
-                        # Outros erros HTTP
-                        if r.status != 200:
+                            if r.status != 200:
+                                self._fetch_errors += 1
+                                text = await r.text()
+                                logging.error(f"❌ HTTP {r.status}: {text[:200]}")
+                                
+                                # ✅ PATCH 2.4: Métricas de HTTP error
+                                self.metrics.inc_fetch(symbol=self.symbol, status=f"http_{r.status}", source="live")
+                                if attempt < max_retries - 1:
+                                    # PATCH 18: backoff com jitter
+                                    await asyncio.sleep(self._retry_sleep(base_delay, attempt))
+                                    continue
+                                break
+
+                        # PATCH 16: Tratar resposta não-JSON
+                        try:
+                            data = await r.json()
+                        except aiohttp.ContentTypeError:
                             self._fetch_errors += 1
                             text = await r.text()
-                            logging.error(
-                                f"❌ HTTP {r.status}: {text[:200]}"
-                            )
+                            logging.error(f"Resposta não-JSON (status=200): {text[:200]}")
+                            
+                            # ✅ PATCH 2.4: Métricas de payload inválido
+                            self.metrics.inc_fetch(symbol=self.symbol, status="bad_payload", source="live")
                             if attempt < max_retries - 1:
-                                await asyncio.sleep(base_delay * (attempt + 1))
+                                await asyncio.sleep(self._retry_sleep(base_delay, attempt))
                                 continue
-                            else:
-                                break
-
-                        # ✅ PARSE JSON ASYNC
-                        data = await r.json()
-
-                        # ✅ VALIDA E CONVERTE (síncrono, não bloqueia)
-                        is_valid, issues, converted = self._validate_snapshot(data)
-
-                        if not is_valid:
-                            self._validation_failures += 1
-
-                            logging.error(
-                                f"❌ Snapshot inválido (attempt {attempt + 1}): {', '.join(issues)}"
-                            )
-
+                            break
+                        except Exception as e:
+                            self._fetch_errors += 1
+                            logging.error(f"Falha ao parsear JSON: {e}")
+                            
+                            # ✅ PATCH 2.4: Métricas de parse JSON fail
+                            self.metrics.inc_fetch(symbol=self.symbol, status="bad_payload", source="live")
                             if attempt < max_retries - 1:
-                                delay = base_delay * (attempt + 1)
-                                logging.debug(f"  Retry em {delay:.1f}s...")
-                                await asyncio.sleep(delay)
+                                await asyncio.sleep(self._retry_sleep(base_delay, attempt))
                                 continue
-                            else:
-                                break
+                            break
 
-                        # ✅ SUCESSO - Salva snapshot CONVERTIDO (protegido por lock)
-                        now_ts = time.time()
-                        async with self._cache_lock:
-                            self._cached_snapshot = converted
-                            self._cache_timestamp = now_ts
+                    except asyncio.TimeoutError:
+                        self._fetch_errors += 1
+                        logging.error(f"⏱️ Timeout (attempt {attempt + 1})")
+                        
+                        # ✅ PATCH 2.4: Métricas de timeout
+                        self.metrics.inc_fetch(symbol=self.symbol, status="timeout", source="live")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(self._retry_sleep(base_delay, attempt))
+                        continue
 
-                            self._last_valid_snapshot = converted.copy()
-                            self._last_valid_timestamp = now_ts
+                    # ✅ VALIDA E CONVERTE (síncrono, não bloqueia)
+                    is_valid, issues, converted = self._validate_snapshot(data)
 
-                            # ✅ SALVA TIMESTAMP ORIGINAL
-                            exchange_ts = converted.get("E") or converted.get("T")
-                            if exchange_ts:
-                                self._last_valid_exchange_ts = int(exchange_ts)
-
-                        logging.debug(
-                            f"✅ Orderbook obtido: "
-                            f"{len(converted['bids'])} bids, {len(converted['asks'])} asks"
+                    if not is_valid:
+                        self._validation_failures += 1
+                        logging.error(
+                            f"❌ Snapshot inválido (attempt {attempt + 1}): {', '.join(issues)}"
                         )
+                        
+                        # ✅ PATCH 2.4: Métricas de validação melhoradas
+                        self.metrics.inc_validation_failure(symbol=self.symbol, reason=issues[0] if issues else "invalid_snapshot")
+                        self.metrics.inc_fetch(symbol=self.symbol, status="invalid", source="live")
+                        
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(self._retry_sleep(base_delay, attempt))
+                            continue
+                        break
 
-                        return converted
+                    # ✅ SUCESSO - Salva snapshot CONVERTIDO (protegido por lock)
+                    now_ts_mono = time.monotonic()
+                    async with self._cache_lock:
+                        safe_copy = self._snapshot_copy(converted)
+                        self._cached_snapshot = safe_copy
+                        self._cache_timestamp_mono = now_ts_mono
 
-                except asyncio.TimeoutError:
-                    # Cancela request pendente
-                    if task and not task.done():
-                        task.cancel()
-                        try:
-                            await task
-                        except asyncio.CancelledError:
-                            pass
+                        self._last_valid_snapshot = self._snapshot_copy(converted)
+                        self._last_valid_timestamp_mono = now_ts_mono
 
+                        # ✅ SALVA TIMESTAMP ORIGINAL
+                        exchange_ts = converted.get("E") or converted.get("T")
+                        if exchange_ts:
+                            self._last_valid_exchange_ts = int(exchange_ts)
+
+                    self._last_fetch_source = "live"
+                    self._last_fetch_age_seconds = 0.0
+
+                    # ✅ PATCH 2.4: Métricas de sucesso live
+                    self.metrics.inc_fetch(symbol=self.symbol, status="ok", source="live")
+                    self.metrics.set_data_age(symbol=self.symbol, source="live", age_seconds=0.0)
+
+                    logging.debug(
+                        f"✅ Orderbook obtido: "
+                        f"{len(converted['bids'])} bids, {len(converted['asks'])} asks"
+                    )
+
+                    # PATCH A-02: Não retornar o MESMO objeto armazenado no cache
+                    result = self._snapshot_copy(safe_copy)
+                    
+                    # 2.5) Registrar sucesso do circuito (record_success)
+                    self._circuit_breaker.record_success()
+                    
+                    return result
+
+                except aiohttp.ClientError as e:
                     self._fetch_errors += 1
-                    logging.error(f"⏱️ Timeout (attempt {attempt + 1})")
+                    logging.error(f"🌐 Client error (attempt {attempt + 1}): {e}")
+                    # Record circuit breaker failure
+                    self._circuit_breaker.record_failure()
                     if attempt < max_retries - 1:
-                        await asyncio.sleep(base_delay * (attempt + 1))
+                        await asyncio.sleep(self._retry_sleep(base_delay, attempt))
 
-            except aiohttp.ClientError as e:
-                self._fetch_errors += 1
-                logging.error(f"🌐 Client error (attempt {attempt + 1}): {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(base_delay * (attempt + 1))
+                except Exception as e:
+                    self._fetch_errors += 1
+                    logging.error(f"💥 Unexpected error (attempt {attempt + 1}): {e}", exc_info=True)
+                    # Record circuit breaker failure
+                    self._circuit_breaker.record_failure()
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(self._retry_sleep(base_delay, attempt))
 
-            except Exception as e:
-                self._fetch_errors += 1
-                logging.error(f"💥 Unexpected error (attempt {attempt + 1}): {e}", exc_info=True)
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(base_delay * (attempt + 1))
-
-            finally:
-                # Garante cancelamento mesmo em exceção
-                if task and not task.done():
-                    task.cancel()
+        # Registrar falha do circuito (record_failure) — 1 vez por chamada
+        # Se tentamos rede (live) e não retornamos sucesso, marca falha 1x
+        if live_attempted:
+            self._circuit_breaker.record_failure()
 
         # 5. ✅ FALLBACK CONSERVADOR (leitura protegida)
         if allow_stale:
@@ -776,37 +1095,43 @@ class OrderBookAnalyzer:
 
             async with self._cache_lock:
                 last_valid = self._last_valid_snapshot
-                last_valid_ts = self._last_valid_timestamp
+                last_valid_ts = self._last_valid_timestamp_mono
                 last_exchange_ts = self._last_valid_exchange_ts
 
             if last_valid is not None:
-                age = time.time() - last_valid_ts
+                now_m = time.monotonic()
+                age = now_m - last_valid_ts
 
-                if age < ORDERBOOK_FALLBACK_MAX_AGE:
+                if age < self.cfg.fallback_max_age:
                     # ✅ VALIDA IDADE DO DADO ORIGINAL
                     if last_exchange_ts:
                         now_ms = self.tm.now_ms()
                         data_age_ms = now_ms - last_exchange_ts
 
-                        if data_age_ms > ORDERBOOK_MAX_AGE_MS:
+                        if data_age_ms > getattr(self.cfg, 'max_age_ms', ORDERBOOK_MAX_AGE_MS):
                             self._old_data_rejected += 1
                             logging.error(
                                 f"❌ Snapshot fallback muito antigo "
-                                f"(data_age={data_age_ms}ms > {ORDERBOOK_MAX_AGE_MS}ms)"
+                                f"(data_age={data_age_ms}ms > {getattr(self.cfg, 'max_age_ms', ORDERBOOK_MAX_AGE_MS)}ms)"
                             )
                             return None
 
                     self._stale_data_uses += 1
+                    self._last_fetch_source = "stale"
+                    self._last_fetch_age_seconds = float(age)
 
                     logging.warning(
                         f"⚠️ Usando snapshot antigo (cache_age={age:.1f}s)"
                     )
+                    
+                    # ✅ PATCH 2.4: Métricas de stale data
+                    self.metrics.inc_fetch(symbol=self.symbol, status="ok", source="stale")
+                    self.metrics.set_data_age(symbol=self.symbol, source="stale", age_seconds=float(age))
 
-                    # cópia para evitar mutação externa
-                    return last_valid.copy()
+                    return self._snapshot_copy(last_valid)
                 else:
                     logging.error(
-                        f"❌ Snapshot muito velho ({age:.1f}s > {ORDERBOOK_FALLBACK_MAX_AGE}s)"
+                        f"❌ Snapshot muito velho ({age:.1f}s > {self.cfg.fallback_max_age}s)"
                     )
 
         # 💀 FALHA TOTAL
@@ -816,6 +1141,9 @@ class OrderBookAnalyzer:
             f"💀 FALHA ao obter orderbook após {max_retries} tentativas "
             f"(erro: {error_rate:.1f}%)"
         )
+        
+        # ✅ PATCH 2.4: Métricas de falha total
+        self.metrics.inc_fetch(symbol=self.symbol, status="failed", source="live")
 
         return None
 
@@ -883,6 +1211,42 @@ class OrderBookAnalyzer:
 
         return float(imbalance), float(ratio), float(pressure)
 
+    # ===== PATCH 8: Volume-weighted imbalance =====
+    def _weighted_imbalance(
+        self,
+        bids: List[Tuple[float, float]],
+        asks: List[Tuple[float, float]],
+        *,
+        weights: Optional[List[float]] = None,
+        use_notional: bool = True,
+    ) -> float:
+        """Mede pressão "perto do topo" ponderando níveis."""
+        if weights is None:
+            weights = list(THRESHOLDS.WEIGHTED_IMBALANCE_WEIGHTS)
+
+        n = len(weights)
+        b = bids[:n]
+        a = asks[:n]
+        if not b or not a:
+            return 0.0
+
+        def val(p: float, q: float) -> float:
+            return (p * q) if use_notional else q
+
+        bid_w = 0.0
+        ask_w = 0.0
+        for i, (p, q) in enumerate(b):
+            if p > 0 and q > 0:
+                bid_w += val(p, q) * weights[i]
+        for i, (p, q) in enumerate(a):
+            if p > 0 and q > 0:
+                ask_w += val(p, q) * weights[i]
+
+        denom = bid_w + ask_w
+        if denom <= 0:
+            return 0.0
+        return (bid_w - ask_w) / denom
+
     def _detect_walls(
         self,
         side_levels: List[Tuple[float, float]],
@@ -893,6 +1257,7 @@ class OrderBookAnalyzer:
 
         ✅ v2.2.0: usa quantil 90% dos volumes como base, multiplicado por self.wall_std,
                    reduzindo falsos positivos em relação a média+desvio.
+        PATCH 7: usa dynamic threshold multiplier
         Mantém retorno compatível: lista de dicts com side/price/qty/limit_threshold.
         """
         if not side_levels:
@@ -909,11 +1274,14 @@ class OrderBookAnalyzer:
                 base = float(np.quantile(qtys, 0.90))
             else:
                 base = float(qtys.max())
-            threshold = base * max(1.0, self.wall_std)  # fator multiplicativo
+            # PATCH 7: dynamic wall multiplier
+            mult = float(self.dynamic_thresholds.get("wall_threshold_multiplier", self.wall_std))
+            threshold = base * max(1.0, mult)  # fator multiplicativo
         except Exception:
             mean = float(np.mean(qtys))
             std = float(np.std(qtys))
-            threshold = mean * 1.5 if std <= 1e-12 else mean + self.wall_std * std
+            mult = float(self.dynamic_thresholds.get("wall_threshold_multiplier", self.wall_std))
+            threshold = mean * 1.5 if std <= 1e-12 else mean + mult * std
 
         walls: List[Dict[str, Any]] = []
         for p, q in levels:
@@ -942,6 +1310,8 @@ class OrderBookAnalyzer:
         - Compara quantidades por preço entre prev e curr
         - Score baseado em deltas relativos; bool indica se score > 0.5
 
+        PATCH 7: usa dynamic iceberg tolerance
+
         Mantém assinatura (bool, score) para compatibilidade.
         """
         try:
@@ -969,169 +1339,252 @@ class OrderBookAnalyzer:
 
                     delta = qty_now - qty_prev
                     # threshold absoluto de recarga + fator relativo
-                    if delta >= 3.0 and qty_now >= tol * max(qty_prev, 1e-9):
+                    min_delta = THRESHOLDS.ICEBERG_RELOAD_MIN_DELTA
+                    score_threshold = THRESHOLDS.ICEBERG_SCORE_THRESHOLD
+
+                    if delta >= min_delta and qty_now >= tol * max(qty_prev, 1e-9):
                         contrib = min(1.0, delta / max(qty_prev, 1e-9))
                         score += contrib
 
-            return (score > 0.5), float(round(score, 4))
+            return (score > score_threshold), float(round(score, 4))
 
         except Exception:
             return False, 0.0
 
-    # ===== EVENTO INVÁLIDO =====
+    # ===== PATCH 9: Liquidity Concentration Index =====
+    def _liquidity_concentration(
+        self,
+        levels: List[Tuple[float, float]],
+        *,
+        top_n: int = 10,
+    ) -> Dict[str, Any]:
+        """Mede se a liquidez está "espalhada" ou concentrada em poucos níveis."""
+        lv = levels[:max(1, int(top_n))]
+        notionals = [p * q for (p, q) in lv if p > 0 and q > 0]
+        total = float(sum(notionals))
+        if total <= 0:
+            return {"top_n": top_n, "total_usd": 0.0, "hhi": None, "top1_share": None, "top3_share": None}
+
+        shares = [x / total for x in notionals]
+        shares_sorted = sorted(shares, reverse=True)
+
+        hhi = float(sum(s * s for s in shares))  # 0..1
+        top1 = float(shares_sorted[0]) if shares_sorted else None
+        top3 = float(sum(shares_sorted[:3])) if shares_sorted else None
+
+        return {
+            "top_n": int(top_n),
+            "total_usd": round(total, 2),
+            "hhi": round(hhi, 6),
+            "top1_share": round(top1, 6) if top1 is not None else None,
+            "top3_share": round(top3, 6) if top3 is not None else None,
+        }
+
+    # ===== PATCH 10: Microstructure metrics =====
+    def _microstructure_metrics(
+        self,
+        bids: List[Tuple[float, float]],
+        asks: List[Tuple[float, float]],
+        *,
+        top_n: int = 20,
+    ) -> Dict[str, Any]:
+        """Adiciona métricas de microestrutura sem depender de trades."""
+        if not bids or not asks:
+            return {}
+
+        top_n = max(1, int(top_n))
+        b = bids[:top_n]
+        a = asks[:top_n]
+
+        best_bid = b[0][0]
+        best_ask = a[0][0]
+        mid = (best_bid + best_ask) / 2.0 if best_bid > 0 and best_ask > 0 else None
+        spread_bps = ((best_ask - best_bid) / mid) * 10000.0 if mid and mid > 0 else None
+
+        def vwap(levels: List[Tuple[float, float]]) -> Optional[float]:
+            qty = 0.0
+            numer = 0.0
+            for p, q in levels:
+                if p > 0 and q > 0:
+                    qty += q
+                    numer += p * q
+            return (numer / qty) if qty > 0 else None
+
+        def avg_distance_bps(levels: List[Tuple[float, float]], ref: float, side: str) -> Optional[float]:
+            if ref <= 0:
+                return None
+            total = 0.0
+            numer = 0.0
+            for p, q in levels:
+                if p <= 0 or q <= 0:
+                    continue
+                notional = p * q
+                dist_bps = ((ref - p) / ref) * 10000.0 if side == "bid" else ((p - ref) / ref) * 10000.0
+                numer += dist_bps * notional
+                total += notional
+            return (numer / total) if total > 0 else None
+
+        vwap_bid = vwap(b)
+        vwap_ask = vwap(a)
+
+        return {
+            "mid": mid,
+            "spread_bps": round(spread_bps, 4) if spread_bps is not None else None,
+            "vwap_bid_topn": round(vwap_bid, 8) if vwap_bid is not None else None,
+            "vwap_ask_topn": round(vwap_ask, 8) if vwap_ask is not None else None,
+            "bid_avg_distance_bps_topn": round(avg_distance_bps(b, best_bid, "bid"), 4),
+            "ask_avg_distance_bps_topn": round(avg_distance_bps(a, best_ask, "ask"), 4),
+        }
+
+    # ===== PATCH 11: Anomaly detection =====
+    def _detect_anomalies(
+        self,
+        bids: List[Tuple[float, float]],
+        asks: List[Tuple[float, float]],
+        prev_snapshot: Optional[Dict[str, Any]],
+        *,
+        spread_jump_bps: float = 30.0,
+        depth_drop_pct: float = 60.0,
+    ) -> List[str]:
+        """Sinaliza mudanças bruscas de microestrutura."""
+        out: List[str] = []
+        if not prev_snapshot:
+            return out
+
+        prev_bids = prev_snapshot.get("bids") or []
+        prev_asks = prev_snapshot.get("asks") or []
+        if not prev_bids or not prev_asks or not bids or not asks:
+            return out
+
+        cur_sm = self._spread_and_depth(bids, asks)
+        prev_sm = self._spread_and_depth(prev_bids, prev_asks)
+
+        cur_bps = float(cur_sm["spread_percent"]) * 100.0 if cur_sm.get("spread_percent") is not None else None
+        prev_bps = float(prev_sm["spread_percent"]) * 100.0 if prev_sm.get("spread_percent") is not None else None
+        if cur_bps is not None and prev_bps is not None and (cur_bps - prev_bps) >= spread_jump_bps:
+            out.append(f"spread_jump: {prev_bps:.2f}bps -> {cur_bps:.2f}bps")
+
+        cur_bid = float(cur_sm.get("bid_depth_usd") or 0.0)
+        cur_ask = float(cur_sm.get("ask_depth_usd") or 0.0)
+        prev_bid = float(prev_sm.get("bid_depth_usd") or 0.0)
+        prev_ask = float(prev_sm.get("ask_depth_usd") or 0.0)
+
+        def drop(p: float, c: float) -> Optional[float]:
+            if p <= 0:
+                return None
+            return (1.0 - (c / p)) * 100.0
+
+        bid_drop = drop(prev_bid, cur_bid)
+        ask_drop = drop(prev_ask, cur_ask)
+
+        if bid_drop is not None and bid_drop >= depth_drop_pct:
+            out.append(f"bid_depth_drop: {bid_drop:.1f}%")
+        if ask_drop is not None and ask_drop >= depth_drop_pct:
+            out.append(f"ask_depth_drop: {ask_drop:.1f}%")
+
+        return out
+
+    # ===== EVENTO INVÁLIDO (PATCH 6.2: usa EventFactory) =====
     def _create_invalid_event(
         self,
         error_msg: str,
         ts_ms: Optional[int] = None,
         severity: str = "ERROR",
     ) -> Dict[str, Any]:
-        """Cria evento marcado como INVÁLIDO."""
+        """Cria evento marcado como INVÁLIDO usando EventFactory (PATCH 6.2)."""
         if ts_ms is None:
             ts_ms = self.tm.now_ms()
 
         tindex = self.tm.build_time_index(ts_ms, include_local=True, timespec="seconds")
 
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "tipo_evento": "OrderBook",
-            "ativo": self.symbol,
-
-            "is_valid": False,
-            "should_skip": True,
-            "emergency_mode": False,
-            "erro": error_msg,
-
-            "descricao": f"❌ Order book indisponível: {error_msg}",
-            "resultado_da_batalha": "INDISPONÍVEL",
-
-            "imbalance": 0.0,
-            "volume_ratio": 1.0,
-            "pressure": 0.0,
-
-            "spread_metrics": {
-                "mid": 0.0,
-                "spread": 0.0,
-                "spread_percent": 0.0,
-                "bid_depth_usd": 0.0,
-                "ask_depth_usd": 0.0,
-            },
-
-            "alertas_liquidez": [f"🚫 ERRO: {error_msg}"],
-            "iceberg_reloaded": False,
-            "iceberg_score": 0.0,
-            "walls": {"bids": [], "asks": []},
-
-            "market_impact_buy": {
-                "100k": {"usd": 100000, "move_usd": 0.0, "bps": 0.0, "levels": 0, "vwap": None},
-                "1M": {"usd": 1000000, "move_usd": 0.0, "bps": 0.0, "levels": 0, "vwap": None},
-            },
-            "market_impact_sell": {
-                "100k": {"usd": 100000, "move_usd": 0.0, "bps": 0.0, "levels": 0, "vwap": None},
-                "1M": {"usd": 1000000, "move_usd": 0.0, "bps": 0.0, "levels": 0, "vwap": None},
-            },
-
-            "top_n": self.top_n,
-            "ob_limit": self.ob_limit_fetch,
-
-            "timestamps": {
-                "exchange_ms": ts_ms,
-                "timestamp_ny": tindex.get("timestamp_ny"),
-                "timestamp_utc": tindex.get("timestamp_utc"),
-            },
-
-            "source": {
-                "exchange": "binance_futures",
-                "endpoint": "fapi/v1/depth",
-                "symbol": self.symbol,
-                "error": error_msg,
-            },
-
-            "labels": {
-                "dominant_label": "INDISPONÍVEL",
-                "note": "Order book não pôde ser obtido ou validado.",
-            },
-
-            "order_book_depth": {},
-            "spread_analysis": {},
-
-            "severity": severity,
-
-            "critical_flags": {
-                "is_critical": False,
-                "abs_imbalance": 0.0,
-                "ratio_dom": 1.0,
-                "dominant_usd": 0.0,
-                "thresholds": {
-                    "ORDERBOOK_CRITICAL_IMBALANCE": ORDERBOOK_CRITICAL_IMBALANCE,
-                    "ORDERBOOK_MIN_DOMINANT_USD": ORDERBOOK_MIN_DOMINANT_USD,
-                    "ORDERBOOK_MIN_RATIO_DOM": ORDERBOOK_MIN_RATIO_DOM,
-                },
-            },
-
-            "orderbook_data": {
-                "mid": 0.0,
-                "spread": 0.0,
-                "spread_percent": 0.0,
-                "bid_depth_usd": 0.0,
-                "ask_depth_usd": 0.0,
-                "imbalance": 0.0,
-                "volume_ratio": 1.0,
-                "pressure": 0.0,
-            },
-
-            "data_quality": {
-                "is_valid": False,
-                "data_source": "error",
-                "age_seconds": 0.0,
-                "validation_passed": False,
-                "validation_issues": [error_msg],
-                "warnings": [],
-            },
-
-            "health_stats": self.get_stats(),
+        thresholds = {
+            "ORDERBOOK_CRITICAL_IMBALANCE": self.cfg.critical_imbalance,
+            "ORDERBOOK_MIN_DOMINANT_USD": self.cfg.min_dominant_usd,
+            "ORDERBOOK_MIN_RATIO_DOM": self.cfg.min_ratio_dom,
         }
 
-    # ===== ✅ ANÁLISE PRINCIPAL ASYNC =====
-    async def analyze(
+        # LOG ESTRUTURADO: evento inválido
+        try:
+            self.slog.error(
+                "orderbook_invalid",
+                error=error_msg,
+                severity=severity,
+                fetch_errors=self._fetch_errors,
+                validation_failures=self._validation_failures,
+                data_source=getattr(self, "_last_fetch_source", "unknown"),
+            )
+        except Exception:
+            # logging não deve nunca quebrar o fluxo
+            pass
+
+        return build_invalid_orderbook_event(
+            symbol=self.symbol,
+            schema_version=SCHEMA_VERSION,
+            engine_version=ENGINE_VERSION,
+            ts_ms=int(ts_ms),
+            error_msg=error_msg,
+            severity=severity,
+            timestamp_ny=tindex.get("timestamp_ny"),
+            timestamp_utc=tindex.get("timestamp_utc"),
+            top_n=self.top_n,
+            ob_limit=self.ob_limit_fetch,
+            thresholds=thresholds,
+            health_stats=self.get_stats(),
+        )
+
+    # ===== REFACTORED METHODS FOR BETTER CODE ORGANIZATION =====
+    
+    async def _acquire_snapshot(
         self,
-        current_snapshot: Optional[Dict[str, Any]] = None,
-        *,
-        event_epoch_ms: Optional[int] = None,
-        window_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        current_snapshot: Optional[Dict[str, Any]],
+        event_epoch_ms: Optional[int],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
-        Analisa orderbook e retorna evento padronizado.
+        Obtém snapshot já convertido/validado.
 
-        async (use: await oba.analyze())
-
-        Returns:
-            Dict com evento. Sempre checar event['is_valid'] antes de usar!
+        - Se current_snapshot foi fornecido: valida, converte e marca data_source=external.
+        - Caso contrário: chama _fetch_orderbook (que já retorna convertido).
         """
-        # 1. Obtém snapshot (já convertido) - ✅ ASYNC
-        snap = current_snapshot or await self._fetch_orderbook(limit=self.ob_limit_fetch)
-
-        if not snap:
-            return self._create_invalid_event("fetch_failed", event_epoch_ms)
-
-        # 2. ✅ SNAPSHOT JÁ DEVE ESTAR CONVERTIDO
         if current_snapshot is not None:
-            is_valid, issues, converted = self._validate_snapshot(snap)
-
+            is_valid, issues, converted = self._validate_snapshot(current_snapshot)
             if not is_valid:
-                error_msg = f"validation_failed: {', '.join(issues)}"
-                logging.error(f"❌ Snapshot externo inválido: {error_msg}")
-                return self._create_invalid_event(error_msg, event_epoch_ms)
+                return None, f"validation_failed: {', '.join(issues)}"
 
-            snap = converted
+            # data_source correto para snapshot externo (Patch A-01 já aplicado no seu código)
+            self._last_fetch_source = "external"
+            try:
+                snap_ts = None
+                for k in ("E", "T"):
+                    v = current_snapshot.get(k)
+                    if isinstance(v, (int, float)) and v > 0:
+                        snap_ts = int(v)
+                        break
+                if snap_ts:
+                    self._last_fetch_age_seconds = max(0.0, (self.tm.now_ms() - snap_ts) / 1000.0)
+                else:
+                    self._last_fetch_age_seconds = 0.0
+            except Exception:
+                self._last_fetch_age_seconds = 0.0
 
-        # 3. ✅ GARANTE QUE ESTÁ CONVERTIDO
-        bids: List[Tuple[float, float]] = snap.get("bids", [])
-        asks: List[Tuple[float, float]] = snap.get("asks", [])
+            return converted, None
 
-        if not bids or not asks:
-            return self._create_invalid_event("empty_orderbook", event_epoch_ms)
+        snap = await self._fetch_orderbook(limit=self.ob_limit_fetch)
+        if not snap:
+            return None, "fetch_failed"
+        return snap, None
 
-        # 4. Timestamp
+    def _extract_book_data(
+        self,
+        snap: Dict[str, Any],
+        event_epoch_ms: Optional[int],
+    ) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]], int, Dict[str, Any]]:
+        """
+        Extrai bids/asks e timestamp principal do evento.
+        Retorna também o time_index (ny/utc).
+        """
+        bids: List[Tuple[float, float]] = snap.get("bids", []) or []
+        asks: List[Tuple[float, float]] = snap.get("asks", []) or []
+
         ts_ms = None
         for key in ("E", "T"):
             v = snap.get(key)
@@ -1142,74 +1595,78 @@ class OrderBookAnalyzer:
             ts_ms = event_epoch_ms if event_epoch_ms is not None else self.tm.now_ms()
 
         tindex = self.tm.build_time_index(ts_ms, include_local=True, timespec="seconds")
-        timestamp_ny = tindex.get("timestamp_ny")
-        timestamp_utc = tindex.get("timestamp_utc")
+        return bids, asks, ts_ms, tindex
 
-        # 5. Calcula métricas
+    def _compute_core_metrics(
+        self,
+        bids: List[Tuple[float, float]],
+        asks: List[Tuple[float, float]],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Calcula métricas core. Se dados parciais/invalidáveis, retorna error string.
+        """
         sm = self._spread_and_depth(bids, asks)
         mid = sm.get("mid")
         bid_usd = float(sm.get("bid_depth_usd") or 0.0)
         ask_usd = float(sm.get("ask_depth_usd") or 0.0)
 
-        # ✅ PROTEÇÃO TOTAL - Rejeita se dados parciais
         imbalance, ratio, pressure = self._imbalance_ratio_pressure(bid_usd, ask_usd)
-
         if imbalance is None:
-            return self._create_invalid_event(
-                f"partial_data_rejected: bid=${bid_usd:.2f}, ask=${ask_usd:.2f}",
-                ts_ms
-            )
+            return None, f"partial_data_rejected: bid=${bid_usd:.2f}, ask=${ask_usd:.2f}"
 
-        bid_walls = self._detect_walls(bids, side="bid")
-        ask_walls = self._detect_walls(asks, side="ask")
+        spread_bps = None
+        if sm.get("spread_percent") is not None:
+            try:
+                spread_bps = float(sm["spread_percent"]) * 100.0
+            except Exception:
+                spread_bps = None
 
-        iceberg, iceberg_score = self._iceberg_reload(
+        core = {
+            "spread_metrics": sm,
+            "mid": mid,
+            "bid_usd": bid_usd,
+            "ask_usd": ask_usd,
+            "imbalance": float(imbalance),
+            "ratio": float(ratio) if ratio is not None else None,
+            "pressure": float(pressure),
+            "spread_bps": spread_bps,
+        }
+        return core, None
+
+    def _compute_iceberg(
+        self,
+        bids: List[Tuple[float, float]],
+        asks: List[Tuple[float, float]],
+    ) -> Tuple[bool, float]:
+        iceberg_tol = float(self.dynamic_thresholds.get("iceberg_tolerance", 0.75))
+        return self._iceberg_reload(
             self.prev_snapshot,
-            {"bids": bids, "asks": asks}
+            {"bids": bids, "asks": asks},
+            tol=iceberg_tol,
         )
 
-        # 6. Market impact (CORRIGIDO SELL v2.2.0: não reverte bids)
+
+    def _compute_market_impact(
+        self,
+        bids: List[Tuple[float, float]],
+        asks: List[Tuple[float, float]],
+        mid: Optional[float],
+    ) -> Dict[str, Any]:
         mi_buy_100k = _simulate_market_impact(asks[:self.top_n], 100_000.0, "buy", mid)
         mi_buy_1m = _simulate_market_impact(asks[:self.top_n], 1_000_000.0, "buy", mid)
         mi_sell_100k = _simulate_market_impact(bids[:self.top_n], 100_000.0, "sell", mid)
         mi_sell_1m = _simulate_market_impact(bids[:self.top_n], 1_000_000.0, "sell", mid)
+        return {
+            "buy": {"100k": mi_buy_100k, "1M": mi_buy_1m},
+            "sell": {"100k": mi_sell_100k, "1M": mi_sell_1m},
+        }
 
-        # 7. Histórico de spread
-        if sm.get("spread_percent") is not None and sm["spread_percent"] >= 0:
-            try:
-                spread_bps = float(sm["spread_percent"]) * 100.0
-                now_ms = ts_ms if ts_ms is not None else self.tm.now_ms()
-                self.spread_history.append((int(now_ms), spread_bps))
-            except Exception:
-                pass
 
-        try:
-            cutoff_ms = (ts_ms or self.tm.now_ms()) - max(self.spread_avg_windows_min) * 60 * 1000
-            self.spread_history = [(t, s) for (t, s) in self.spread_history if t >= cutoff_ms]
-        except Exception:
-            pass
-
-        # 8. Rótulos e alertas
-        resultado_da_batalha = "Equilíbrio"
-        if imbalance > self.alert_threshold:
-            resultado_da_batalha = "Demanda no Livro (Bid>Ask)"
-        elif imbalance < -self.alert_threshold:
-            resultado_da_batalha = "Oferta no Livro (Ask>Bid)"
-        else:
-            if imbalance > 0.0:
-                resultado_da_batalha = "Leve Demanda no Livro"
-            elif imbalance < 0.0:
-                resultado_da_batalha = "Leve Oferta no Livro"
-
-        alertas: List[str] = []
-        if abs(imbalance) >= self.alert_threshold:
-            alertas.append("Alerta de Liquidez (desequilíbrio)")
-        if iceberg:
-            alertas.append("Iceberg possivelmente recarregando")
-        if sm.get("spread") is not None and sm["spread"] <= 0.5:
-            alertas.append("Spread apertado")
-
-        # 9. Depth summary
+    def _build_depth_summary(
+        self,
+        bids: List[Tuple[float, float]],
+        asks: List[Tuple[float, float]],
+    ) -> Dict[str, Any]:
         depth_summary: Dict[str, Any] = {}
         total_bids_last = 0.0
         total_asks_last = 0.0
@@ -1241,25 +1698,42 @@ class OrderBookAnalyzer:
             pass
 
         depth_summary["total_depth_ratio"] = round(total_ratio, 3) if total_ratio is not None else None
+        return depth_summary
 
-        # 10. Spread analysis
+    def _build_spread_analysis(
+        self,
+        ts_ms: int,
+        spread_bps: Optional[float],
+        sm: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Atualiza spread_history (append + prune) e calcula spread_analysis.
+        Mantém a lógica atual, só encapsula.
+        """
+        # Atualiza histórico
+        if spread_bps is not None and spread_bps >= 0:
+            try:
+                self.spread_history.append((int(ts_ms), float(spread_bps)))
+            except Exception:
+                pass
+
+        try:
+            cutoff_ms = ts_ms - max(self.spread_avg_windows_min) * 60 * 1000
+            self.spread_history = [(t, s) for (t, s) in self.spread_history if t >= cutoff_ms]
+        except Exception:
+            pass
+
         spread_analysis: Dict[str, Any] = {
-            "current_spread_bps": None,
+            "current_spread_bps": round(spread_bps, 4) if spread_bps is not None else None,
             "spread_percentile": None,
             "tight_spread_duration_min": None,
             "spread_volatility": None,
         }
 
         try:
-            current_bps = None
-            if sm.get("spread_percent") is not None:
-                current_bps = float(sm["spread_percent"]) * 100.0
-                spread_analysis["current_spread_bps"] = round(current_bps, 4)
-
             for window_min in self.spread_avg_windows_min:
                 window_ms = window_min * 60 * 1000
-                now_ms = ts_ms if ts_ms is not None else self.tm.now_ms()
-                values = [s for (t, s) in self.spread_history if (now_ms - t) <= window_ms]
+                values = [s for (t, s) in self.spread_history if (ts_ms - t) <= window_ms]
                 avg = float(np.mean(values)) if values else None
 
                 if window_min >= 60 and window_min % 60 == 0:
@@ -1270,32 +1744,64 @@ class OrderBookAnalyzer:
 
                 spread_analysis[key] = round(avg, 4) if avg is not None else None
 
-            if current_bps is not None:
+            if spread_bps is not None:
                 all_values = [s for (_, s) in self.spread_history]
                 if all_values:
                     sorted_vals = sorted(all_values)
-                    less = sum(1 for v in sorted_vals if v < current_bps)
+                    less = sum(1 for v in sorted_vals if v < spread_bps)
                     pct = (less / len(sorted_vals)) * 100.0
                     spread_analysis["spread_percentile"] = round(pct, 1)
                     spread_analysis["spread_volatility"] = round(float(np.std(sorted_vals)), 4)
 
-            if current_bps is not None:
-                now_ms = ts_ms if ts_ms is not None else self.tm.now_ms()
+            if spread_bps is not None:
                 duration_ms = 0
                 threshold = self.spread_tight_threshold_bps
-
                 for (t, s) in reversed(self.spread_history):
                     if s <= threshold:
-                        duration_ms = now_ms - t
+                        duration_ms = ts_ms - t
                     else:
                         break
-
                 spread_analysis["tight_spread_duration_min"] = round(duration_ms / 60000.0, 2) if duration_ms else 0.0
 
         except Exception as e:
             logging.debug(f"Erro em spread_analysis: {e}")
 
-        # 11. Criticidade
+        return spread_analysis
+
+    def _build_labels_and_alerts(
+        self,
+        imbalance: float,
+        iceberg: bool,
+        spread_bps: Optional[float],
+        ratio: Optional[float],
+        bid_usd: float,
+        ask_usd: float,
+    ) -> Tuple[str, List[str], bool, Dict[str, Any]]:
+        """
+        Define resultado_da_batalha, alertas, criticidade e critical_flags.
+        Mantém regras atuais.
+        """
+        # Resultado
+        resultado_da_batalha = "Equilíbrio"
+        if imbalance > self.alert_threshold:
+            resultado_da_batalha = "Demanda no Livro (Bid>Ask)"
+        elif imbalance < -self.alert_threshold:
+            resultado_da_batalha = "Oferta no Livro (Ask>Bid)"
+        else:
+            if imbalance > 0.0:
+                resultado_da_batalha = "Leve Demanda no Livro"
+            elif imbalance < 0.0:
+                resultado_da_batalha = "Leve Oferta no Livro"
+
+        alertas: List[str] = []
+        if abs(imbalance) >= self.alert_threshold:
+            alertas.append("Alerta de Liquidez (desequilíbrio)")
+        if iceberg:
+            alertas.append("Iceberg possivelmente recarregando")
+        if spread_bps is not None and spread_bps <= self.spread_tight_threshold_bps:
+            alertas.append("Spread apertado")
+
+        # Criticidade (mesma lógica atual)
         ratio_dom = None
         if ratio is not None:
             if ratio > 0:
@@ -1304,151 +1810,304 @@ class OrderBookAnalyzer:
                 ratio_dom = float("inf")
 
         dominant_usd = max(bid_usd, ask_usd)
-        is_extreme_imbalance = abs(imbalance) >= ORDERBOOK_CRITICAL_IMBALANCE
-        is_extreme_ratio = (ratio_dom is not None) and (ratio_dom >= ORDERBOOK_MIN_RATIO_DOM)
-        is_extreme_usd = dominant_usd >= ORDERBOOK_MIN_DOMINANT_USD
+        is_extreme_imbalance = abs(imbalance) >= self.cfg.critical_imbalance
+        is_extreme_ratio = (ratio_dom is not None) and (ratio_dom >= self.cfg.min_ratio_dom)
+        is_extreme_usd = dominant_usd >= self.cfg.min_dominant_usd
 
         is_critical = bool(
             is_extreme_imbalance and (is_extreme_ratio or is_extreme_usd) or
-            (ratio_dom is not None and ratio_dom >= max(50.0, ORDERBOOK_MIN_RATIO_DOM))
+            (ratio_dom is not None and ratio_dom >= max(50.0, self.cfg.min_ratio_dom))
         )
 
         if is_critical:
             side_dom = "ASKS" if imbalance < 0 else "BIDS"
             alertas.append(f"🔴 DESEQUILÍBRIO CRÍTICO ({side_dom})")
 
-        # 12. Descrição
-        if imbalance < -0.05:
-            batalha = "Oferta domina"
-            descricao = f"Livro: Δ={imbalance:+.4f} | ratio={ratio:.4f} | bids=${bid_usd:,.2f} vs asks=${ask_usd:,.2f}"
-        elif imbalance > 0.05:
-            batalha = "Demanda domina"
-            descricao = f"Livro: Δ={imbalance:+.4f} | ratio={ratio:.4f} | bids=${bid_usd:,.2f} vs asks=${ask_usd:,.2f}"
-        else:
-            batalha = "Equilíbrio"
-            descricao = f"Livro: Δ={imbalance:+.4f} | ratio={ratio:.4f} | bids=${bid_usd:,.2f} vs asks=${ask_usd:,.2f}"
-
-        # 13. ✅ DATA QUALITY
-        data_source = "live"
-        age_seconds = 0.0
-
-        if snap == self._cached_snapshot:
-            data_source = "cache"
-            age_seconds = time.time() - self._cache_timestamp
-        elif snap == self._last_valid_snapshot:
-            data_source = "stale"
-            age_seconds = time.time() - self._last_valid_timestamp
-
-        # 14. Log
-        logging.info(
-            f"📊 OrderBook OK - Janela #{window_id if window_id else '?'}: "
-            f"bid=${bid_usd:,.0f}, ask=${ask_usd:,.0f}"
-        )
-
-        # 15. Monta evento
-        event: Dict[str, Any] = {
-            "schema_version": SCHEMA_VERSION,
-            "tipo_evento": "OrderBook",
-            "ativo": self.symbol,
-
-            "is_valid": True,
-            "should_skip": False,
-            "emergency_mode": False,
-
-            "descricao": descricao,
-            "resultado_da_batalha": resultado_da_batalha,
-
-            "imbalance": round(imbalance, 4),
-            "volume_ratio": round(ratio, 4) if ratio not in (None, float("inf")) else None,
-            "pressure": round(pressure, 4),
-
-            "spread_metrics": sm,
-            "alertas_liquidez": alertas,
-            "iceberg_reloaded": bool(iceberg),
-            "iceberg_score": iceberg_score,
-            "walls": {"bids": bid_walls[:3], "asks": ask_walls[:3]},
-
-            "market_impact_buy": {"100k": mi_buy_100k, "1M": mi_buy_1m},
-            "market_impact_sell": {"100k": mi_sell_100k, "1M": mi_sell_1m},
-
-            "top_n": self.top_n,
-            "ob_limit": self.ob_limit_fetch,
-
-            "timestamps": {
-                "exchange_ms": ts_ms,
-                "timestamp_ny": timestamp_ny,
-                "timestamp_utc": timestamp_utc,
+        critical_flags = {
+            "is_critical": is_critical,
+            "abs_imbalance": round(abs(imbalance), 4),
+            "ratio_dom": (round(ratio_dom, 4) if (ratio_dom not in (None, float("inf"))) else ratio_dom),
+            "dominant_usd": round(dominant_usd, 2),
+            "thresholds": {
+                "ORDERBOOK_CRITICAL_IMBALANCE": self.cfg.critical_imbalance,
+                "ORDERBOOK_MIN_DOMINANT_USD": self.cfg.min_dominant_usd,
+                "ORDERBOOK_MIN_RATIO_DOM": self.cfg.min_ratio_dom,
             },
-
-            "source": {
-                "exchange": "binance_futures",
-                "endpoint": "fapi/v1/depth",
-                "symbol": self.symbol,
-            },
-
-            "labels": {
-                "dominant_label": resultado_da_batalha,
-                "note": "Rótulo baseado no livro (estoque de liquidez).",
-            },
-
-            "order_book_depth": depth_summary,
-            "spread_analysis": spread_analysis,
-
-            "severity": "CRITICAL" if is_critical else "INFO",
-
-            "critical_flags": {
-                "is_critical": is_critical,
-                "abs_imbalance": round(abs(imbalance), 4),
-                "ratio_dom": (round(ratio_dom, 4) if (ratio_dom not in (None, float("inf"))) else ratio_dom),
-                "dominant_usd": round(dominant_usd, 2),
-                "thresholds": {
-                    "ORDERBOOK_CRITICAL_IMBALANCE": ORDERBOOK_CRITICAL_IMBALANCE,
-                    "ORDERBOOK_MIN_DOMINANT_USD": ORDERBOOK_MIN_DOMINANT_USD,
-                    "ORDERBOOK_MIN_RATIO_DOM": ORDERBOOK_MIN_RATIO_DOM,
-                },
-            },
-
-            "orderbook_data": {
-                "mid": sm["mid"],
-                "spread": sm["spread"],
-                "spread_percent": sm["spread_percent"],
-                "bid_depth_usd": bid_usd,
-                "ask_depth_usd": ask_usd,
-                "imbalance": round(imbalance, 4),
-                "volume_ratio": round(ratio, 4) if ratio not in (None, float("inf")) else None,
-                "pressure": round(pressure, 4),
-            },
-
-            "depth_metrics": snap.get("depth_metrics", {}),
-
-            "data_quality": {
-                "is_valid": True,
-                "data_source": data_source,
-                "age_seconds": round(age_seconds, 2),
-                "validation_passed": True,
-                "validation_issues": [],
-                "warnings": [],
-                "emergency_mode": False,
-            },
-
-            "health_stats": self.get_stats(),
         }
 
-        # 16. Atualiza memória / histórico
+
+        return resultado_da_batalha, alertas, is_critical, critical_flags
+
+    def _build_description(
+        self,
+        imbalance: float,
+        ratio: Optional[float],
+        bid_usd: float,
+        ask_usd: float,
+    ) -> str:
+        # Mantém exatamente o padrão de texto atual
+        if ratio is None:
+            ratio = 1.0
+        if imbalance < -0.05:
+            return f"Livro: Δ={imbalance:+.4f} | ratio={ratio:.4f} | bids=${bid_usd:,.2f} vs asks=${ask_usd:,.2f}"
+        elif imbalance > 0.05:
+            return f"Livro: Δ={imbalance:+.4f} | ratio={ratio:.4f} | bids=${bid_usd:,.2f} vs asks=${ask_usd:,.2f}"
+        return f"Livro: Δ={imbalance:+.4f} | ratio={ratio:.4f} | bids=${bid_usd:,.2f} vs asks=${ask_usd:,.2f}"
+
+    def _get_data_quality(self) -> Tuple[str, float]:
+        data_source = getattr(self, "_last_fetch_source", "unknown")
+        age_seconds = float(getattr(self, "_last_fetch_age_seconds", 0.0))
+        return data_source, age_seconds
+
+    def _update_internal_state(self, bids: List[Tuple[float, float]], asks: List[Tuple[float, float]], ts_ms: int) -> None:
         self.prev_snapshot = {"bids": bids, "asks": asks}
         self.last_event_ts_ms = ts_ms
-
         try:
             self._history.append({"bids": bids, "asks": asks})
         except Exception:
             pass
 
-        # Validação de invariantes
-        if event.get("is_valid"):
-            self._validate_invariants(event)
-            event["invariants_checked"] = True
+    def _export_metrics_from_event(self, event: Dict[str, Any]) -> None:
+        """
+        Publica gauges/idade se a Etapa 2 estiver instalada.
+        Não quebra se self.metrics não existir.
+        """
+        try:
+            metrics = getattr(self, "metrics", None)
+            if metrics is None:
+                return
 
-        return event
+            ob = event.get("orderbook_data") or {}
+            sm = event.get("spread_metrics") or {}
+            dq = event.get("data_quality") or {}
+
+            spread_bps = None
+            sp = ob.get("spread_percent", sm.get("spread_percent"))
+            if sp is not None:
+                spread_bps = float(sp) * 100.0
+
+            metrics.set_core_gauges(
+                symbol=self.symbol,
+                imbalance=float(ob.get("imbalance")),
+                bid_depth_usd=float(ob.get("bid_depth_usd")),
+                ask_depth_usd=float(ob.get("ask_depth_usd")),
+                spread_bps=spread_bps,
+            )
+
+
+            source = str(dq.get("data_source", "unknown"))
+            age = float(dq.get("age_seconds", 0.0))
+            metrics.set_data_age(symbol=self.symbol, source=source, age_seconds=age)
+        except Exception:
+            # observabilidade não pode derrubar pipeline
+            return
+
+    # ===== ✅ ANÁLISE PRINCIPAL ASYNC (PATCH 3.2: orquestrador refatorado) =====
+    async def analyze(
+        self,
+        current_snapshot: Optional[Dict[str, Any]] = None,
+        *,
+        event_epoch_ms: Optional[int] = None,
+        window_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Orquestrador refatorado: mantém a API e o formato do evento,
+        mas delega trabalho para submétodos (Etapa 3).
+        """
+
+        with self.tracer.start_span(
+            "orderbook_analyze",
+            {
+                "window_id": window_id or "?",
+                "has_external_snapshot": current_snapshot is not None,
+            },
+        ):
+            # 1) Acquire + validate snapshot
+            snap, err = await self._acquire_snapshot(current_snapshot, event_epoch_ms)
+            if err:
+                return self._create_invalid_event(err, event_epoch_ms)
+
+            assert snap is not None
+
+            # 2) Extract book + timestamps
+            bids, asks, ts_ms, tindex = self._extract_book_data(snap, event_epoch_ms)
+            if not bids or not asks:
+                return self._create_invalid_event("empty_orderbook", ts_ms)
+
+            # 3) Core metrics
+            core, core_err = self._compute_core_metrics(bids, asks)
+            if core_err:
+                return self._create_invalid_event(core_err, ts_ms)
+
+            assert core is not None
+            sm = core["spread_metrics"]
+            mid = core["mid"]
+            bid_usd = core["bid_usd"]
+            ask_usd = core["ask_usd"]
+            imbalance = core["imbalance"]
+            ratio = core["ratio"]
+            pressure = core["pressure"]
+            spread_bps = core["spread_bps"]
+
+            # 4) Patterns
+            bid_walls = self._detect_walls(bids, side="bid")
+            ask_walls = self._detect_walls(asks, side="ask")
+            iceberg, iceberg_score = self._compute_iceberg(bids, asks)
+
+            # 5) Market impact
+            mi = self._compute_market_impact(bids, asks, mid)
+
+            # 6) Depth + spread analysis
+            depth_summary = self._build_depth_summary(bids, asks)
+            spread_analysis = self._build_spread_analysis(ts_ms, spread_bps, sm)
+
+            # 7) Labels/alerts + critical flags
+            resultado_da_batalha, alertas, is_critical, critical_flags = self._build_labels_and_alerts(
+                imbalance=imbalance,
+                iceberg=iceberg,
+                spread_bps=spread_bps,
+                ratio=ratio,
+                bid_usd=bid_usd,
+                ask_usd=ask_usd,
+            )
+
+            # 8) Description
+            descricao = self._build_description(
+                imbalance=imbalance,
+                ratio=ratio,
+                bid_usd=bid_usd,
+                ask_usd=ask_usd,
+            )
+
+            # 9) Data quality
+            data_source, age_seconds = self._get_data_quality()
+
+            # 10) Advanced metrics
+            weighted_imb = self._weighted_imbalance(bids, asks, use_notional=True)
+            liq_bids = self._liquidity_concentration(bids, top_n=10)
+            liq_asks = self._liquidity_concentration(asks, top_n=10)
+            micro = self._microstructure_metrics(bids, asks, top_n=self.top_n)
+            anoms = self._detect_anomalies(bids, asks, self.prev_snapshot)
+
+            # 11) Build event
+            event: Dict[str, Any] = {
+                "schema_version": SCHEMA_VERSION,
+                "engine_version": ENGINE_VERSION,
+                "tipo_evento": "OrderBook",
+                "ativo": self.symbol,
+
+                "is_valid": True,
+                "should_skip": False,
+                "emergency_mode": False,
+
+                "descricao": descricao,
+                "resultado_da_batalha": resultado_da_batalha,
+
+                "imbalance": round(imbalance, 4),
+                "volume_ratio": round(ratio, 4) if ratio not in (None, float("inf")) else None,
+                "pressure": round(pressure, 4),
+
+                "spread_metrics": sm,
+                "alertas_liquidez": alertas,
+                "iceberg_reloaded": bool(iceberg),
+                "iceberg_score": iceberg_score,
+                "walls": {"bids": bid_walls[:3], "asks": ask_walls[:3]},
+
+                "market_impact_buy": mi["buy"],
+                "market_impact_sell": mi["sell"],
+
+                "top_n": self.top_n,
+                "ob_limit": self.ob_limit_fetch,
+
+                "timestamps": {
+                    "exchange_ms": ts_ms,
+                    "timestamp_ny": tindex.get("timestamp_ny"),
+                    "timestamp_utc": tindex.get("timestamp_utc"),
+                },
+
+                "source": {
+                    "exchange": "binance_futures",
+                    "endpoint": "fapi/v1/depth",
+                    "symbol": self.symbol,
+                },
+
+                "labels": {
+                    "dominant_label": resultado_da_batalha,
+                    "note": "Rótulo baseado no livro (estoque de liquidez).",
+                },
+
+                "order_book_depth": depth_summary,
+                "spread_analysis": spread_analysis,
+
+                "severity": "CRITICAL" if is_critical else "INFO",
+
+                "critical_flags": critical_flags,
+
+                "orderbook_data": {
+                    "mid": sm["mid"],
+                    "spread": sm["spread"],
+                    "spread_percent": sm["spread_percent"],
+                    "bid_depth_usd": bid_usd,
+                    "ask_depth_usd": ask_usd,
+                    "imbalance": round(imbalance, 4),
+                    "volume_ratio": round(ratio, 4) if ratio not in (None, float("inf")) else None,
+                    "pressure": round(pressure, 4),
+                },
+
+                "depth_metrics": snap.get("depth_metrics", {}),
+
+                "data_quality": {
+                    "is_valid": True,
+                    "data_source": data_source,
+                    "age_seconds": round(age_seconds, 2),
+                    "validation_passed": True,
+                    "validation_issues": [],
+                    "warnings": [],
+                    "emergency_mode": False,
+                },
+
+                "advanced_metrics": {
+                    "weighted_imbalance": round(float(weighted_imb), 6),
+                    "liquidity_concentration": {"bids": liq_bids, "asks": liq_asks},
+                    "microstructure": micro,
+                    "anomalies": anoms,
+                    "dynamic_thresholds": self.dynamic_thresholds,
+                },
+
+                "health_stats": self.get_stats(),
+            }
+
+            # 12) Update state + invariants + metrics export
+            self._update_internal_state(bids, asks, ts_ms)
+
+            if event.get("is_valid"):
+                self._validate_invariants(event)
+                event["invariants_checked"] = True
+
+            self._export_metrics_from_event(event)
+
+            # Logging estruturado + logging humano
+            try:
+                self.slog.info(
+                    "orderbook_event",
+                    window_id=window_id or "?",
+                    severity=event.get("severity"),
+                    data_source=event.get("data_quality", {}).get("data_source"),
+                    bid_depth_usd=float(bid_usd),
+                    ask_depth_usd=float(ask_usd),
+                    imbalance=float(imbalance),
+                    spread_bps=float(spread_bps) if spread_bps is not None else None,
+                    emergency_mode=False,
+                )
+            except Exception:
+                pass
+
+            logging.info(
+                f"📊 OrderBook OK - Janela #{window_id if window_id else '?'}: "
+                f"bid=${bid_usd:,.0f}, ask=${ask_usd:,.0f}"
+            )
+
+            return event
 
     # ===== VALIDATE INVARIANTS =====
     def _validate_invariants(self, ob_event: Dict[str, Any]) -> None:
@@ -1491,12 +2150,21 @@ class OrderBookAnalyzer:
         except Exception as e:
             logging.debug(f"Erro na validação de invariantes do OrderBook: {e}", exc_info=True)
 
-    # ===== HEALTH MONITORING =====
+    # ===== HEALTH MONITORING (PATCH A-03: requests_last_min mais fiel) =====
     def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas de performance e health."""
         error_rate = 100 * self._fetch_errors / max(1, self._total_fetches)
         validation_failure_rate = 100 * self._validation_failures / max(1, self._total_fetches)
         cache_hit_rate = 100 * self._cache_hits / max(1, self._total_fetches)
+
+        now_mono = time.monotonic()
+        
+        # PATCH A-03: Limpa deque antes de contar
+        while self._request_times_mono and (now_mono - self._request_times_mono[0] > 60.0):
+            self._request_times_mono.popleft()
+        
+        cache_age = now_mono - self._cache_timestamp_mono if self._cache_timestamp_mono > 0 else None
+        stale_age = now_mono - self._last_valid_timestamp_mono if self._last_valid_timestamp_mono > 0 else None
 
         return {
             "total_fetches": self._total_fetches,
@@ -1514,20 +2182,23 @@ class OrderBookAnalyzer:
             "has_cached_data": self._cached_snapshot is not None,
             "has_stale_data": self._last_valid_snapshot is not None,
 
-            "cache_age_seconds": round(time.time() - self._cache_timestamp, 2) if self._cache_timestamp > 0 else None,
-            "stale_age_seconds": round(time.time() - self._last_valid_timestamp, 2) if self._last_valid_timestamp > 0 else None,
+            "cache_age_seconds": round(cache_age, 2) if cache_age is not None else None,
+            "stale_age_seconds": round(stale_age, 2) if stale_age is not None else None,
 
-            "requests_last_min": len(self._request_times),
+            "requests_last_min": len(self._request_times_mono),
             "rate_limit_threshold": self.rate_limit_threshold,
+
+            "circuit_breaker": self._circuit_breaker.snapshot(),
 
             "config": {
                 "cache_ttl": self.cache_ttl_seconds,
                 "max_stale": self.max_stale_seconds,
-                "emergency_mode": ORDERBOOK_EMERGENCY_MODE,
-                "allow_partial": ORDERBOOK_ALLOW_PARTIAL,
-                "min_depth_usd": ORDERBOOK_MIN_DEPTH_USD,
+                "emergency_mode": self.cfg.emergency_mode,
+                "allow_partial": self.cfg.allow_partial,
+                "min_depth_usd": self.cfg.min_depth_usd,
                 "max_age_ms": ORDERBOOK_MAX_AGE_MS,
                 "config_loaded": CONFIG_LOADED,
+                "history_maxlen": self._history_maxlen,
             }
         }
 
@@ -1540,34 +2211,60 @@ class OrderBookAnalyzer:
         self._stale_data_uses = 0
         self._emergency_uses = 0
         self._old_data_rejected = 0
+        
+        # Reset circuit breaker by creating a new instance with same config
+        failure_threshold = getattr(self.cfg, 'circuit_breaker_failure_threshold', ORDERBOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD)
+        success_threshold = getattr(self.cfg, 'circuit_breaker_success_threshold', ORDERBOOK_CIRCUIT_BREAKER_SUCCESS_THRESHOLD)
+        timeout_seconds = getattr(self.cfg, 'circuit_breaker_timeout_seconds', ORDERBOOK_CIRCUIT_BREAKER_TIMEOUT_SECONDS)
+        half_open_max_calls = getattr(self.cfg, 'circuit_breaker_half_open_max_calls', ORDERBOOK_CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS)
+        
+        cb_config = CircuitBreakerConfig(
+            failure_threshold=failure_threshold,
+            success_threshold=success_threshold,
+            timeout_seconds=timeout_seconds,
+            half_open_max_calls=half_open_max_calls,
+        )
+        self._circuit_breaker = CircuitBreaker(name=f"orderbook_{self.symbol}", config=cb_config)
+        
         logging.info("📊 Estatísticas resetadas")
 
-    # ===== SHIMS DE COMPATIBILIDADE =====
+    # ===== SHIMS DE COMPATIBILIDADE (DEPRECATED) =====
+    async def _warn_deprecated_shim(self, shim_name: str) -> None:
+        """
+        Loga WARNING uma única vez por instância quando shims forem usados.
+        """
+        if not getattr(self, "_shims_deprecated_warned", False):
+            self._shims_deprecated_warned = True
+            logging.warning(
+                f"[DEPRECATED] Método '{shim_name}' será removido futuramente. "
+                f"Use 'await analyze(...)' em vez disso."
+            )
+
     async def analyze_order_book(self, *args, **kwargs) -> Dict[str, Any]:
+        """
+        DEPRECATED: use 'await analyze(...)' em vez disso.
+        Mantido apenas por compatibilidade.
+        """
+        await self._warn_deprecated_shim("analyze_order_book")
         return await self.analyze(*args, **kwargs)
 
     async def analyzeOrderBook(self, *args, **kwargs) -> Dict[str, Any]:
+        """
+        DEPRECATED: use 'await analyze(...)' em vez disso.
+        Mantido apenas por compatibilidade.
+        """
+        await self._warn_deprecated_shim("analyzeOrderBook")
         return await self.analyze(*args, **kwargs)
 
     async def analyze_orderbook(self, *args, **kwargs) -> Dict[str, Any]:
+        """
+        DEPRECATED: use 'await analyze(...)' em vez disso.
+        Mantido apenas por compatibilidade.
+        """
+        await self._warn_deprecated_shim("analyze_orderbook")
         return await self.analyze(*args, **kwargs)
 
-    # ===== DESTRUCTOR (OPCIONAL, CUIDADO COM EVENT LOOP) =====
-    def __del__(self):
-        """
-        Tenta fechar a sessão HTTP se ainda estiver aberta e se foi criada internamente.
-        Evita vazamento de conexões em cenários de GC, sem quebrar se não houver loop rodando.
-        """
-        try:
-            if self._owns_session and hasattr(self, "_session") and self._session and not self._session.closed:
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        loop.create_task(self._session.close())
-                except Exception:
-                    pass
-        except Exception:
-            pass
+
 
 
 # ===== TESTE =====
@@ -1582,9 +2279,7 @@ async def main_test():
     print("🧪 TESTE DE ORDERBOOK ANALYZER v2.2.0 (ASYNC, SESSÃO REUTILIZÁVEL + MELHORIAS)")
     print("=" * 80 + "\n")
 
-    oba = OrderBookAnalyzer(symbol="BTCUSDT")
-
-    try:
+    async with OrderBookAnalyzer(symbol="BTCUSDT") as oba:
         # Teste 1: Fetch normal
         print("📡 Teste 1: Fetch normal (async)...")
         evt = await oba.analyze()  # ✅ ASYNC
@@ -1598,6 +2293,10 @@ async def main_test():
         print(f" ✓ Ask Depth: ${evt.get('orderbook_data', {}).get('ask_depth_usd', 0):,.2f}")
         print(f" ✓ Imbalance: {evt.get('orderbook_data', {}).get('imbalance', 0):+.4f}")
         print(f" ✓ Data Source: {evt.get('data_quality', {}).get('data_source')}")
+        
+        # Novas métricas
+        print(f" ✓ Weighted Imbalance: {evt.get('advanced_metrics', {}).get('weighted_imbalance', 0):.6f}")
+        print(f" ✓ Anomalies: {evt.get('advanced_metrics', {}).get('anomalies', [])}")
 
         # Teste 2: Cache hit
         print("\n📦 Teste 2: Cache hit...")
@@ -1629,10 +2328,21 @@ async def main_test():
                     print(f"   - {k2}: {v2}")
             else:
                 print(f" • {key}: {val}")
+        
+        # Teste 5: Metrics integration
+        print("\n📈 Teste 5: Metrics Integration...")
+        print(f" • Metrics enabled: {oba.metrics.enabled}")
+        print(f" • Prometheus available: {oba.metrics.prom_available}")
+        print(f" • Metrics type: {type(oba.metrics.fetch_total).__name__}")
 
-    finally:
-        # Fecha sessão apenas se criada internamente
-        await oba.close()
+        # Teste 6: Circuit Breaker
+        print("\n🔌 Teste 6: Circuit Breaker Status...")
+        cb_snapshot = oba._circuit_breaker.snapshot()
+        print(f" • Circuit Breaker State: {cb_snapshot['state']}")
+        print(f" • Failure Count: {cb_snapshot['failure_count']}")
+        print(f" • Success Count: {cb_snapshot['success_count']}")
+        print(f" • Half Open Calls: {cb_snapshot['half_open_calls']}")
+        print(f" • Allow Request: {oba._circuit_breaker.allow_request()}")
 
     print("\n" + "=" * 80)
     print("✅ TESTES CONCLUÍDOS - ORDERBOOK v2.2.0 ASYNC (SESSÃO REUTILIZÁVEL + MELHORIAS)")

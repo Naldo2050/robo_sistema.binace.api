@@ -281,6 +281,8 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                     historical_profile = event_data.get("historical_vp", {})
                     macro_ctx = event_data.get("market_context", {})
                     market_env = event_data.get("market_environment", {})
+                    # [PIVOTS] Extrai pivots do evento (vindos do ContextCollector)
+                    pivots = event_data.get("pivots", {})
                     ob_data = event_data.get("orderbook_data", {})
                     ml_feats = event_data.get("ml_features") or {}
 
@@ -312,6 +314,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                         orderbook_data=ob_data,
                         ml_features=ml_feats,
                         ml_prediction=ml_prediction,
+                        pivots=pivots, # [NEW ARGUMENT]
                     )
 
                     # Anexa ao evento original, sem mudar o formato que a IA já espera

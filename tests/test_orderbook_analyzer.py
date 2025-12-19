@@ -215,7 +215,7 @@ async def test_analyze_valid_flow(analyzer, valid_snapshot):
     
     # Verifica qualidade dos dados
     assert result["data_quality"]["validation_passed"] is True
-    assert result["data_quality"]["data_source"] == "live" # pois passamos current_snapshot
+    assert result["data_quality"]["data_source"] == "external" # pois passamos current_snapshot
 
 @pytest.mark.asyncio
 async def test_analyze_critical_flags(analyzer, mock_tm):
