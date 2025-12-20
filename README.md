@@ -2,6 +2,27 @@
 
 Um bot para análise de dados de mercado da Binance com suporte a análise de IA.
 
+## Arquitetura Geral
+
+A arquitetura completa do Enhanced Market Bot – incluindo:
+
+- fluxo do `main.py` até o `EnhancedMarketBot`,
+- gerenciador de conexão (`RobustConnectionManager`),
+- processamento de janelas (`window_processor` + `DataPipeline` + `FlowAnalyzer`),
+- módulo de OrderBook (`OrderBookAnalyzer` + wrapper),
+- camada de IA (quantitativa + generativa),
+- EventBus, EventSaver e HealthMonitor,
+
+está documentada em:
+
+- [`docs/architecture_overview.md`](docs/architecture_overview.md)
+
+Para detalhes específicos do evento de OrderBook (schema de saída) e
+como operar o módulo de OrderBook, veja também:
+
+- [`docs/orderbook_event_schema.md`](docs/orderbook_event_schema.md)
+- [`docs/orderbook_operational_guide.md`](docs/orderbook_operational_guide.md)
+
 ## Instalação
 
 Recomenda-se o uso de um ambiente virtual (como `venv` ou `conda`).
