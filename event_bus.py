@@ -25,6 +25,8 @@ from format_utils import (
     auto_format
 )
 
+from orderbook_core.structured_logging import StructuredLogger
+
 
 class EventBus:
     """
@@ -82,6 +84,9 @@ class EventBus:
         self._normalization_warnings = 0
         self._precision_loss_warnings = 0
         self._total_events_normalized = 0
+
+        # Logger estruturado
+        self._slog = StructuredLogger("event_bus", "EventBus")
         
         # Iniciar thread de processamento
         self.start()
@@ -514,6 +519,14 @@ class EventBus:
                 except Exception as e:
                     self._normalization_warnings += 1
                     self._logger.debug(f"⚠️ Erro ao normalizar evento {event_type}: {e}")
+                    try:
+                        self._slog.warning(
+                            "event_normalization_error",
+                            event_type=event_type,
+                            error=str(e),
+                        )
+                    except Exception:
+                        pass
             
             # Ignorar eventos duplicados
             if self._is_duplicate(event_data):
@@ -540,6 +553,13 @@ class EventBus:
                     time.sleep(0.01)  # Pequena pausa para reduzir uso de CPU
             except Exception as e:
                 self._logger.error(f"❌ Erro no processamento de eventos: {e}", exc_info=True)
+                try:
+                    self._slog.error(
+                        "event_bus_process_error",
+                        error=str(e),
+                    )
+                except Exception:
+                    pass
 
     def _dispatch(self, event_type: str, event_data: Dict):
         """Envia evento para todos os handlers registrados"""
@@ -559,6 +579,14 @@ class EventBus:
             self._thread = threading.Thread(target=self._process_queue, daemon=True)
             self._thread.start()
             self._logger.info("✅ EventBus v2.1.2 iniciado (validação inteligente)")
+            try:
+                self._slog.info(
+                    "event_bus_started",
+                    max_queue_size=self._queue.maxlen,
+                    dedup_window=self._dedup_window,
+                )
+            except Exception:
+                pass
 
     def shutdown(self):
         """Para thread de processamento."""
@@ -566,6 +594,10 @@ class EventBus:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
         self._logger.info("🔄 EventBus desligado")
+        try:
+            self._slog.info("event_bus_shutdown")
+        except Exception:
+            pass
 
     def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do EventBus"""

@@ -283,6 +283,12 @@ class FlowAnalyzer(IFlowAnalyzer):
         self.perf_monitor = PerformanceMonitor()
         self._processing_times: deque = deque(maxlen=1000)
         
+        # === OTIMIZAÇÕES PARA LATÊNCIA ===
+        self._fast_path_enabled = True  # Ativa path otimizado para trades simples
+        self._complex_analysis_threshold = 10  # Só faz análise complexa se > 10 trades
+        self._last_complex_analysis = 0
+        self._complex_analysis_interval = 1000  # ms entre análises complexas
+        
         # === CIRCUIT BREAKER ===
         self._circuit_breaker = CircuitBreaker()
         
@@ -569,8 +575,13 @@ class FlowAnalyzer(IFlowAnalyzer):
             self._processing_times.append(duration)
             self.perf_monitor.record(duration)
             
-            if self.log_perf and duration > 10.0:
+            # Log apenas se muito lento (aumentado threshold para reduzir overhead)
+            if self.log_perf and duration > 20.0:
                 logging.warning("⚠️ process_trade lento: %.2fms", duration)
+            
+            # Alerta de latência crítica (> 50ms)
+            if duration > 50.0:
+                logging.error("🚨 LATÊNCIA CRÍTICA: process_trade took %.2fms", duration)
             
             # Heatmap fora do lock
             if heatmap_payload and self.liquidity_heatmap:

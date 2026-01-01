@@ -11,9 +11,10 @@ trocando `self` por `bot`.
 Nenhuma lógica foi alterada.
 """
 
+import asyncio
 import logging
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import config
@@ -23,6 +24,97 @@ from data_pipeline import DataPipeline
 from data_handler import create_absorption_event, create_exhaustion_event
 from orderbook_core.structured_logging import StructuredLogger
 from orderbook_core.tracing_utils import TracerWrapper
+
+
+class WindowProcessor:
+    """
+    Processador de janelas para o EnhancedMarketBot.
+    
+    Gerencia o processamento de janelas de tempo e mantém um ticker
+    interno para processamento periódico.
+    """
+    
+    def __init__(
+        self,
+        symbol: str,
+        windows_minutes: List[int],
+        event_bus: Any,
+        time_manager: Any,
+        logger: Optional[logging.Logger] = None
+    ):
+        self.symbol = symbol
+        self.windows_minutes = windows_minutes
+        self.event_bus = event_bus
+        self.time_manager = time_manager
+        self.logger = logger or logging.getLogger(__name__)
+        
+        self._running = False
+        self._task: Optional[asyncio.Task] = None
+        self._ticker_task: Optional[asyncio.Task] = None
+        
+        self.window_count = 0
+        self._shutdown_event = asyncio.Event()
+        
+    async def start(self) -> None:
+        """Inicia o WindowProcessor criando tarefas internas."""
+        if self._running:
+            self.logger.warning("WindowProcessor já está rodando")
+            return
+            
+        self._running = True
+        self._shutdown_event.clear()
+        
+        # Cria tarefa para processamento de janelas
+        self._task = asyncio.create_task(self._run())
+        
+        # Cria ticker para processamento periódico (se necessário)
+        self._ticker_task = asyncio.create_task(self._ticker())
+        
+        self.logger.info(f"✅ WindowProcessor iniciado para {self.symbol} com janelas={self.windows_minutes}")
+        
+    async def stop(self) -> None:
+        """Para o WindowProcessor e cancela todas as tarefas."""
+        if not self._running:
+            return
+            
+        self.logger.info("🛑 Parando WindowProcessor...")
+        
+        self._running = False
+        self._shutdown_event.set()
+        
+        # Cancela tarefas
+        tasks = [self._task, self._ticker_task]
+        for task in tasks:
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        
+        self.logger.info("✅ WindowProcessor parado")
+        
+    async def _run(self) -> None:
+        """Loop principal do processador de janelas."""
+        try:
+            while self._running:
+                await asyncio.sleep(1.0)  # Check every second
+                # Aqui seria implementado o processamento periódico se necessário
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.error(f"Erro no loop do WindowProcessor: {e}")
+            
+    async def _ticker(self) -> None:
+        """Ticker para processamento periódico."""
+        try:
+            while self._running:
+                await asyncio.sleep(60.0)  # Check every minute
+                # Aqui seria implementado o processamento periódico se necessário
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.error(f"Erro no ticker do WindowProcessor: {e}")
 
 
 def process_window(bot) -> None:

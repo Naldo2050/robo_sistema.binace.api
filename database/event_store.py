@@ -24,7 +24,12 @@ class EventStore:
         Args:
             db_path: Caminho para o arquivo do banco de dados.
         """
-        self.db_path = Path(db_path)
+        # Usa caminho absoluto para evitar problemas se o processo mudar o cwd
+        # (sqlite3.resolve caminhos relativos no momento do connect).
+        try:
+            self.db_path = Path(db_path).expanduser().resolve()
+        except Exception:
+            self.db_path = Path(db_path)
         self.logger = logging.getLogger(__name__)
 
         # Garante que o diretório existe
@@ -116,17 +121,36 @@ class EventStore:
         if not data:
             return
 
+        insert_sql = """
+            INSERT INTO events (
+                timestamp_ms, event_type, symbol, window_id, is_signal, payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """
+
         try:
             with self._get_conn() as conn:
-                conn.executemany(
-                    """
-                    INSERT INTO events (
-                        timestamp_ms, event_type, symbol, window_id, is_signal, payload
+                conn.executemany(insert_sql, data)
+        except sqlite3.OperationalError as e:
+            # Auto-recuperação: se a tabela ainda não existe por qualquer motivo,
+            # recria o schema e tenta 1 vez.
+            msg = str(e).lower()
+            if "no such table" in msg and "events" in msg:
+                try:
+                    self.logger.warning(
+                        "Tabela 'events' ausente no SQLite; recriando schema e tentando novamente..."
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    data,
-                )
+                    self._init_db()
+                    with self._get_conn() as conn:
+                        conn.executemany(insert_sql, data)
+                    return
+                except Exception as e2:
+                    self.logger.error(
+                        f"Erro ao recriar schema do SQLite e regravar batch ({len(data)} eventos): {e2}"
+                    )
+            self.logger.error(
+                f"Erro ao gravar batch no SQLite ({len(data)} eventos): {e}"
+            )
         except Exception as e:
             self.logger.error(f"Erro ao gravar batch no SQLite ({len(data)} eventos): {e}")
 

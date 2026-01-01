@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any
 import time
 import threading
 import logging
+import random
 
 
 class CircuitState(Enum):
@@ -21,6 +22,10 @@ class CircuitBreakerConfig:
     success_threshold: int = 2          # sucessos no HALF_OPEN para fechar
     timeout_seconds: float = 30.0       # tempo em OPEN antes de ir para HALF_OPEN
     half_open_max_calls: int = 3        # máximo de tentativas no HALF_OPEN
+    fallback_enabled: bool = True       # habilita fallback para REST API
+    max_retry_attempts: int = 3         # máximo de tentativas de retry
+    base_retry_delay: float = 1.0       # delay base para retry
+    max_retry_delay: float = 10.0       # delay máximo para retry
 
 
 class CircuitBreaker:
@@ -147,4 +152,37 @@ class CircuitBreaker:
                 "failure_threshold": self.config.failure_threshold,
                 "success_threshold": self.config.success_threshold,
                 "half_open_max_calls": self.config.half_open_max_calls,
+                "fallback_enabled": self.config.fallback_enabled,
+                "max_retry_attempts": self.config.max_retry_attempts,
             }
+
+    def _calculate_retry_delay(self, attempt: int) -> float:
+        """
+        Calcula delay com backoff exponencial e jitter para evitar thundering herd.
+        
+        Args:
+            attempt: Número da tentativa (0-indexed)
+            
+        Returns:
+            Delay em segundos com jitter
+        """
+        delay = min(
+            self.config.max_retry_delay,
+            self.config.base_retry_delay * (2 ** attempt)
+        )
+        jitter = random.uniform(0, delay * 0.25)
+        return delay + jitter
+
+    def should_fallback_to_rest(self) -> bool:
+        """
+        Determina se deve usar fallback para REST API quando WebSocket falhar.
+        
+        Returns:
+            True se deve usar fallback, False caso contrário
+        """
+        with self._lock:
+            return (
+                self.config.fallback_enabled and
+                self._state == CircuitState.OPEN and
+                self._failure_count >= self.config.failure_threshold
+            )

@@ -24,6 +24,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Union, Tuple
 import re
 
+# ===== CONFIG (opcional) =====
+try:
+    import config
+except Exception:
+    config = None
+
 # ===== IMPORT DO NOVO BACKEND SQLITE =====
 try:
     from database.event_store import EventStore
@@ -59,10 +65,11 @@ except ImportError:
     HAS_CLOCK_SYNC = False
     _clock_sync_instance = None
 
-# ===== CONFIGURAÇÕES =====
-MAX_BUFFER_SIZE = 10000  # Limite máximo de eventos no buffer
+# ===== CONFIGURACOES =====
+MAX_BUFFER_SIZE = 10000  # Limite maximo de eventos no buffer
+MAX_JSON_FILE_SIZE = 50 * 1024 * 1024  # 50MB maximo por snapshot
 CLEANUP_INTERVAL = 300  # Limpa cache a cada 5 min
-SEEN_BLOCK_TTL = 3600  # Mantém seen_in_block por 1h
+SEEN_BLOCK_TTL = 3600  # Mantem seen_in_block por 1h
 
 # ===== REGEX PRÉ-COMPILADOS =====
 NUMBER_PATTERN = re.compile(r'^[\d\.\-]+$')
@@ -337,6 +344,41 @@ class EventSaver:
     def __init__(self, sound_alert: bool = True):
         self.sound_alert = sound_alert
         self.visual_log_file = DATA_DIR / "eventos_visuais.log"
+        json_file_name = "eventos-fluxo.json"
+        jsonl_file_name = "eventos_fluxo.jsonl"
+        if config is not None:
+            json_file_name = getattr(
+                config, "EVENT_SAVER_JSON_FILE", json_file_name
+            )
+            jsonl_file_name = getattr(
+                config, "EVENT_SAVER_JSONL_FILE", jsonl_file_name
+            )
+        self.snapshot_file = DATA_DIR / json_file_name
+        self.history_file = DATA_DIR / jsonl_file_name
+        self.write_json = True
+        self.write_jsonl = True
+        self.max_json_events = 1000
+        self.max_json_file_size = MAX_JSON_FILE_SIZE
+        if config is not None:
+            self.write_json = bool(
+                getattr(config, "EVENT_SAVER_WRITE_JSON", True)
+            )
+            self.write_jsonl = bool(
+                getattr(config, "EVENT_SAVER_WRITE_JSONL", True)
+            )
+            try:
+                self.max_json_events = int(
+                    getattr(config, "EVENT_SAVER_MAX_JSON_EVENTS", 1000)
+                )
+            except Exception:
+                self.max_json_events = 1000
+            try:
+                max_mb = float(
+                    getattr(config, "EVENT_SAVER_MAX_JSON_MB", 50)
+                )
+                self.max_json_file_size = int(max_mb * 1024 * 1024)
+            except Exception:
+                self.max_json_file_size = MAX_JSON_FILE_SIZE
         self.last_window_id = None  # compat legada
         self.time_manager = TimeManager()
         self._window_counter = 0   # pode ser usado por código legado sem janela_numero
@@ -715,10 +757,159 @@ class EventSaver:
                     cleaned[key] = value
 
             return cleaned
-            
+
         except Exception as e:
             self.logger.error(f"Erro ao limpar dados: {e}")
             return event
+
+    def _save_to_json(self, event: Dict) -> None:
+        """Salva evento em arquivo JSON (snapshot) com lock e retry."""
+        if not self.write_json:
+            return
+
+        max_retries = 3
+        retry_delay = 0.5
+
+        for attempt in range(max_retries):
+            lock_file = None
+            lock_acquired = False
+            lock_file_path = None
+
+            try:
+                if self.snapshot_file.exists():
+                    file_size = self.snapshot_file.stat().st_size
+                    if file_size > self.max_json_file_size:
+                        self.logger.warning(
+                            "Snapshot JSON grande (%.1fMB), rotacionando.",
+                            file_size / 1024 / 1024,
+                        )
+                        backup = self.snapshot_file.with_suffix(".backup")
+                        try:
+                            self.snapshot_file.replace(backup)
+                        except Exception:
+                            self.snapshot_file.rename(backup)
+                        events = []
+                    else:
+                        lock_file_path = self.snapshot_file.with_suffix(".lock")
+                        lock_file = open(lock_file_path, "w")
+                        lock_acquired = acquire_file_lock(
+                            lock_file, blocking=True, timeout=3.0
+                        )
+                        if not lock_acquired:
+                            self._lock_timeout_count += 1
+                            raise IOError("Lock timeout")
+
+                        try:
+                            with open(
+                                self.snapshot_file, "r", encoding="utf-8"
+                            ) as f:
+                                content = f.read().strip()
+                                events = json.loads(content) if content else []
+                        except (json.JSONDecodeError, OSError):
+                            events = []
+                else:
+                    events = []
+
+                events.append(event)
+                if len(events) > self.max_json_events:
+                    events = events[-self.max_json_events :]
+
+                temp_file = self.snapshot_file.with_suffix(".tmp")
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    json.dump(
+                        events, f, indent=2, ensure_ascii=False, default=str
+                    )
+
+                temp_file.replace(self.snapshot_file)
+
+                if lock_file and lock_acquired:
+                    release_file_lock(lock_file)
+                    lock_file.close()
+                    if lock_file_path:
+                        try:
+                            lock_file_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+
+                return
+
+            except Exception as e:
+                self.logger.error(
+                    "Erro ao salvar JSON (tentativa %d): %s",
+                    attempt + 1,
+                    e,
+                )
+
+                if lock_file:
+                    try:
+                        if lock_acquired:
+                            release_file_lock(lock_file)
+                        lock_file.close()
+                        if lock_file_path:
+                            lock_file_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (2 ** attempt))
+                else:
+                    self._save_fallback(event, "json")
+
+    def _save_to_jsonl(self, event: Dict) -> None:
+        """Salva evento em arquivo JSONL (historico) com retry."""
+        if not self.write_jsonl:
+            return
+
+        max_retries = 3
+        retry_delay = 0.5
+
+        for attempt in range(max_retries):
+            try:
+                with open(self.history_file, "a", encoding="utf-8") as f:
+                    json_line = json.dumps(
+                        event, ensure_ascii=False, default=str
+                    )
+                    f.write(json_line + "\n")
+                    f.flush()
+                return
+            except Exception as e:
+                self.logger.error(
+                    "Erro ao salvar JSONL (tentativa %d): %s",
+                    attempt + 1,
+                    e,
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (2 ** attempt))
+                else:
+                    self._save_fallback(event, "jsonl")
+
+    def _save_fallback(self, event: Dict, format_type: str) -> None:
+        """Salva evento em fallback_events quando JSON falha."""
+        try:
+            fallback_dir = Path("fallback_events")
+            fallback_dir.mkdir(exist_ok=True)
+
+            stamp = datetime.now().strftime("%Y%m%d")
+            suffix = "jsonl" if format_type == "jsonl" else "json"
+            fallback_file = fallback_dir / f"eventos_{stamp}.{suffix}"
+
+            with open(fallback_file, "a", encoding="utf-8") as f:
+                if format_type == "jsonl":
+                    f.write(
+                        json.dumps(
+                            event, ensure_ascii=False, default=str
+                        )
+                        + "\n"
+                    )
+                else:
+                    f.write(
+                        json.dumps(
+                            event, ensure_ascii=False, default=str
+                        )
+                        + "\n"
+                    )
+        except Exception as e:
+            self.logger.error(f"Falha ao salvar fallback: {e}")
 
     def _flush_loop(self):
         """Thread que periodicamente esvazia o buffer."""
@@ -741,20 +932,27 @@ class EventSaver:
             except Exception as e:
                 self.logger.error(f"Erro ao salvar batch no SQLite: {e}")
 
-        # 2. Escrita no Log Visual (Debug)
+        # 2. Escrita no Log Visual (Debug) + JSONs (snapshot/historico)
         for event in events:
             try:
-                # Adiciona separador ANTES de processar evento, se necessário
+                # Adiciona separador ANTES de processar evento, se necessario
                 if event.get("_needs_separator"):
                     self._add_visual_separator(event)
                     event.pop("_needs_separator", None)
-                
+
                 cleaned_event = self._clean_event_data(event)
                 if cleaned_event:
-                    # 🆕 Injeta ID no log visual para facilitar grep
+                    if self.write_json:
+                        self._save_to_json(cleaned_event)
+                    if self.write_jsonl:
+                        self._save_to_jsonl(cleaned_event)
+
+                    log_event = cleaned_event
+                    # Injeta ID no log visual para facilitar grep
                     if "event_id" in event:
-                         cleaned_event["_log_id"] = event["event_id"]
-                    self._add_visual_log_entry(cleaned_event)
+                        log_event = dict(cleaned_event)
+                        log_event["_log_id"] = event["event_id"]
+                    self._add_visual_log_entry(log_event)
             except Exception as e:
                 self.logger.error(f"Erro ao processar evento no flush visual: {e}")
 
@@ -767,6 +965,39 @@ class EventSaver:
             return
 
         try:
+            # ==== NORMALIZAÇÃO: janela_numero ====
+            # Alguns eventos chegam com a janela apenas dentro de "raw_event".
+            # Promove para o top-level para permitir:
+            # - separador por janela no log visual
+            # - cabeçalho "JANELA: X" no eventos_visuais.log
+            if "janela_numero" not in event:
+                raw_event = event.get("raw_event")
+                janela_candidate = None
+                if isinstance(raw_event, dict):
+                    janela_candidate = raw_event.get("janela_numero")
+                    if janela_candidate is None:
+                        janela_candidate = raw_event.get("window_count")
+                    if janela_candidate is None:
+                        janela_candidate = raw_event.get("window_id")
+                if janela_candidate is None:
+                    janela_candidate = event.get("window_count")
+                if janela_candidate is None:
+                    janela_candidate = event.get("window_id")
+
+                janela_num = None
+                try:
+                    if isinstance(janela_candidate, str):
+                        m = re.search(r"(\d+)", janela_candidate)
+                        if m:
+                            janela_num = int(m.group(1))
+                    elif isinstance(janela_candidate, (int, float)):
+                        janela_num = int(janela_candidate)
+                except Exception:
+                    janela_num = None
+
+                if janela_num and janela_num > 0:
+                    event["janela_numero"] = janela_num
+
             # ==== TIMESTAMPS / CLOCK SYNC ====
             epoch_ms = event.get("epoch_ms")
             timestamp_str = event.get("timestamp")
@@ -879,6 +1110,42 @@ class EventSaver:
             if janela_num in self._janelas_processadas:
                 return
             self._janelas_processadas.add(janela_num)
+
+        # Cabeçalho simples por janela (pedido: identificar no início de cada janela)
+        # Mantemos o lock de arquivo já existente para evitar escrita concorrente.
+        try:
+            window_num = int(janela_num)
+        except Exception:
+            window_num = None
+        if window_num and window_num > 0:
+            separator = "\n" + ("-" * 100) + "\n" + f" # Janela {window_num}\n"
+            lock_file = None
+            lock_acquired = False
+            lock_file_path = self.visual_log_file.with_suffix(".lock")
+            try:
+                lock_file = open(lock_file_path, "w")
+                lock_acquired = acquire_file_lock(
+                    lock_file, blocking=True, timeout=10.0
+                )
+                if lock_acquired:
+                    with open(self.visual_log_file, "a", encoding="utf-8") as f:
+                        f.write(separator)
+                        f.flush()
+            except Exception as e:
+                self.logger.error(f"Erro ao escrever separador: {e}")
+            finally:
+                if lock_file:
+                    try:
+                        if lock_acquired:
+                            release_file_lock(lock_file)
+                    except Exception:
+                        pass
+                    lock_file.close()
+                    try:
+                        lock_file_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            return
 
         try:
             epoch_ms = event.get("epoch_ms") or event.get("window_close_ms")
@@ -1022,6 +1289,20 @@ class EventSaver:
             tipo = event.get("tipo_evento", event.get("type", "GENÉRICO"))
             symbol = event.get("symbol") or event.get("par") or event.get("ativo") or ""
             janela = event.get("janela_numero")
+            if janela is None:
+                raw_event = event.get("raw_event")
+                if isinstance(raw_event, dict):
+                    janela = (
+                        raw_event.get("janela_numero")
+                        or raw_event.get("window_count")
+                        or raw_event.get("window_id")
+                    )
+                if isinstance(janela, str):
+                    try:
+                        m = re.search(r"(\d+)", janela)
+                        janela = int(m.group(1)) if m else None
+                    except Exception:
+                        janela = None
 
             header_lines = ["-" * 100]
             title_parts = [f"EVENTO: {tipo}"]

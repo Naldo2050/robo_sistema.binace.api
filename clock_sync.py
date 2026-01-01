@@ -61,6 +61,14 @@ class ClockSync:
 
     def _sync_loop(self):
         """Loop de sincronização periódica."""
+        # ✅ Sincronização inicial imediata
+        offset = self._fetch_server_time()
+        if offset is not None:
+            self._offset_sec = offset
+            self._is_synced = True
+            self._last_sync = time.time()
+            self.logger.info(f"[ClockSync] Sincronização inicial concluída. Offset: {offset:+.3f}s")
+
         while not self._stop_event.wait(_SYNC_INTERVAL):
             offset = self._fetch_server_time()
             if offset is not None:

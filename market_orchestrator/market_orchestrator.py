@@ -24,14 +24,11 @@ from typing import Any, Dict, Optional, List
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import config
+from trade_buffer import AsyncTradeBuffer, BufferStatus
 
 # ====== Clock Sync (opcional) ======
-try:
-    from clock_sync import get_clock_sync
-    HAS_CLOCK_SYNC = True
-except ImportError:
-    HAS_CLOCK_SYNC = False
-    logging.warning("⚠️ clock_sync.py não encontrado - timestamps usarão relógio local")
+# REMOVIDO: ClockSync duplicado - TimeManager já faz sincronização robusta com Binance
+# Isso evita conflitos entre dois sistemas de sincronização de tempo
 
 # ====== Utilitários de formatação ======
 from format_utils import (
@@ -97,7 +94,7 @@ from .connection.robust_connection import RobustConnectionManager, RateLimiter
 from .flow.trade_flow_analyzer import TradeFlowAnalyzer
 from .orderbook.orderbook_wrapper import fetch_orderbook_with_retry
 from .ai.ai_runner import initialize_ai_async, run_ai_analysis_threaded
-from .windows.window_processor import process_window
+from .windows import WindowProcessor, process_window
 from .signals.signal_processor import process_signals
 
 # Ativa filtro anti-eco global
@@ -136,21 +133,31 @@ class EnhancedMarketBot:
         self.warmup_windows_remaining = 0
         self.warmup_windows_required = getattr(config, "WARMUP_WINDOWS", 3)
 
-        self.trades_buffer: deque[Dict[str, Any]] = deque(
-            maxlen=getattr(config, "TRADES_BUFFER_SIZE", 2000)
+        # Buffer assíncrono de trades com backpressure
+        self.trades_buffer = AsyncTradeBuffer(
+            max_size=getattr(config, "TRADES_BUFFER_SIZE", 2000),
+            backpressure_threshold=getattr(
+                config, "TRADES_BUFFER_BACKPRESSURE", 0.8
+            ),
+            processing_batch_size=getattr(
+                config, "TRADES_BUFFER_BATCH_SIZE", 50
+            ),
+            processing_interval_ms=getattr(
+                config, "TRADES_BUFFER_PROCESSING_INTERVAL_MS", 10
+            ),
+            max_processing_time_ms=getattr(
+                config, "TRADES_BUFFER_MAX_PROCESSING_MS", 200.0
+            ),
+            warning_callback=self._on_buffer_warning
         )
         self.min_trades_for_pipeline = getattr(
             config, "MIN_TRADES_FOR_PIPELINE", 10
         )
 
-        # Clock Sync
-        self.clock_sync = None
-        if HAS_CLOCK_SYNC:
-            try:
-                self.clock_sync = get_clock_sync()
-                logging.info("✅ Clock Sync inicializado")
-            except Exception as e:
-                logging.error(f"❌ Erro ao inicializar Clock Sync: {e}")
+        self._loop = None
+        self._initialized = False
+
+        # REMOVIDO: ClockSync duplicado - TimeManager é suficiente
 
         self.time_manager = TimeManager()
 
@@ -229,6 +236,15 @@ class EnhancedMarketBot:
 
         # Inicializa IA em background (mesma lógica do original)
         initialize_ai_async(self)
+        
+        # Guardar referência da task do buffer
+        self._buffer_task = None
+
+        # ====== WindowProcessor ======
+        self.window_processor = None
+        self._window_task = None
+        self._window_watchdog_task = None
+        self._trade_count = 0
 
         # EventBus → IA
         self.event_bus.subscribe("signal", self._handle_signal_event)
@@ -344,6 +360,26 @@ class EnhancedMarketBot:
         )
 
     # ========================================
+    # CALLBACK DO BUFFER DE TRADES
+    # ========================================
+    def _on_buffer_warning(self, status: BufferStatus, buffer_size: int) -> None:
+        """Callback para alertas do buffer de trades."""
+        if status == BufferStatus.CRITICAL:
+            logging.warning(
+                f"🚨 Buffer de trades CRÍTICO: {buffer_size} trades no buffer"
+            )
+            self.health_monitor.heartbeat("buffer_critical")
+        elif status == BufferStatus.OVERFLOW:
+            logging.error(
+                f"💀 Buffer de trades em OVERFLOW: {buffer_size} trades"
+            )
+            self.health_monitor.heartbeat("buffer_overflow")
+        elif status == BufferStatus.WARNING:
+            logging.info(
+                f"⚠️ Buffer de trades.warning: {buffer_size} trades"
+            )
+    
+    # ========================================
     # GERENCIAMENTO DE THREADS DE IA
     # ========================================
     def _wait_for_ai_threads(self, timeout_per_thread: float = 2.0) -> None:
@@ -370,6 +406,15 @@ class EnhancedMarketBot:
 
         logging.info("🧹 Iniciando limpeza dos recursos...")
         self.should_stop = True
+
+        # Se o loop principal do bot estiver ativo, agenda o shutdown assíncrono
+        # (evita warnings de corotina não aguardada e 'Event loop is closed' no exit).
+        try:
+            if self._loop is not None and not self._loop.is_closed():
+                asyncio.run_coroutine_threadsafe(self.shutdown(), self._loop)
+                return
+        except Exception:
+            pass
 
         # Aguarda término das threads de IA
         try:
@@ -418,12 +463,7 @@ class EnhancedMarketBot:
         except Exception as e:
             logging.error(f"❌ Erro ao parar Health Monitor: {e}")
 
-        try:
-            if self.clock_sync and hasattr(self.clock_sync, "stop"):
-                self.clock_sync.stop()
-                logging.info("✅ Clock Sync parado.")
-        except Exception as e:
-            logging.error(f"❌ Erro ao parar Clock Sync: {e}")
+        # REMOVIDO: ClockSync não é mais usado
 
         try:
             if hasattr(self, "_async_executor"):
@@ -476,6 +516,8 @@ class EnhancedMarketBot:
                 self.feature_store.close()
         except Exception as e:
             logging.warning(f"Falha ao fechar FeatureStore: {e}")
+        
+        # WindowProcessor e trades_buffer devem ser finalizados via shutdown() (async).
 
         logging.info("✅ Bot encerrado com segurança.")
 
@@ -675,15 +717,21 @@ class EnhancedMarketBot:
 
             norm = {"p": p, "q": q, "T": T, "m": bool(m)}
 
-            self.trades_buffer.append(norm)
+            # Adiciona trade ao buffer assíncrono
+            def process_trade_sync(trade):
+                # Envia trade para FlowAnalyzer
+                self.flow_analyzer.process_trade(trade)
+            
+            # Adiciona ao buffer com controle de backpressure (versão thread-safe)
+            success = self.trades_buffer.add_trade_sync(norm, process_trade_sync)
+            
+            if not success:
+                logging.warning(f"⚠️ Trade descartado por buffer overflow")
 
             try:
                 self.health_monitor.heartbeat("main")
             except Exception:
                 pass
-
-            # Envia trade para FlowAnalyzer
-            self.flow_analyzer.process_trade(norm)
 
             # 8) Controle de janelas
             if self.window_end_ms is None:
@@ -1011,15 +1059,34 @@ class EnhancedMarketBot:
         if "epoch_ms" not in signal:
             signal["epoch_ms"] = close_ms
 
-        if "timestamp_utc" not in signal:
-            signal["timestamp_utc"] = self.time_manager.from_timestamp_ms(
-                close_ms, tz=self.time_manager.tz_utc
-            ).isoformat(timespec="milliseconds")
+        dt_utc = self.time_manager.from_timestamp_ms(close_ms, tz=self.time_manager.tz_utc)
+        dt_ny = self.time_manager.from_timestamp_ms(close_ms, tz=self.ny_tz)
 
-        if "timestamp" not in signal:
-            signal["timestamp"] = self.time_manager.from_timestamp_ms(
-                close_ms, tz=self.ny_tz
-            ).strftime("%Y-%m-%d %H:%M:%S")
+        # Normaliza timestamps para evitar correções automáticas do DataValidator
+        # (ele adiciona 'Z' quando o campo 'timestamp' não tem timezone explícito).
+        ts_utc = signal.get("timestamp_utc")
+        if not isinstance(ts_utc, str) or not ts_utc.strip():
+            signal["timestamp_utc"] = dt_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        else:
+            ts_utc_clean = ts_utc.strip()
+            if ts_utc_clean.endswith("+00:00"):
+                signal["timestamp_utc"] = ts_utc_clean.replace("+00:00", "Z")
+            else:
+                has_tz = ts_utc_clean.endswith("Z") or ("+" in ts_utc_clean[-6:] or "-" in ts_utc_clean[-6:])
+                if not has_tz:
+                    signal["timestamp_utc"] = dt_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+        ts_local = signal.get("timestamp")
+        if not isinstance(ts_local, str) or not ts_local.strip():
+            signal["timestamp"] = dt_ny.isoformat(sep=" ", timespec="seconds")
+        else:
+            ts_local_clean = ts_local.strip()
+            if ts_local_clean.endswith("+00:00") or "+00:00" in ts_local_clean:
+                signal["timestamp"] = ts_local_clean.replace("+00:00", "Z")
+            else:
+                has_tz = ts_local_clean.endswith("Z") or ("+" in ts_local_clean[-6:] or "-" in ts_local_clean[-6:])
+                if not has_tz:
+                    signal["timestamp"] = dt_ny.isoformat(sep=" ", timespec="seconds")
 
         validated_signal = validator.validate_and_clean(signal)
         if not validated_signal:
@@ -1521,11 +1588,23 @@ class EnhancedMarketBot:
                 if self.last_valid_vp_time > 0
                 else float("inf")
             )
+            
+            # Métricas do buffer de trades
+            buffer_metrics = self.trades_buffer.get_stats()
+            buffer_info = buffer_metrics.get('buffer', {})
+            processing_info = buffer_metrics.get('processing', {})
+            
             logging.info(
                 f"\n📊 HEALTH CHECK - Janela #{self.window_count}:\n"
                 f"  Orderbook: failures={self.orderbook_fetch_failures}, "
                 f"last_valid={last_ob_age:.0f}s ago\n"
-                f"  Value Area: last_valid={last_vp_age:.0f}s ago"
+                f"  Value Area: last_valid={last_vp_age:.0f}s ago\n"
+                f"  Trade Buffer: size={buffer_info.get('current_size', 0)}/"
+                f"{buffer_info.get('capacity', 0)} "
+                f"({buffer_info.get('fill_ratio', 0)*100:.1f}%) "
+                f"status={buffer_info.get('status', 'unknown')}\n"
+                f"  Processing: {processing_info.get('trades_per_second', 0):.1f} "
+                f"trades/s, avg={processing_info.get('avg_time_ms', 0):.2f}ms"
             )
 
     def _log_window_summary(
@@ -1728,6 +1807,183 @@ class EnhancedMarketBot:
             self._process_window()
 
     # ========================================
+    # INITIALIZE (assíncrona)
+    # ========================================
+    async def initialize(self) -> None:
+        """
+        Inicialização assíncrona.
+        Deve ser chamada APÓS o event loop estar rodando (ex.: dentro do asyncio.run(main())).
+        """
+        if self._initialized:
+            return
+
+        import asyncio
+        self._loop = asyncio.get_running_loop()
+
+        # Inicia o buffer de trades com loop já ativo.
+        # O start() do AsyncTradeBuffer pode (internamente) criar tasks, mas agora isso é seguro.
+        if self.trades_buffer is not None:
+            await self.trades_buffer.start()
+
+        # Inicia o WindowProcessor
+        windows_min = [1, 5, 15]  # janelas desejadas
+        self.window_processor = WindowProcessor(
+            symbol=self.symbol,
+            windows_minutes=windows_min,
+            event_bus=self.event_bus,
+            time_manager=self.time_manager,
+            logger=logging.getLogger(__name__),
+        )
+        
+        await self.window_processor.start()
+        
+        logging.info("✅ WindowProcessor iniciado | windows=%s", windows_min)
+
+        self._initialized = True
+
+    # ========================================
+    # SHUTDOWN (assíncrono)
+    # ========================================
+    async def shutdown(self) -> None:
+        """Shutdown limpo (chamar com await, dentro do loop)."""
+        # Marcar cleanup iniciado para evitar handler duplicado (atexit/signal)
+        try:
+            with self._cleanup_lock:
+                self._cleanup_started.set()
+                self.is_cleaning_up = True
+        except Exception:
+            pass
+
+        self.should_stop = True
+
+        # 1) Para geradores de trabalho primeiro
+        try:
+            if self.connection_manager:
+                try:
+                    self.connection_manager.should_stop = True
+                except Exception:
+                    pass
+                try:
+                    await self.connection_manager.disconnect()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            if self.trades_buffer is not None:
+                await self.trades_buffer.stop()
+        except Exception as e:
+            logging.warning(f"Falha ao parar trade buffer: {e}")
+
+        try:
+            if self.window_processor:
+                await self.window_processor.stop()
+        except Exception as e:
+            logging.warning(f"Falha ao parar WindowProcessor: {e}")
+
+        # 2) Fecha IA (async) antes do loop encerrar
+        try:
+            if self.ai_analyzer is not None:
+                if hasattr(self.ai_analyzer, "aclose"):
+                    await self.ai_analyzer.aclose()
+                elif hasattr(self.ai_analyzer, "close"):
+                    self.ai_analyzer.close()
+        except Exception as e:
+            logging.warning(f"Falha ao fechar AI Analyzer: {e}")
+
+        # 3) Componentes síncronos
+        try:
+            if self.context_collector:
+                self.context_collector.stop()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "event_bus") and self.event_bus:
+                self.event_bus.shutdown()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "health_monitor") and self.health_monitor:
+                self.health_monitor.stop()
+        except Exception:
+            pass
+
+        try:
+            if (
+                hasattr(self, "event_saver")
+                and self.event_saver
+                and hasattr(self.event_saver, "stop")
+            ):
+                self.event_saver.stop()
+        except Exception:
+            pass
+
+        # 4) Encerrar loop asyncio dedicado do OrderBookAnalyzer + executor
+        try:
+            if (
+                hasattr(self, "orderbook_analyzer")
+                and self.orderbook_analyzer
+                and hasattr(self.orderbook_analyzer, "close")
+            ):
+                fut = asyncio.run_coroutine_threadsafe(
+                    self.orderbook_analyzer.close(),
+                    self._async_loop,
+                )
+                try:
+                    fut.result(timeout=2.0)
+                except Exception:
+                    try:
+                        fut.cancel()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "_async_loop"):
+                try:
+                    self._async_loop.call_soon_threadsafe(self._async_loop.stop)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, "_async_loop_thread"):
+                        self._async_loop_thread.join(timeout=2.0)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "_async_executor") and self._async_executor:
+                self._async_executor.shutdown(wait=True)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "feature_store") and self.feature_store is not None:
+                self.feature_store.close()
+        except Exception:
+            pass
+
+    def shutdown_sync(self):
+        """
+        Shutdown síncrono (somente se for chamado fora do event loop / em outra thread).
+        Retorna um Future do concurrent.futures.
+        """
+        import asyncio
+
+        if self._loop is None:
+            raise RuntimeError("Loop não definido: initialize() não foi executado")
+
+        if self.trades_buffer is None:
+            return None
+
+        return asyncio.run_coroutine_threadsafe(self.trades_buffer.stop(), self._loop)
+
+    # ========================================
     # RUN (versão assíncrona)
     # ========================================
     async def run(self) -> None:
@@ -1738,7 +1994,8 @@ class EnhancedMarketBot:
         """
         try:
             self.context_collector.start()
-
+            await self.initialize()
+            
             logging.info(
                 "🎯 Iniciando Enhanced Market Bot v2.3.2 "
                 "(modo assíncrono, refatorado em módulos)..."
@@ -1771,5 +2028,4 @@ class EnhancedMarketBot:
                     exc_info=True,
                 )
 
-            # Limpeza de todos os demais recursos (threads, IA, etc.)
-            self._cleanup_handler()
+            await self.shutdown()

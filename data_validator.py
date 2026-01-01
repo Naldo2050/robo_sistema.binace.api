@@ -179,6 +179,10 @@ class DataValidator:
         - Timestamps estão em range válido (2021-2038)
         - first_seen_ms <= last_seen_ms
         - age_ms >= 0
+        
+        IMPROVEMENTS v2.3.4:
+        - Lógica de validação mais inteligente
+        - Evita correções desnecessárias em timestamps válidos
         """
         try:
             # Valida timestamp principal
@@ -191,8 +195,14 @@ class DataValidator:
                         main_timestamp = data[field]
                     elif field in ['timestamp_utc', 'timestamp']:
                         try:
-                            ts_str = data[field].replace('Z', '+00:00')
-                            dt = datetime.fromisoformat(ts_str)
+                            ts_str = data[field]
+                            # Normaliza timezone antes de validar
+                            if '+00:00' in ts_str:
+                                ts_str = ts_str.replace('+00:00', 'Z')
+                                data[field] = ts_str  # Atualiza no data também
+                            
+                            # Só parse se não for um timestamp muito distante
+                            dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
                             main_timestamp = int(dt.timestamp() * 1000)
                         except Exception:
                             pass
@@ -366,9 +376,17 @@ class DataValidator:
         data = self._recalculate_poc_percentage(data)
         data = self._sanitize_session_time(data)
         
-        if 'timestamp' in data and data['timestamp'] and not data['timestamp'].endswith('Z'):
-            data['timestamp'] += 'Z'
-            self.corrections_count['timestamp'] += 1
+        if 'timestamp' in data and data['timestamp']:
+            ts = data['timestamp']
+            # Só adiciona 'Z' se não tiver timezone explícito
+            if not (ts.endswith('Z') or '+' in ts[-6:] or '-' in ts[-6:]):
+                data['timestamp'] += 'Z'
+                self.corrections_count['timestamp'] += 1
+            # Converte timezone +00:00 para Z para padronizar
+            elif '+00:00' in ts:
+                data['timestamp'] = ts.replace('+00:00', 'Z')
+                if data['timestamp'] != ts:
+                    self.corrections_count['timestamp'] += 1
             
         return data
 
@@ -498,12 +516,26 @@ class DataValidator:
         return data
 
     def _fix_year(self, data: Dict) -> Dict:
-        """Corrige anos futuros para o ano atual recursivamente."""
+        """
+        Corrige anos futuros para o ano atual APENAS em campos que não são timestamps.
+        
+        Evita corrigir timestamps que são válidos (ex: 2025 em timestamps é normal).
+        """
         corrections_made = False
+        timestamp_fields = {'timestamp', 'timestamp_utc', 'timestamp_ny', 'timestamp_sp', 
+                           'open_time', 'close_time', 'recent_timestamp', 
+                           'last_seen_ms', 'first_seen_ms'}
+        
         for key, value in data.items():
+            # Pula campos de timestamp - eles podem ter anos futuros legitimately
+            if key in timestamp_fields or key.endswith('_time') or key.endswith('_timestamp'):
+                continue
+                
             if isinstance(value, str) and "2025" in value:
-                data[key] = value.replace("2025", str(self.current_year))
-                corrections_made = True
+                # Verifica se não é um timestamp válido
+                if not any(tz_indicator in value for tz_indicator in ['T', 'Z', '+', '-']):
+                    data[key] = value.replace("2025", str(self.current_year))
+                    corrections_made = True
             elif isinstance(value, dict):
                 data[key] = self._fix_year(value)
             elif isinstance(value, list):
@@ -511,8 +543,11 @@ class DataValidator:
                     if isinstance(item, dict):
                         data[key][i] = self._fix_year(item)
                     elif isinstance(item, str) and "2025" in item:
-                        data[key][i] = item.replace("2025", str(self.current_year))
-                        corrections_made = True
+                        # Também verifica se não é um timestamp
+                        if not any(tz_indicator in item for tz_indicator in ['T', 'Z', '+', '-']):
+                            data[key][i] = item.replace("2025", str(self.current_year))
+                            corrections_made = True
+        
         if corrections_made:
             self.corrections_count['year'] += 1
         return data

@@ -4,6 +4,7 @@ import threading
 import logging
 
 from config import HEALTH_CHECK_TIMEOUT, HEALTH_CHECK_CRITICAL, HEALTH_CHECK_INTERVAL
+from orderbook_core.structured_logging import StructuredLogger
 
 # Tenta importar monitor OCI, falha graciosamente se não existir
 try:
@@ -34,6 +35,9 @@ class HealthMonitor:
         self.alerted_level: dict[str, str] = {}
         self._lock = threading.Lock()
         
+        # Logger estruturado
+        self.slog = StructuredLogger("health_monitor", "SYSTEM")
+        
         # OCI Monitoring
         self.oci_monitor = None
         if OCIMonitor:
@@ -54,6 +58,17 @@ class HealthMonitor:
             self.critical_silence,
         )
 
+        try:
+            self.slog.info(
+                "health_monitor_started",
+                warn_silence=self.warn_silence,
+                critical_silence=self.critical_silence,
+                check_interval=self.check_interval,
+                oci_enabled=bool(self.oci_monitor and getattr(self.oci_monitor, "enabled", False)),
+            )
+        except Exception:
+            pass
+
     def heartbeat(self, module_name: str):
         """Registra que um módulo está vivo."""
         now = time.time()
@@ -63,6 +78,13 @@ class HealthMonitor:
             # Se já tinha sido alertado, limpa o estado e loga recovery
             if module_name in self.alerted_level:
                 logging.info("💚 Módulo %s voltou ao normal.", module_name)
+                try:
+                    self.slog.info(
+                        "module_recovered",
+                        module=module_name,
+                    )
+                except Exception:
+                    pass
                 self.alerted_level.pop(module_name, None)
 
     def _monitor_loop(self):
@@ -88,6 +110,14 @@ class HealthMonitor:
                             silence,
                         )
                         self.alerted_level[module] = "critical"
+                        try:
+                            self.slog.error(
+                                "module_silence_critical",
+                                module=module,
+                                silence_seconds=float(silence),
+                            )
+                        except Exception:
+                            pass
 
                     elif silence >= self.warn_silence and level is None:
                         logging.warning(
@@ -96,6 +126,14 @@ class HealthMonitor:
                             silence,
                         )
                         self.alerted_level[module] = "warning"
+                        try:
+                            self.slog.warning(
+                                "module_silence_warning",
+                                module=module,
+                                silence_seconds=float(silence),
+                            )
+                        except Exception:
+                            pass
 
             # 2. Envio de Métricas OCI (se habilitado)
             if self.oci_monitor and self.oci_monitor.enabled:
@@ -141,3 +179,41 @@ class HealthMonitor:
         if self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=5)
         logging.info("🛑 HealthMonitor parado.")
+        try:
+            self.slog.info("health_monitor_stopped")
+        except Exception:
+            pass
+
+    def get_stats(self) -> dict:
+        """
+        Retorna um snapshot do estado atual de saúde dos módulos monitorados.
+        Útil para debug e exposição em health endpoints.
+        """
+        now = time.time()
+        with self._lock:
+            heartbeats = {
+                module: {
+                    "last_beat_ts": last,
+                    "silence_seconds": now - last,
+                    "alert_level": self.alerted_level.get(module),
+                }
+                for module, last in self.last_heartbeat.items()
+            }
+
+            critical_count = sum(
+                1 for lvl in self.alerted_level.values() if lvl == "critical"
+            )
+            warning_count = sum(
+                1 for lvl in self.alerted_level.values() if lvl == "warning"
+            )
+
+        return {
+            "warn_silence": self.warn_silence,
+            "critical_silence": self.critical_silence,
+            "check_interval": self.check_interval,
+            "monitored_modules": list(self.last_heartbeat.keys()),
+            "heartbeats": heartbeats,
+            "active_critical_alerts": critical_count,
+            "active_warning_alerts": warning_count,
+            "oci_enabled": bool(self.oci_monitor),
+        }

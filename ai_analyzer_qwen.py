@@ -1,4 +1,4 @@
-# ai_analyzer_qwen.py v2.4.0 - COM INTELIGÊNCIA QUANTITATIVA COMO BASE PRINCIPAL
+# ai_analyzer_qwen.py v2.4.0 + PATCH 2 - COM INTELIGÊNCIA QUANTITATIVA COMO BASE PRINCIPAL
 """
 AI Analyzer para eventos de mercado com validação de dados.
 
@@ -18,10 +18,10 @@ AI Analyzer para eventos de mercado com validação de dados.
   ✅ Cliente assíncrono AsyncOpenAI para Groq/OpenAI (usado internamente via asyncio.run)
 
 🔹 NOVIDADES v2.1.0:
-  ✅ Suporte completo ao GroqCloud (PRIORIDADE 1)
-  ✅ Fallback inteligente: Groq → OpenAI → DashScope → Mock
-  ✅ Validação automática de chave Groq
-  ✅ Logs detalhados de qual provedor está ativo
+   ✅ Suporte completo ao GroqCloud (PRIORIDADE 1)
+   ✅ Fallback inteligente: Groq → OpenAI → Mock (DashScope desabilitado)
+   ✅ Validação automática de chave Groq
+   ✅ Logs detalhados de qual provedor está ativo
 
 🔹 CORREÇÕES v2.0.2 (mantidas):
   ✅ Método analyze() adicionado para compatibilidade com main.py
@@ -37,6 +37,13 @@ AI Analyzer para eventos de mercado com validação de dados.
      - AIAnalyzer pode receber um HealthMonitor externo
      - Envia heartbeat("ai") a cada 30s enquanto ativo
      - Fecha a thread de heartbeat no close()
+
+🔹 PATCH 2 - IMPLEMENTADO:
+  ✅ Impede fallback automático para provider errado
+  ✅ Se provider=groq, tenta modelos alternativos da Groq apenas
+  ✅ Se nenhum modelo Groq funcionar, vai para MOCK (não OpenAI automaticamente)
+  ✅ Só troca para outro provider se explicitamente configurado em provider_fallbacks
+  ✅ Fallback automático DESABILITADO por padrão
 """
 
 import logging
@@ -45,6 +52,7 @@ import random
 import time
 import asyncio
 import threading
+import json
 from typing import Any, Dict, Optional, Literal, TYPE_CHECKING
 
 from dotenv import load_dotenv
@@ -109,6 +117,7 @@ except Exception:
     BaseModel = object  # type: ignore
 
 from time_manager import TimeManager
+from orderbook_core.structured_logging import StructuredLogger
 
 load_dotenv()
 
@@ -152,6 +161,7 @@ else:
 # ========================
 # SYSTEM PROMPT (v2.4.0)
 # ========================
+
 SYSTEM_PROMPT = """Você é analista institucional de fluxo, suporte/resistência e regiões de defesa.
 
 🔹 HORIZONTE DE ANÁLISE: Focado em entradas rápidas de 5-15 minutos (scalp), com validação em horizontes maiores se disponível.
@@ -279,6 +289,24 @@ Foque em:
 """
 
 
+def _is_model_decommissioned_error(err: Exception) -> bool:
+    """
+    Detecta o erro retornado pela API (via SDK OpenAI compatível) quando o modelo foi descontinuado.
+    Fazemos por string + tentativa de ler 'body' quando existir.
+    """
+    msg = str(err)
+    if "model_decommissioned" in msg:
+        return True
+
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        code = (body.get("error") or {}).get("code")
+        if code == "model_decommissioned":
+            return True
+
+    return False
+
+
 def _extract_dashscope_text(resp) -> str:
     """Extrai texto de respostas do DashScope."""
     try:
@@ -310,6 +338,22 @@ def _extract_dashscope_text(resp) -> str:
         return ""
 
 
+def _dedupe_keep_order(items):
+    out = []
+    for x in items:
+        if x and x not in out:
+            out.append(x)
+    return out
+
+
+def _models_from_cfg(cfg: dict) -> list[str]:
+    primary = cfg.get("model", "llama-3.3-70b-versatile")
+    fallbacks = cfg.get("model_fallbacks", [])
+    if not isinstance(fallbacks, list):
+        fallbacks = []
+    return _dedupe_keep_order([primary, *fallbacks])
+
+
 class AIAnalyzer:
     """Analisador de IA com validação robusta de dados e suporte GroqCloud + structured output + heartbeat."""
     
@@ -330,11 +374,22 @@ class AIAnalyzer:
         self.mode: Optional[str] = None
         self.time_manager = TimeManager()
 
+        # Logger estruturado interno da IA
+        self.slog = StructuredLogger("ai_analyzer", "AI")
+
         # Integração com HealthMonitor
         self.health_monitor = health_monitor
         self.module_name = module_name
         self._hb_stop = threading.Event()
         self._hb_thread: Optional[threading.Thread] = None
+
+        # Carrega configuração do config.json
+        self.config = {}
+        try:
+            with open('config.json', 'r') as f:
+                self.config = json.load(f)
+        except Exception as e:
+            logging.warning(f"Erro ao carregar config.json: {e}")
 
         # Modelo padrão (será sobrescrito se Groq estiver ativo)
         self.model_name = (
@@ -349,7 +404,7 @@ class AIAnalyzer:
         self.max_failures_before_mock = 3
 
         logging.info(
-            "🧠 IA Analyzer v2.3.0 inicializada - GroqCloud + Structured Output focado em regiões de entrada"
+            "🧠 IA Analyzer v2.4.0 + PATCH 2 inicializada - GroqCloud + Structured Output focado em regiões de entrada"
         )
         try:
             self._initialize_api()
@@ -400,101 +455,255 @@ class AIAnalyzer:
 
     def _initialize_api(self):
         """
-        Inicializa provedores de IA com ordem de prioridade.
+        Inicializa provedores de IA com PATCH 2 - Fallback Controlado.
         
-        ✅ PRIORIDADE:
-          1. GroqCloud (rápido e barato)
-          2. OpenAI (se configurado)
-          3. DashScope (fallback)
-          4. Mock (última opção)
+        ✅ NOVA LÓGICA (Patch 2):
+          - Se provider=groq, tenta apenas modelos alternativos da Groq
+          - Se nenhum modelo Groq funcionar, vai para MOCK (não OpenAI automaticamente)
+          - Só troca para outro provider se explicitamente configurado em provider_fallbacks
+          - Fallback automático DESABILITADO por padrão
         """
         
-        # ============================================================
-        # 🚀 PRIORIDADE 1: GROQCLOUD
-        # ============================================================
-        groq_key = os.getenv("GROQ_API_KEY") or getattr(app_config, "GROQ_API_KEY", None)
+        # Carrega configuração do config.json
+        ai_cfg = self.config.get("ai", {})
+        provider = ai_cfg.get("provider", "groq")
+        provider_fallbacks = ai_cfg.get("provider_fallbacks", [])
         
-        if OPENAI_AVAILABLE and groq_key:
-            # Valida formato da chave
-            if not groq_key.startswith("gsk_"):
-                logging.warning(
-                    f"⚠️ GROQ_API_KEY suspeita (não começa com 'gsk_'). "
-                    f"Tentando mesmo assim..."
-                )
+        # Lista para tracking de providers testados
+        providers_tested = []
+        
+        # ============================================================
+        # 🚀 PROVIDER ESPECÍFICO: GROQ
+        # ============================================================
+        if provider == "groq":
+            providers_tested.append("groq")
+            groq_key = os.getenv("GROQ_API_KEY") or getattr(app_config, "GROQ_API_KEY", None)
             
-            try:
+            if OPENAI_AVAILABLE and groq_key:
+                groq_cfg = ai_cfg.get("groq", {})
+                groq_base_url = groq_cfg.get("base_url", "https://api.groq.com/openai/v1")
+                
+                # Valida formato da chave
+                if not groq_key.startswith("gsk_"):
+                    logging.warning(
+                        f"⚠️ GROQ_API_KEY suspeita (não começa com 'gsk_'). "
+                        f"Tentando mesmo assim..."
+                    )
+                
+                self.base_url = groq_base_url
                 # Cliente síncrono OpenAI-compatível apontando para Groq
                 self.client = OpenAI(
                     api_key=groq_key,
-                    base_url="https://api.groq.com/openai/v1"
+                    base_url=self.base_url
                 )
                 # Cliente assíncrono, se disponível
                 if ASYNC_OPENAI_AVAILABLE and AsyncOpenAI is not None:
                     self.client_async = AsyncOpenAI(
                         api_key=groq_key,
-                        base_url="https://api.groq.com/openai/v1"
+                        base_url=self.base_url
                     )
-                
-                # Sobrescreve model_name com modelo Groq
-                self.model_name = (
-                    getattr(app_config, "GROQ_MODEL", None)
-                    or os.getenv("GROQ_MODEL")
-                    or "llama-3.1-70b-versatile"
-                )
-                
-                self.mode = "groq"
-                self.enabled = True
-                
-                logging.info(
-                    f"🚀 GroqCloud ATIVO | Modelo: {self.model_name} | "
-                    f"Chave: {groq_key[:10]}...{groq_key[-4:]}"
-                )
+                logging.info("🔧 Groq client configurado | base_url=%s", self.base_url)
+
+                models = _models_from_cfg(groq_cfg)
+                self._groq_model_candidates = models
+                if not models:
+                    logging.warning("Nenhum modelo Groq configurado em ai.groq.model")
+                else:
+                    last_err = None
+                    selected = None
+                    for m in models:
+                        try:
+                            self.client.chat.completions.create(
+                                model=m,
+                                messages=[{"role": "user", "content": "ping"}],
+                                temperature=0,
+                                max_tokens=1,
+                                timeout=10,
+                            )
+                            selected = m
+                            break
+                        except Exception as e:
+                            last_err = e
+                            logging.warning(f"⚠️ Ping falhou no modelo Groq {m}: {e}")
+                    if not selected:
+                        logging.error(f"❌ Groq sem modelo válido. Último erro: {last_err}")
+                        # PATCH 2: Se Groq falhar, NÃO fazer fallback automático
+                        # Vai para mock ou tentar fallbacks explicitamente configurados
+                    else:
+                        self.model_name = selected
+                        self.mode = "groq"
+                        self.enabled = True
+                        logging.info(
+                            f"🚀 GroqCloud ATIVO | Modelo final: {self.model_name} | "
+                            f"Chave: {groq_key[:10]}...{groq_key[-4:]}"
+                        )
+                        try:
+                            self.slog.info(
+                                "ai_provider_selected",
+                                provider="groq",
+                                model=self.model_name,
+                            )
+                        except Exception:
+                            pass
+                        return
+            
+            # Se chegou aqui, Groq falhou
+            # PATCH 2: Só tenta fallbacks se explicitamente configurados
+            if not provider_fallbacks:
+                logging.info("🔧 Groq falhou e nenhum fallback configurado. Ativando modo MOCK.")
+                self._activate_mock_mode()
                 return
-                
-            except Exception as e:
-                logging.warning(f"⚠️ Groq falhou na inicialização: {e}")
-        else:
-            if not OPENAI_AVAILABLE:
-                logging.debug("OpenAI lib não disponível (necessária para Groq)")
-            if not groq_key:
-                logging.debug("GROQ_API_KEY não encontrada")
+            else:
+                logging.info(f"🔄 Groq falhou, tentando fallbacks configurados: {provider_fallbacks}")
         
         # ============================================================
-        # PRIORIDADE 2: OPENAI (compatibilidade original)
+        # FALLBACKS EXPLICITAMENTE CONFIGURADOS
         # ============================================================
-        if OPENAI_AVAILABLE:
-            try:
-                self.client = OpenAI()  # Usa OPENAI_API_KEY
-                if ASYNC_OPENAI_AVAILABLE and AsyncOpenAI is not None:
-                    self.client_async = AsyncOpenAI()
-                self.mode = "openai"
-                self.enabled = True
-                logging.info("🔧 OpenAI client configurado (modo compatível)")
+        # Só chega aqui se:
+        # 1. Provider não é groq, OU
+        # 2. Groq falhou E tem fallbacks configurados
+        
+        for fallback_provider in provider_fallbacks:
+            if fallback_provider in providers_tested:
+                continue  # Já testou este provider
+                
+            if fallback_provider == "openai":
+                providers_tested.append("openai")
+                if self._try_initialize_openai():
+                    return
+                    
+            elif fallback_provider == "dashscope":
+                providers_tested.append("dashscope")
+                if self._try_initialize_dashscope():
+                    return
+        
+        # ============================================================
+        # PROVIDER PADRÃO: OPENAI (só se não for groq ou groq com fallback)
+        # ============================================================
+        if provider != "groq" and "openai" not in providers_tested:
+            if self._try_initialize_openai():
                 return
-            except Exception as e:
-                logging.warning(f"OpenAI indisponível: {e}")
-
+        
         # ============================================================
-        # PRIORIDADE 3: DASHSCOPE (fallback)
+        # FALLBACK FINAL: MOCK
         # ============================================================
+        self._activate_mock_mode()
+        
+    def _try_initialize_openai(self) -> bool:
+        """Tenta inicializar OpenAI. Retorna True se succeeded."""
+        try:
+            self.client = OpenAI()  # Usa OPENAI_API_KEY
+            if ASYNC_OPENAI_AVAILABLE and AsyncOpenAI is not None:
+                self.client_async = AsyncOpenAI()
+            self.mode = "openai"
+            self.enabled = True
+            logging.info("🔧 OpenAI client configurado (fallback)")
+            try:
+                self.slog.info(
+                    "ai_provider_selected",
+                    provider="openai",
+                    model=self.model_name,
+                )
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            logging.warning(f"OpenAI indisponível: {e}")
+            return False
+    
+    def _try_initialize_dashscope(self) -> bool:
+        """Tenta inicializar DashScope. Retorna True se succeeded."""
         token = os.getenv("DASHSCOPE_API_KEY") or getattr(app_config, "DASHSCOPE_API_KEY", None)
         
         if DASHSCOPE_AVAILABLE and token:
             try:
+                import dashscope
                 dashscope.api_key = token
                 self.mode = "dashscope"
                 self.enabled = True
-                logging.info("🔧 DashScope configurado (modo nativo - fallback)")
-                return
+                logging.info("🔧 DashScope configurado (fallback)")
+                try:
+                    self.slog.info(
+                        "ai_provider_selected",
+                        provider="dashscope",
+                        model=self.model_name,
+                    )
+                except Exception:
+                    pass
+                return True
             except Exception as e:
                 logging.warning(f"DashScope indisponível: {e}")
-
-        # ============================================================
-        # FALLBACK FINAL: MOCK
-        # ============================================================
+        
+        return False
+    
+    def _activate_mock_mode(self):
+        """Ativa modo mock."""
         self.mode = None
         self.enabled = True
         logging.info("🔧 Modo MOCK ativado (sem provedores externos).")
+        try:
+            self.slog.warning(
+                "ai_provider_selected",
+                provider="mock",
+                model=self.model_name,
+            )
+        except Exception:
+            pass
+
+    async def _select_working_groq_model(self) -> str | None:
+        """Seleciona um modelo Groq válido testando cada candidato."""
+        if not self._groq_model_candidates:
+            return None
+
+        last_err = None
+        for candidate in self._groq_model_candidates:
+            try:
+                # Temporariamente define o modelo para teste
+                original_model = self.model_name
+                self.model_name = candidate
+
+                # Testa conexão (ping)
+                if await self._ping_once_async():
+                    # Sucesso: mantém o modelo selecionado
+                    logging.info(f"✅ Modelo Groq válido encontrado: {candidate}")
+                    return candidate
+                else:
+                    logging.warning(f"⚠️ Ping falhou para modelo {candidate}")
+
+            except Exception as e:
+                last_err = e
+                if _is_model_decommissioned_error(e):
+                    logging.warning(f"⚠️ Modelo Groq descontinuado: {candidate} | tentando próximo fallback...")
+                    continue
+                else:
+                    logging.warning(f"⚠️ Falha ao testar modelo Groq {candidate}: {e}")
+                    continue
+            finally:
+                # Restaura modelo original se falhou
+                if 'original_model' in locals():
+                    self.model_name = original_model
+
+        logging.error(f"❌ Nenhum modelo Groq funcionou. Último erro: {last_err}")
+        return None
+
+    async def _ping_once_async(self) -> bool:
+        """Versão assíncrona do ping para um modelo."""
+        try:
+            # Tenta uma chamada simples
+            response = await self.client_async.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": "Diagnóstico curto. Responda apenas 'OK'."},
+                    {"role": "user", "content": "Ping curto. Responda com 'OK'."},
+                ],
+                max_tokens=3,
+                temperature=0.0,
+                timeout=10,
+            )
+            content = response.choices[0].message.content.strip().upper()
+            return content.startswith("OK")
+        except Exception:
+            return False
 
     def _should_test_connection(self) -> bool:
         """Verifica se deve testar conexão."""
@@ -510,6 +719,7 @@ class AIAnalyzer:
                 pass
 
         prompt = "Ping curto. Responda com 'OK'."
+        ok = True
         try:
             if self.mode == "openai" or self.mode == "groq":
                 r = self.client.chat.completions.create(
@@ -528,7 +738,7 @@ class AIAnalyzer:
                 if success and self.mode == "groq":
                     logging.debug("✅ Groq ping OK")
                 
-                return success
+                ok = success
                 
             elif self.mode == "dashscope":
                 r = Generation.call(
@@ -543,16 +753,34 @@ class AIAnalyzer:
                     timeout=10,
                 )
                 content = _extract_dashscope_text(r).upper()
-                return content.startswith("OK")
+                ok = content.startswith("OK")
             else:
-                return True  # Mock sempre OK
+                ok = True  # Mock sempre OK
                 
         except Exception as e:
             self.connection_failed_count += 1
             logging.warning(
                 f"Falha no ping da IA [{self.mode}] ({self.connection_failed_count}): {e}"
             )
-            return False
+            ok = False
+
+        # log estruturado
+        try:
+            if ok:
+                self.slog.info(
+                    "ai_ping_ok",
+                    mode=self.mode or "mock",
+                )
+            else:
+                self.slog.warning(
+                    "ai_ping_failed",
+                    mode=self.mode or "mock",
+                    failures=self.connection_failed_count,
+                )
+        except Exception:
+            pass
+
+        return ok
 
     # ====================================================================
     # 🆕 EXTRAÇÃO DE DADOS CORRIGIDA (mantido de v2.0.2)
@@ -653,110 +881,7 @@ class AIAnalyzer:
                 "4) Se não houver entrada clara, recomende aguardar (wait/avoid) e explique o porquê.\n"
             )
 
-    def _build_structured_prompt(self, payload: Dict[str, Any]) -> str:
-        """
-        Constrói um prompt estruturado usando o novo formato AI Payload v2.
-        Foca em Price Action, Profundidade de Orderbook e Fluxo.
-        """
-        # Extração Segura
-        symbol = payload.get("symbol", "N/A")
-        ts = payload.get("timestamp", "N/A")
-        
-        # 1. Price Context & Action
-        pc = payload.get("price_context", {})
-        pa = pc.get("price_action", {})
-        price = format_price(pc.get("current_price"))
-        
-        # Formata Price Action
-        pa_str = "Indisponível"
-        if pa:
-            cp = pa.get('close_position')
-            bp = pa.get('candle_body_pct', 0)
-            rng = pa.get('candle_range_pct', 0)
-            
-            # Interpretação textual rápida para ajudar o modelo
-            candle_type = "Neutro"
-            if bp < 0.05:
-                candle_type = "Doji/Indecisão"
-            elif cp is not None:
-                if cp > 0.66: candle_type = "Fechamento Forte (Topo)"
-                elif cp < 0.33: candle_type = "Fechamento Fraco (Fundo)"
-                else: candle_type = "Fechamento Misto (Meio)"
-                
-            pa_str = (
-                f"   - Preço Atual: {price}\n"
-                f"   - Posição Fechamento: {cp:.2f} (0=Low, 1=High) -> {candle_type}\n"
-                f"   - Corpo Candle: {bp:.2f}% do range ({rng:.2f}% variação total)"
-            )
-        
-        # 2. Orderbook Depth
-        oc = payload.get("orderbook_context", {})
-        dm = oc.get("depth_metrics", {})
-        ob_str = "Indisponível"
-        
-        if dm or oc.get("bid_depth_usd"):
-            bid5 = dm.get("bid_liquidity_top5") or oc.get("bid_depth_usd", 0)
-            ask5 = dm.get("ask_liquidity_top5") or oc.get("ask_depth_usd", 0)
-            imb = dm.get("depth_imbalance") or oc.get("imbalance", 0)
-            
-            ob_str = (
-                f"   - Liquidez Bid (Sup): ${format_large_number(bid5)}\n"
-                f"   - Liquidez Ask (Res): ${format_large_number(ask5)}\n"
-                f"   - Imbalance Profundidade: {imb:.2f} (>0 Compra, <0 Venda)\n"
-                f"   - Paredes Detectadas: {'Sim' if oc.get('walls_detected') else 'Não'}"
-            )
 
-        # 3. Flow Context
-        fc = payload.get("flow_context", {})
-        whale = fc.get("whale_activity", {})
-        flow_str = (
-            f"   - Net Flow (1m): {format_delta(fc.get('net_flow'))}\n"
-            f"   - Agressão Compra: {fc.get('aggressive_buyers', 0):.1f}%\n"
-            f"   - Whale Delta: {format_delta(whale.get('whale_delta'))}\n"
-            f"   - Absorção: {fc.get('absorption_type', 'Nenhuma')}"
-        )
-
-        # 4. Quant/ML Context
-        quant = payload.get("quant_model", {})
-        ml_str = "Dados Indisponíveis"
-        if quant:
-            ml_str = (
-                f"   - Sentimento Modelo: {quant.get('model_sentiment')}\n"
-                f"   - Probabilidade Alta: {quant.get('model_probability_up', 0):.1%}\n"
-                f"   - Action Bias Base: {quant.get('action_bias', 'N/A').upper()}\n"
-                f"   - Confiança: {quant.get('confidence_score', 0):.1%}"
-            )
-
-        # Montagem do Prompt
-        prompt = f"""
-🧠 **ANÁLISE INSTITUCIONAL AVANÇADA - {symbol}**
-
-📝 **CENÁRIO ATUAL ({ts})**
-
-1️⃣ **PRICE ACTION (Estrutura do Candle)**
-{pa_str}
-*Instrução: Use 'Posição Fechamento' para validar força. Fechamento no topo = força compradora real.*
-
-2️⃣ **ORDERBOOK DEPTH (Liquidez Passiva)**
-{ob_str}
-*Instrução: 'Imbalance Profundidade' positivo indica suporte passivo forte abaixo do preço.*
-
-3️⃣ **FLUXO & WHALES (Agressão)**
-{flow_str}
-*Instrução: Whale Delta positivo confirma intenção institucional de compra.*
-
-4️⃣ **INTELIGÊNCIA QUANTITATIVA (Viés Matemático)**
-{ml_str}
-
-🔎 **PROCESSAMENTO DE DECISÃO**
-Avalie a confluência dos 4 fatores acima.
-
-Regras de Decisão:
-- **COMPRA FORTE**: Action Bias Compra + Whale Delta Positivo + Candle Fechamento Alto + Depth Support.
-- **VENDA FORTE**: Action Bias Venda + Whale Delta Negativo + Candle Fechamento Baixo + Depth Resistance.
-- **AGUARDAR (WAIT)**: Se houver divergência clara (ex: Modelo diz Venda mas Whales estão comprando forte).
-"""
-        return prompt
 
     def _create_prompt(self, event_data: Dict[str, Any]) -> str:
         """
@@ -1175,74 +1300,110 @@ Regras de Decisão:
     # ====================================================================
 
     async def _a_call_openai_text(self, prompt: str) -> str:
-        """Versão assíncrona simples (texto livre) para OpenAI/Groq."""
+        """Versão assíncrona simples (texto livre) para OpenAI/Groq com fallbacks."""
         if not self.client_async:
             raise RuntimeError("Cliente assíncrono não inicializado")
-        try:
-            response = await self.client_async.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT,
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=700,
-                temperature=0.25,
-                timeout=30,
-            )
-            if response.choices and len(response.choices) > 0:
-                content = response.choices[0].message.content.strip()
-                return content
-            return ""
-        except Exception as e:
-            logging.error(f"Erro assíncrono {self.mode} (texto): {e}")
-            return ""
+
+        # Usar lista centralizada de candidatos
+        models_to_try = self._groq_model_candidates if self.mode == "groq" else [self.model_name]
+
+        for model in models_to_try:
+            try:
+                response = await self.client_async.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": SYSTEM_PROMPT,
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=700,
+                    temperature=0.25,
+                    timeout=30,
+                )
+                if response.choices and len(response.choices) > 0:
+                    content = response.choices[0].message.content.strip()
+                    # Sucesso: atualizar modelos se foi fallback
+                    if model != self.model_name:
+                        logging.info(f"🔄 Modelo trocado de {self.model_name} para {model} devido a decommissioned")
+                        self.model_name = model
+                        self.groq_model = model
+                    return content
+            except Exception as e:
+                if _is_model_decommissioned_error(e):
+                    logging.warning(f"Modelo {model} decommissioned. Tentando próximo...")
+                    continue
+                else:
+                    logging.error(f"Erro com modelo {model}: {e}. Tentando próximo...")
+                    continue
+
+        # Todos falharam
+        logging.error(f"Todos os modelos falharam para texto.")
+        return ""
 
     async def _a_call_openai_structured(self, prompt: str) -> tuple[str, Optional[AITradeAnalysis]]:
         """
         Versão assíncrona usando JSON Mode + Pydantic.
         Retorna (raw_json_string, objeto_validado_ou_None).
+        Com suporte a fallbacks de modelo se decommissioned.
         """
         if not self.client_async:
             raise RuntimeError("Cliente assíncrono não inicializado")
         if not (PYDANTIC_AVAILABLE and AITradeAnalysis):
             text = await self._a_call_openai_text(prompt)
             return text, None
-        try:
-            response = await self.client_async.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT_STRUCTURED,
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=400,
-                temperature=0.25,
-                timeout=30,
-                response_format={"type": "json_object"},
-            )
-            if not response.choices:
-                return "", None
-            content = response.choices[0].message.content.strip()
-            if not content:
-                return "", None
+
+        # Usar lista centralizada de candidatos
+        models_to_try = self._groq_model_candidates if self.mode == "groq" else [self.model_name]
+
+        for model in models_to_try:
             try:
-                if hasattr(AITradeAnalysis, "model_validate_json"):
-                    obj = AITradeAnalysis.model_validate_json(content)  # type: ignore[attr-defined]
-                else:
-                    obj = AITradeAnalysis.parse_raw(content)           # type: ignore[attr-defined]
-                return content, obj
+                response = await self.client_async.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": SYSTEM_PROMPT_STRUCTURED,
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=400,
+                    temperature=0.25,
+                    timeout=30,
+                    response_format={"type": "json_object"},
+                )
+                if not response.choices:
+                    continue
+                content = response.choices[0].message.content.strip()
+                if not content:
+                    continue
+                try:
+                    if hasattr(AITradeAnalysis, "model_validate_json"):
+                        obj = AITradeAnalysis.model_validate_json(content)  # type: ignore[attr-defined]
+                    else:
+                        obj = AITradeAnalysis.parse_raw(content)           # type: ignore[attr-defined]
+                    # Sucesso: atualizar modelos se foi fallback
+                    if model != self.model_name:
+                        logging.info(f"🔄 Modelo trocado de {self.model_name} para {model} devido a decommissioned")
+                        self.model_name = model
+                        self.groq_model = model
+                    return content, obj
+                except Exception as e:
+                    logging.warning(f"Falha ao parsear JSON structured com {model}: {e}. Tentando próximo...")
+                    continue
             except Exception as e:
-                logging.warning(f"Falha ao parsear JSON structured: {e}. Usando apenas texto.")
-                return content, None
-        except Exception as e:
-            logging.error(f"Erro JSON Mode {self.mode}: {e}. Fallback texto.")
-            text = await self._a_call_openai_text(prompt)
-            return text, None
+                if _is_model_decommissioned_error(e):
+                    logging.warning(f"Modelo {model} decommissioned. Tentando próximo...")
+                    continue
+                else:
+                    logging.error(f"Erro com modelo {model}: {e}. Tentando próximo...")
+                    continue
+
+        # Todos os modelos falharam
+        logging.error(f"Todos os modelos falharam. Fallback texto com {self.model_name}.")
+        text = await self._a_call_openai_text(prompt)
+        return text, None
 
     def _call_openai_compatible(self, prompt: str, max_retries: int = 3) -> str:
         """
@@ -1442,6 +1603,17 @@ Regras de Decisão:
             
             logging.info(f"✅ IA [{self.mode or 'mock'}] analisou: {tipo_evento} - {ativo}")
             
+            try:
+                self.slog.info(
+                    "ai_analyze_ok",
+                    mode=self.mode or "mock",
+                    model=self.model_name,
+                    tipo_evento=tipo_evento,
+                    ativo=ativo,
+                )
+            except Exception:
+                pass
+            
             return {
                 "raw_response": analysis_text,
                 "structured": (
@@ -1457,6 +1629,17 @@ Regras de Decisão:
             
         except Exception as e:
             logging.error(f"❌ Erro em analyze(): {e}", exc_info=True)
+            try:
+                self.slog.error(
+                    "ai_analyze_error",
+                    error=str(e),
+                    mode=self.mode or "mock",
+                    model=self.model_name,
+                    tipo_evento=event_data.get("tipo_evento", "N/A"),
+                    ativo=event_data.get("ativo") or event_data.get("symbol") or "N/A",
+                )
+            except Exception:
+                pass
             return {
                 "raw_response": f"❌ Erro ao analisar evento: {str(e)}",
                 "structured": None,
@@ -1481,6 +1664,65 @@ Regras de Decisão:
 
         if self.mode == "groq":
             logging.info("🔌 Desconectando GroqCloud...")
+
+        # Fecha cliente síncrono (se suportado)
+        try:
+            if self.client is not None and hasattr(self.client, "close"):
+                self.client.close()
+        except Exception:
+            pass
+
+        # Melhor esforço para fechar cliente assíncrono:
+        # - se houver loop rodando, agenda close()
+        # - se não houver loop, tenta executar close() em um loop novo
+        try:
+            if self.client_async is not None and hasattr(self.client_async, "close"):
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop is not None and not loop.is_closed():
+                    try:
+                        loop.create_task(self.client_async.close())
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        asyncio.run(self.client_async.close())
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        self.client = None
+        self.client_async = None
+
+    async def aclose(self) -> None:
+        """Fecha conexões async (evita 'Event loop is closed' no shutdown)."""
+        # Para heartbeat (thread)
+        try:
+            self._hb_stop.set()
+            if self._hb_thread is not None and self._hb_thread.is_alive():
+                self._hb_thread.join(timeout=5)
+        except Exception:
+            pass
+
+        if self.mode == "groq":
+            logging.info("🔌 Desconectando GroqCloud...")
+
+        try:
+            if self.client is not None and hasattr(self.client, "close"):
+                self.client.close()
+        except Exception:
+            pass
+
+        try:
+            if self.client_async is not None and hasattr(self.client_async, "close"):
+                await self.client_async.close()
+        except Exception:
+            pass
+
         self.client = None
         self.client_async = None
 
@@ -1497,7 +1739,7 @@ Regras de Decisão:
 
 if __name__ == "__main__":
     print("\n" + "=" * 70)
-    print("🧪 TESTANDO AI_ANALYZER v2.3.0 (GroqCloud + Structured Output focado em regiões)")
+    print("🧪 TESTANDO AI_ANALYZER v2.4.0 + PATCH 2 (GroqCloud + Structured Output focado em regiões)")
     print("=" * 70)
     
     logging.basicConfig(

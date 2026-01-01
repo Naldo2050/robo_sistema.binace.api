@@ -71,7 +71,7 @@ class DataPipeline:
         """
         self.symbol = symbol
         self.config = config or PipelineConfig.from_config_file()
-        self.tm = time_manager
+        self.time_manager = time_manager
 
         # Logger especializado
         self.logger = PipelineLogger(symbol)

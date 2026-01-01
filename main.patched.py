@@ -5,8 +5,8 @@
 import sys
 import io
 if sys.platform == 'win32':
-from colorama import init as colorama_init, Fore, Style
-colorama_init(autoreset=True)
+    from colorama import init as colorama_init, Fore, Style
+    colorama_init(autoreset=True)
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 # --- Helpers de layout para janelas (injetado pelo patch) ---
 try:
@@ -34,11 +34,6 @@ def print_janela_header(self, delta_fmt: str, vol_fmt: str):
         except Exception:
             agora_ny = "NY"
     print(_yellow_rule())
-    try:
-print_janela_header(self, delta_fmt, vol_fmt)
-    except Exception:
-        # fallback se atributos não existirem
-        print(f"[Janela] [{agora_ny} NY] | Delta: {delta_fmt} | Vol: {vol_fmt}")
 # --- fim helpers ---
 
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
@@ -604,9 +599,25 @@ class EnhancedMarketBot:
     def on_message(self, ws, message):
         if self.should_stop:
             return
-        
+         
         try:
-            raw = json.loads(message)
+            # Tratamento robusto de JSON com logging melhorado
+            try:
+                raw = json.loads(message)
+                if not isinstance(raw, dict):
+                    logging.error(f"Mensagem JSON inválida (não é objeto): {message[:100]}")
+                    return
+            except json.JSONDecodeError as e:
+                logging.error(f"Falha ao parsear JSON: {e}. Mensagem: {message[:200]}")
+                # Implementar lógica de fallback ou reconexão
+                if hasattr(self, 'connection_manager'):
+                    self.connection_manager.disconnect()
+                    self.connection_manager.connect()
+                return
+            except Exception as e:
+                logging.error(f"Erro inesperado ao processar mensagem: {e}. Mensagem: {message[:200]}")
+                return
+            
             trade = raw.get("data", raw)
             
             p = trade.get("p") or trade.get("P") or trade.get("price")

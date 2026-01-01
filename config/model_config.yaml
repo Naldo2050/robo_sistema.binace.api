@@ -1,4 +1,14 @@
 # config/model_config.yaml
+ai:
+  provider: groq
+  provider_fallbacks: []  # Lista de providers para fallback automático (só usar se necessário)
+  groq:
+    model: llama-3.3-70b-versatile   # Modelo padrão atualizado para Llama 3.3 70B
+    model_fallbacks:
+      - llama-3.1-70b-versatile
+      - llama-3.1-8b-instant
+      - mixtral-8x7b-32768
+
 model:
   # Parâmetros do target
   lookahead_windows: 15         # Quantas janelas à frente prever

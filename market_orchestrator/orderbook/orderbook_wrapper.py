@@ -102,7 +102,7 @@ def run_orderbook_analyze(bot: BotProtocol, close_ms: int) -> Optional[Dict[str,
                         timeout=coro_timeout,
                     )
                 except asyncio.TimeoutError:
-                    logging.error(
+                    logging.warning(
                         "⏱️ Timeout interno na coroutine de orderbook "
                         "(asyncio.wait_for); resultado será None"
                     )

@@ -1,0 +1,24 @@
+{
+  "SYMBOL": "BTCUSDT",
+  "WINDOW_SIZE_MINUTES": 2,
+  "VOL_FACTOR_EXH": 2.5,
+  "HISTORY_SIZE": 100,
+  "DELTA_STD_DEV_FACTOR": 2.0,
+  "CONTEXT_SMA_PERIOD": 20,
+  "LIQUIDITY_FLOW_ALERT_PERCENTAGE": 0.15,
+  "WALL_STD_DEV_FACTOR": 3.0,
+  "BINANCE_API_KEY": "sua_api_key_aqui",
+  "BINANCE_API_SECRET": "sua_api_secret_aqui",
+  "ai": {
+    "provider": "groq",
+    "groq": {
+      "base_url": "https://api.groq.com/openai/v1",
+      "model": "llama-3.3-70b-versatile",
+      "model_fallbacks": [
+        "llama-3.3-70b",
+        "llama-3.1-8b-instant"
+      ]
+    },
+    "dashscope": { "enabled": false }
+  }
+}

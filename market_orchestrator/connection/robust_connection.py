@@ -161,9 +161,11 @@ class RobustConnectionManager:
         """
         self.should_stop = False
 
-        # Configurações de timeout
+        # Configurações de timeout e ping/pong
         ping_interval = getattr(config, "WS_PING_INTERVAL", 20)
-        logger.info(f"🚀 Iniciando conexão Async (aiohttp) para {self.symbol}...")
+        ping_timeout = getattr(config, "WS_PING_TIMEOUT", 10)
+        connect_timeout = getattr(config, "ORDERBOOK_REQUEST_TIMEOUT", 10.0)
+        logger.info(f"🚀 Iniciando conexão Async (aiohttp) para {self.symbol}... (ping_interval={ping_interval}s, ping_timeout={ping_timeout}s)")
 
         with self.tracer.start_span(
             "ws_connect_loop",
@@ -192,7 +194,8 @@ class RobustConnectionManager:
                             async with session.ws_connect(
                                 self.stream_url,
                                 heartbeat=ping_interval,
-                                autoping=True
+                                autoping=True,
+                                timeout=connect_timeout
                             ) as ws:
                                 self._ws = ws
                                 await self._handle_connection_success(ws)
@@ -274,24 +277,59 @@ class RobustConnectionManager:
                 self.on_open_callback(ws)
 
     async def _handle_message(self, msg) -> None:
-        """Processa mensagens recebidas."""
+        """Processa mensagens recebidas com tratamento robusto de JSON."""
         if msg.type == WSMsgType.TEXT:
             self.last_message_time = datetime.now(timezone.utc)
             self.total_messages_received += 1
             
             # Chama heartbeat externo se configurado
             if self.external_heartbeat_cb:
-                self.external_heartbeat_cb()
+                try:
+                    self.external_heartbeat_cb()
+                except Exception as hb_err:
+                    logger.warning(f"Falha no heartbeat externo: {hb_err}")
 
             if self.on_message_callback:
                 try:
+                    # Validação básica do JSON antes de passar para o callback
+                    try:
+                        data = json.loads(msg.data)
+                        if not isinstance(data, dict):
+                            raise ValueError("Mensagem não é um objeto JSON válido")
+                        
+                        # Verifica se é uma mensagem de OrderBook válida
+                        if 'e' in data and data['e'] == 'depthUpdate':
+                            # Mensagem de OrderBook válida
+                            pass
+                        elif 'result' in data or 'error' in data:
+                            # Mensagem de controle da Binance
+                            logger.info(f"Mensagem de controle da Binance: {data}")
+                            if 'error' in data:
+                                logger.error(f"Erro da Binance: {data['error']}")
+                                return
+                            
+                    except json.JSONDecodeError as json_err:
+                        logger.error(f"Erro ao decodificar JSON: {json_err}. Mensagem: {msg.data[:200]}")
+                        # Implementar lógica de fallback ou reconexão aqui
+                        await self._handle_reconnect()
+                        return
+                    except ValueError as val_err:
+                        logger.error(f"JSON inválido: {val_err}. Mensagem: {msg.data[:200]}")
+                        return
+                    except Exception as parse_err:
+                        logger.error(f"Erro ao parsear mensagem: {parse_err}. Mensagem: {msg.data[:200]}")
+                        return
+
                     if asyncio.iscoroutinefunction(self.on_message_callback):
                         await self.on_message_callback(self._ws, msg.data)
                     else:
                         # Executa callback síncrono (cuidado para não bloquear o loop)
                         self.on_message_callback(self._ws, msg.data)
+                        
                 except Exception as e:
-                    logger.error(f"Erro no callback on_message: {e}")
+                    logger.error(f"Erro no callback on_message: {e}", exc_info=True)
+                    # Em caso de erro no callback, tentamos reconectar
+                    await self._handle_reconnect()
         
         elif msg.type == WSMsgType.ERROR:
             logger.error(f"Erro no WebSocket: {msg.data}")
@@ -300,6 +338,11 @@ class RobustConnectionManager:
                     await self.on_error_callback(self._ws, msg.data)
                 else:
                     self.on_error_callback(self._ws, msg.data)
+        
+        elif msg.type == WSMsgType.PONG:
+            # Mensagem de pong recebida - conexão está ativa
+            logger.debug("🏓 Pong recebido - conexão WebSocket ativa")
+            self.last_message_time = datetime.now(timezone.utc)
 
     async def _handle_reconnect(self) -> None:
         """Gerencia a lógica de backoff e reconexão."""
@@ -334,13 +377,16 @@ class RobustConnectionManager:
             )
             await asyncio.sleep(self.current_delay)
             
-            # Backoff exponencial com jitter
+            # Backoff exponencial com jitter melhorado
             import random
-            jitter = random.uniform(0, 0.1 * self.current_delay)
+            jitter = random.uniform(0, 0.2 * self.current_delay)
             self.current_delay = min(
-                self.current_delay * self.backoff_factor + jitter, 
+                self.current_delay * self.backoff_factor + jitter,
                 self.max_delay
             )
+            
+            # Log do próximo delay
+            logger.debug(f"Próximo delay de reconexão: {self.current_delay:.1f}s")
             
             if self.on_reconnect_callback:
                 if asyncio.iscoroutinefunction(self.on_reconnect_callback):

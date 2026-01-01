@@ -1,0 +1,45 @@
+[run]
+branch = True
+source = 
+    orderbook_analyzer/
+    orderbook_core/
+    market_orchestrator/
+    ai_runner/
+    risk_management/
+    utils/
+    scripts/  # Se quiser incluir scripts
+    
+omit = 
+    */tests/*
+    */__pycache__/*
+    */legacy/*
+    */migrations/*
+    venv/*
+    .venv/*
+    *setup.py
+    *conftest.py
+    */experimental/*
+    */deprecated/*
+
+[report]
+exclude_lines = 
+    pragma: no cover
+    def __repr__
+    raise AssertionError
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    @property
+    @abstractmethod
+    pass
+    logger\.
+    ^\s*$
+    ^\s*#.*$
+
+precision = 2
+show_missing = True
+skip_covered = False
+fail_under = 65
+
+[html]
+directory = coverage_html
+title = Trading System Test Coverage

@@ -13,10 +13,23 @@ Correções:
 
 import sys
 import io
+import os
 import logging
 import asyncio
+import traceback
 
 from dotenv import load_dotenv
+
+# 🔧 INSTRUMENTAÇÃO PARA DEBUG DE asyncio.create_task (opcional)
+if os.getenv("DEBUG_CREATE_TASK") == "1":
+    _real_create_task = asyncio.create_task
+
+    def traced_create_task(coro, *args, **kwargs):
+        print("\n[DEBUG] asyncio.create_task chamado. Stack:")
+        print("".join(traceback.format_stack(limit=25)))
+        return _real_create_task(coro, *args, **kwargs)
+
+    asyncio.create_task = traced_create_task
 
 # 🔧 FORÇAR UTF-8 NO WINDOWS (DEVE SER A PRIMEIRA COISA)
 if sys.platform == "win32":
@@ -92,10 +105,10 @@ def _validate_required_config() -> None:
         raise ValueError("❌ " + " | ".join(messages))
 
 
-def main() -> int:
+async def main() -> int:
     """
     Entry point principal com cleanup garantido.
-    
+
     Returns:
         0 para sucesso, 1 para erro
     """
@@ -109,8 +122,10 @@ def main() -> int:
     )
     logging.info(f"📊 Nível de log configurado: {log_level_name}")
 
+    logger = logging.getLogger(__name__)
+
     bot = None  # ✅ Inicializa fora do try
-    
+
     try:
         # ✅ Validação mais específica (não captura AttributeError genérico)
         validate = getattr(config, "validate_config", None)
@@ -128,13 +143,13 @@ def main() -> int:
         # ✅ Validação rigorosa de parâmetros obrigatórios usados no construtor
         _validate_required_config()
 
-        logging.info(f"🚀 Iniciando bot para {config.SYMBOL}...")
+        logger.info(f"🚀 Iniciando bot para {config.SYMBOL}...")
 
         # ✅ PATCH 2.6: Iniciar servidor Prometheus para métricas
         try:
             from prometheus_client import start_http_server
             import os
-            
+
             # Porta configurável via env var (default 8000)
             prometheus_port = int(os.getenv("PROMETHEUS_PORT", "8000"))
             start_http_server(prometheus_port)
@@ -144,6 +159,7 @@ def main() -> int:
         except Exception as e:
             logging.warning(f"⚠️ Erro ao iniciar servidor Prometheus: {e}")
 
+        # 1. Criar o bot (sem inicializar tasks)
         bot = EnhancedMarketBot(
             stream_url=config.STREAM_URL,
             symbol=config.SYMBOL,
@@ -156,45 +172,38 @@ def main() -> int:
             wall_std_dev_factor=config.WALL_STD_DEV_FACTOR,
         )
 
-        # Executa o loop assíncrono principal do bot
-        asyncio.run(bot.run())
+        # 2. ✅ ADICIONAR: Inicializar componentes assíncronos
+        await bot.initialize()
+
+        # 3. Executar o bot
+        await bot.run()
         return 0
 
     except KeyboardInterrupt:
-        logging.info("⏹️ Execução interrompida pelo usuário (Ctrl+C).")
+        logger.info("⚠️ Interrupção manual detectada")
+        if bot is not None:
+            await bot.shutdown()
         return 0
 
     except ValueError as e:
         # Erros de configuração (inclui os do validate_config e os dos required_params)
-        logging.critical(f"❌ Erro de configuração: {e}")
+        logger.critical(f"❌ Erro de configuração: {e}")
+        if bot is not None:
+            await bot.shutdown()
         return 1
 
     except Exception as e:
-        logging.critical(
+        logger.critical(
             "❌ Erro crítico na inicialização/execução do bot: %s",
             e,
             exc_info=True,
         )
-        return 1
-
-    finally:
-        # ✅ GARANTE CLEANUP MESMO EM CASO DE ERRO
         if bot is not None:
-            try:
-                logging.info("🧹 Iniciando cleanup de recursos...")
-                if hasattr(bot, "_cleanup_handler"):
-                    # Verifica se o cleanup é assíncrono
-                    if asyncio.iscoroutinefunction(bot._cleanup_handler):
-                        asyncio.run(bot._cleanup_handler())
-                    else:
-                        bot._cleanup_handler()
-                logging.info("✅ Cleanup concluído")
-            except Exception as cleanup_err:
-                logging.error(
-                    f"❌ Erro no cleanup: {cleanup_err}",
-                    exc_info=True
-                )
+            await bot.shutdown()
+        return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # ✅ Executar a função assíncrona corretamente
+    exit_code = asyncio.run(main())
+    sys.exit(exit_code)
