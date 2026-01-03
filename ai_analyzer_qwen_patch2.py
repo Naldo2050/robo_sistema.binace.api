@@ -3,9 +3,10 @@
 AI Analyzer para eventos de mercado com validação de dados.
 
 🔹 NOVIDADES v2.3.0:
-  ✅ Structured Output focado em regiões de entrada:
-     - sentiment, confidence, action
-     - entry_zone, invalidation_zone, region_type
+  ✅ Modo texto livre para GroqCloud (sem JSON estruturado)
+     - resposta em texto natural
+     - foco em análise qualitativa
+     - compatibilidade total com modelos Groq
   ✅ Prompts ajustados para foco em:
      - suporte / resistência
      - absorção / exaustão
@@ -13,7 +14,6 @@ AI Analyzer para eventos de mercado com validação de dados.
      - pontos claros de entrada e zonas de defesa/invalidação
 
 🔹 NOVIDADES v2.2.0:
-  ✅ Suporte a Structured Output (JSON Mode) para Groq/OpenAI (se Pydantic disponível)
   ✅ Templates de prompt com Jinja2 (se disponível), com fallback para f-strings
   ✅ Cliente assíncrono AsyncOpenAI para Groq/OpenAI (usado internamente via asyncio.run)
 
@@ -121,9 +121,7 @@ from orderbook_core.structured_logging import StructuredLogger
 
 load_dotenv()
 
-# ========================
-# Structured Output Schema
-# ========================
+
 
 if PYDANTIC_AVAILABLE:
     class AITradeAnalysis(BaseModel):
@@ -204,24 +202,18 @@ REGRAS GERAIS:
 8) Incentive action='wait' se confiança do modelo < 50% ou edge não claro.
 9) Se o cenário não estiver claro, prefira recomendar 'aguardar'.
 10) Seja sucinto, objetivo e profissional.
+
+11) Responda SEMPRE e APENAS em português do Brasil.
+12) NÃO utilize inglês em nenhuma parte da resposta.
+13) NÃO use tags <think> nem mostre seu raciocínio passo a passo; entregue apenas a análise final em português.
+14) GARANTA que toda sua comunicação seja em português brasileiro, sem mistura de idiomas.
+
+Responda sempre e apenas em português do Brasil.
+Não utilize inglês em nenhuma parte da resposta.
+Não use tags <think> nem mostre seu raciocínio passo a passo; entregue apenas a análise final em português.
 """
 
-SYSTEM_PROMPT_STRUCTURED = SYSTEM_PROMPT + """
-Responda APENAS em JSON com os campos:
-sentiment (bullish/bearish/neutral),
-confidence (0-1),
-action (buy/sell/hold/flat/wait/avoid),
-rationale (string),
-entry_zone (string ou null),
-invalidation_zone (string ou null),
-region_type (string ou null, ex: 'suporte', 'resistência', 'absorção', 'exaustão').
 
-⚠️ IMPORTANTE:
-- action DEVE estar alinhado com action_bias do modelo, a menos que haja evidência MUITO FORTE contrária.
-- Só indique entry_zone se houver uma região CLARA.
-- Se confiança quantitativa < 50%, use action='wait' ou 'avoid'.
-- Não inclua texto fora do JSON.
-"""
 
 ORDERBOOK_TEMPLATE = """
 🧠 **Análise Institucional – {{ ativo }} | {{ tipo_evento }}**
@@ -347,7 +339,7 @@ def _dedupe_keep_order(items):
 
 
 def _models_from_cfg(cfg: dict) -> list[str]:
-    primary = cfg.get("model", "llama-3.3-70b-versatile")
+    primary = cfg.get("model", "qwen/qwen3-32b")
     fallbacks = cfg.get("model_fallbacks", [])
     if not isinstance(fallbacks, list):
         fallbacks = []
@@ -404,7 +396,7 @@ class AIAnalyzer:
         self.max_failures_before_mock = 3
 
         logging.info(
-            "🧠 IA Analyzer v2.4.0 + PATCH 2 inicializada - GroqCloud + Structured Output focado em regiões de entrada"
+            "🧠 IA Analyzer v2.4.0 + PATCH 2 inicializada - GroqCloud (modo texto livre)"
         )
         try:
             self._initialize_api()
@@ -1296,7 +1288,7 @@ class AIAnalyzer:
         return "\n".join(lines)
 
     # ====================================================================
-    # CALLERS (SYNC + ASYNC / STRUCTURED)
+    # CALLERS (SYNC + ASYNC)
     # ====================================================================
 
     async def _a_call_openai_text(self, prompt: str) -> str:
@@ -1342,68 +1334,7 @@ class AIAnalyzer:
         logging.error(f"Todos os modelos falharam para texto.")
         return ""
 
-    async def _a_call_openai_structured(self, prompt: str) -> tuple[str, Optional[AITradeAnalysis]]:
-        """
-        Versão assíncrona usando JSON Mode + Pydantic.
-        Retorna (raw_json_string, objeto_validado_ou_None).
-        Com suporte a fallbacks de modelo se decommissioned.
-        """
-        if not self.client_async:
-            raise RuntimeError("Cliente assíncrono não inicializado")
-        if not (PYDANTIC_AVAILABLE and AITradeAnalysis):
-            text = await self._a_call_openai_text(prompt)
-            return text, None
 
-        # Usar lista centralizada de candidatos
-        models_to_try = self._groq_model_candidates if self.mode == "groq" else [self.model_name]
-
-        for model in models_to_try:
-            try:
-                response = await self.client_async.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": SYSTEM_PROMPT_STRUCTURED,
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    max_tokens=400,
-                    temperature=0.25,
-                    timeout=30,
-                    response_format={"type": "json_object"},
-                )
-                if not response.choices:
-                    continue
-                content = response.choices[0].message.content.strip()
-                if not content:
-                    continue
-                try:
-                    if hasattr(AITradeAnalysis, "model_validate_json"):
-                        obj = AITradeAnalysis.model_validate_json(content)  # type: ignore[attr-defined]
-                    else:
-                        obj = AITradeAnalysis.parse_raw(content)           # type: ignore[attr-defined]
-                    # Sucesso: atualizar modelos se foi fallback
-                    if model != self.model_name:
-                        logging.info(f"🔄 Modelo trocado de {self.model_name} para {model} devido a decommissioned")
-                        self.model_name = model
-                        self.groq_model = model
-                    return content, obj
-                except Exception as e:
-                    logging.warning(f"Falha ao parsear JSON structured com {model}: {e}. Tentando próximo...")
-                    continue
-            except Exception as e:
-                if _is_model_decommissioned_error(e):
-                    logging.warning(f"Modelo {model} decommissioned. Tentando próximo...")
-                    continue
-                else:
-                    logging.error(f"Erro com modelo {model}: {e}. Tentando próximo...")
-                    continue
-
-        # Todos os modelos falharam
-        logging.error(f"Todos os modelos falharam. Fallback texto com {self.model_name}.")
-        text = await self._a_call_openai_text(prompt)
-        return text, None
 
     def _call_openai_compatible(self, prompt: str, max_retries: int = 3) -> str:
         """
@@ -1472,25 +1403,10 @@ class AIAnalyzer:
 
     def _call_model(self, prompt: str, event_data: Dict[str, Any]) -> tuple[str, Optional[Any]]:
         """
-        Chama o provedor atual e retorna (raw_response, structured_or_None).
+        Chama o provedor atual e retorna (raw_response, None).
+        Sempre usa modo texto livre.
         """
-        # Preferir JSON Mode + AsyncOpenAI se disponível
-        if self.mode in ("openai", "groq") and self.client_async and PYDANTIC_AVAILABLE and AITradeAnalysis:
-            try:
-                raw, structured = asyncio.run(self._a_call_openai_structured(prompt))
-                if raw:
-                    return raw, structured
-            except Exception as e:
-                logging.error(f"Erro ao usar AsyncOpenAI structured: {e}")
-                # Fallback para cliente síncrono
-                try:
-                    text = self._call_openai_compatible(prompt)
-                    return text, None
-                except Exception as e2:
-                    logging.error(f"Erro fallback sync OpenAI: {e2}")
-                    return self._generate_mock_analysis(event_data), None
-
-        # Sem JSON Mode ou sem Async: usar cliente síncrono
+        # Sempre usar texto livre (modo padrão)
         if self.mode in ("openai", "groq") and self.client:
             text = self._call_openai_compatible(prompt)
             return text, None
@@ -1680,7 +1596,7 @@ class AIAnalyzer:
 
 if __name__ == "__main__":
     print("\n" + "=" * 70)
-    print("🧪 TESTANDO AI_ANALYZER v2.4.0 + PATCH 2 (GroqCloud + Structured Output focado em regiões)")
+    print("🧪 TESTANDO AI_ANALYZER v2.4.0 + PATCH 2 (GroqCloud - modo texto livre)")
     print("=" * 70)
     
     logging.basicConfig(

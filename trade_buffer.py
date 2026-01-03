@@ -291,13 +291,17 @@ class AsyncTradeBuffer:
                             f"for {len(batch)} trades "
                             f"(avg: {batch_time/len(batch):.2f}ms/trade)"
                         )
-                
+
+                    # Se ainda houver backlog, drena sem dormir
+                    if len(self._buffer) > 0:
+                        continue
+
                 # Intervalo entre processamentos
                 await asyncio.sleep(self.processing_interval_ms / 1000.0)
-                
+
             except Exception as e:
                 logging.error(f"❌ Erro no processing loop: {e}")
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
     
     def _get_batch(self):
         """Obtem batch de trades para processar."""

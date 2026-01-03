@@ -135,18 +135,18 @@ class EnhancedMarketBot:
 
         # Buffer assíncrono de trades com backpressure
         self.trades_buffer = AsyncTradeBuffer(
-            max_size=getattr(config, "TRADES_BUFFER_SIZE", 2000),
+            max_size=getattr(config, "TRADES_BUFFER_SIZE", 5000),
             backpressure_threshold=getattr(
-                config, "TRADES_BUFFER_BACKPRESSURE", 0.8
+                config, "TRADES_BUFFER_BACKPRESSURE", 0.6
             ),
             processing_batch_size=getattr(
-                config, "TRADES_BUFFER_BATCH_SIZE", 50
+                config, "TRADES_BUFFER_BATCH_SIZE", 200
             ),
             processing_interval_ms=getattr(
-                config, "TRADES_BUFFER_PROCESSING_INTERVAL_MS", 10
+                config, "TRADES_BUFFER_PROCESSING_INTERVAL_MS", 5
             ),
             max_processing_time_ms=getattr(
-                config, "TRADES_BUFFER_MAX_PROCESSING_MS", 200.0
+                config, "TRADES_BUFFER_MAX_PROCESSING_MS", 500.0
             ),
             warning_callback=self._on_buffer_warning
         )
@@ -1928,19 +1928,10 @@ class EnhancedMarketBot:
                 and self.orderbook_analyzer
                 and hasattr(self.orderbook_analyzer, "close")
             ):
-                fut = asyncio.run_coroutine_threadsafe(
-                    self.orderbook_analyzer.close(),
-                    self._async_loop,
-                )
-                try:
-                    fut.result(timeout=2.0)
-                except Exception:
-                    try:
-                        fut.cancel()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                # Aguarda a corrotina de fechamento do OrderBookAnalyzer
+                await self.orderbook_analyzer.close()
+        except Exception as e:
+            logging.debug(f"Falha ao fechar OrderBookAnalyzer: {e}")
 
         try:
             if hasattr(self, "_async_loop"):

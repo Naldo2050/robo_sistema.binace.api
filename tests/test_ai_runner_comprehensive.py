@@ -224,7 +224,7 @@ Provide risk assessment."""
             
             # Constrói mensagens para a API
             messages = [
-                {"role": "system", "content": "You are a professional trading AI assistant. Provide accurate, concise trading analysis."},
+                {"role": "system", "content": "You are a professional trading AI assistant. Provide accurate, concise trading analysis.\n\nResponda sempre e apenas em português do Brasil.\nNão utilize inglês em nenhuma parte da resposta.\nNão use tags <think> nem mostre seu raciocínio passo a passo; entregue apenas a análise final em português."},
                 {"role": "user", "content": prompt}
             ]
             
@@ -367,8 +367,7 @@ Provide risk assessment."""
                             model=self.model_name,
                             messages=messages,
                             max_tokens=self.max_tokens,
-                            temperature=self.temperature,
-                            response_format={"type": "json_object"}
+                            temperature=self.temperature
                         ),
                         timeout=self.timeout_seconds
                     )

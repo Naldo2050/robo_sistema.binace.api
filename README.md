@@ -15,13 +15,12 @@ A arquitetura completa do Enhanced Market Bot – incluindo:
 
 está documentada em:
 
-- [`docs/architecture_overview.md`](docs/architecture_overview.md)
+- [`docs/architecture.md`](docs/architecture.md)
 
-Para detalhes específicos do evento de OrderBook (schema de saída) e
-como operar o módulo de OrderBook, veja também:
+Para operação do sistema e troubleshooting, veja também:
 
-- [`docs/orderbook_event_schema.md`](docs/orderbook_event_schema.md)
-- [`docs/orderbook_operational_guide.md`](docs/orderbook_operational_guide.md)
+- [`docs/RUNBOOK.md`](docs/RUNBOOK.md)
+- [`docs/troubleshooting.md`](docs/troubleshooting.md)
 
 ## Instalação
 
@@ -100,11 +99,12 @@ em `schema_version = "2.1.0"`.
 A descrição detalhada de todos os campos (incluindo `orderbook_data`,
 `spread_metrics`, `advanced_metrics`, `health_stats`, etc.) está em:
 
-- [`docs/orderbook_event_schema.md`](docs/orderbook_event_schema.md)
+- `orderbook_analyzer.py`
+- `orderbook_core/event_factory.py`
 
 ### Guia de Operação do OrderBook
 
 Para entender como chamar o `OrderBookAnalyzer`, usar o wrapper no bot e
 monitorar o módulo via métricas, logs e Circuit Breaker, veja:
 
-- [`docs/orderbook_operational_guide.md`](docs/orderbook_operational_guide.md)
+- [`docs/RUNBOOK.md`](docs/RUNBOOK.md)

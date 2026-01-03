@@ -575,12 +575,12 @@ class FlowAnalyzer(IFlowAnalyzer):
             self._processing_times.append(duration)
             self.perf_monitor.record(duration)
             
-            # Log apenas se muito lento (aumentado threshold para reduzir overhead)
-            if self.log_perf and duration > 20.0:
+            # Log apenas se muito lento (threshold ampliado)
+            if self.log_perf and duration > 50.0:
                 logging.warning("⚠️ process_trade lento: %.2fms", duration)
             
-            # Alerta de latência crítica (> 50ms)
-            if duration > 50.0:
+            # Alerta de latência crítica (> 200ms)
+            if duration > 200.0:
                 logging.error("🚨 LATÊNCIA CRÍTICA: process_trade took %.2fms", duration)
             
             # Heatmap fora do lock

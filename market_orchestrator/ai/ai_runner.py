@@ -18,6 +18,7 @@ from typing import Any, Dict
 import config
 from ai_analyzer_qwen import AIAnalyzer  # arquivo na raiz do projeto
 from ..utils.price_fetcher import get_current_price
+from export_signals import create_chart_signal_from_event, export_signal_to_csv
 from format_utils import (
     format_price,
     format_large_number,
@@ -276,6 +277,55 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
         )
     except Exception:
         pass
+
+    # ============================================
+    # [EXPORT_SIGNALS] Exportação de Sinais para CSV
+    # ============================================
+    try:
+        # Extrai dados necessários para criar o sinal
+        enriched_snapshot = event_data.get("enriched_snapshot", {})
+        historical_profile = event_data.get("historical_vp", {})
+        market_environment = event_data.get("market_environment", {})
+        orderbook_data = event_data.get("orderbook_data", {})
+        
+        # Cria o sinal para exportação
+        signal = create_chart_signal_from_event(
+            event_data=event_data,
+            symbol=bot.symbol,
+            exchange="BINANCE",  # Pode ser parametrizado depois
+            enriched_snapshot=enriched_snapshot,
+            historical_profile=historical_profile,
+            market_environment=market_environment,
+            orderbook_data=orderbook_data
+        )
+        
+        # Exporta o sinal para CSV
+        export_signal_to_csv(signal)
+        
+        try:
+            slog.info(
+                "signal_exported",
+                symbol=signal.symbol,
+                event_type=signal.event_type,
+                side=signal.side,
+                strength=signal.strength,
+            )
+        except Exception:
+            pass
+            
+    except Exception as e:
+        logging.debug(
+            f"Falha ao exportar sinal para CSV: {e}",
+            exc_info=True,
+        )
+        try:
+            slog.warning(
+                "signal_export_error",
+                error=str(e),
+                tipo_evento=event_data.get("tipo_evento"),
+            )
+        except Exception:
+            pass
 
     def _print_ai_report_clean(report_text: str) -> None:
         if not report_text:

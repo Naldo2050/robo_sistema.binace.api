@@ -165,18 +165,10 @@ def process_window(bot) -> None:
             f"⏳ Janela com apenas {len(valid_window_data)} trades "
             f"(mín: {bot.min_trades_for_pipeline}). Aguardando mais dados..."
         )
-
-        if len(bot.trades_buffer) >= bot.min_trades_for_pipeline:
-            logging.info(
-                f"🔄 Recuperando {bot.min_trades_for_pipeline} trades "
-                f"do buffer de emergência..."
-            )
-            valid_window_data = list(bot.trades_buffer)[
-                -bot.min_trades_for_pipeline:
-            ]
-        else:
-            bot.window_data = []
-            return
+        # FIX: AsyncTradeBuffer não é um container iterável de trades para uso como fallback.
+        # Se a janela não tem trades suficientes, aguarda mais dados na próxima janela.
+        bot.window_data = []
+        return
 
     total_volume = sum(
         float(trade.get("q", 0)) for trade in valid_window_data

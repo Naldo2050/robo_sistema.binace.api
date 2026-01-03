@@ -296,7 +296,7 @@ class AIRunner:
 
     def _prepare_prompt(self, market_data: Dict[str, Any], analysis_type: str = "orderbook", custom_instructions: str = "") -> List[Dict[str, str]]:
         """Prepare prompt for AI analysis."""
-        system_prompt = f"You are an expert market analyst specializing in {analysis_type} analysis."
+        system_prompt = f"You are an expert market analyst specializing in {analysis_type} analysis.\n\nResponda sempre e apenas em português do Brasil.\nNão utilize inglês em nenhuma parte da resposta.\nNão use tags <think> nem mostre seu raciocínio passo a passo; entregue apenas a análise final em português."
         user_prompt = f"Analyze this market data: {json.dumps(market_data)}"
         
         if custom_instructions:
@@ -323,7 +323,11 @@ class AIRunner:
             elif "SELL" in response.upper():
                 signal = "SELL"
             
-            confidence_match = re.search(r'confidence\s*(\d+\.?\d*)', response, re.IGNORECASE)
+            confidence_match = re.search(
+                r"confidence\s*[:=]?\s*(\d+(?:\.\d+)?)",
+                response,
+                re.IGNORECASE,
+            )
             if confidence_match:
                 try:
                     confidence = float(confidence_match.group(1))
