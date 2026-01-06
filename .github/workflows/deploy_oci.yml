@@ -1,0 +1,35 @@
+name: Deploy to OCI
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    # Exemplo simples: Deploy via SSH direto (Git Pull + Docker Compose Up)
+    # Para produção Enterprise, recomendaria Buildar Imagem -> Registry -> Pull
+    - name: Deploy via SSH
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.OCI_HOST }}
+        username: opc
+        key: ${{ secrets.OCI_SSH_KEY }}
+        script: |
+          cd /opt/market-bot
+          git pull origin main
+          
+          # Atualiza .env se houver secrets novos (opcional, requer lógica adicional)
+          
+          echo "🐳 Rebuilding containers..."
+          docker compose build
+          
+          echo "🚀 Restarting service..."
+          docker compose up -d
+          
+          echo "✅ Deploy Complete"

@@ -1,0 +1,60 @@
+# config/model_config.yaml
+ai:
+  provider: groq
+  provider_fallbacks: []  # Lista de providers para fallback automático (só usar se necessário)
+  groq:
+    model: llama-3.3-70b-versatile   # Modelo padrão atualizado para Llama 3.3 70B
+    model_fallbacks:
+      - llama-3.1-70b-versatile
+      - llama-3.1-8b-instant
+      - mixtral-8x7b-32768
+
+model:
+  # Parâmetros do target
+  lookahead_windows: 15         # Quantas janelas à frente prever
+  min_return_threshold: 0.002   # 0.2% mínimo para considerar "COMPRA"
+  
+  # Divisão dos dados
+  test_size: 0.2                # 20% para teste
+  validation_size: 0.1          # 10% para validação
+  random_state: 42              # Semente para reprodutibilidade
+
+xgboost:
+  # Hiperparâmetros do XGBoost
+  n_estimators: 500             # Número de árvores
+  learning_rate: 0.05           # Taxa de aprendizado
+  max_depth: 6                  # Profundidade máxima das árvores
+  subsample: 0.8                # Amostragem de linhas
+  colsample_bytree: 0.8         # Amostragem de colunas
+  eval_metric: "logloss"        # Métrica de avaliação
+  n_jobs: -1                    # Usar todos os cores da CPU
+  random_state: 42              # Semente
+  
+features:
+  # Configurações das features
+  required_columns:             # Colunas obrigatórias
+    - "price_close"
+    - "volume"
+  
+  drop_columns:                 # Colunas para remover
+    - "window_id"
+    - "saved_at"
+    - "symbol"
+    - "timestamp"
+    - "timestamp_utc"
+    - "epoch_ms"
+  
+  # Limites de qualidade
+  max_null_percentage: 0.3      # Máximo 30% de valores nulos
+  correlation_threshold: 0.95   # Remover features com correlação > 95%
+
+sampling:
+  # Balanceamento de classes
+  use_smote: false              # Usar SMOTE para oversampling?
+  smote_ratio: 0.5              # Balanceamento (1.0 = 50/50)
+  
+paths:
+  # Diretórios
+  features_dir: "features"
+  models_dir: "ml/models"
+  logs_dir: "ml/logs"

@@ -1,0 +1,6 @@
+timestamp_utc,symbol,exchange,event_type,side,price,delta,volume,poc,val,vah,regime,strength,context
+2026.01.03 04:58:19,BTCUSDT,BINANCE,Absorcao de Venda Detectada,buy,45200.0,850.5,135000.0,45000.0,44800.0,45300.0,trend_up,strong,"Delta: 850.5, Vol: 135000, Imb: 0.65"
+2026.01.03 01:58:19,BTCUSDT,BINANCE,Absorcao de Venda Detectada,buy,45000.0,750.5,125000.0,44800.0,44500.0,45200.0,trend_up,strong,"Delta: 750.5, Vol: 125000, Imb: 0.75"
+2026.01.03 02:03:59,BTCUSDT,BINANCE,ANALYSIS_TRIGGER,none,90182.2,-0.5716,8.584,,,,trend_up,weak,"Delta: -0.6, Vol: 9, Imb: 0.03"
+2026.01.03 02:06:00,BTCUSDT,BINANCE,ANALYSIS_TRIGGER,none,90154.1,-1.8129,3.2956,90087.0,89999.0,90176.0,trend_up,weak,"Delta: -1.8, Vol: 3, Imb: 0.24"
+2026.01.03 02:08:00,BTCUSDT,BINANCE,ANALYSIS_TRIGGER,none,90186.5,0.5463,9.2436,90087.0,89999.0,90180.0,trend_up,weak,"Delta: 0.5, Vol: 9, Imb: 0.11"

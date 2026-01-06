@@ -1,0 +1,23 @@
+symbol,name,exchange,category
+ES,E-mini S&P 500,CME,equity_index
+NQ,E-mini Nasdaq 100,CME,equity_index
+YM,E-mini Dow,CME,equity_index
+RT,Russell 2000,CME,equity_index
+DA,DAX Index,CME,equity_index
+STOXX,Euro STOXX 50,Eurex,equity_index
+NG,Natural Gas,CME,energy
+CL,Crude Oil,CME,energy
+GC,Gold,CME,metals
+SI,Silver,CME,metals
+HG,Copper,CME,metals
+ZC,Corn,CME,agricultural
+ZS,Soybeans,CME,agricultural
+ZW,Wheat,CME,agricultural
+6E,Euro,CME,currency
+6J,Yen,CME,currency
+6B,British Pound,CME,currency
+6C,Canadian Dollar,CME,currency
+6A,Australian Dollar,CME,currency
+TF,10Y Treasury Note,CME,rates
+FV,5Y Treasury Note,CME,rates
+US,30Y Treasury Bond,CME,rates

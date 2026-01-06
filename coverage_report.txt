@@ -1,0 +1,206 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.8, pytest-9.0.1, pluggy-1.6.0 -- C:\Users\Micro\AppData\Local\Programs\Python\Python312\python.exe
+cachedir: .pytest_cache
+rootdir: c:\Users\Micro\Documents\Visual Studio\robo_sistema.binace.api
+configfile: pytest.ini
+plugins: anyio-4.12.0, asyncio-1.3.0, cov-7.0.0, mock-3.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... 
+----------------------------- live log collection -----------------------------
+2025-12-19 22:57:16 [WARNING] root: \u26a0\ufe0f Config n\xe3o carregado (cannot import name 'ORDERBOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD' from 'config' (C:\\Users\\Micro\\Documents\\Visual Studio\\robo_sistema.binace.api\\config.py)), usando valores seguros\ncollected 11 items
+
+tests/test_orderbook_analyzer.py::test_validate_snapshot_success 
+------------------------------- live log setup --------------------------------
+2025-12-19 22:57:16 [INFO] root: \u2705 OrderBook Analyzer v2.1.0 (engine 2.2.0) inicializado | Symbol: BTCUSDT | Alert: 4000% | Wall STD: 3.0x | Top N: 20 | Cache TTL: 15.0s | Max Stale: 60.0s | Rate Limit: 10 req/min | Config loaded: \u274c (usando defaults) | History maxlen: 50 | Metrics: \u274c (desabilitadas)\nPASSED                                                                   [  9%]
+tests/test_orderbook_analyzer.py::test_validate_snapshot_stale_data 
+------------------------------- live log setup --------------------------------
+2025-12-19 22:57:16 [INFO] root: \u2705 OrderBook Analyzer v2.1.0 (engine 2.2.0) inicializado | Symbol: BTCUSDT | Alert: 4000% | Wall STD: 3.0x | Top N: 20 | Cache TTL: 15.0s | Max Stale: 60.0s | Rate Limit: 10 req/min | Config loaded: \u274c (usando defaults) | History maxlen: 50 | Metrics: \u274c (desabilitadas)\nPASSED                                                                   [ 18%]
+tests/test_orderbook_analyzer.py::test_validate_snapshot_crossed_spread 
+------------------------------- live log setup --------------------------------
+2025-12-19 22:57:16 [INFO] root: \u2705 OrderBook Analyzer v2.1.0 (engine 2.2.0) inicializado | Symbol: BTCUSDT | Alert: 4000% | Wall STD: 3.0x | Top N: 20 | Cache TTL: 15.0s | Max Stale: 60.0s | Rate Limit: 10 req/min | Config loaded: \u274c (usando defaults) | History maxlen: 50 | Metrics: \u274c (desabilitadas)\nPASSED                                                                   [ 27%]
+tests/test_orderbook_analyzer.py::test_validate_snapshot_zero_volume 
+------------------------------- live log setup --------------------------------
+2025-12-19 22:57:16 [INFO] root: \u2705 OrderBook Analyzer v2.1.0 (engine 2.2.0) inicializado | Symbol: BTCUSDT | Alert: 4000% | Wall STD: 3.0x | Top N: 20 | Cache TTL: 15.0s | Max Stale: 60.0s | Rate Limit: 10 req/min | Config loaded: \u274c (usando defaults) | History maxlen: 50 | Metrics: \u274c (desabilitadas)\nPASSED                                                                   [ 36%]
+tests/test_orderbook_analyzer.py::test_metrics_calculation 
+------------------------------- live log setup --------------------------------
+2025-12-19 22:57:16 [INFO] root: \u2705 OrderBook Analyzer v2.1.0 (engine 2.2.0) inicializado | Symbol: BTCUSDT | Alert: 4000% | Wall STD: 3.0x | Top N: 20 | Cache TTL: 15.0s | Max Stale: 60.0s | Rate Limit: 10 req/min | Config loaded: \u274c (usando defaults) | History maxlen: 50 | Metrics: \u274c (desabilitadas)\nPASSED                                                                   [ 45%]
+tests/test_orderbook_analyzer.py::test_market_impact_simulation 
+------------------------------- live log setup --------------------------------
+2025-12-19 22:57:16 [INFO] root: \u2705 OrderBook Analyzer v2.1.0 (engine 2.2.0) inicializado | Symbol: BTCUSDT | Alert: 4000% | Wall STD: 3.0x | Top N: 20 | Cache TTL: 15.0s | Max Stale: 60.0s | Rate Limit: 10 req/min | Config loaded: \u274c (usando defaults) | History maxlen: 50 | Metrics: \u274c (desabilitadas)\nPASSED                                                                   [ 54%]
+tests/test_orderbook_analyzer.py::test_analyze_valid_flow 
+------------------------------- live log setup --------------------------------
+2025-12-19 22:57:16 [INFO] root: \u2705 OrderBook Analyzer v2.1.0 (engine 2.2.0) inicializado | Symbol: BTCUSDT | Alert: 4000% | Wall STD: 3.0x | Top N: 20 | Cache TTL: 15.0s | Max Stale: 60.0s | Rate Limit: 10 req/min | Config loaded: \u274c (usando defaults) | History maxlen: 50 | Metrics: \u274c (desabilitadas)\n-------------------------------- live log call --------------------------------
+2025-12-19 22:57:16 [INFO] orderbook_analyzer: {"symbol": "BTCUSDT", "event": "orderbook_event", "level": "INFO", "window_id": "?", "severity": "INFO", "data_source": "external", "bid_depth_usd": 399880.0, "ask_depth_usd": 275130.0, "imbalance": 0.18481207685812062, "spread_bps": 1.9997999999999998, "emergency_mode": false}
+2025-12-19 22:57:16 [INFO] root: \U0001f4ca OrderBook OK - Janela #?: bid=$399,880, ask=$275,130\nPASSED                                                                   [ 63%]
+tests/test_orderbook_analyzer.py::test_analyze_critical_flags 
+------------------------------- live log setup --------------------------------
+2025-12-19 22:57:16 [INFO] root: \u2705 OrderBook Analyzer v2.1.0 (engine 2.2.0) inicializado | Symbol: BTCUSDT | Alert: 4000% | Wall STD: 3.0x | Top N: 20 | Cache TTL: 15.0s | Max Stale: 60.0s | Rate Limit: 10 req/min | Config loaded: \u274c (usando defaults) | History maxlen: 50 | Metrics: \u274c (desabilitadas)\n-------------------------------- live log call --------------------------------
+2025-12-19 22:57:16 [INFO] orderbook_analyzer: {"symbol": "BTCUSDT", "event": "orderbook_event", "level": "INFO", "window_id": "?", "severity": "CRITICAL", "data_source": "external", "bid_depth_usd": 50000000.0, "ask_depth_usd": 5001.0, "imbalance": 0.9997999800059998, "spread_bps": 1.9997999999999998, "emergency_mode": false}
+2025-12-19 22:57:16 [INFO] root: \U0001f4ca OrderBook OK - Janela #?: bid=$50,000,000, ask=$5,001\nPASSED                                                                   [ 72%]
+tests/test_orderbook_analyzer.py::test_analyze_fetch_failure 
+------------------------------- live log setup --------------------------------
+2025-12-19 22:57:16 [INFO] root: \u2705 OrderBook Analyzer v2.1.0 (engine 2.2.0) inicializado | Symbol: BTCUSDT | Alert: 4000% | Wall STD: 3.0x | Top N: 20 | Cache TTL: 15.0s | Max Stale: 60.0s | Rate Limit: 10 req/min | Config loaded: \u274c (usando defaults) | History maxlen: 50 | Metrics: \u274c (desabilitadas)\n-------------------------------- live log call --------------------------------
+2025-12-19 22:57:16 [ERROR] orderbook_analyzer: {"symbol": "BTCUSDT", "event": "orderbook_invalid", "level": "ERROR", "error": "fetch_failed", "severity": "ERROR", "fetch_errors": 0, "validation_failures": 0, "data_source": "unknown"}
+PASSED                                                                   [ 81%]
+tests/test_orderbook_analyzer.py::test_analyze_partial_data_rejection 
+------------------------------- live log setup --------------------------------
+2025-12-19 22:57:16 [INFO] root: \u2705 OrderBook Analyzer v2.1.0 (engine 2.2.0) inicializado | Symbol: BTCUSDT | Alert: 4000% | Wall STD: 3.0x | Top N: 20 | Cache TTL: 15.0s | Max Stale: 60.0s | Rate Limit: 10 req/min | Config loaded: \u274c (usando defaults) | History maxlen: 50 | Metrics: \u274c (desabilitadas)\n-------------------------------- live log call --------------------------------
+2025-12-19 22:57:16 [ERROR] orderbook_analyzer: {"symbol": "BTCUSDT", "event": "orderbook_invalid", "level": "ERROR", "error": "validation_failed: orderbook vazio (bids=3, asks=0)", "severity": "ERROR", "fetch_errors": 0, "validation_failures": 0, "data_source": "unknown"}
+PASSED                                                                   [ 90%]
+tests/test_orderbook_analyzer.py::test_get_stats 
+------------------------------- live log setup --------------------------------
+2025-12-19 22:57:16 [INFO] root: \u2705 OrderBook Analyzer v2.1.0 (engine 2.2.0) inicializado | Symbol: BTCUSDT | Alert: 4000% | Wall STD: 3.0x | Top N: 20 | Cache TTL: 15.0s | Max Stale: 60.0s | Rate Limit: 10 req/min | Config loaded: \u274c (usando defaults) | History maxlen: 50 | Metrics: \u274c (desabilitadas)\nPASSED                                                                   [100%]
+ERROR: Coverage failure: total of 5.22 is less than fail-under=65.00
+
+
+=============================== tests coverage ================================
+_______________ coverage: platform win32, python 3.12.8-final-0 _______________
+
+Name                                                  Stmts   Miss Branch BrPart   Cover   Missing
+--------------------------------------------------------------------------------------------------
+ai_analyzer_disabled.py                                  51     51     12      0   0.00%   3-112
+ai_analyzer_qwen.py                                     635    635    192      0   0.00%   42-1464
+ai_historical_pro.py                                    545    545    134      0   0.00%   11-1171
+ai_runner\__init__.py                                     4      4      0      0   0.00%   3-7
+ai_runner\ai_runner.py                                  362    362    112      0   0.00%   2-599
+ai_runner\exceptions.py                                   4      4      0      0   0.00%   4-19
+alert_engine.py                                         207    207    108      0   0.00%   12-497
+audit_new_features.py                                   125    125     60      0   0.00%   1-206
+audit_script.py                                          27     27      8      0   0.00%   1-36
+clock_sync.py                                            57     57      6      0   0.00%   18-104
+config.py                                               190     28     26      0  75.93%   520-585
+context_collector.py                                    586    586    164      0   0.00%   13-901
+create_structure.py                                      48     48     12      0   0.00%   6-107
+dashboard.py                                            433    433    188      0   0.00%   2-1084
+data_handler.py                                         692    692    214      0   0.00%   38-1665
+data_pipeline\__init__.py                                 5      5      0      0   0.00%   14-19
+data_pipeline\cache\__init__.py                           3      3      0      0   0.00%   2-5
+data_pipeline\cache\buffer.py                           124    124     32      0   0.00%   2-349
+data_pipeline\cache\lru_cache.py                         91     91     18      0   0.00%   2-295
+data_pipeline\config.py                                  32     32      2      0   0.00%   2-67
+data_pipeline\fallback\__init__.py                        2      2      0      0   0.00%   2-4
+data_pipeline\fallback\registry.py                       25     25      0      0   0.00%   2-136
+data_pipeline\logging_utils.py                           99     99      2      0   0.00%   2-213
+data_pipeline\metrics\__init__.py                         3      3      0      0   0.00%   2-5
+data_pipeline\metrics\data_quality_metrics.py           104    104     30      0   0.00%   14-315
+data_pipeline\metrics\processor.py                       57     57     10      0   0.00%   2-162
+data_pipeline\pipeline.py                               246    246     68      0   0.00%   2-720
+data_pipeline\validation\__init__.py                      3      3      0      0   0.00%   2-5
+data_pipeline\validation\adaptive.py                     60     60     12      0   0.00%   2-165
+data_pipeline\validation\validator.py                   124    124     36      0   0.00%   2-328
+data_quality_validator.py                                75     75     26      0   0.00%   2-172
+data_validator.py                                       497    497    250      0   0.00%   4-907
+database\__init__.py                                      0      0      0      0 100.00%
+database\event_store.py                                  70     70      6      0   0.00%   2-170
+debug_payload.py                                         14     14      0      0   0.00%   1-24
+debug_validator.py                                       25     25      4      0   0.00%   2-49
+diagnose_crash.py                                        78     78     34      0   0.00%   6-121
+dynamic_volume_profile.py                               104    104     34      0   0.00%   2-208
+enhanced_market_bot.py                                    0      0      0      0 100.00%
+event_bus.py                                            262    262    112      0   0.00%   3-615
+event_memory.py                                          22     22     10      0   0.00%   2-41
+event_saver.py                                          835    835    326      0   0.00%   16-1262
+event_stats_model.py                                    238    238     54      0   0.00%   1-371
+feature_store.py                                         82     82     22      0   0.00%   1-131
+fix_duplicatas.py                                        30     30      4      0   0.00%   3-70
+fix_playwright.py                                        63     63     20      0   0.00%   2-109
+fix_separador_final.py                                   23     23      2      0   0.00%   3-78
+fix_timestamp.py                                         15     15      0      0   0.00%   3-47
+flow_analyzer.py                                         11     11      0      0   0.00%   13-49
+flow_analyzer\__init__.py                                20     20      0      0   0.00%   13-137
+flow_analyzer\absorption.py                             154    154     62      0   0.00%   16-493
+flow_analyzer\aggregates.py                             150    150     48      0   0.00%   12-332
+flow_analyzer\constants.py                               50     50      0      0   0.00%   9-114
+flow_analyzer\core.py                                   598    598    180      0   0.00%   13-1322
+flow_analyzer\errors.py                                  60     60      4      0   0.00%   15-189
+flow_analyzer\logging_config.py                          67     67     14      0   0.00%   11-212
+flow_analyzer\metrics.py                                147    147     40      0   0.00%   11-370
+flow_analyzer\profiling.py                              207    207     28      0   0.00%   15-472
+flow_analyzer\prometheus_metrics.py                     116    116     30      0   0.00%   12-320
+flow_analyzer\protocols.py                               74     74      0      0   0.00%   12-206
+flow_analyzer\serialization.py                           60     60     22      0   0.00%   11-168
+flow_analyzer\utils.py                                  117    117     30      0   0.00%   12-366
+flow_analyzer\validation.py                             168    168     76      0   0.00%   11-423
+format_utils.py                                         220    220    132      0   0.00%   2-434
+full_audit.py                                           101    101     56      0   0.00%   1-155
+health_monitor.py                                       105    105     26      0   0.00%   2-210
+historical_profiler.py                                  113    113     28      0   0.00%   1-229
+infrastructure\__init__.py                                0      0      0      0 100.00%
+infrastructure\oci\__init__.py                            0      0      0      0 100.00%
+infrastructure\oci\monitoring.py                         53     53     10      0   0.00%   2-111
+infrastructure\oci\vault_helper.py                       44     43      8      0   1.92%   3-70
+integration_validator.py                                 71     71     30      0   0.00%   9-227
+levels_registry.py                                      144    144     44      0   0.00%   1-201
+liquidity_heatmap.py                                    220    220     70      0   0.00%   3-478
+log_formatter.py                                         69     69     34      0   0.00%   3-195
+macro_fetcher.py                                        110    110     38      0   0.00%   2-202
+main.py                                                  85     85     22      0   0.00%   14-193
+market_analyzer.py                                        3      3      0      0   0.00%   2-11
+market_impact.py                                         85     85     48      0   0.00%   2-154
+market_orchestrator\__init__.py                           2      2      0      0   0.00%   3-5
+market_orchestrator\ai\__init__.py                        0      0      0      0 100.00%
+market_orchestrator\ai\ai_payload_builder.py             83     83     28      0   0.00%   10-300
+market_orchestrator\ai\ai_runner.py                     222    222     34      0   0.00%   12-573
+market_orchestrator\connection\__init__.py                0      0      0      0 100.00%
+market_orchestrator\connection\robust_connection.py     180    180     46      0   0.00%   11-363
+market_orchestrator\flow\__init__.py                      0      0      0      0 100.00%
+market_orchestrator\flow\risk_manager.py                 32     32      6      0   0.00%   2-88
+market_orchestrator\flow\signal_processor.py             29     29      4      0   0.00%   2-59
+market_orchestrator\flow\trade_executor.py               21     21      2      0   0.00%   2-55
+market_orchestrator\flow\trade_flow_analyzer.py          13     13      2      0   0.00%   9-73
+market_orchestrator\market_orchestrator.py              873    873    264      0   0.00%   11-1775
+market_orchestrator\orchestrator.py                      59     59     14      0   0.00%   2-104
+market_orchestrator\orderbook\__init__.py                 0      0      0      0 100.00%
+market_orchestrator\orderbook\orderbook_wrapper.py      147    147     32      0   0.00%   17-370
+market_orchestrator\signals\__init__.py                   0      0      0      0 100.00%
+market_orchestrator\signals\signal_processor.py          72     72     28      0   0.00%   14-222
+market_orchestrator\utils\__init__.py                     0      0      0      0 100.00%
+market_orchestrator\utils\logging_utils.py               18     18      2      0   0.00%   9-47
+market_orchestrator\utils\price_fetcher.py               26     26      6      0   0.00%   9-57
+market_orchestrator\windows\__init__.py                   0      0      0      0 100.00%
+market_orchestrator\windows\window_processor.py         158    158     44      0   0.00%   14-389
+ml_features.py                                          222    222     68      0   0.00%   13-512
+orderbook_analyzer.py                                  1089    491    336     87  51.16%   62-63, 96, 152, 163-166, 177, 183-185, 196, 232->239, 436-439, 445-448, 452, 459, 461, 463, 476-485, 494-500, 509, 516-517, 526-547, 573-574, 577-578, 608-609, 614-615, 618->621, 622->628, 624->622, 633-634, 641-642, 652-653, 656-657, 667, 672-673, 681-682, 693-696, 700-723, 734->738, 748-750, 755-760, 764, 768-814, 819-821, 833-846, 870-1148, 1158, 1174, 1199-1202, 1206, 1224->1227, 1231, 1239->1238, 1242->1241, 1247, 1264, 1270, 1280-1284, 1289, 1321-1352, 1366, 1393, 1408->1407, 1415, 1420, 1454-1485, 1495->1498, 1516, 1557->1562, 1559->1557, 1565-1567, 1574, 1589->1594, 1591->1589, 1595, 1615, 1618->1624, 1621-1622, 1680->1683, 1690-1691, 1695->1700, 1697, 1714->1720, 1717, 1723, 1743, 1747->1756, 1749->1756, 1756->1769, 1759->1764, 1761, 1766-1767, 1787, 1789, 1793-1794, 1798, 1800, 1802, 1806->1812, 1810, 1850, 1852, 1855, 1867, 1878, 1886->1889, 1901-1903, 1935, 1940, 2083->2087, 2102, 2126-2127, 2130, 2142->exit, 2145-2151, 2164, 2207-2229, 2236-2238, 2248-2249, 2256-2257, 2264-2265, 2273-2349
+orderbook_analyzer\__init__.py                           10      0      0      0 100.00%
+orderbook_analyzer\analyzer.py                          250    250     84      0   0.00%   2-470
+orderbook_analyzer\config\__init__.py                     0      0      0      0 100.00%
+orderbook_analyzer\config\settings.py                    22     22      6      0   0.00%   2-52
+orderbook_core\__init__.py                                9      0      0      0 100.00%
+orderbook_core\circuit_breaker.py                        92     52     30      1  33.61%   48-66, 71-74, 77-80, 88-103, 106-120, 123-134
+orderbook_core\constants.py                              15      0      0      0 100.00%
+orderbook_core\event_factory.py                          17      6      0      0  64.71%   175-264
+orderbook_core\exceptions.py                              4      0      0      0 100.00%
+orderbook_core\metrics.py                               100     32     18      7  63.56%   15-17, 25, 28, 69->72, 77-137, 151-152, 160, 163, 166, 170-171, 182->184, 184->186, 186->188, 188->exit, 203-205, 208-209, 212-215
+orderbook_core\orderbook.py                             246    246     94      0   0.00%   2-432
+orderbook_core\orderbook_config.py                       22      0      0      0 100.00%
+orderbook_core\protocols.py                              34      0     12      6  86.96%   13->exit, 15->exit, 28->exit, 36->exit, 38->exit, 40->exit
+orderbook_core\structured_logging.py                     14      0      0      0 100.00%
+orderbook_core\tracing_utils.py                          37     15      6      2  55.81%   13-14, 41-44, 63-80
+pattern_recognition.py                                   47     47     14      0   0.00%   1-111
+report_generator.py                                     234    234     76      0   0.00%   13-617
+reproduce_issue.py                                       12     12      2      0   0.00%   2-29
+risk_management\__init__.py                               0      0      0      0 100.00%
+risk_management\exceptions.py                             4      4      0      0   0.00%   4-19
+risk_management\risk_manager.py                         306    306     96      0   0.00%   2-684
+show_problem_lines.py                                    28     28     14      0   0.00%   4-36
+support_resistance\__init__.py                           30     30      2      0   0.00%   9-50
+support_resistance\config.py                             98     98     26      0   0.00%   5-170
+support_resistance\constants.py                         110    110      4      0   0.00%   5-197
+support_resistance\core.py                              236    236     82      0   0.00%   5-636
+support_resistance\monitor.py                           167    167     68      0   0.00%   5-361
+support_resistance\pivot_points.py                      151    151     48      0   0.00%   5-318
+support_resistance\system.py                            205    205     66      0   0.00%   5-584
+support_resistance\utils.py                             228    228     80      0   0.00%   5-519
+support_resistance\validation.py                         70     70     38      0   0.00%   5-144
+support_resistance\volume_profile.py                    103    103     28      0   0.00%   5-281
+technical_indicators.py                                  73     73      4      0   0.00%   1-120
+test_circuit_breaker_integration.py                      25     25      4      0   0.00%   5-45
+test_feature_store.py                                   212    212     54      0   0.00%   7-600
+test_new_payload.py                                      24     24      0      0   0.00%   1-88
+teste_separador.py                                       31     31      8      0   0.00%   3-59
+time_manager.py                                         496    443    116      0   8.66%   17-23, 59-62, 80-118, 126-184, 199-239, 246-311, 315-319, 332-436, 440-448, 452-515, 523-535, 539, 543-545, 553-562, 570-575, 579, 583, 587, 595-598, 609-621, 628, 637-646, 654-682, 687-700, 709-747, 752-757, 762-783, 791-869, 873-874
+--------------------------------------------------------------------------------------------------
+TOTAL                                                 17807  16744   5426    103   5.22%
+Coverage HTML written to dir coverage_html
+FAIL Required test coverage of 65% not reached. Total coverage: 5.22%
+============================= 11 passed in 14.16s =============================

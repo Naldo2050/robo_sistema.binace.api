@@ -1,0 +1,116 @@
+{
+  "summary": {
+    "total_scenarios": 9,
+    "passed": 9,
+    "failed": 0,
+    "pass_rate": "100.0%",
+    "timestamp": "2026-01-05T22:04:39.097046"
+  },
+  "scenarios": [
+    {
+      "name": "RISK_ON + LOW_VOL (Ideal)",
+      "passed": true,
+      "regime": "RISK_ON",
+      "should_trade": true,
+      "position_mult": 1.25,
+      "recommendation": "LONG",
+      "warnings": []
+    },
+    {
+      "name": "RISK_ON + NORMAL_VOL",
+      "passed": true,
+      "regime": "RISK_ON",
+      "should_trade": true,
+      "position_mult": 1.0,
+      "recommendation": "LONG",
+      "warnings": []
+    },
+    {
+      "name": "RISK_OFF + HIGH_VOL (Cuidado)",
+      "passed": true,
+      "regime": "RISK_OFF",
+      "should_trade": false,
+      "position_mult": 0.5,
+      "recommendation": "SHORT",
+      "warnings": [
+        "WARNING RISK_OFF + HIGH_VOL: Operar com extrema cautela"
+      ]
+    },
+    {
+      "name": "EXTREME_VOL (N\u00e3o Operar)",
+      "passed": true,
+      "regime": "RISK_OFF",
+      "should_trade": true,
+      "position_mult": 0.5,
+      "recommendation": "NO_TRADE",
+      "warnings": [
+        "WARNING RISK_OFF + HIGH_VOL: Operar com extrema cautela"
+      ]
+    },
+    {
+      "name": "TRANSITION (Aguardar)",
+      "passed": true,
+      "regime": "TRANSITION",
+      "should_trade": false,
+      "position_mult": 0.5,
+      "recommendation": "NEUTRAL",
+      "warnings": [
+        "TRANSITION TRANSITION: Regime mudando, aguardar confirma\u00e7\u00e3o",
+        "Regime change warning active"
+      ]
+    },
+    {
+      "name": "CRYPTO_NATIVE (Seguir Fluxo)",
+      "passed": true,
+      "regime": "TRANSITION",
+      "should_trade": false,
+      "position_mult": 0.5,
+      "recommendation": "WEAK_LONG",
+      "warnings": [
+        "TRANSITION TRANSITION: Regime mudando, aguardar confirma\u00e7\u00e3o"
+      ]
+    },
+    {
+      "name": "REGIME_CHANGE_WARNING",
+      "passed": true,
+      "regime": "RISK_ON",
+      "should_trade": true,
+      "position_mult": 1.0,
+      "recommendation": "LONG",
+      "warnings": [
+        "Regime change warning active"
+      ]
+    },
+    {
+      "name": "LOW_CONFIDENCE_SIGNAL",
+      "passed": true,
+      "regime": "RISK_ON",
+      "should_trade": false,
+      "position_mult": 1.0,
+      "recommendation": "NEUTRAL",
+      "warnings": []
+    },
+    {
+      "name": "WRONG_DIRECTION (Long em RISK_OFF+HIGH_VOL)",
+      "passed": true,
+      "regime": "RISK_OFF",
+      "should_trade": false,
+      "position_mult": 0.5,
+      "recommendation": "LONG",
+      "warnings": [
+        "WARNING RISK_OFF + HIGH_VOL: Operar com extrema cautela"
+      ]
+    }
+  ],
+  "regime_distribution": {
+    "TRANSITION": 2,
+    "RISK_OFF": 3,
+    "RISK_ON": 4
+  },
+  "position_sizing_analysis": {
+    "min": 0.5,
+    "max": 1.25,
+    "avg": 0.75,
+    "zero_count": 0
+  }
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "timestamp": "2025-01-01T00:00:00Z",
+    "symbol": "US_GDP_YoY",
+    "value": 2.5,
+    "source": "FRED"
+  },
+  {
+    "timestamp": "2025-01-01T00:00:00Z",
+    "symbol": "US_CPI_YoY",
+    "value": 3.2,
+    "source": "FRED"
+  },
+  {
+    "timestamp": "2025-01-01T00:00:00Z",
+    "symbol": "US_UNEMPLOYMENT",
+    "value": 3.7,
+    "source": "FRED"
+  },
+  {
+    "timestamp": "2025-01-01T00:00:00Z",
+    "symbol": "FED_RATE",
+    "value": 5.25,
+    "source": "FRED"
+  },
+  {
+    "timestamp": "2025-01-01T00:00:00Z",
+    "symbol": "US_10Y_YIELD",
+    "value": 4.25,
+    "source": "FRED"
+  },
+  {
+    "timestamp": "2025-01-01T00:00:00Z",
+    "symbol": "US_2Y_YIELD",
+    "value": 4.85,
+    "source": "FRED"
+  },
+  {
+    "timestamp": "2025-01-01T00:00:00Z",
+    "symbol": "DXY",
+    "value": 103.5,
+    "source": "FRED"
+  },
+  {
+    "timestamp": "2025-01-01T00:00:00Z",
+    "symbol": "VIX",
+    "value": 14.5,
+    "source": "CBOE"
+  },
+  {
+    "timestamp": "2025-01-01T00:00:00Z",
+    "symbol": "US_RETAIL_SALES",
+    "value": 0.6,
+    "source": "FRED"
+  },
+  {
+    "timestamp": "2025-01-01T00:00:00Z",
+    "symbol": "US_PCE",
+    "value": 2.8,
+    "source": "FRED"
+  }
+]
