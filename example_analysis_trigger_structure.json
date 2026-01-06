@@ -1,0 +1,68 @@
+{
+  "tipo_evento": "ANALYSIS_TRIGGER",
+  "symbol": "BTCUSDT",
+  "epoch_ms": 1703788800000,
+  "is_signal": true,
+  "descricao": "Evento automático para análise da IA",
+  "delta": -250.0,
+  "volume_total": 15.5,
+  "preco_fechamento": 45250.0,
+  "timestamp_utc": "2024-01-04T00:00:00Z",
+  "resultado_da_batalha": "VENDEDOR_VENCEDOR",
+  "features_window_id": "1703788800000",
+  "ml_features": {
+    "price_features": {
+      "returns_1": 0.0023,
+      "returns_5": 0.0115,
+      "returns_15": 0.0342,
+      "volatility_1": 0.0156,
+      "volatility_5": 0.0234,
+      "volatility_15": 0.0289,
+      "momentum_score": 1.245
+    },
+    "volume_features": {
+      "volume_sma_ratio": 1.23,
+      "volume_momentum": 0.15,
+      "buy_sell_pressure": -0.08,
+      "liquidity_gradient": 0.12
+    },
+    "microstructure": {
+      "order_book_slope": 0.0056,
+      "flow_imbalance": -0.1123,
+      "tick_rule_sum": -2.0,
+      "trade_intensity": 5.2
+    },
+    "cross_asset": {
+      "btc_eth_corr_7d": 0.95,
+      "btc_eth_corr_30d": 0.92,
+      "btc_dxy_corr_30d": -0.48,
+      "btc_dxy_corr_90d": -0.35,
+      "btc_ndx_corr_30d": 0.60,
+      "dxy_return_5d": 0.012,
+      "dxy_return_20d": 0.025
+    },
+    "data_quality": {
+      "has_price_features": true,
+      "has_volume_features": true,
+      "has_microstructure": true,
+      "has_cross_asset": true,
+      "issues": [],
+      "is_valid": true
+    }
+  },
+  "raw_event": {
+    "delta": -250.0,
+    "volume_total": 15.5,
+    "volume_compra": 7.2,
+    "volume_venda": 8.3,
+    "preco_fechamento": 45250.0,
+    "advanced_analysis": {
+      "price_targets": {
+        "resistance_1": 45600.0,
+        "support_1": 44900.0
+      },
+      "market_structure": "BULLISH_CONTINUATION",
+      "confidence": 0.78
+    }
+  }
+}

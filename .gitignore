@@ -1,0 +1,104 @@
+# ==============================
+# Python
+# ==============================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.manifest
+*.spec
+.coverage
+.pytest_cache/
+.coverage.*
+
+# ==============================
+# Virtual Environments
+# ==============================
+venv/
+env/
+ENV/
+.venv/
+.env
+.env.local
+.env.*.local
+
+# ==============================
+# Playwright
+# ==============================
+playwright-report/
+*.log
+*.tmp
+playwright_user_data/
+
+# ==============================
+# Local Data Folders (NÃO DEVEM SER COMMITADOS)
+# ==============================
+/dados/                 # DBs, logs locais etc.
+firefox_data/
+gemini_data/
+features/               # FeatureStore em Parquet (produção)
+test_output/            # Saída de testes do FeatureStore
+ml/models/              # Modelos treinados (XGBoost, metadados, scalers)
+
+# ==============================
+# Arquivos de Dados Específicos
+# (redundantes se a pasta já for ignorada, mas mantidos por segurança)
+# ==============================
+# Banco de dados local
+dados/trading_bot.db
+
+# Arquivos Parquet individuais (caso apareçam fora de features/)
+*.parquet
+
+features.csv
+levels_BTCUSDT.json
+eventos_fluxo.jsonl
+eventos-fluxo.json
+
+# ==============================
+# Artefatos de ML adicionais
+# ==============================
+ml/*.log
+
+# Modelos e metadados (caso ml/models/ deixe de ser ignorado no futuro)
+ml/models/*.json
+ml/models/*.pkl
+ml/models/xgb_model_*.json
+ml/models/xgb_model_latest.json
+ml/models/model_metadata_*.json
+ml/models/model_metadata.json
+ml/models/scaler_*.pkl
+
+# Logs e relatórios de treino
+ml/models/error_log_*.txt
+ml/models/feature_importance_*.csv
+
+# ==============================
+# Arquivos temporários de editores / LibreOffice
+# ==============================
+~lock*.odt#             # locks temporários de arquivos .odt
+
+# ==============================
+# Sistema Operacional
+# ==============================
+.DS_Store
+Thumbs.db
+
+# ==============================
+# IDEs e Editores (opcional, mas recomendado)
+# ==============================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ==============================
+# Relatórios de performance de IA (não versionar)
+# ==============================
+diagnostics/ai_performance_report.csv
