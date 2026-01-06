@@ -22,7 +22,9 @@ from enrichment_integrator import enrich_analysis_trigger_event, build_analysis_
 
 # imports opcionais, como no arquivo original
 try:
-    from support_resistance import detect_support_resistance, defense_zones
+    import support_resistance as _sr
+    detect_support_resistance = getattr(_sr, "detect_support_resistance", None)
+    defense_zones = getattr(_sr, "defense_zones", None)
 except Exception:
     detect_support_resistance = None
     defense_zones = None

@@ -37,7 +37,7 @@ Data Handler com lógica unificada (NumPy como fonte da verdade).
 
 import pandas as pd
 import numpy as np
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from zoneinfo import ZoneInfo
 import logging
 import hashlib
@@ -626,7 +626,13 @@ def calcular_delta(
             out["Delta"] = out["VolumeBuyMarket"] - out["VolumeSellMarket"]
             return out
 
-        q = pd.to_numeric(out.get("q", 0.0), errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        q_series = pd.to_numeric(out.get("q", 0.0), errors="coerce")
+        # Verifica se é Series antes de usar to_numpy
+        if isinstance(q_series, pd.Series):
+            q = q_series.to_numpy(dtype=float)
+        else:
+            q = np.array([float(q_series)], dtype=float) if np.isfinite(q_series) else np.array([], dtype=float)
+        q = np.nan_to_num(q, nan=0.0)
 
         try:
             # ✅ USA WRAPPER → CORE
@@ -643,8 +649,17 @@ def calcular_delta(
     except Exception as e:
         logging.error(f"Erro ao calcular delta: {e}")
         out = df if inplace else df.copy()
-        out["VolumeBuyMarket"] = pd.to_numeric(out.get("VolumeBuyMarket", 0.0), errors="coerce").fillna(0.0)
-        out["VolumeSellMarket"] = pd.to_numeric(out.get("VolumeSellMarket", 0.0), errors="coerce").fillna(0.0)
+        buy_series = pd.to_numeric(out.get("VolumeBuyMarket", 0.0), errors="coerce")
+        sell_series = pd.to_numeric(out.get("VolumeSellMarket", 0.0), errors="coerce")
+        # Verifica se é Series antes de usar fillna
+        if isinstance(buy_series, pd.Series):
+            out["VolumeBuyMarket"] = buy_series.fillna(0.0)
+        else:
+            out["VolumeBuyMarket"] = float(buy_series) if np.isfinite(buy_series) else 0.0
+        if isinstance(sell_series, pd.Series):
+            out["VolumeSellMarket"] = sell_series.fillna(0.0)
+        else:
+            out["VolumeSellMarket"] = float(sell_series) if np.isfinite(sell_series) else 0.0
         out["Delta"] = out["VolumeBuyMarket"] - out["VolumeSellMarket"]
         return out
 
@@ -656,7 +671,12 @@ def calcular_delta_normalizado(df: pd.DataFrame, *, inplace: bool = False) -> pd
         price_range = df.get("High", 0) - df.get("Low", 0)
         min_range = df.get("Close", 0) * 0.0001
         price_range = np.maximum(price_range, min_range)
-        df["DeltaNorm"] = (df.get("Delta", 0) / price_range).replace([np.inf, -np.inf], 0).fillna(0)
+        delta_values = df.get("Delta", 0)
+        delta_norm = delta_values / price_range
+        # Use numpy operations instead of pandas replace
+        delta_norm = np.where(np.isinf(delta_norm), 0, delta_norm)
+        delta_norm = np.where(np.isnan(delta_norm), 0, delta_norm)
+        df["DeltaNorm"] = delta_norm
         return df
     except Exception as e:
         logging.error(f"Erro ao calcular delta normalizado: {e}")
@@ -708,9 +728,10 @@ def detectar_absorcao(
                     o, h, l, c, delta_threshold, buy_vol, sell_vol
                 )
 
-                df.at[idx, "AbsorcaoCompra"] = int(abs_compra)
-                df.at[idx, "AbsorcaoVenda"] = int(abs_venda)
-                df.at[idx, "IndiceAbsorcao"] = idx_abs
+                # Use .at[] para acesso por rótulo (mais simples e type-safe)
+                df.at[idx, "AbsorcaoCompra"] = int(abs_compra)  # type: ignore[index]
+                df.at[idx, "AbsorcaoVenda"] = int(abs_venda)  # type: ignore[index]
+                df.at[idx, "IndiceAbsorcao"] = idx_abs  # type: ignore[index]
 
             except Exception as e:
                 logging.debug(f"Erro ao processar linha {idx}: {e}")
@@ -989,9 +1010,9 @@ def create_absorption_event(
     window_data: list,
     symbol: str,
     delta_threshold: float = 0.5,
-    tz_output=timezone.utc,
-    flow_metrics: dict = None,
-    historical_profile: dict = None,
+    tz_output: tzinfo = timezone.utc,
+    flow_metrics: Optional[dict] = None,
+    historical_profile: Optional[dict] = None,
     time_manager: Optional[TimeManager] = None,
     event_epoch_ms: Optional[int] = None,
     data_context: str = "real_time",
@@ -1345,9 +1366,9 @@ def create_exhaustion_event(
     symbol: str,
     history_volumes: Optional[List[float]] = None,
     volume_factor: float = 2.0,
-    tz_output=timezone.utc,
-    flow_metrics: dict = None,
-    historical_profile: dict = None,
+    tz_output: tzinfo = timezone.utc,
+    flow_metrics: Optional[dict] = None,
+    historical_profile: Optional[dict] = None,
     time_manager: Optional[TimeManager] = None,
     event_epoch_ms: Optional[int] = None,
     data_context: str = "real_time",

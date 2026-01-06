@@ -14,6 +14,21 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+# Import das configurações de intervalo
+try:
+    import sys
+    import os
+    # Adicionar o diretório pai ao path para encontrar config.py
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    from config import CROSS_ASSET_INTERVAL, ECONOMIC_DATA_INTERVAL
+except ImportError:
+    # Fallback caso config.py não esteja disponível
+    CROSS_ASSET_INTERVAL = 900  # 15 minutos
+    ECONOMIC_DATA_INTERVAL = 14400  # 4 horas
+    logger.warning("config.py não encontrado, usando valores padrão para intervalos")
+
 
 class MacroDataProvider:
     """
@@ -57,10 +72,27 @@ class MacroDataProvider:
         # ══════════════════════════════════════════════════════════════════════
         # SISTEMA DE CACHE
         # ══════════════════════════════════════════════════════════════════════
-        
+
         self._cache: Dict[str, Any] = {}
         self._cache_timestamps: Dict[str, float] = {}
         self._cache_ttl: int = 300  # 5 minutos padrão
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # CACHE RÍGIDO PARA YFINANCE (15 minutos - evita vazamento de performance)
+        # ═══════════════════════════════════════════════════════════════════════
+        self._yfinance_cache: Dict[str, Any] = {}
+        self._yfinance_cache_timestamps: Dict[str, float] = {}
+        self._last_yfinance_update: float = 0  # Timestamp do último update yfinance
+        self._YFINANCE_CACHE_TTL: int = 900  # 15 minutos em segundos
+
+        # ══════════════════════════════════════════════════════════════════════
+        # CACHE INTELIGENTE BASEADO EM INTERVALOS DO CONFIG
+        # ══════════════════════════════════════════════════════════════════════
+
+        self._last_cross_asset_fetch: float = 0
+        self._last_economic_data_fetch: float = 0
+        self._cached_cross_asset_data: Optional[Dict[str, Any]] = None
+        self._cached_economic_data: Optional[Dict[str, Any]] = None
         
         # TTLs específicos por tipo de dado
         self._ttl_config = {
@@ -175,6 +207,44 @@ class MacroDataProvider:
         """Set thread-safe no cache"""
         with self._cache_lock:
             self._set_cache(key, value)
+    
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # CACHE RÍGIDO PARA YFINANCE (15 minutos)
+    # ═══════════════════════════════════════════════════════════════════════════════
+    
+    def _get_yfinance_cached(self, key: str) -> Optional[Any]:
+        """
+        Retorna valor cacheado do yfinance se ainda válido (15 min TTL).
+        CRÍTICO: Esta verificação deve ocorrer ANTES de qualquer conexão.
+        
+        Args:
+            key: Chave do cache (ex: 'vix', 'dxy', 'oil')
+            
+        Returns:
+            Valor cacheado ou None se expirado/inexistente
+        """
+        current_time = time.time()
+        
+        # Verificação RÍGIDA de timestamp ANTES de qualquer conexão
+        if (current_time - self._last_yfinance_update) < self._YFINANCE_CACHE_TTL:
+            if key in self._yfinance_cache:
+                cached_time = self._yfinance_cache_timestamps.get(key, 0)
+                age = current_time - cached_time
+                logger.debug(f"📦 Cache HIT yfinance: {key} (age: {age:.1f}s, TTL: {self._YFINANCE_CACHE_TTL}s)")
+                return self._yfinance_cache[key]
+        
+        logger.debug(f"📦 Cache EXPIRED/EMPTY yfinance: {key}")
+        return None
+    
+    def _set_yfinance_cache(self, key: str, value: Any) -> None:
+        """
+        Salva valor do yfinance no cache com timestamp.
+        """
+        if value is not None:
+            self._yfinance_cache[key] = value
+            self._yfinance_cache_timestamps[key] = time.time()
+            self._last_yfinance_update = time.time()
+            logger.debug(f"📦 Cache SET yfinance: {key}")
     
     def _can_call_api(self, api: str) -> bool:
         """
@@ -364,15 +434,29 @@ class MacroDataProvider:
         return value
     
     async def _fetch_vix_impl(self) -> Optional[float]:
-        """Implementação real de busca do VIX"""
+        """Implementação real de busca do VIX - versão não-bloqueante"""
+        # Verificação RÍGIDA de cache ANTES de qualquer conexão
+        cached = self._get_yfinance_cached("vix")
+        if cached is not None:
+            return cached
+        
         try:
-            await self._wait_for_rate_limit("yahoo")
-            import yfinance as yf
-            vix = yf.Ticker("^VIX")
-            hist = vix.history(period="1d")
-            if not hist.empty:
-                value = float(hist['Close'].iloc[-1])
-                logger.info(f"✅ VIX (Yahoo): {value:.2f}")
+            loop = asyncio.get_running_loop()
+            
+            def _fetch_vix_sync():
+                import yfinance as yf
+                vix = yf.Ticker("^VIX")
+                hist = vix.history(period="1d")
+                if not hist.empty:
+                    return float(hist['Close'].iloc[-1])
+                return None
+            
+            # Executar em thread separada para não bloquear o event loop
+            value = await loop.run_in_executor(None, _fetch_vix_sync)
+            
+            if value is not None:
+                logger.debug(f"✅ VIX (Yahoo): {value:.2f}")
+                self._set_yfinance_cache("vix", value)
                 return value
         except Exception as e:
             logger.warning(f"⚠️ Erro ao buscar VIX: {e}")
@@ -398,7 +482,7 @@ class MacroDataProvider:
                 await self._wait_for_rate_limit("twelve")
                 session = await self._get_session()
                 url = f"https://api.twelvedata.com/time_series?symbol=TNX&interval=1day&apikey={twelve_key}"
-                async with session.get(url, timeout=10) as resp:
+                async with session.get(url) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if data.get("values") and len(data["values"]) > 0:
@@ -413,14 +497,29 @@ class MacroDataProvider:
             logger.warning("⚠️ Chave da API Twelve Data não configurada para TNX")
         
         # Fallback para Yahoo Finance
+        # Verificação RÍGIDA de cache ANTES de qualquer conexão
+        cached = self._get_yfinance_cached("treasury_10y")
+        if cached is not None:
+            logger.debug(f"📦 Treasury 10Y usando cache: {cached:.2f}%")
+            return cached
+        
         try:
-            await self._wait_for_rate_limit("yahoo")
-            import yfinance as yf
-            tnx = yf.Ticker("^TNX")
-            hist = tnx.history(period="1d")
-            if not hist.empty:
-                value = float(hist['Close'].iloc[-1])
-                logger.info(f"✅ Treasury 10Y (Yahoo Finance): {value:.2f}%")
+            loop = asyncio.get_running_loop()
+            
+            def _fetch_treasury_sync():
+                import yfinance as yf
+                tnx = yf.Ticker("^TNX")
+                hist = tnx.history(period="1d")
+                if not hist.empty:
+                    return float(hist['Close'].iloc[-1])
+                return None
+            
+            # Executar em thread separada para não bloquear o event loop
+            value = await loop.run_in_executor(None, _fetch_treasury_sync)
+            
+            if value is not None:
+                logger.debug(f"✅ Treasury 10Y (Yahoo Finance): {value:.2f}%")
+                self._set_yfinance_cache("treasury_10y", value)
                 return value
         except Exception as e:
             logger.warning(f"⚠️ Erro ao buscar TNX do Yahoo Finance: {e}")
@@ -446,15 +545,28 @@ class MacroDataProvider:
     
     async def _fetch_dxy_impl(self) -> Optional[float]:
         """Implementação real de busca do DXY - Yahoo Finance como fonte de verdade"""
-        # Yahoo Finance é a fonte de verdade absoluta para DXY (DX-Y.NYB)
+        # Verificação RÍGIDA de cache ANTES de qualquer conexão
+        cached = self._get_yfinance_cached("dxy")
+        if cached is not None:
+            return cached
+        
         try:
-            await self._wait_for_rate_limit("yahoo")
-            import yfinance as yf
-            dxy = yf.Ticker("DX-Y.NYB")
-            hist = dxy.history(period="1d")
-            if not hist.empty:
-                value = float(hist['Close'].iloc[-1])
-                logger.info(f"✅ DXY (Yahoo Finance - DX-Y.NYB): {value:.2f}")
+            loop = asyncio.get_running_loop()
+            
+            def _fetch_dxy_sync():
+                import yfinance as yf
+                dxy = yf.Ticker("DX-Y.NYB")
+                hist = dxy.history(period="1d")
+                if not hist.empty:
+                    return float(hist['Close'].iloc[-1])
+                return None
+            
+            # Executar em thread separada para não bloquear o event loop
+            value = await loop.run_in_executor(None, _fetch_dxy_sync)
+            
+            if value is not None:
+                logger.debug(f"✅ DXY (Yahoo Finance - DX-Y.NYB): {value:.2f}")
+                self._set_yfinance_cache("dxy", value)
                 return value
         except Exception as e:
             logger.warning(f"⚠️ Erro ao buscar DXY do Yahoo Finance: {e}")
@@ -487,7 +599,7 @@ class MacroDataProvider:
                 await self._wait_for_rate_limit("twelve")
                 session = await self._get_session()
                 url = f"https://api.twelvedata.com/time_series?symbol=SPY&interval=1day&apikey={twelve_key}"
-                async with session.get(url, timeout=10) as resp:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if data.get("values") and len(data["values"]) > 0:
@@ -520,7 +632,7 @@ class MacroDataProvider:
                 await self._wait_for_rate_limit("twelve")
                 session = await self._get_session()
                 url = f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=1day&apikey={twelve_key}"
-                async with session.get(url, timeout=10) as resp:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         if data.get("values") and len(data["values"]) > 0:
@@ -545,15 +657,29 @@ class MacroDataProvider:
         return value
     
     async def _fetch_oil_impl(self) -> Optional[float]:
-        """Implementação real de busca do Oil"""
+        """Implementação real de busca do Oil - versão não-bloqueante"""
+        # Verificação RÍGIDA de cache ANTES de qualquer conexão
+        cached = self._get_yfinance_cached("oil")
+        if cached is not None:
+            return cached
+        
         try:
-            await self._wait_for_rate_limit("yahoo")
-            import yfinance as yf
-            oil = yf.Ticker("CL=F")
-            hist = oil.history(period="5d")
-            if not hist.empty:
-                value = float(hist['Close'].iloc[-1])
-                logger.info(f"✅ Oil (Yahoo): ${value:.2f}")
+            loop = asyncio.get_running_loop()
+            
+            def _fetch_oil_sync():
+                import yfinance as yf
+                oil = yf.Ticker("CL=F")
+                hist = oil.history(period="5d")
+                if not hist.empty:
+                    return float(hist['Close'].iloc[-1])
+                return None
+            
+            # Executar em thread separada para não bloquear o event loop
+            value = await loop.run_in_executor(None, _fetch_oil_sync)
+            
+            if value is not None:
+                logger.debug(f"✅ Oil (Yahoo): ${value:.2f}")
+                self._set_yfinance_cache("oil", value)
                 return value
         except Exception as e:
             logger.warning(f"⚠️ Erro ao buscar Oil: {e}")
@@ -838,6 +964,169 @@ class MacroDataProvider:
                 return partial
 
         return macro_data
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # MÉTODOS COM CACHE INTELIGENTE BASEADO EM INTERVALOS
+    # ══════════════════════════════════════════════════════════════════════════
+
+    async def fetch_cross_asset_data(self) -> Dict[str, Any]:
+        """
+        Busca dados cross-asset (Twelve Data/Alpha Vantage) com cache inteligente.
+        Só chama API se o tempo decorrido for maior que CROSS_ASSET_INTERVAL.
+
+        Returns:
+            Dict com dados cross-asset ou dados cacheados
+        """
+        current_time = time.time()
+        time_since_last_fetch = current_time - self._last_cross_asset_fetch
+
+        # Verificar se deve usar cache
+        if self._cached_cross_asset_data is not None and time_since_last_fetch < CROSS_ASSET_INTERVAL:
+            logger.debug(f"📦 Usando cache cross-asset (último fetch: {time_since_last_fetch:.1f}s atrás)")
+            return self._cached_cross_asset_data
+
+        logger.info(f"🔄 Buscando dados cross-asset frescos (último fetch: {time_since_last_fetch:.1f}s atrás)")
+
+        # Buscar dados frescos
+        try:
+            fresh_data = await self._fetch_cross_asset_data_impl()
+            self._cached_cross_asset_data = fresh_data
+            self._last_cross_asset_fetch = current_time
+            return fresh_data
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao buscar dados cross-asset: {e}")
+            # Retornar cache se disponível
+            if self._cached_cross_asset_data is not None:
+                logger.warning("⚠️ Retornando dados cross-asset do cache devido a erro")
+                return self._cached_cross_asset_data
+            # Retornar dados vazios se não há cache
+            return {
+                "status": "error",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+    async def _fetch_cross_asset_data_impl(self) -> Dict[str, Any]:
+        """
+        Implementação real da busca de dados cross-asset.
+        Usa Twelve Data e Alpha Vantage conforme hierarquia existente.
+        """
+        data = {
+            "status": "ok",
+            "timestamp": datetime.utcnow().isoformat(),
+            "sources": []
+        }
+
+        # Buscar dados de índices (Twelve Data)
+        try:
+            sp500 = await self.get_sp500()
+            if sp500 is not None:
+                data["sp500"] = sp500
+                data["sources"].append("twelve_data_sp500")
+
+            gold = await self.get_gold_price()
+            if gold is not None:
+                data["gold"] = gold
+                data["sources"].append("twelve_data_gold")
+
+            # Treasury 10Y
+            treasury_10y = await self.get_treasury_10y()
+            if treasury_10y is not None:
+                data["treasury_10y"] = treasury_10y
+                data["sources"].append("twelve_data_treasury")
+
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao buscar dados Twelve Data: {e}")
+
+        # Buscar dados adicionais do Alpha Vantage se disponível
+        if self.alpha_key:
+            try:
+                # Aqui poderia adicionar chamadas específicas do Alpha Vantage
+                # Por enquanto, mantemos apenas Twelve Data
+                pass
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao buscar dados Alpha Vantage: {e}")
+
+        return data
+
+    async def fetch_economic_data(self) -> Dict[str, Any]:
+        """
+        Busca dados econômicos (FRED) com cache inteligente.
+        Só chama API se o tempo decorrido for maior que ECONOMIC_DATA_INTERVAL.
+
+        Returns:
+            Dict com dados econômicos ou dados cacheados
+        """
+        current_time = time.time()
+        time_since_last_fetch = current_time - self._last_economic_data_fetch
+
+        # Verificar se deve usar cache
+        if self._cached_economic_data is not None and time_since_last_fetch < ECONOMIC_DATA_INTERVAL:
+            logger.debug(f"📦 Usando cache economic data (último fetch: {time_since_last_fetch:.1f}s atrás)")
+            return self._cached_economic_data
+
+        logger.info(f"🔄 Buscando dados econômicos frescos (último fetch: {time_since_last_fetch:.1f}s atrás)")
+
+        # Buscar dados frescos
+        try:
+            fresh_data = await self._fetch_economic_data_impl()
+            self._cached_economic_data = fresh_data
+            self._last_economic_data_fetch = current_time
+            return fresh_data
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao buscar dados econômicos: {e}")
+            # Retornar cache se disponível
+            if self._cached_economic_data is not None:
+                logger.warning("⚠️ Retornando dados econômicos do cache devido a erro")
+                return self._cached_economic_data
+            # Retornar dados vazios se não há cache
+            return {
+                "status": "error",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+    async def _fetch_economic_data_impl(self) -> Dict[str, Any]:
+        """
+        Implementação real da busca de dados econômicos.
+        Focado em dados que mudam raramente (FRED API).
+        """
+        data = {
+            "status": "ok",
+            "timestamp": datetime.utcnow().isoformat(),
+            "sources": []
+        }
+
+        # FRED API - dados econômicos que mudam raramente
+        if self.fred_key:
+            try:
+                # Aqui seria implementada a busca de dados específicos do FRED
+                # Por exemplo: desemprego, PIB, inflação, etc.
+                # Como o código atual não tem implementação específica do FRED,
+                # mantemos placeholder
+                logger.debug("FRED API disponível mas implementação específica pendente")
+                data["sources"].append("fred_placeholder")
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao buscar dados FRED: {e}")
+
+        # Dados econômicos de outras fontes (Yahoo Finance, etc.)
+        try:
+            # DXY como indicador econômico
+            dxy = await self.get_dxy()
+            if dxy is not None:
+                data["dxy"] = dxy
+                data["sources"].append("yahoo_dxy")
+
+            # Oil price como indicador econômico
+            oil = await self.get_oil_price()
+            if oil is not None:
+                data["oil"] = oil
+                data["sources"].append("yahoo_oil")
+
+        except Exception as e:
+            logger.warning(f"⚠️ Erro ao buscar dados econômicos alternativos: {e}")
+
+        return data
 
 
 # ══════════════════════════════════════════════════════════════════════════════

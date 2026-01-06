@@ -5,11 +5,27 @@ Implementa cache inteligente e graceful shutdown.
 """
 import asyncio
 import logging
+import time
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 import psutil
 
 logger = logging.getLogger(__name__)
+
+# Import das configurações de intervalo
+try:
+    import sys
+    import os
+    # Adicionar o diretório pai ao path para encontrar config.py
+    parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
+    from config import CROSS_ASSET_INTERVAL, ECONOMIC_DATA_INTERVAL
+except ImportError:
+    # Fallback caso config.py não esteja disponível
+    CROSS_ASSET_INTERVAL = 900  # 15 minutos
+    ECONOMIC_DATA_INTERVAL = 14400  # 4 horas
+    logger.warning("config.py não encontrado, usando valores padrão para intervalos")
 
 
 class MacroUpdateService:
@@ -30,12 +46,16 @@ class MacroUpdateService:
     def __init__(self):
         if hasattr(self, '_initialized'):
             return
-        
+
         self._initialized = True
-        self.update_interval = 60  # Atualizar a cada 60 segundos
+        # Removido update_interval fixo - agora usa intervalos independentes
         self.last_update: Optional[datetime] = None
         self._running = False
         
+        # Import do provider
+        from src.data.macro_data_provider import get_macro_provider
+        self.provider = get_macro_provider()
+         
         # Métricas de performance
         self._performance_metrics: Dict[str, Any] = {
             'total_updates': 0,
@@ -48,7 +68,7 @@ class MacroUpdateService:
             'average_update_time': 0.0,
             'memory_usage_mb': 0,
         }
-        
+         
         # Health check
         self._health_status = {
             'status': 'healthy',
@@ -57,7 +77,7 @@ class MacroUpdateService:
             'uptime_seconds': 0,
             'start_time': datetime.utcnow(),
         }
-        
+         
         logger.info("✅ MacroUpdateService inicializado (SINGLETON)")
 
     def get_cache_metrics(self) -> Dict[str, Any]:
@@ -179,34 +199,77 @@ class MacroUpdateService:
             logger.info("ℹ️ MacroUpdateService não tinha task ativo")
     
     async def _update_loop(self):
-        """Loop principal de atualização"""
+        """Loop principal de atualização com verificação independente de timestamps"""
         from src.data.macro_data_provider import get_macro_provider
-        
+
+        provider = get_macro_provider()
+
+        # Timestamps dos últimos updates
+        last_cross_asset_update = 0
+        last_economic_update = 0
+        last_crypto_update = 0  # Para manter compatibilidade com lógica de cripto existente
+
+        logger.info(f"🔄 Iniciando loop de atualização: Cross-Asset cada {CROSS_ASSET_INTERVAL}s, Economic cada {ECONOMIC_DATA_INTERVAL}s")
+
         while self._running:
             try:
-                provider = get_macro_provider()
-                
-                # Limpar cache antigo para forçar atualização
-                provider.clear_cache("all_macro")
-                
-                # Buscar novos dados (isso atualiza o cache)
-                data = await provider.get_all_macro_data()
-                
+                current_time = time.time()
+
+                # Check Cross Asset (15 min)
+                if current_time - last_cross_asset_update >= CROSS_ASSET_INTERVAL:
+                    logger.info("🔄 Atualizando dados Cross-Asset...")
+                    try:
+                        cross_asset_data = await provider.fetch_cross_asset_data()
+                        if cross_asset_data.get("status") == "ok":
+                            logger.info(f"✅ Cross-Asset atualizado: {len(cross_asset_data.get('sources', []))} fontes")
+                            last_cross_asset_update = current_time
+                            self._performance_metrics['successful_updates'] += 1
+                        else:
+                            logger.warning(f"⚠️ Falha na atualização Cross-Asset: {cross_asset_data.get('error', 'desconhecido')}")
+                            self._performance_metrics['failed_updates'] += 1
+                    except Exception as e:
+                        logger.error(f"❌ Erro atualizando Cross-Asset: {e}")
+                        self._performance_metrics['failed_updates'] += 1
+
+                # Check Economic (4 hours)
+                if current_time - last_economic_update >= ECONOMIC_DATA_INTERVAL:
+                    logger.info("🔄 Atualizando dados Econômicos...")
+                    try:
+                        economic_data = await provider.fetch_economic_data()
+                        if economic_data.get("status") == "ok":
+                            logger.info(f"✅ Dados Econômicos atualizados: {len(economic_data.get('sources', []))} fontes")
+                            last_economic_update = current_time
+                            self._performance_metrics['successful_updates'] += 1
+                        else:
+                            logger.warning(f"⚠️ Falha na atualização Econômica: {economic_data.get('error', 'desconhecido')}")
+                            self._performance_metrics['failed_updates'] += 1
+                    except Exception as e:
+                        logger.error(f"❌ Erro atualizando dados Econômicos: {e}")
+                        self._performance_metrics['failed_updates'] += 1
+
+                # Check Binance/Crypto (Fast - manter lógica existente se houver)
+                # Por enquanto, manter o comportamento antigo para compatibilidade
+                # TODO: Implementar lógica específica para cripto se necessário
+
+                # Atualizar métricas gerais
+                self._performance_metrics['total_updates'] += 1
                 self.last_update = datetime.utcnow()
-                logger.debug(f"📊 Macro data atualizado: {len(data)} campos")
-                
+
             except Exception as e:
-                logger.error(f"❌ Erro atualizando macro data: {e}")
-            
-            # Aguardar próximo ciclo
-            await asyncio.sleep(self.update_interval)
+                logger.error(f"❌ Erro no loop de atualização: {e}")
+                self._performance_metrics['failed_updates'] += 1
+
+            # Loop rápido que não consome API, apenas checa o tempo
+            await asyncio.sleep(1)
     
     def get_status(self) -> dict:
         """Retorna status do serviço"""
         return {
             "running": self._running,
             "last_update": self.last_update.isoformat() if self.last_update else None,
-            "update_interval": self.update_interval,
+            "cross_asset_interval": CROSS_ASSET_INTERVAL,
+            "economic_data_interval": ECONOMIC_DATA_INTERVAL,
+            "loop_interval": 1,  # Loop roda a cada 1 segundo
         }
 
 
