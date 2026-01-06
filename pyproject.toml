@@ -10,3 +10,9 @@ ignore = ["E501"] # Deixar que o black cuide de line length
 
 [tool.ruff.lint]
 # Desativar regras conflitantes se necessário
+
+[tool.pyright]
+# Configurações do Pylance
+pythonVersion = "3.12"
+stubPath = "src"
+typeCheckingMode = "basic"

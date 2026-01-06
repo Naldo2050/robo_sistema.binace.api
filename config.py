@@ -153,3 +153,23 @@ CORRELATION_CALC_INTERVAL = 5  # Calcular a cada 5 janelas (era 1)
 
 # Número de workers para processamento paralelo
 PARALLEL_WORKERS = 4  # Workers para processamento paralelo de trades
+
+# --- UPDATE INTERVALS (Seconds) ---
+# Binance/Crypto (Websockets mantêm realtime, isso é para snapshots/fallback)
+CRYPTO_POLLING_INTERVAL = 60   # 1 minuto (Backup do Websocket)
+CRYPTO_INTERVAL = 60            # 1 minuto (para consistência)
+
+# Macro Data (Twelve Data/Alpha Vantage)
+# 15 minutos = 96 requisições/dia (Muito seguro para conta Free de 800/dia)
+CROSS_ASSET_INTERVAL = 900
+
+# Economic Data (FRED)
+# 4 horas = Dados econômicos mudam raramente
+ECONOMIC_DATA_INTERVAL = 14400
+
+# AI Analysis
+# Não basear em tempo, mas em eventos. Se precisar de tempo:
+AI_ANALYSIS_INTERVAL = 300     # 5 minutos (Evita spammar a Groq)
+
+# Otimização de IA - pula análise quando volume baixo em regime lateral
+AI_SKIP_VOLUME_THRESHOLD = 100_000  # USD - threshold para pular IA em sideways

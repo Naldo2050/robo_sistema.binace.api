@@ -66,7 +66,7 @@ class OCIMonitor:
         Envia um dicionário de métricas para o OCI.
         metrics_dict: dict { 'NomeMetrica': valor, ... }
         """
-        if not self.enabled or not self.compartment_id:
+        if not self.enabled or not self.compartment_id or not self.monitoring_client:
             return
 
         timestamp = datetime.now(timezone.utc)
@@ -74,9 +74,9 @@ class OCIMonitor:
 
         for name, value in metrics_dict.items():
             # Proteção contra valores nulos/inválidos
-            if value is None: 
+            if value is None:
                 continue
-                
+                 
             metric_data_details.append(
                 oci.monitoring.models.MetricDataDetails(
                     namespace=self.namespace,

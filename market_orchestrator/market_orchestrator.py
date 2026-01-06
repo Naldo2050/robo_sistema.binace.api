@@ -78,7 +78,9 @@ except Exception:
     generate_alerts = None
 
 try:
-    from support_resistance import detect_support_resistance, defense_zones
+    import support_resistance as _sr
+    detect_support_resistance = getattr(_sr, "detect_support_resistance", None)
+    defense_zones = getattr(_sr, "defense_zones", None)
 except Exception:
     detect_support_resistance = None
     defense_zones = None
@@ -543,8 +545,8 @@ class EnhancedMarketBot:
             try:
                 try:
                     pending = asyncio.all_tasks(loop=self._async_loop)
-                except TypeError:
-                    pending = asyncio.Task.all_tasks(loop=self._async_loop)
+                except (TypeError, AttributeError):
+                    pending = asyncio.all_tasks()
             except Exception:
                 pending = []
 

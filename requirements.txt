@@ -22,6 +22,7 @@ pydantic>=2.0.0
 
 # Market Data
 yfinance>=0.2.43
+fredapi>=0.5.0
 
 # Oracle Cloud
 oci>=2.115.0

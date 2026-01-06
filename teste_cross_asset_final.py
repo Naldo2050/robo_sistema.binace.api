@@ -39,7 +39,7 @@ def teste_completo():
     # 3. Teste das features ML
     print("\n3. Testando calculate_cross_asset_features...")
     try:
-        features = calculate_cross_asset_features(now_utc)
+        features = calculate_cross_asset_features("BTCUSDT", now_utc)
         print(f"[OK] Features calculadas: {len(features)} features")
         print("Primeiras 5 features:")
         for key, value in list(features.items())[:5]:
@@ -114,7 +114,7 @@ def test_integration_with_ml_features():
         
         # Verificar se a função está registrada no ANALYSIS_TRIGGER
         now_utc = datetime.now(timezone.utc)
-        features = calculate_cross_asset_features(now_utc)
+        features = calculate_cross_asset_features("BTCUSDT", now_utc)
         
         expected_features = [
             "btc_eth_corr_7d",

@@ -237,6 +237,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
     - semaphore
     - pool de threads limitado
     - logs detalhados
+    - otimização para pular análise em condições de baixo volume/volatilidade lateral
 
     Equivalente ao método EnhancedMarketBot._run_ai_analysis_threaded original.
     """
@@ -247,6 +248,50 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                 "⚠️ Análise da IA ignorada: sistema não passou no teste inicial."
             )
         return
+
+    # ============================================
+    # [AI_OPTIMIZATION] Otimização para economizar tokens de IA
+    # ============================================
+    # Pula análise da IA se volatility_regime for 'SIDEWAYS' e volume estiver baixo
+    try:
+        regime_analysis = event_data.get("regime_analysis", {})
+        volatility_regime = regime_analysis.get("volatility_regime", "").upper()
+
+        # Verifica se está em regime lateral
+        if volatility_regime == "SIDEWAYS":
+            # Verifica volume baixo
+            volume_total = event_data.get("volume_total", 0)
+            volume_threshold = getattr(config, "AI_SKIP_VOLUME_THRESHOLD", 100000)  # 100k USD default
+
+            if volume_total < volume_threshold:
+                logging.info(
+                    f"🤖 IA pulada: regime SIDEWAYS + volume baixo "
+                    f"({format_large_number(volume_total)} < {format_large_number(volume_threshold)})"
+                )
+
+                # Usa logger estruturado se disponível
+                slog = getattr(
+                    bot,
+                    "slog",
+                    StructuredLogger("ai_runner", getattr(bot, "symbol", "UNKNOWN")),
+                )
+                try:
+                    slog.info(
+                        "ai_analysis_skipped",
+                        reason="sideways_low_volume",
+                        volatility_regime=volatility_regime,
+                        volume_total=volume_total,
+                        volume_threshold=volume_threshold,
+                        tipo_evento=event_data.get("tipo_evento"),
+                    )
+                except Exception:
+                    pass
+
+                return
+
+    except Exception as e:
+        logging.debug(f"Erro na verificação de otimização da IA: {e}")
+        # Continua normalmente se houver erro na verificação
 
     logging.debug(
         "🔍 Evento recebido para análise da IA: %s",
@@ -516,7 +561,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                         }
 
                                 # [HYBRID_DECISION]
-                                if HYBRID_AVAILABLE and getattr(config, "HYBRID_ENABLED", True):
+                                if HYBRID_AVAILABLE and getattr(config, "HYBRID_ENABLED", True) and fuse_decisions and decision_to_ai_result:
                                     try:
                                         ml_pred = ml_prediction if ml_prediction.get("status") == "ok" else None
                                         hybrid_result = fuse_decisions(ml_pred, ai_result_json)

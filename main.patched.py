@@ -120,7 +120,8 @@ except Exception:
     generate_alerts = None
 
 try:
-    from support_resistance import detect_support_resistance
+    import support_resistance as _sr
+    detect_support_resistance = getattr(_sr, "detect_support_resistance", None)
 except Exception:
     detect_support_resistance = None
 
@@ -342,16 +343,16 @@ class TradeFlowAnalyzer:
             symbol,
             delta_threshold=dynamic_delta_threshold,
             tz_output=self.tz_output,
-            historical_profile=historical_profile,
+            historical_profile=historical_profile if historical_profile else {},
         )
-        
+         
         exhaustion_event = create_exhaustion_event(
             window_data,
             symbol,
             history_volumes=list(history_volumes),
             volume_factor=self.vol_factor_exh,
             tz_output=self.tz_output,
-            historical_profile=historical_profile,
+            historical_profile=historical_profile if historical_profile else {},
         )
         
         return absorption_event, exhaustion_event
@@ -657,8 +658,19 @@ class EnhancedMarketBot:
                 return
             
             try:
-                p = float(p); q = float(q); T = int(T)
-            except (TypeError, ValueError):
+                # Converte tipos de forma segura
+                p_val = float(p) if p is not None else None
+                q_val = float(q) if q is not None else None
+                T_val = int(T) if T is not None else None
+                
+                if p_val is None or q_val is None or T_val is None:
+                    logging.error("Trade inválido (valores nulos): %s", trade)
+                    return
+                
+                p = p_val
+                q = q_val
+                T = T_val
+            except (TypeError, ValueError, OverflowError):
                 logging.error("Trade inválido (tipos): %s", trade)
                 return
             
@@ -710,6 +722,25 @@ class EnhancedMarketBot:
                 logging.warning("⚠️ Análise da IA ignorada: sistema não passou no teste inicial.")
             return
         
+        # 🔧 GUARD CLAUSE: Filtrar sinais neutros/fracos ANTES de enviar para IA
+        resultado_batalha = event_data.get("resultado_da_batalha", "")
+        strength = event_data.get("strength", "")
+        
+        # Ignorar sinais N/A, neutros ou fracos para economizar IA
+        if resultado_batalha == "N/A" or resultado_batalha == "NEUTRAL":
+            logging.debug(f"🚫 IA ignorando sinal neutro: {resultado_batalha}")
+            return
+        
+        if strength == "weak":
+            logging.debug(f"🚫 IA ignorando sinal fraco: strength={strength}")
+            return
+        
+        # Filtrar por palavras-chave de sinais não-actionáveis
+        na_keywords = ["N/A", "INDISPONÍVEL", "DADOS INVÁLIDOS", "SEM SINAL"]
+        if any(kw in resultado_batalha.upper() for kw in na_keywords):
+            logging.debug(f"🚫 IA ignorando sinal N/A: {resultado_batalha}")
+            return
+        
         logging.debug("🔍 Evento recebido para análise da IA: %s", event_data.get("tipo_evento", "N/A"))
         
         def _print_ai_report_clean(report_text: str):
@@ -736,7 +767,11 @@ class EnhancedMarketBot:
                     })
                     
                     # 🔧 CORREÇÃO: Usa analyze() que retorna Dict
-                    analysis_result = self.ai_analyzer.analyze(event_data)
+                    if self.ai_analyzer and hasattr(self.ai_analyzer, 'analyze'):
+                        analysis_result = self.ai_analyzer.analyze(event_data)
+                    else:
+                        logging.warning("⚠️ IA Analyzer não disponível para análise")
+                        return
                     
                     if analysis_result and not self.should_stop:
                         try:
@@ -1336,7 +1371,7 @@ class EnhancedMarketBot:
                 try:
                     if detect_support_resistance is not None:
                         try:
-                            price_series = pipeline.df['p'] if hasattr(pipeline, 'df') else None
+                            price_series = pipeline.df['p'] if hasattr(pipeline, 'df') and pipeline.df is not None else None
                             if price_series is not None:
                                 sr = detect_support_resistance(price_series, num_levels=3)
                             else:
