@@ -16,6 +16,9 @@ import logging
 import json
 import hashlib
 import os
+from functools import lru_cache
+
+import yaml
 
 # Adiciona o diretório raiz do projeto ao PYTHONPATH
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -23,6 +26,38 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 from market_orchestrator.ai.ai_enrichment_context import build_enriched_ai_context
 from market_orchestrator.ai.payload_compressor import compress_payload
 from market_orchestrator.ai.payload_section_cache import SectionCache, canonical_ref, is_fresh
+
+# Configuração de payload (feature flags)
+DEFAULT_LLM_PAYLOAD_CONFIG = {
+    "v2_enabled": True,
+    "max_bytes": 6144,
+    "section_budgets_enabled": True,
+    "section_cache_enabled": True,
+    "cache_ttls_s": {
+        "macro_context": 1800,
+        "cross_asset_context": 1800,
+    },
+    "guardrail_hard_enabled": True,
+}
+
+_FLAGS_LOGGED = False
+
+
+@lru_cache(maxsize=1)
+def get_llm_payload_config() -> Dict[str, Any]:
+    cfg = dict(DEFAULT_LLM_PAYLOAD_CONFIG)
+    config_path = Path("config/model_config.yaml")
+    try:
+        if config_path.exists():
+            with config_path.open("r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            llm_cfg = (loaded or {}).get("llm_payload") or {}
+            if isinstance(llm_cfg, dict):
+                cfg.update(llm_cfg)
+    except Exception as e:
+        logging.warning("Não foi possível carregar config llm_payload: %s", e)
+    return cfg
+
 
 # Import para correlações cross-asset
 try:
@@ -114,6 +149,19 @@ def build_ai_input(
     Returns:
         dict: Payload completo e organizado para a IA.
     """
+
+    cfg = get_llm_payload_config()
+    global _FLAGS_LOGGED
+    if not _FLAGS_LOGGED:
+        logging.info(
+            "PAYLOAD_FEATURE_FLAGS v2_enabled=%s max_bytes=%s cache_enabled=%s budgets_enabled=%s guardrail_enabled=%s",
+            cfg.get("v2_enabled", True),
+            cfg.get("max_bytes", 6144),
+            cfg.get("section_cache_enabled", True),
+            cfg.get("section_budgets_enabled", True),
+            cfg.get("guardrail_hard_enabled", True),
+        )
+        _FLAGS_LOGGED = True
 
     # Garante que ml_features sempre seja um dicionário
     if not isinstance(ml_features, dict):
@@ -350,7 +398,7 @@ def build_ai_input(
                 "eth_dominance": 18.0,
                 "usdt_dominance": 5.0,
                 "yield_spread": 0.7,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             # Dados de exemplo para cross_asset_features e current_price_data
@@ -510,10 +558,10 @@ def build_ai_input(
     def _apply_section_cache(payload: Dict[str, Any]) -> Dict[str, Any]:
         cache_path = os.getenv("PAYLOAD_SECTION_CACHE_PATH", "logs/payload_section_cache.json")
         cache = SectionCache(cache_path)
-        now_ms = payload.get("epoch_ms") or int(datetime.utcnow().timestamp() * 1000)
+        now_ms = payload.get("epoch_ms") or int(datetime.now(timezone.utc).timestamp() * 1000)
         cacheable = {
-            "macro_context": 3600,
-            "cross_asset_context": 3600,
+            "macro_context": (cfg.get("cache_ttls_s") or {}).get("macro_context", 3600),
+            "cross_asset_context": (cfg.get("cache_ttls_s") or {}).get("cross_asset_context", 3600),
         }
 
         for section_name, ttl_s in cacheable.items():
@@ -578,32 +626,38 @@ def build_ai_input(
     # === COMPRESSÃO / V2 ===
     v1_bytes = len(json.dumps(ai_payload, ensure_ascii=False).encode("utf-8"))
     action_bias_v1 = (ai_payload.get("quant_model") or {}).get("action_bias")
-    try:
-        payload_v2 = compress_payload(ai_payload, max_bytes=6144)
-        _validate_payload_v2(payload_v2)
-        # Confirma limite de bytes
-        size_bytes = len(json.dumps(payload_v2, ensure_ascii=False).encode("utf-8"))
-        if size_bytes > 6144:
-            raise ValueError(f"payload_v2 excedeu limite de bytes: {size_bytes}")
-        decision_hash = _build_decision_features_hash(payload_v2)
-        payload_v2["decision_features_hash"] = decision_hash
-        action_bias_v2 = (payload_v2.get("quant_model") or {}).get("action_bias")
-        ai_payload = payload_v2
-        logging.info(
-            "PAYLOAD_V2_CANARY v1_bytes=%s v2_bytes=%s decision_hash=%s decision_consistent=%s action_v1=%s action_v2=%s",
-            v1_bytes,
-            size_bytes,
-            decision_hash,
-            action_bias_v1 == action_bias_v2,
-            action_bias_v1,
-            action_bias_v2,
-        )
-    except Exception as e:
-        logging.error(f"Fallback para payload v1 (compressão falhou): {e}", exc_info=True)
-        logging.info("PAYLOAD_V1_ONLY v1_bytes=%s", v1_bytes)
+    v2_enabled = bool(cfg.get("v2_enabled", True))
+    max_bytes = int(cfg.get("max_bytes", 6144) or 6144)
+
+    if v2_enabled:
+        try:
+            payload_v2 = compress_payload(ai_payload, max_bytes=max_bytes)
+            _validate_payload_v2(payload_v2)
+            # Confirma limite de bytes
+            size_bytes = len(json.dumps(payload_v2, ensure_ascii=False).encode("utf-8"))
+            if size_bytes > max_bytes:
+                raise ValueError(f"payload_v2 excedeu limite de bytes: {size_bytes}")
+            decision_hash = _build_decision_features_hash(payload_v2)
+            payload_v2["decision_features_hash"] = decision_hash
+            action_bias_v2 = (payload_v2.get("quant_model") or {}).get("action_bias")
+            ai_payload = payload_v2
+            logging.info(
+                "PAYLOAD_V2_CANARY v1_bytes=%s v2_bytes=%s decision_hash=%s decision_consistent=%s action_v1=%s action_v2=%s",
+                v1_bytes,
+                size_bytes,
+                decision_hash,
+                action_bias_v1 == action_bias_v2,
+                action_bias_v1,
+                action_bias_v2,
+            )
+        except Exception as e:
+            logging.error(f"Fallback para payload v1 (compressão falhou): {e}", exc_info=True)
+            logging.info("PAYLOAD_V1_ONLY v1_bytes=%s", v1_bytes)
+    else:
+        logging.info("PAYLOAD_V1_FORCED v1_bytes=%s", v1_bytes)
 
     # Aplica cache de seções apenas para v2
-    if ai_payload.get("_v") == 2:
+    if ai_payload.get("_v") == 2 and cfg.get("section_cache_enabled", True):
         ai_payload = _apply_section_cache(ai_payload)
 
     return ai_payload
@@ -646,7 +700,7 @@ def build_payload_with_cross_asset(
     if symbol == "BTCUSDT" and get_cross_asset_features is not None:
         try:
             # Calcula correlações em tempo real
-            correlations = get_cross_asset_features(datetime.utcnow())
+            correlations = get_cross_asset_features(datetime.now(timezone.utc))
 
             if correlations.get("status") == "ok":
                 cross_asset_context = {

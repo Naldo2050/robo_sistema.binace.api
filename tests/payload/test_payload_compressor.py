@@ -5,6 +5,7 @@ import pytest
 from market_orchestrator.ai.payload_compressor import compress_payload
 from market_orchestrator.ai.ai_payload_builder import build_ai_input
 from market_orchestrator.ai.payload_section_cache import canonical_ref
+import market_orchestrator.ai.ai_payload_builder as builder
 
 pytestmark = pytest.mark.payload
 
@@ -250,3 +251,66 @@ def test_cache_miss_on_change(tmp_path, monkeypatch):
     assert macro_section.get("present") is True
     assert "data" in macro_section
     assert macro_section["ref"] != ref1
+
+
+def test_config_flag_disables_v2(monkeypatch):
+    monkeypatch.setattr(builder, "_FLAGS_LOGGED", False)
+
+    def fake_cfg():
+        return {
+            "v2_enabled": False,
+            "max_bytes": 1024,
+            "section_cache_enabled": True,
+            "cache_ttls_s": {},
+            "guardrail_hard_enabled": True,
+        }
+
+    monkeypatch.setattr(builder, "get_llm_payload_config", fake_cfg)
+
+    signal = {"tipo_evento": "X", "descricao": "y", "preco_fechamento": 1.0, "epoch_ms": 1000}
+    payload = build_ai_input(
+        symbol="BTCUSDT",
+        signal=signal,
+        enriched={"ohlc": {"open": 1, "high": 2, "low": 1, "close": 2}},
+        flow_metrics={},
+        historical_profile={},
+        macro_context={"session": "us"},
+        market_environment={},
+        orderbook_data={},
+        ml_features={},
+    )
+    assert "_v" not in payload
+    assert "decision_features_hash" not in payload
+
+
+def test_config_disables_section_cache(monkeypatch):
+    monkeypatch.setattr(builder, "_FLAGS_LOGGED", False)
+
+    def fake_cfg():
+        return {
+            "v2_enabled": True,
+            "max_bytes": 4096,
+            "section_cache_enabled": False,
+            "cache_ttls_s": {},
+            "guardrail_hard_enabled": True,
+        }
+
+    monkeypatch.setattr(builder, "get_llm_payload_config", fake_cfg)
+
+    signal = {"tipo_evento": "X", "descricao": "y", "preco_fechamento": 1.0, "epoch_ms": 1000}
+    macro = {"session": "us", "correlations": {"sp500": 0.1}}
+    payload = build_ai_input(
+        symbol="BTCUSDT",
+        signal=signal,
+        enriched={"ohlc": {"open": 1, "high": 2, "low": 1, "close": 2}},
+        flow_metrics={},
+        historical_profile={},
+        macro_context=macro,
+        market_environment={},
+        orderbook_data={},
+        ml_features={},
+    )
+    # cache desabilitado -> macro_context permanece dicionário completo
+    assert isinstance(payload.get("macro_context"), dict)
+    assert "ref" not in payload["macro_context"]
+    assert payload["macro_context"].get("present") is None
