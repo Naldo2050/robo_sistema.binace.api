@@ -37,6 +37,9 @@ pip install python-dotenv # ou pip install -r requirements.txt (se tiver)
 pip install dashscope     # Para DashScope
 pip install openai        # Para OpenAI (opcional)
 # ... outras dependências ...
+
+# Dependências de desenvolvimento (tests/linters)
+pip install -r requirements-dev.txt
 ```
 
 ## MarketOrchestrator
