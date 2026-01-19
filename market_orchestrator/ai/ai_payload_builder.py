@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 import logging
 import json
+import hashlib
 
 # Adiciona o diretório raiz do projeto ao PYTHONPATH
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -504,6 +505,21 @@ def build_ai_input(
     # NOVO: mesclar contextos enriquecidos
     ai_payload = add_enriched_context_to_ai_payload(ai_payload, signal)
 
+    def _build_decision_features_hash(payload: Dict[str, Any]) -> str:
+        """Gera hash estável de campos chave para canary local."""
+        base = {
+            "symbol": payload.get("symbol"),
+            "epoch_ms": payload.get("epoch_ms"),
+            "price": (payload.get("price_context") or {}).get("current_price"),
+            "net_flow": (payload.get("flow_context") or {}).get("net_flow"),
+            "cvd": (payload.get("flow_context") or {}).get("cvd_accumulated"),
+            "imbalance": (payload.get("orderbook_context") or {}).get("imbalance"),
+            "volatility_regime": (payload.get("macro_context") or {}).get("regime", {}).get("trend"),
+            "action_bias": (payload.get("quant_model") or {}).get("action_bias"),
+        }
+        encoded = json.dumps(base, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
     def _validate_payload_v2(payload: Dict[str, Any]) -> None:
         if not isinstance(payload, dict):
             raise ValueError("payload_v2 inválido: não é dict")
@@ -516,6 +532,8 @@ def build_ai_input(
             raise ValueError("payload_v2 inválido: price_context.current_price obrigatório")
 
     # === COMPRESSÃO / V2 ===
+    v1_bytes = len(json.dumps(ai_payload, ensure_ascii=False).encode("utf-8"))
+    action_bias_v1 = (ai_payload.get("quant_model") or {}).get("action_bias")
     try:
         payload_v2 = compress_payload(ai_payload, max_bytes=6144)
         _validate_payload_v2(payload_v2)
@@ -523,9 +541,22 @@ def build_ai_input(
         size_bytes = len(json.dumps(payload_v2, ensure_ascii=False).encode("utf-8"))
         if size_bytes > 6144:
             raise ValueError(f"payload_v2 excedeu limite de bytes: {size_bytes}")
+        decision_hash = _build_decision_features_hash(payload_v2)
+        payload_v2["decision_features_hash"] = decision_hash
+        action_bias_v2 = (payload_v2.get("quant_model") or {}).get("action_bias")
         ai_payload = payload_v2
+        logging.info(
+            "PAYLOAD_V2_CANARY v1_bytes=%s v2_bytes=%s decision_hash=%s decision_consistent=%s action_v1=%s action_v2=%s",
+            v1_bytes,
+            size_bytes,
+            decision_hash,
+            action_bias_v1 == action_bias_v2,
+            action_bias_v1,
+            action_bias_v2,
+        )
     except Exception as e:
         logging.error(f"Fallback para payload v1 (compressão falhou): {e}", exc_info=True)
+        logging.info("PAYLOAD_V1_ONLY v1_bytes=%s", v1_bytes)
 
     return ai_payload
 
