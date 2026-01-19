@@ -8,7 +8,7 @@ do sistema em um formato estruturado e semântico para consumo pelos modelos de 
 """
 
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 import sys
 from pathlib import Path
@@ -254,7 +254,7 @@ def build_ai_input(
     if symbol == "BTCUSDT" and get_cross_asset_features is not None:
         try:
             # Calcula correlações em tempo real para a IA
-            correlations = get_cross_asset_features(datetime.utcnow())
+            correlations = get_cross_asset_features(datetime.now(timezone.utc))
             
             if correlations.get("status") == "ok":
                 cross_asset_context = {
@@ -408,7 +408,7 @@ def build_ai_input(
             signal.get("epoch_ms")
             or signal.get("timestamp_ms")
             or signal.get("timestamp")
-            or int(datetime.utcnow().timestamp() * 1000)
+            or int(datetime.now(timezone.utc).timestamp() * 1000)
         ),
         "signal_metadata": signal_metadata,
         "price_context": price_context,
