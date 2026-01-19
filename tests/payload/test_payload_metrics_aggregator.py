@@ -21,6 +21,7 @@ def test_summarize_metrics_basic(tmp_path):
     path.write_text("\n".join(json.dumps(l, ensure_ascii=False) for l in lines) + "\n", encoding="utf-8")
 
     summary = summarize_metrics(str(path), last_n=20)
+    print("PAYLOAD_METRICS_SUMMARY", summary)
     assert summary["count"] == len(lines)
     # valores de bytes: 100,200,50,150,120 -> mediana 120, max 200
     assert summary["bytes_p50"] == 120
