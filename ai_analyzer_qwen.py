@@ -53,6 +53,7 @@ import time
 import asyncio
 import threading
 import json
+from pathlib import Path
 from typing import Any, Dict, Optional, Literal, TYPE_CHECKING
 
 from dotenv import load_dotenv
@@ -1282,6 +1283,71 @@ class AIAnalyzer:
 
         return "\n".join(lines)
 
+    def _extract_list_counts(self, payload: Dict[str, Any]) -> Dict[str, int]:
+        """
+        Percorre dict/list procurando listas relevantes para medir tamanho.
+        Mantém escopo limitado para evitar custo alto na caminhada.
+        """
+        counts: Dict[str, int] = {}
+        keys_of_interest = {
+            "clusters",
+            "hvn_nodes",
+            "lvn_nodes",
+            "event_history",
+            "signals",
+            "windows",
+            "orders",
+        }
+
+        def _walk(node: Any) -> None:
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if isinstance(v, list) and (k in keys_of_interest or k.endswith("_list")):
+                        counts[k] = len(v)
+                    elif isinstance(v, (dict, list)):
+                        _walk(v)
+            elif isinstance(node, list):
+                for item in node:
+                    if isinstance(item, (dict, list)):
+                        _walk(item)
+
+        _walk(payload)
+        return counts
+
+    def _log_payload_metrics(self, payload: Dict[str, Any], event_data: Dict[str, Any]) -> None:
+        """Registra métricas do payload antes de enviar para o modelo."""
+        if not isinstance(payload, dict):
+            return
+
+        try:
+            payload_bytes = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            metrics = {
+                "payload_bytes": payload_bytes,
+                "keys_top_level": list(payload.keys()),
+                "schema_version": payload.get("_v") or "v1",
+                "symbol": payload.get("symbol") or event_data.get("symbol") or event_data.get("ativo"),
+                "epoch_ms": (
+                    event_data.get("epoch_ms")
+                    or event_data.get("timestamp_ms")
+                    or event_data.get("timestamp")
+                ),
+                "counts": self._extract_list_counts(payload),
+            }
+
+            metrics_line = json.dumps(metrics, ensure_ascii=False)
+            logging.info(metrics_line)
+
+            try:
+                logs_dir = Path("logs")
+                logs_dir.mkdir(parents=True, exist_ok=True)
+                metrics_path = logs_dir / "payload_metrics.jsonl"
+                with metrics_path.open("a", encoding="utf-8") as fp:
+                    fp.write(metrics_line + "\n")
+            except Exception as file_err:
+                logging.error(f"Erro ao persistir payload metrics: {file_err}", exc_info=True)
+        except Exception as e:
+            logging.error(f"Erro ao registrar métricas do payload: {e}", exc_info=True)
+
     # ====================================================================
     # CALLERS (SYNC + ASYNC / STRUCTURED)
     # ====================================================================
@@ -1452,6 +1518,42 @@ class AIAnalyzer:
         except Exception as e:
             logging.error(f"Erro ao criar prompt: {e}", exc_info=True)
             return self._generate_mock_analysis(event_data), None
+
+        try:
+            payload_for_metrics = event_data.get("ai_payload")
+            if isinstance(payload_for_metrics, dict):
+                self._log_payload_metrics(payload_for_metrics, event_data)
+            elif isinstance(event_data, dict):
+                self._log_payload_metrics(event_data, event_data)
+        except Exception as e:
+            logging.error(f"Erro ao instrumentar payload antes da LLM: {e}", exc_info=True)
+
+        try:
+            payload_for_llm = event_data.get("ai_payload")
+            payload_root_name = "ai_payload"
+            if not isinstance(payload_for_llm, dict):
+                payload_for_llm = event_data if isinstance(event_data, dict) else {}
+                payload_root_name = "event"
+
+            payload_bytes = len(json.dumps(payload_for_llm, ensure_ascii=False).encode("utf-8"))
+            keys_sample = list(payload_for_llm.keys())[:20] if isinstance(payload_for_llm, dict) else []
+
+            logging.info(
+                "LLM_PAYLOAD_INFO root=%s bytes=%s keys_sample=%s",
+                payload_root_name,
+                payload_bytes,
+                keys_sample,
+            )
+
+            leak_keys = {"raw_event", "ANALYSIS_TRIGGER", "contextual_snapshot", "historical_vp", "observability"}
+            if isinstance(payload_for_llm, dict) and leak_keys.intersection(payload_for_llm.keys()):
+                logging.warning(
+                    "FULL_PAYLOAD_LEAK_RISK root=%s suspicious_keys=%s",
+                    payload_root_name,
+                    list(leak_keys.intersection(payload_for_llm.keys())),
+                )
+        except Exception as e:
+            logging.error(f"Erro ao logar metadados do payload da LLM: {e}", exc_info=True)
 
         try:
             raw, structured = self._call_model(prompt, event_data)
