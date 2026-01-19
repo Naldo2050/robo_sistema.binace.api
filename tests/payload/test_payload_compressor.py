@@ -127,3 +127,46 @@ def test_cluster_time_preserves_existing_when_no_timestamps():
     cluster = compressed["flow_context"]["liquidity_heatmap"]["clusters"][0]
     assert cluster["age_ms"] == 289
     assert cluster["cluster_duration_ms"] == 77
+
+
+def test_budget_enforcement_reduces_sections():
+    payload = _dummy_payload()
+    # Deixa heatmap e orderbook grandes para forçar reduções
+    payload["flow_context"]["liquidity_heatmap"]["clusters"] = [
+        {"price": 100 + i, "liquidity": 1000 + i, "volume": 5, "age_ms": 10, "note": "x" * 150}
+        for i in range(5)
+    ]
+    payload["orderbook_context"] = {
+        "imbalance": 0.5,
+        "depth_metrics": {
+            "bid_liquidity_top5": list(range(200)),
+            "ask_liquidity_top5": list(range(200)),
+            "depth_imbalance": list(range(100)),
+        },
+        "market_impact_score": 10,
+        "walls_detected": True,
+    }
+    payload["macro_context"]["correlations"] = {"sp500": "x" * 200, "dxy": -0.2}
+    payload["macro_context"]["multi_timeframe_trends"] = {"1h": {"rsi": 70, "extra": "y" * 200}}
+
+    compressed = compress_payload(payload, max_bytes=1200)
+    size_bytes = len(json.dumps(compressed, ensure_ascii=False).encode("utf-8"))
+    assert size_bytes <= 1200
+
+    clusters = compressed["flow_context"]["liquidity_heatmap"]["clusters"]
+    assert len(clusters) <= 1  # Orçamento força poda agressiva
+
+    depth_metrics = compressed["orderbook_context"]["depth_metrics"]
+    assert isinstance(depth_metrics, dict)
+    # Seções devem respeitar o orçamento estimado
+    scale = 1200 / 6144
+    budgets = {
+        "liquidity_heatmap": max(256, int(1800 * scale)),
+        "orderbook_context": max(256, int(1400 * scale)),
+    }
+    heatmap_bytes = len(json.dumps(compressed["flow_context"]["liquidity_heatmap"]).encode("utf-8"))
+    orderbook_bytes = len(json.dumps(compressed["orderbook_context"]).encode("utf-8"))
+    assert heatmap_bytes <= budgets["liquidity_heatmap"]
+    assert orderbook_bytes <= budgets["orderbook_context"]
+
+    assert "correlations" not in compressed.get("macro_context", {})
