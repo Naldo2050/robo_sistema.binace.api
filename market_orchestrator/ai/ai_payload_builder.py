@@ -26,6 +26,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 from market_orchestrator.ai.ai_enrichment_context import build_enriched_ai_context
 from market_orchestrator.ai.payload_compressor import compress_payload
 from market_orchestrator.ai.payload_section_cache import SectionCache, canonical_ref, is_fresh
+from market_orchestrator.ai.payload_metrics_aggregator import append_metric_line
 
 # Configuração de payload (feature flags)
 DEFAULT_LLM_PAYLOAD_CONFIG = {
@@ -61,13 +62,7 @@ def get_llm_payload_config() -> Dict[str, Any]:
 
 
 def _append_payload_metric(metric: Dict[str, Any]) -> None:
-    try:
-        _METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(metric, ensure_ascii=False)
-        with _METRICS_PATH.open("a", encoding="utf-8") as fp:
-            fp.write(line + "\n")
-    except Exception:
-        logging.debug("Falha ao salvar m\u00e9trica de payload", exc_info=True)
+    append_metric_line(metric, str(_METRICS_PATH))
 
 
 # Import para correlações cross-asset

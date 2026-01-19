@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from market_orchestrator.ai.payload_compressor import compress_payload
+from market_orchestrator.ai.payload_metrics_aggregator import append_metric_line
 
 
 FORBIDDEN_KEYS = {"raw_event", "ANALYSIS_TRIGGER", "contextual_snapshot", "historical_vp", "observability"}
@@ -29,14 +30,7 @@ def _log_guardrail(leak_blocked: bool, bytes_before: int, bytes_after: int, root
 
     line = json.dumps(metrics, ensure_ascii=False)
     logging.info(line)
-    try:
-        logs_dir = Path("logs")
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        metrics_path = logs_dir / "payload_metrics.jsonl"
-        with metrics_path.open("a", encoding="utf-8") as fp:
-            fp.write(line + "\n")
-    except Exception as file_err:
-        logging.error(f"Erro ao persistir guardrail metrics: {file_err}", exc_info=True)
+    append_metric_line(metrics)
 
 
 def ensure_safe_llm_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:

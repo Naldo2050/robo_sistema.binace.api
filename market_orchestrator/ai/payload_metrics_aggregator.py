@@ -9,9 +9,27 @@ quebradas, e devolve um resumo num dicion\u00e1rio.
 from __future__ import annotations
 
 import json
+import logging
 from collections import deque, defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional
+
+_METRICS_PATH_LOGGED = False
+
+
+def append_metric_line(obj: Dict[str, object], metrics_path: str = "logs/payload_metrics.jsonl") -> None:
+    """Anexa uma linha de métrica em JSONL, logando o caminho absoluto na primeira escrita."""
+    global _METRICS_PATH_LOGGED
+    try:
+        p = Path(metrics_path).resolve()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if not _METRICS_PATH_LOGGED:
+            logging.info("PAYLOAD_METRICS_FILE path=%s cwd=%s", str(p), str(Path.cwd()))
+            _METRICS_PATH_LOGGED = True
+        with p.open("a", encoding="utf-8") as fp:
+            fp.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    except Exception:
+        logging.debug("Falha ao persistir métricas no JSONL", exc_info=True)
 
 
 def _safe_loads(line: str) -> Optional[Dict]:
