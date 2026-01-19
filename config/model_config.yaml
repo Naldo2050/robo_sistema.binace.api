@@ -1,38 +1,37 @@
-# config/model_config.yaml
-ai:
+﻿ai:
   provider: groq
-  provider_fallbacks: []  # Lista de providers para fallback automático (só usar se necessário)
+  provider_fallbacks: []  # Lista de providers para fallback automÇ­tico (sÇü usar se necessÇ­rio)
   groq:
-    model: llama-3.3-70b-versatile   # Modelo padrão atualizado para Llama 3.3 70B
+    model: llama-3.3-70b-versatile   # Modelo padrÇœo atualizado para Llama 3.3 70B
     model_fallbacks:
       - llama-3.1-70b-versatile
       - llama-3.1-8b-instant
       - mixtral-8x7b-32768
 
 model:
-  # Parâmetros do target
-  lookahead_windows: 15         # Quantas janelas à frente prever
-  min_return_threshold: 0.002   # 0.2% mínimo para considerar "COMPRA"
+  # ParÇ½metros do target
+  lookahead_windows: 15         # Quantas janelas Çÿ frente prever
+  min_return_threshold: 0.002   # 0.2% mÇðnimo para considerar "COMPRA"
   
-  # Divisão dos dados
+  # DivisÇœo dos dados
   test_size: 0.2                # 20% para teste
-  validation_size: 0.1          # 10% para validação
+  validation_size: 0.1          # 10% para validaÇõÇœo
   random_state: 42              # Semente para reprodutibilidade
 
 xgboost:
-  # Hiperparâmetros do XGBoost
-  n_estimators: 500             # Número de árvores
+  # HiperparÇ½metros do XGBoost
+  n_estimators: 500             # NÇ§mero de Ç­rvores
   learning_rate: 0.05           # Taxa de aprendizado
-  max_depth: 6                  # Profundidade máxima das árvores
+  max_depth: 6                  # Profundidade mÇ­xima das Ç­rvores
   subsample: 0.8                # Amostragem de linhas
   colsample_bytree: 0.8         # Amostragem de colunas
-  eval_metric: "logloss"        # Métrica de avaliação
+  eval_metric: "logloss"        # MÇ¸trica de avaliaÇõÇœo
   n_jobs: -1                    # Usar todos os cores da CPU
   random_state: 42              # Semente
   
 features:
-  # Configurações das features
-  required_columns:             # Colunas obrigatórias
+  # ConfiguraÇõÇæes das features
+  required_columns:             # Colunas obrigatÇürias
     - "price_close"
     - "volume"
   
@@ -45,8 +44,18 @@ features:
     - "epoch_ms"
   
   # Limites de qualidade
-  max_null_percentage: 0.3      # Máximo 30% de valores nulos
-  correlation_threshold: 0.95   # Remover features com correlação > 95%
+  max_null_percentage: 0.3      # MÇ­ximo 30% de valores nulos
+  correlation_threshold: 0.95   # Remover features com correlaÇõÇœo > 95%
+
+llm_payload:
+  v2_enabled: true
+  max_bytes: 6144
+  section_budgets_enabled: true
+  section_cache_enabled: true
+  cache_ttls_s:
+    macro_context: 1800
+    cross_asset_context: 1800
+  guardrail_hard_enabled: true
 
 sampling:
   # Balanceamento de classes
@@ -54,7 +63,7 @@ sampling:
   smote_ratio: 0.5              # Balanceamento (1.0 = 50/50)
   
 paths:
-  # Diretórios
+  # DiretÇürios
   features_dir: "features"
   models_dir: "ml/models"
   logs_dir: "ml/logs"
