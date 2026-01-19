@@ -90,3 +90,40 @@ def test_builder_generates_v2_with_decision_hash():
     )
     assert payload.get("_v") == 2
     assert "decision_features_hash" in payload
+
+
+def test_cluster_time_normalization_from_timestamps():
+    payload = _dummy_payload()
+    payload["epoch_ms"] = 2500
+    payload["flow_context"]["liquidity_heatmap"] = {
+        "clusters": [
+            {
+                "first_seen_ms": 1000,
+                "last_seen_ms": 2000,
+                "age_ms": 123,  # will be recomputed
+                "cluster_duration_ms": 0,
+            }
+        ]
+    }
+    compressed = compress_payload(payload, max_bytes=2048)
+    cluster = compressed["flow_context"]["liquidity_heatmap"]["clusters"][0]
+    assert cluster["age_ms"] == 500
+    assert cluster["cluster_duration_ms"] == 1000
+    for redundant in ["first_seen_ms", "last_seen_ms", "recent_ts_ms", "recent_timestamp"]:
+        assert redundant not in cluster
+
+
+def test_cluster_time_preserves_existing_when_no_timestamps():
+    payload = _dummy_payload()
+    payload["flow_context"]["liquidity_heatmap"] = {
+        "clusters": [
+            {
+                "age_ms": 289,
+                "cluster_duration_ms": 77,
+            }
+        ]
+    }
+    compressed = compress_payload(payload, max_bytes=2048)
+    cluster = compressed["flow_context"]["liquidity_heatmap"]["clusters"][0]
+    assert cluster["age_ms"] == 289
+    assert cluster["cluster_duration_ms"] == 77

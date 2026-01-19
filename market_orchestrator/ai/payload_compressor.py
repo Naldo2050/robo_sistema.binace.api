@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import Any, Dict, Tuple
+import logging
+from typing import Any, Dict, Optional, Tuple
 
 
 ALLOWED_TOP_LEVEL = {
@@ -36,6 +37,8 @@ FORBIDDEN_KEYS = {
     "debug",
 }
 
+logger = logging.getLogger(__name__)
+
 
 def _limit_list(value: Any, max_len: int) -> Any:
     if isinstance(value, list) and len(value) > max_len:
@@ -43,20 +46,69 @@ def _limit_list(value: Any, max_len: int) -> Any:
     return value
 
 
-def _trim_known_lists(block: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_cluster_times(cluster: Dict[str, Any], epoch_ms: Optional[int]) -> Dict[str, Any]:
+    """
+    Deriva age_ms e cluster_duration_ms a partir de timestamps de primeiro/último visto.
+    Remove campos redundantes de timestamp.
+    """
+    if not isinstance(cluster, dict) or epoch_ms is None:
+        return cluster
+
+    first_ts = cluster.get("first_seen_ms")
+    last_ts = (
+        cluster.get("last_seen_ms")
+        or cluster.get("recent_ts_ms")
+        or cluster.get("recent_timestamp")
+    )
+
+    derived = dict(cluster)
+    derived_flag = False
+
+    try:
+        if last_ts is not None:
+            age = max(0, int(epoch_ms) - int(last_ts))
+            derived["age_ms"] = age
+            derived_flag = True
+        if last_ts is not None and first_ts is not None:
+            duration = max(0, int(last_ts) - int(first_ts))
+            derived["cluster_duration_ms"] = duration
+            derived_flag = True
+    except Exception:
+        pass
+
+    for redundant in ["first_seen_ms", "last_seen_ms", "recent_ts_ms", "recent_timestamp"]:
+        derived.pop(redundant, None)
+
+    if derived_flag:
+        logger.debug("cluster_time_derived=true")
+
+    return derived
+
+
+def _trim_known_lists(block: Dict[str, Any], epoch_ms: Optional[int]) -> Dict[str, Any]:
     if not isinstance(block, dict):
         return block  # type: ignore[return-value]
 
     trimmed = {}
     for key, val in block.items():
         if key == "clusters":
-            trimmed[key] = _limit_list(val, 3)
+            limited = _limit_list(val, 3)
+            if isinstance(limited, list):
+                trimmed[key] = [
+                    _normalize_cluster_times(item, epoch_ms) if isinstance(item, dict) else item
+                    for item in limited
+                ]
+            else:
+                trimmed[key] = limited
         elif key in {"hvn_nodes", "lvn_nodes"}:
             trimmed[key] = _limit_list(val, 5)
         elif isinstance(val, dict):
-            trimmed[key] = _trim_known_lists(val)
+            trimmed[key] = _trim_known_lists(val, epoch_ms)
         elif isinstance(val, list):
-            trimmed[key] = [_trim_known_lists(item) if isinstance(item, dict) else item for item in _limit_list(val, 10)]
+            trimmed[key] = [
+                _trim_known_lists(item, epoch_ms) if isinstance(item, dict) else item
+                for item in _limit_list(val, 10)
+            ]
         else:
             trimmed[key] = val
 
@@ -111,7 +163,7 @@ def compress_payload(payload: Dict[str, Any], max_bytes: int = 6144) -> Dict[str
         if key == "signal_metadata" and isinstance(val, dict):
             compressed[key] = _normalize_signal_metadata(val)
         elif isinstance(val, dict):
-            compressed[key] = _trim_known_lists(val)
+            compressed[key] = _trim_known_lists(val, base.get("epoch_ms"))
         else:
             compressed[key] = val
 
