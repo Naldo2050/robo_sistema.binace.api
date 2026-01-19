@@ -119,9 +119,51 @@ except Exception:
 
 from time_manager import TimeManager
 from market_orchestrator.ai.payload_metrics_aggregator import summarize_metrics
+from market_orchestrator.ai.ai_payload_builder import get_llm_payload_config
 
 _PAYLOAD_METRICS_CALLS = 0
 _PAYLOAD_METRICS_LAST_TS = 0.0
+
+
+def _evaluate_payload_tripwires(summary: Dict[str, Any], tripwires: Dict[str, Any]) -> list:
+    violations = []
+    if not isinstance(summary, dict) or not isinstance(tripwires, dict):
+        return violations
+
+    def exceeds(key_summary, key_thresh):
+        return key_summary in summary and key_thresh in tripwires and summary[key_summary] is not None and summary[key_summary] > tripwires[key_thresh]
+
+    if exceeds("fallback_rate", "fallback_rate_max"):
+        violations.append("fallback_rate")
+    if exceeds("abort_rate", "abort_rate_max"):
+        violations.append("abort_rate")
+    if exceeds("guardrail_block_rate", "guardrail_block_rate_max"):
+        violations.append("guardrail_block_rate")
+    if exceeds("bytes_p95", "bytes_p95_max"):
+        violations.append("bytes_p95")
+
+    cache_min = tripwires.get("cache_hit_rate_min") or {}
+    if isinstance(cache_min, dict) and "cache_hit_rate" in summary and isinstance(summary.get("cache_hit_rate"), dict):
+        for section, min_val in cache_min.items():
+            try:
+                val = summary["cache_hit_rate"].get(section)
+                if val is not None and min_val is not None and val < float(min_val):
+                    violations.append(f"cache_hit_rate.{section}")
+            except Exception:
+                continue
+
+    return violations
+
+
+def _log_payload_tripwires(summary: Dict[str, Any]) -> None:
+    cfg = get_llm_payload_config()
+    tripwires = cfg.get("tripwires") if isinstance(cfg, dict) else {}
+    violations = _evaluate_payload_tripwires(summary, tripwires or {})
+    if violations:
+        logging.warning(
+            "PAYLOAD_TRIPWIRE_TRIGGERED %s",
+            json.dumps({"violations": violations, "summary": summary}, ensure_ascii=False),
+        )
 from orderbook_core.structured_logging import StructuredLogger
 from market_orchestrator.ai.llm_payload_guardrail import ensure_safe_llm_payload
 
@@ -1357,6 +1399,7 @@ class AIAnalyzer:
                     summary = summarize_metrics(str(metrics_path), last_n=2000)
                     if summary:
                         logging.info("PAYLOAD_METRICS_SUMMARY %s", json.dumps(summary, ensure_ascii=False))
+                        _log_payload_tripwires(summary)
                     _PAYLOAD_METRICS_CALLS = 0
                     _PAYLOAD_METRICS_LAST_TS = now
             except Exception as file_err:

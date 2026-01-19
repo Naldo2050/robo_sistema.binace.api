@@ -56,6 +56,14 @@ llm_payload:
     macro_context: 1800
     cross_asset_context: 1800
   guardrail_hard_enabled: true
+  tripwires:
+    fallback_rate_max: 0.005
+    abort_rate_max: 0.0001
+    guardrail_block_rate_max: 0.01
+    bytes_p95_max: 6144
+    cache_hit_rate_min:
+      macro_context: 0.6
+      cross_asset_context: 0.6
 
 sampling:
   # Balanceamento de classes
