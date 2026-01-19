@@ -70,3 +70,21 @@ def test_builder_fallback_when_missing_price():
         ml_features={},
     )
     assert "_v" not in payload  # fallback para v1
+
+
+def test_builder_generates_v2_with_decision_hash():
+    symbol = "BTCUSDT"
+    signal = {"tipo_evento": "X", "descricao": "y", "preco_fechamento": 1.0}
+    payload = build_ai_input(
+        symbol=symbol,
+        signal=signal,
+        enriched={"ohlc": {"open": 1, "high": 2, "low": 1, "close": 2}},
+        flow_metrics={},
+        historical_profile={},
+        macro_context={},
+        market_environment={},
+        orderbook_data={},
+        ml_features={},
+    )
+    assert payload.get("_v") == 2
+    assert "decision_features_hash" in payload
