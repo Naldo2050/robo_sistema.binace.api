@@ -54,7 +54,6 @@ import asyncio
 import threading
 import json
 from pathlib import Path
-import importlib.util
 from typing import Any, Dict, Optional, Literal, TYPE_CHECKING
 
 from dotenv import load_dotenv
@@ -119,39 +118,14 @@ except Exception:
     BaseModel = object  # type: ignore
 
 from time_manager import TimeManager
+from market_orchestrator.ai.payload_metrics_aggregator import summarize_metrics
+
+_PAYLOAD_METRICS_CALLS = 0
+_PAYLOAD_METRICS_LAST_TS = 0.0
 from orderbook_core.structured_logging import StructuredLogger
+from market_orchestrator.ai.llm_payload_guardrail import ensure_safe_llm_payload
 
 load_dotenv()
-
-_compress_payload_cache = None
-
-
-def _get_compress_payload():
-    global _compress_payload_cache
-    if _compress_payload_cache is not None:
-        return _compress_payload_cache
-
-    cp = None
-    try:
-        from market_orchestrator.ai.payload_compressor import compress_payload as _cp  # type: ignore
-        cp = _cp
-    except Exception:
-        try:
-            from ai.payload_compressor import compress_payload as _cp  # type: ignore
-            cp = _cp
-        except Exception:
-            try:
-                module_path = Path(__file__).parent / "market_orchestrator" / "ai" / "payload_compressor.py"
-                spec = importlib.util.spec_from_file_location("_payload_compressor", module_path)
-                if spec and spec.loader:
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)  # type: ignore
-                    cp = getattr(module, "compress_payload", None)
-            except Exception:
-                cp = None
-
-    _compress_payload_cache = cp
-    return _compress_payload_cache
 
 
 
@@ -1374,93 +1348,21 @@ class AIAnalyzer:
                 metrics_path = logs_dir / "payload_metrics.jsonl"
                 with metrics_path.open("a", encoding="utf-8") as fp:
                     fp.write(metrics_line + "\n")
+
+                # Resumo periódico das métricas para monitorar custo/qualidade
+                global _PAYLOAD_METRICS_CALLS, _PAYLOAD_METRICS_LAST_TS
+                _PAYLOAD_METRICS_CALLS += 1
+                now = time.time()
+                if _PAYLOAD_METRICS_CALLS >= 200 or (now - _PAYLOAD_METRICS_LAST_TS) >= 600:
+                    summary = summarize_metrics(str(metrics_path), last_n=2000)
+                    if summary:
+                        logging.info("PAYLOAD_METRICS_SUMMARY %s", json.dumps(summary, ensure_ascii=False))
+                    _PAYLOAD_METRICS_CALLS = 0
+                    _PAYLOAD_METRICS_LAST_TS = now
             except Exception as file_err:
                 logging.error(f"Erro ao persistir payload metrics: {file_err}", exc_info=True)
         except Exception as e:
             logging.error(f"Erro ao registrar métricas do payload: {e}", exc_info=True)
-
-    @staticmethod
-    def ensure_safe_llm_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """
-        Guardrail HARD: evita enviar payloads com campos sensíveis para a LLM.
-        Retorna um payload seguro ou None (para abortar).
-        """
-        forbidden = {"raw_event", "ANALYSIS_TRIGGER", "contextual_snapshot", "historical_vp", "observability"}
-
-        def _log_guardrail(leak_blocked: bool, bytes_before: int, bytes_after: int, root: str, error: Optional[str] = None) -> None:
-            metrics = {
-                "payload_bytes": bytes_before,
-                "leak_blocked": leak_blocked,
-                "bytes_after": bytes_after,
-                "payload_root_name": root,
-            }
-            if error:
-                metrics["error"] = error
-            line = json.dumps(metrics, ensure_ascii=False)
-            logging.info(line)
-            try:
-                logs_dir = Path("logs")
-                logs_dir.mkdir(parents=True, exist_ok=True)
-                metrics_path = logs_dir / "payload_metrics.jsonl"
-                with metrics_path.open("a", encoding="utf-8") as fp:
-                    fp.write(line + "\n")
-            except Exception as file_err:
-                logging.error(f"Erro ao persistir guardrail metrics: {file_err}", exc_info=True)
-
-        if not isinstance(payload, dict):
-            _log_guardrail(True, 0, 0, "invalid_payload", "payload_not_dict")
-            return None
-
-        bytes_before = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-        leak_keys = forbidden.intersection(payload.keys())
-        if not leak_keys:
-            _log_guardrail(False, bytes_before, bytes_before, "event")
-            return payload
-
-        candidates = [
-            (payload.get("AI_ANALYSIS") or {}).get("ai_payload"),
-            payload.get("ai_payload"),
-            (payload.get("enriched_snapshot") or {}).get("ai_payload"),
-        ]
-
-        safe_candidate: Optional[Dict[str, Any]] = None
-        for cand in candidates:
-            if isinstance(cand, dict):
-                safe_candidate = cand
-                break
-
-        if safe_candidate is None:
-            logging.error(
-                "FULL_PAYLOAD_LEAK_ABORTED forbidden_keys=%s", list(leak_keys), exc_info=True
-            )
-            _log_guardrail(True, bytes_before, 0, "event", "no_safe_candidate")
-            return None
-
-        try:
-            cp = _get_compress_payload()
-            if cp:
-                compressed = cp(safe_candidate, max_bytes=6144)
-            else:
-                compressed = safe_candidate
-        except Exception:
-            compressed = safe_candidate
-
-        bytes_after = len(json.dumps(compressed, ensure_ascii=False).encode("utf-8"))
-        logging.warning(
-            "FULL_PAYLOAD_LEAK_BLOCKED root=event bytes_before=%s bytes_after=%s",
-            bytes_before,
-            bytes_after,
-        )
-        _log_guardrail(True, bytes_before, bytes_after, "event")
-
-        sanitized_event = {
-            "ai_payload": compressed,
-        }
-        for k in ("tipo_evento", "descricao", "symbol", "ativo"):
-            if k in payload:
-                sanitized_event[k] = payload[k]
-
-        return sanitized_event
 
     # ====================================================================
     # CALLERS (SYNC + ASYNC / STRUCTURED)
@@ -1627,7 +1529,7 @@ class AIAnalyzer:
                 if self.connection_failed_count >= self.max_failures_before_mock:
                     return self._generate_mock_analysis(event_data), None
 
-        event_data_safe = self.ensure_safe_llm_payload(event_data)
+        event_data_safe = ensure_safe_llm_payload(event_data)
         if event_data_safe is None:
             logging.error("Análise abortada por leak de payload completo (guardrail).")
             return "analysis skipped (unsafe payload)", None

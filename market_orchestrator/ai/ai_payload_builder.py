@@ -41,6 +41,7 @@ DEFAULT_LLM_PAYLOAD_CONFIG = {
 }
 
 _FLAGS_LOGGED = False
+_METRICS_PATH = Path("logs") / "payload_metrics.jsonl"
 
 
 @lru_cache(maxsize=1)
@@ -57,6 +58,16 @@ def get_llm_payload_config() -> Dict[str, Any]:
     except Exception as e:
         logging.warning("Não foi possível carregar config llm_payload: %s", e)
     return cfg
+
+
+def _append_payload_metric(metric: Dict[str, Any]) -> None:
+    try:
+        _METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(metric, ensure_ascii=False)
+        with _METRICS_PATH.open("a", encoding="utf-8") as fp:
+            fp.write(line + "\n")
+    except Exception:
+        logging.debug("Falha ao salvar m\u00e9trica de payload", exc_info=True)
 
 
 # Import para correlações cross-asset
@@ -581,6 +592,14 @@ def build_ai_input(
                     entry["ref"],
                     age_s,
                 )
+                _append_payload_metric(
+                    {
+                        "cache_hit": True,
+                        "section": section_name,
+                        "ref": entry["ref"],
+                        "age_s": age_s,
+                    }
+                )
             else:
                 cache.set(cache_key, ref_new, now_ms, section)
                 payload[section_name] = {
@@ -594,6 +613,7 @@ def build_ai_input(
                     section_name,
                     ref_new,
                 )
+                _append_payload_metric({"cache_hit": False, "section": section_name, "ref": ref_new})
 
         return payload
 
@@ -653,6 +673,7 @@ def build_ai_input(
         except Exception as e:
             logging.error(f"Fallback para payload v1 (compressão falhou): {e}", exc_info=True)
             logging.info("PAYLOAD_V1_ONLY v1_bytes=%s", v1_bytes)
+            _append_payload_metric({"fallback_v1": True, "payload_bytes": v1_bytes, "error": str(e)})
     else:
         logging.info("PAYLOAD_V1_FORCED v1_bytes=%s", v1_bytes)
 
