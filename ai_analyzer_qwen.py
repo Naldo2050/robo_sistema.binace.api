@@ -118,7 +118,7 @@ except Exception:
     BaseModel = object  # type: ignore
 
 from time_manager import TimeManager
-from market_orchestrator.ai.payload_metrics_aggregator import summarize_metrics
+from market_orchestrator.ai.payload_metrics_aggregator import summarize_metrics, append_metric_line
 from market_orchestrator.ai.ai_payload_builder import get_llm_payload_config
 
 _PAYLOAD_METRICS_CALLS = 0
@@ -1388,8 +1388,7 @@ class AIAnalyzer:
                 logs_dir = Path("logs")
                 logs_dir.mkdir(parents=True, exist_ok=True)
                 metrics_path = logs_dir / "payload_metrics.jsonl"
-                with metrics_path.open("a", encoding="utf-8") as fp:
-                    fp.write(metrics_line + "\n")
+                append_metric_line(metrics, str(metrics_path))
 
                 # Resumo periódico das métricas para monitorar custo/qualidade
                 global _PAYLOAD_METRICS_CALLS, _PAYLOAD_METRICS_LAST_TS
