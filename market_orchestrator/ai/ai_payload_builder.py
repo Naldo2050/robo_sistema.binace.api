@@ -12,11 +12,14 @@ from datetime import datetime
 import asyncio
 import sys
 from pathlib import Path
+import logging
+import json
 
 # Adiciona o diretório raiz do projeto ao PYTHONPATH
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from market_orchestrator.ai.ai_enrichment_context import build_enriched_ai_context
+from market_orchestrator.ai.payload_compressor import compress_payload
 
 # Import para correlações cross-asset
 try:
@@ -398,6 +401,12 @@ def build_ai_input(
     ai_payload = {
         "symbol": symbol,
         "timestamp": signal.get("timestamp"),
+        "epoch_ms": (
+            signal.get("epoch_ms")
+            or signal.get("timestamp_ms")
+            or signal.get("timestamp")
+            or int(datetime.utcnow().timestamp() * 1000)
+        ),
         "signal_metadata": signal_metadata,
         "price_context": price_context,
         "flow_context": flow_context,
@@ -494,6 +503,29 @@ def build_ai_input(
     
     # NOVO: mesclar contextos enriquecidos
     ai_payload = add_enriched_context_to_ai_payload(ai_payload, signal)
+
+    def _validate_payload_v2(payload: Dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            raise ValueError("payload_v2 inválido: não é dict")
+        if not payload.get("symbol"):
+            raise ValueError("payload_v2 inválido: campo 'symbol' obrigatório")
+        if payload.get("epoch_ms") is None:
+            raise ValueError("payload_v2 inválido: campo 'epoch_ms' obrigatório")
+        price_ctx = payload.get("price_context") or {}
+        if price_ctx.get("current_price") is None:
+            raise ValueError("payload_v2 inválido: price_context.current_price obrigatório")
+
+    # === COMPRESSÃO / V2 ===
+    try:
+        payload_v2 = compress_payload(ai_payload, max_bytes=6144)
+        _validate_payload_v2(payload_v2)
+        # Confirma limite de bytes
+        size_bytes = len(json.dumps(payload_v2, ensure_ascii=False).encode("utf-8"))
+        if size_bytes > 6144:
+            raise ValueError(f"payload_v2 excedeu limite de bytes: {size_bytes}")
+        ai_payload = payload_v2
+    except Exception as e:
+        logging.error(f"Fallback para payload v1 (compressão falhou): {e}", exc_info=True)
 
     return ai_payload
 
