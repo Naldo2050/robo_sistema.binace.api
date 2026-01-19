@@ -5,6 +5,8 @@ import pytest
 from market_orchestrator.ai.payload_compressor import compress_payload
 from market_orchestrator.ai.ai_payload_builder import build_ai_input
 
+pytestmark = pytest.mark.payload
+
 
 def _dummy_payload():
     return {

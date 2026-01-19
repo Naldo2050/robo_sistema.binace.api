@@ -1,7 +1,11 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from ai_analyzer_qwen import AIAnalyzer
+
+pytestmark = pytest.mark.payload
 
 
 def test_guardrail_allows_safe_payload():
