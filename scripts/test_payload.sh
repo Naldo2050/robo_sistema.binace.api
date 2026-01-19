@@ -7,7 +7,9 @@ cd "$(dirname "$0")/.."
 pytest -q \
   tests/payload \
   -m payload \
+  --rootdir=. \
   --confcutdir=tests/payload \
+  -c tests/payload/pytest.ini \
   --cov=market_orchestrator.ai.payload_compressor \
   --cov=market_orchestrator.ai.llm_payload_guardrail \
   --cov-report=term-missing \
