@@ -72,6 +72,16 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+## Testes focados em payload/LLM
+
+Para validar mudanças no compressor/guardrail de payload sem depender do gate global de cobertura, execute:
+
+```bash
+./scripts/test_payload.sh
+```
+
+Esse comando roda apenas os testes de payload (compressor + guardrail) com cobertura restrita aos módulos relevantes e sem fail-under global.
+
 ### Métodos deprecated
 
 Os métodos abaixo ainda existem apenas por compatibilidade, mas serão removidos futuramente:
