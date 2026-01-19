@@ -15,12 +15,14 @@ from pathlib import Path
 import logging
 import json
 import hashlib
+import os
 
 # Adiciona o diretório raiz do projeto ao PYTHONPATH
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from market_orchestrator.ai.ai_enrichment_context import build_enriched_ai_context
 from market_orchestrator.ai.payload_compressor import compress_payload
+from market_orchestrator.ai.payload_section_cache import SectionCache, canonical_ref, is_fresh
 
 # Import para correlações cross-asset
 try:
@@ -505,6 +507,48 @@ def build_ai_input(
     # NOVO: mesclar contextos enriquecidos
     ai_payload = add_enriched_context_to_ai_payload(ai_payload, signal)
 
+    def _apply_section_cache(payload: Dict[str, Any]) -> Dict[str, Any]:
+        cache_path = os.getenv("PAYLOAD_SECTION_CACHE_PATH", "logs/payload_section_cache.json")
+        cache = SectionCache(cache_path)
+        now_ms = payload.get("epoch_ms") or int(datetime.utcnow().timestamp() * 1000)
+        cacheable = {
+            "macro_context": 3600,
+            "cross_asset_context": 3600,
+        }
+
+        for section_name, ttl_s in cacheable.items():
+            section = payload.get(section_name)
+            if not isinstance(section, dict):
+                continue
+
+            ref_new = canonical_ref(section)
+            cache_key = f"{symbol}:{section_name}:v2"
+            entry = cache.get(cache_key)
+            if entry and entry.get("ref") == ref_new and is_fresh(entry.get("saved_at_ms"), ttl_s, now_ms):
+                age_s = int(max(0, now_ms - entry.get("saved_at_ms", now_ms)) / 1000)
+                payload[section_name] = {"ref": entry["ref"], "age_s": age_s, "present": False}
+                logging.info(
+                    "CACHE_HIT section=%s ref=%s age_s=%s",
+                    section_name,
+                    entry["ref"],
+                    age_s,
+                )
+            else:
+                cache.set(cache_key, ref_new, now_ms, section)
+                payload[section_name] = {
+                    "ref": ref_new,
+                    "age_s": 0,
+                    "present": True,
+                    "data": section,
+                }
+                logging.info(
+                    "CACHE_MISS section=%s ref=%s",
+                    section_name,
+                    ref_new,
+                )
+
+        return payload
+
     def _build_decision_features_hash(payload: Dict[str, Any]) -> str:
         """Gera hash estável de campos chave para canary local."""
         base = {
@@ -557,6 +601,10 @@ def build_ai_input(
     except Exception as e:
         logging.error(f"Fallback para payload v1 (compressão falhou): {e}", exc_info=True)
         logging.info("PAYLOAD_V1_ONLY v1_bytes=%s", v1_bytes)
+
+    # Aplica cache de seções apenas para v2
+    if ai_payload.get("_v") == 2:
+        ai_payload = _apply_section_cache(ai_payload)
 
     return ai_payload
 

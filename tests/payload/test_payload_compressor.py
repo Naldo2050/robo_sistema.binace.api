@@ -4,6 +4,7 @@ import pytest
 
 from market_orchestrator.ai.payload_compressor import compress_payload
 from market_orchestrator.ai.ai_payload_builder import build_ai_input
+from market_orchestrator.ai.payload_section_cache import canonical_ref
 
 pytestmark = pytest.mark.payload
 
@@ -170,3 +171,82 @@ def test_budget_enforcement_reduces_sections():
     assert orderbook_bytes <= budgets["orderbook_context"]
 
     assert "correlations" not in compressed.get("macro_context", {})
+
+
+def test_cache_hit_reduces_payload(tmp_path, monkeypatch):
+    cache_path = tmp_path / "cache.json"
+    monkeypatch.setenv("PAYLOAD_SECTION_CACHE_PATH", str(cache_path))
+
+    signal = {"tipo_evento": "X", "descricao": "y", "preco_fechamento": 1.0, "epoch_ms": 1000}
+    payload1 = build_ai_input(
+        symbol="BTCUSDT",
+        signal=signal,
+        enriched={"ohlc": {"open": 1, "high": 2, "low": 1, "close": 2}},
+        flow_metrics={},
+        historical_profile={},
+        macro_context={"session": "us", "correlations": {"sp500": 0.1}},
+        market_environment={},
+        orderbook_data={},
+        ml_features={},
+    )
+    size1 = len(json.dumps(payload1, ensure_ascii=False).encode("utf-8"))
+
+    signal2 = dict(signal)
+    signal2["epoch_ms"] = signal["epoch_ms"] + 1000
+    payload2 = build_ai_input(
+        symbol="BTCUSDT",
+        signal=signal2,
+        enriched={"ohlc": {"open": 1, "high": 2, "low": 1, "close": 2}},
+        flow_metrics={},
+        historical_profile={},
+        macro_context={"session": "us", "correlations": {"sp500": 0.1}},
+        market_environment={},
+        orderbook_data={},
+        ml_features={},
+    )
+    size2 = len(json.dumps(payload2, ensure_ascii=False).encode("utf-8"))
+
+    macro_section = payload2.get("macro_context", {})
+    assert macro_section.get("present") is False
+    assert "data" not in macro_section
+    assert size2 < size1
+
+
+def test_cache_miss_on_change(tmp_path, monkeypatch):
+    cache_path = tmp_path / "cache.json"
+    monkeypatch.setenv("PAYLOAD_SECTION_CACHE_PATH", str(cache_path))
+
+    base_macro = {"trading_session": "us", "correlations": {"sp500": 0.1}}
+    signal = {"tipo_evento": "X", "descricao": "y", "preco_fechamento": 1.0, "epoch_ms": 1000}
+    payload1 = build_ai_input(
+        symbol="BTCUSDT",
+        signal=signal,
+        enriched={"ohlc": {"open": 1, "high": 2, "low": 1, "close": 2}},
+        flow_metrics={},
+        historical_profile={},
+        macro_context=base_macro,
+        market_environment={},
+        orderbook_data={},
+        ml_features={},
+    )
+    ref1 = payload1["macro_context"]["ref"]
+
+    updated_macro = {"trading_session": "eu", "correlations": {"sp500": 0.2}}
+    signal2 = dict(signal)
+    signal2["epoch_ms"] = signal["epoch_ms"] + 2000
+    payload2 = build_ai_input(
+        symbol="BTCUSDT",
+        signal=signal2,
+        enriched={"ohlc": {"open": 1, "high": 2, "low": 1, "close": 2}},
+        flow_metrics={},
+        historical_profile={},
+        macro_context=updated_macro,
+        market_environment={},
+        orderbook_data={},
+        ml_features={},
+    )
+
+    macro_section = payload2.get("macro_context", {})
+    assert macro_section.get("present") is True
+    assert "data" in macro_section
+    assert macro_section["ref"] != ref1
