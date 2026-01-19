@@ -1,6 +1,8 @@
-# PowerShell runner para testes focados em payload/LLM (sem WSL)
+﻿# PowerShell runner para testes focados em payload/LLM (sem WSL)
+Remove-Item Env:PYTEST_DISABLE_PLUGIN_AUTOLOAD -ErrorAction SilentlyContinue
 
 python -m pytest `
+  -c pytest.ini `
   tests/payload `
   -q `
   -m payload `
