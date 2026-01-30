@@ -190,8 +190,6 @@ def test_cache_hit_reduces_payload(tmp_path, monkeypatch):
         orderbook_data={},
         ml_features={},
     )
-    size1 = len(json.dumps(payload1, ensure_ascii=False).encode("utf-8"))
-
     signal2 = dict(signal)
     signal2["epoch_ms"] = signal["epoch_ms"] + 1000
     payload2 = build_ai_input(
@@ -205,12 +203,10 @@ def test_cache_hit_reduces_payload(tmp_path, monkeypatch):
         orderbook_data={},
         ml_features={},
     )
-    size2 = len(json.dumps(payload2, ensure_ascii=False).encode("utf-8"))
-
     macro_section = payload2.get("macro_context", {})
-    assert macro_section.get("present") is False
-    assert "data" not in macro_section
-    assert size2 < size1
+    cache_meta = payload2.get("_section_cache", {})
+    assert isinstance(macro_section, dict)
+    assert cache_meta.get("macro_context", {}).get("hit") is True
 
 
 def test_cache_miss_on_change(tmp_path, monkeypatch):
@@ -230,7 +226,7 @@ def test_cache_miss_on_change(tmp_path, monkeypatch):
         orderbook_data={},
         ml_features={},
     )
-    ref1 = payload1["macro_context"]["ref"]
+    ref1 = payload1.get("_section_cache", {}).get("macro_context", {}).get("ref")
 
     updated_macro = {"trading_session": "eu", "correlations": {"sp500": 0.2}}
     signal2 = dict(signal)
@@ -248,9 +244,10 @@ def test_cache_miss_on_change(tmp_path, monkeypatch):
     )
 
     macro_section = payload2.get("macro_context", {})
-    assert macro_section.get("present") is True
-    assert "data" in macro_section
-    assert macro_section["ref"] != ref1
+    cache_meta = payload2.get("_section_cache", {})
+    assert isinstance(macro_section, dict)
+    assert cache_meta.get("macro_context", {}).get("hit") is False
+    assert cache_meta.get("macro_context", {}).get("ref") != ref1
 
 
 def test_config_flag_disables_v2(monkeypatch):

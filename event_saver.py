@@ -68,6 +68,7 @@ except ImportError:
 # ===== CONFIGURACOES =====
 MAX_BUFFER_SIZE = 10000  # Limite maximo de eventos no buffer
 MAX_JSON_FILE_SIZE = 50 * 1024 * 1024  # 50MB maximo por snapshot
+MAX_JSONL_BYTES = 5000  # Limite duro por linha (JSONL)
 CLEANUP_INTERVAL = 300  # Limpa cache a cada 5 min
 SEEN_BLOCK_TTL = 3600  # Mantem seen_in_block por 1h
 
@@ -359,6 +360,7 @@ class EventSaver:
         self.write_jsonl = True
         self.max_json_events = 1000
         self.max_json_file_size = MAX_JSON_FILE_SIZE
+        self.max_jsonl_bytes = MAX_JSONL_BYTES
         if config is not None:
             self.write_json = bool(
                 getattr(config, "EVENT_SAVER_WRITE_JSON", True)
@@ -366,6 +368,12 @@ class EventSaver:
             self.write_jsonl = bool(
                 getattr(config, "EVENT_SAVER_WRITE_JSONL", True)
             )
+            try:
+                self.max_jsonl_bytes = int(
+                    getattr(config, "EVENT_SAVER_MAX_JSONL_BYTES", MAX_JSONL_BYTES)
+                )
+            except Exception:
+                self.max_jsonl_bytes = MAX_JSONL_BYTES
             try:
                 self.max_json_events = int(
                     getattr(config, "EVENT_SAVER_MAX_JSON_EVENTS", 1000)
@@ -855,6 +863,36 @@ class EventSaver:
                 else:
                     self._save_fallback(event, "json")
 
+    def _optimize_event_for_storage(self, event: Dict) -> Dict:
+        """
+        Otimiza apenas para armazenamento (JSONL).
+        Não muda a estrutura essencial do evento.
+        """
+        if not isinstance(event, dict):
+            return event
+
+        if event.get("tipo_evento") != "ANALYSIS_TRIGGER":
+            return event
+
+        event_original = event
+
+        try:
+            import copy
+            event_copy = copy.deepcopy(event)
+        except Exception:
+            event_copy = dict(event)
+
+        try:
+            from fix_optimization import clean_event, simplify_historical_vp, remove_enriched_snapshot
+            event_copy = clean_event(event_copy)
+            event_copy = simplify_historical_vp(event_copy)
+            event_copy = remove_enriched_snapshot(event_copy)
+        except Exception:
+            self.logger.exception("Falha ao otimizar evento para storage")
+            return event_original
+
+        return event_copy
+
     def _save_to_jsonl(self, event: Dict) -> None:
         """Salva evento em arquivo JSONL (historico) com retry."""
         if not self.write_jsonl:
@@ -866,9 +904,48 @@ class EventSaver:
         for attempt in range(max_retries):
             try:
                 with open(self.history_file, "a", encoding="utf-8") as f:
+                    event_to_save = self._optimize_event_for_storage(event)
                     json_line = json.dumps(
-                        event, ensure_ascii=False, default=str
+                        event_to_save, ensure_ascii=False, default=str, separators=(",", ":")
                     )
+                    max_bytes = getattr(self, "max_jsonl_bytes", MAX_JSONL_BYTES)
+                    tipo_evento = event.get("tipo_evento") if isinstance(event, dict) else None
+                    if (
+                        tipo_evento == "ANALYSIS_TRIGGER"
+                        and len(json_line.encode("utf-8", errors="replace")) > max_bytes
+                    ):
+                        event_slim = {
+                            "tipo_evento": event.get("tipo_evento") if isinstance(event, dict) else None,
+                            "symbol": event.get("symbol") if isinstance(event, dict) else None,
+                            "epoch_ms": event.get("epoch_ms") if isinstance(event, dict) else None,
+                            "janela_numero": event.get("janela_numero") if isinstance(event, dict) else None,
+                            "event_id": event.get("event_id") if isinstance(event, dict) else None,
+                            "timestamp_utc": event.get("timestamp_utc") if isinstance(event, dict) else None,
+                            "note": "trimmed_by_guardian",
+                        }
+
+                        json_line = json.dumps(
+                            event_slim, ensure_ascii=False, default=str, separators=(",", ":")
+                        )
+
+                        if len(json_line.encode("utf-8", errors="replace")) > max_bytes:
+                            json_line = json.dumps(
+                                {
+                                    "tipo_evento": event_slim.get("tipo_evento"),
+                                    "event_id": event_slim.get("event_id"),
+                                    "note": "trimmed_by_guardian_hard",
+                                },
+                                ensure_ascii=False,
+                                default=str,
+                                separators=(",", ":"),
+                            )
+                            if len(json_line.encode("utf-8", errors="replace")) > max_bytes:
+                                json_line = json.dumps(
+                                    {"note": "trimmed_by_guardian_hard"},
+                                    ensure_ascii=False,
+                                    default=str,
+                                    separators=(",", ":"),
+                                )
                     f.write(json_line + "\n")
                     f.flush()
                 return
@@ -895,12 +972,50 @@ class EventSaver:
 
             with open(fallback_file, "a", encoding="utf-8") as f:
                 if format_type == "jsonl":
-                    f.write(
-                        json.dumps(
-                            event, ensure_ascii=False, default=str
-                        )
-                        + "\n"
+                    event_to_save = self._optimize_event_for_storage(event)
+                    json_line = json.dumps(
+                        event_to_save, ensure_ascii=False, default=str, separators=(",", ":")
                     )
+                    max_bytes = getattr(self, "max_jsonl_bytes", MAX_JSONL_BYTES)
+                    tipo_evento = event.get("tipo_evento") if isinstance(event, dict) else None
+                    if (
+                        tipo_evento == "ANALYSIS_TRIGGER"
+                        and len(json_line.encode("utf-8", errors="replace")) > max_bytes
+                    ):
+                        event_slim = {
+                            "tipo_evento": event.get("tipo_evento") if isinstance(event, dict) else None,
+                            "symbol": event.get("symbol") if isinstance(event, dict) else None,
+                            "epoch_ms": event.get("epoch_ms") if isinstance(event, dict) else None,
+                            "janela_numero": event.get("janela_numero") if isinstance(event, dict) else None,
+                            "event_id": event.get("event_id") if isinstance(event, dict) else None,
+                            "timestamp_utc": event.get("timestamp_utc") if isinstance(event, dict) else None,
+                            "note": "trimmed_by_guardian",
+                        }
+
+                        json_line = json.dumps(
+                            event_slim, ensure_ascii=False, default=str, separators=(",", ":")
+                        )
+
+                        if len(json_line.encode("utf-8", errors="replace")) > max_bytes:
+                            json_line = json.dumps(
+                                {
+                                    "tipo_evento": event_slim.get("tipo_evento"),
+                                    "event_id": event_slim.get("event_id"),
+                                    "note": "trimmed_by_guardian_hard",
+                                },
+                                ensure_ascii=False,
+                                default=str,
+                                separators=(",", ":"),
+                            )
+                            if len(json_line.encode("utf-8", errors="replace")) > max_bytes:
+                                json_line = json.dumps(
+                                    {"note": "trimmed_by_guardian_hard"},
+                                    ensure_ascii=False,
+                                    default=str,
+                                    separators=(",", ":"),
+                                )
+
+                    f.write(json_line + "\n")
                 else:
                     f.write(
                         json.dumps(
@@ -960,6 +1075,17 @@ class EventSaver:
         """
         API pública para salvar um evento.
         """
+
+        # ✅ OTIMIZAÇÃO AUTOMÁTICA
+        if event.get("tipo_evento") == "ANALYSIS_TRIGGER":
+            try:
+                from fix_optimization import clean_event, simplify_historical_vp, remove_enriched_snapshot
+                event = clean_event(event)
+                event = simplify_historical_vp(event)
+                event = remove_enriched_snapshot(event)
+            except Exception as e:
+                self.logger.exception("Falha ao otimizar evento (pré-processamento)")
+
         if not isinstance(event, dict):
             self.logger.error("Evento inválido: não é um dicionário")
             return

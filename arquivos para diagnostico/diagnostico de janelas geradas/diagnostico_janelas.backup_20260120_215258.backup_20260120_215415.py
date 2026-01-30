@@ -1,6 +1,5 @@
 # diagnostico_janelas.py - v1.0
 
-
 import json
 import re
 from pathlib import Path
@@ -448,12 +447,6 @@ for i in range(5):
 
 print("\\n⏳ Aguardando flush...")
 time.sleep(7)
-
-
-        if event.get("tipo_evento") == "ANALYSIS_TRIGGER":
-
-
-
 
 print("\\n📊 Estatísticas:")
 stats = saver.get_stats()

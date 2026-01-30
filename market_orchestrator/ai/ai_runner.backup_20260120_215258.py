@@ -1,4 +1,10 @@
 # ai/ai_runner.py
+# Otimização de eventos (auto-adicionado)
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from fix_optimization import clean_event, simplify_historical_vp, remove_enriched_snapshot
+
 # -*- coding: utf-8 -*-
 
 """
@@ -634,6 +640,11 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                             except Exception as e:
                                 logging.debug(
                                     f"Falha ao salvar evento de análise da IA: {e}",
+                                    # Otimizar ANALYSIS_TRIGGER antes de salvar
+                                            if event.get("tipo_evento") == "ANALYSIS_TRIGGER":
+                                                event = clean_event(event)
+                                                event = simplify_historical_vp(event)
+                                                event = remove_enriched_snapshot(event)
                                     exc_info=True,
                                 )
 

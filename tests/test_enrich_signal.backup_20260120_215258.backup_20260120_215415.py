@@ -1,11 +1,5 @@
 # tests/test_enrich_signal.py
 from __future__ import annotations
-# Otimização de eventos (auto-adicionado)
-from pathlib import Path
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from fix_optimization import clean_event, simplify_historical_vp, remove_enriched_snapshot
-
 
 import threading
 from collections import deque
@@ -52,11 +46,6 @@ class EventSaverStub:
 
 
 @dataclass
-# Otimizar ANALYSIS_TRIGGER antes de salvar
-        if event.get("tipo_evento") == "ANALYSIS_TRIGGER":
-            event = clean_event(event)
-            event = simplify_historical_vp(event)
-            event = remove_enriched_snapshot(event)
 class EventBusStub:
     published: List[Dict[str, Any]] = field(default_factory=list)
 

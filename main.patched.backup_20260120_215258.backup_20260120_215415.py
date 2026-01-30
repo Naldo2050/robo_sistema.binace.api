@@ -1,10 +1,4 @@
 # main.py v2.1.1 (CORRIGIDO COMPLETO - IA FUNCIONANDO)
-# Otimização de eventos (auto-adicionado)
-from pathlib import Path
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from fix_optimization import clean_event, simplify_historical_vp, remove_enriched_snapshot
-
 # -*- coding: utf-8 -*-
 
 # 🆕 FORÇAR UTF-8 NO WINDOWS (ADICIONAR ANTES DE TUDO)
@@ -1287,11 +1281,6 @@ class EnhancedMarketBot:
                     if "timestamp" not in signal:
                         signal["timestamp"] = datetime.fromisoformat(
                             signal.get("timestamp_ny", datetime.now(self.ny_tz).isoformat(timespec="seconds")).replace("Z", "+00:00")
-                        # Otimizar ANALYSIS_TRIGGER antes de salvar
-                                if event.get("tipo_evento") == "ANALYSIS_TRIGGER":
-                                    event = clean_event(event)
-                                    event = simplify_historical_vp(event)
-                                    event = remove_enriched_snapshot(event)
                         ).strftime("%Y-%m-%d %H:%M:%S")
                     
                     if signal.get("tipo_evento") != "OrderBook":
