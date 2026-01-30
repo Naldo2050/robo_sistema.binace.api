@@ -1,0 +1,111 @@
+{
+  "ai_payload": {
+    "technical_indicators": {
+      "rsi": 42.8,
+      "macd": {
+        "line": -301.3043,
+        "signal": -336.3872,
+        "histogram": 35.0829
+      },
+      "adx": 27.1,
+      "stoch": null,
+      "pivots": {}
+    },
+    "orderbook_context": {
+      "bid_depth_usd": 390358.98,
+      "ask_depth_usd": 1017091.66,
+      "imbalance": -0.4453,
+      "spread_percent": 0.0001,
+      "market_impact_score": -0.4453,
+      "walls_detected": true,
+      "depth_metrics": {
+        "bid_liquidity_top5": 200147.8073,
+        "ask_liquidity_top5": 543099.8956,
+        "depth_imbalance": -0.4614
+      }
+    },
+    "symbol": "BTCUSDT",
+    "historical_stats": {},
+    "epoch_ms": 1768873920000,
+    "signal_metadata": {
+      "type": "ANALYSIS_TRIGGER",
+      "battle_result": "N/A",
+      "severity": "INFO",
+      "window_id": 6,
+      "description": "Evento automático para análise da IA"
+    },
+    "macro_context": {
+      "session": "NY",
+      "phase": "ACTIVE",
+      "regime": {
+        "structure": "RANGE_BOUND",
+        "trend": "SIDEWAYS",
+        "sentiment": "NEUTRAL"
+      }
+    },
+    "cross_asset_context": {},
+    "flow_context": {
+      "net_flow": 0.0,
+      "cvd_accumulated": 2.30693,
+      "flow_imbalance": null,
+      "aggressive_buyers": null,
+      "aggressive_sellers": null,
+      "whale_activity": {
+        "whale_delta": 0.0,
+        "whale_buy_vol": 0.0,
+        "whale_sell_vol": 0.0
+      },
+      "liquidity_clusters_count": 1,
+      "absorption_type": "Neutra"
+    },
+    "price_context": {
+      "current_price": 92795.2,
+      "ohlc": {
+        "open": 92810.0,
+        "high": 92810.0,
+        "low": 92795.1,
+        "close": 92795.2,
+        "vwap": 92807.0
+      },
+      "price_action": {
+        "candle_range_pct": 0.01605430449304405,
+        "candle_body_pct": 0.015946557483032982,
+        "upper_shadow_pct": 0.0,
+        "lower_shadow_pct": 0.6711409395389792,
+        "close_position": 0.006711409395389793
+      },
+      "volume_profile_daily": {
+        "poc": 92767.0,
+        "vah": 92861.0,
+        "val": 92622.0,
+        "in_value_area": true
+      },
+      "volatility": {
+        "atr": null,
+        "volatility_regime": "LOW"
+      }
+    },
+    "quant_model": {
+      "model_probability_up": 0.539702296257019,
+      "model_probability_down": 0.46029770374298096,
+      "model_sentiment": "NEUTRO / INDEFINIDO",
+      "action_bias": "aguardar",
+      "confidence_score": 0.07940459251403809,
+      "features_used": 8,
+      "total_features": 51
+    },
+    "_v": 2
+  },
+  "tipo_evento": "ANALYSIS_TRIGGER",
+  "descricao": "Evento automático para análise da IA",
+  "symbol": "BTCUSDT",
+  "_dump_meta": {
+    "payload_bytes_final": 1913,
+    "timestamp_utc": "2026-01-20T01:57:17.096292+00:00",
+    "flags": {
+      "v2_enabled": true,
+      "max_bytes": 6144,
+      "guardrail_hard_enabled": true
+    }
+  }
+}

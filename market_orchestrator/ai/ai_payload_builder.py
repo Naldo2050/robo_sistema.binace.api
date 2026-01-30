@@ -19,6 +19,7 @@ import os
 from functools import lru_cache
 
 import yaml
+from ai_payload_optimizer import AIPayloadOptimizer, compact_historical_vp
 
 # Adiciona o diretório raiz do projeto ao PYTHONPATH
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -178,6 +179,27 @@ def build_ai_input(
     # 1. Contexto de Preço (Price Context)
     ohlc = enriched.get("ohlc", {})
     vp_daily = historical_profile.get("daily", {})
+
+    # Compacta HVNs/LVNs para reduzir custo sem perder niveis relevantes
+    try:
+        current_price_for_vp = signal.get("preco_fechamento", ohlc.get("close"))
+        current_price_for_vp = float(current_price_for_vp) if current_price_for_vp is not None else None
+    except Exception:
+        current_price_for_vp = None
+
+    vp_compact_daily: Dict[str, Any] = {}
+    try:
+        if isinstance(historical_profile, dict):
+            vp_compact = compact_historical_vp(
+                historical_profile,
+                current_price=current_price_for_vp,
+                pct_range=0.05,
+                max_levels=5,
+                timeframes=("daily",),
+            )
+            vp_compact_daily = vp_compact.get("daily", {}) if isinstance(vp_compact, dict) else {}
+    except Exception:
+        vp_compact_daily = {}
     
     # Cálculos de Price Action (Candle)
     pa_metrics = {
@@ -219,6 +241,19 @@ def build_ai_input(
     except Exception:
         pass # Mantém defaults seguros
 
+    volume_profile_daily = {
+        "poc": vp_daily.get("poc"),
+        "vah": vp_daily.get("vah"),
+        "val": vp_daily.get("val"),
+        "in_value_area": _check_in_range(ohlc.get("close"), vp_daily.get("val"), vp_daily.get("vah")),
+    }
+    hvns_nearby = vp_compact_daily.get("hvns_nearby")
+    if isinstance(hvns_nearby, list) and hvns_nearby:
+        volume_profile_daily["hvns_nearby"] = hvns_nearby
+    lvns_nearby = vp_compact_daily.get("lvns_nearby")
+    if isinstance(lvns_nearby, list) and lvns_nearby:
+        volume_profile_daily["lvns_nearby"] = lvns_nearby
+
     price_context = {
         "current_price": signal.get("preco_fechamento", ohlc.get("close")),
         "ohlc": {
@@ -229,12 +264,7 @@ def build_ai_input(
             "vwap": ohlc.get("vwap")
         },
         "price_action": pa_metrics, # 🆕 Bloco de Price Action explícito
-        "volume_profile_daily": {
-            "poc": vp_daily.get("poc"),
-            "vah": vp_daily.get("vah"),
-            "val": vp_daily.get("val"),
-            "in_value_area": _check_in_range(ohlc.get("close"), vp_daily.get("val"), vp_daily.get("vah"))
-        },
+        "volume_profile_daily": volume_profile_daily,
         "volatility": {
             "atr": macro_context.get("atr"),  # Se disponível no macro
             "volatility_regime": market_environment.get("volatility_regime")
@@ -283,19 +313,32 @@ def build_ai_input(
 
     # 🆕 3.5. Indicadores Técnicos (Technical Indicators)
     # Extrai indicadores chave do contexto MTF (prioriza 1h ou 4h para trend, 15m para tático)
-    mtf = macro_context.get("mtf_trends", {})
-    # Tenta pegar contexto de 1h para indicadores 'padrão', fallback para 15m
-    tf_tech = mtf.get("1h", {}) if "1h" in mtf else mtf.get("15m", {})
+    mtf = (
+        macro_context.get("mtf_trends")
+        or macro_context.get("multi_timeframe_trends")
+        or macro_context.get("multi_tf")
+        or signal.get("multi_tf")
+        or signal.get("multi_timeframe_trends")
+        or {}
+    )
+    # Tenta pegar contexto de 1h para indicadores 'padrão', fallback para 4h/15m
+    tf_tech = mtf.get("1h") or mtf.get("4h") or mtf.get("15m") or {}
+
+    rsi_value = tf_tech.get("rsi_short") or tf_tech.get("rsi") or tf_tech.get("rsi_14")
+    macd_line = tf_tech.get("macd") or tf_tech.get("macd_line")
+    macd_signal = tf_tech.get("macd_signal") or tf_tech.get("signal")
+    adx_value = tf_tech.get("adx") or tf_tech.get("adx_14")
+    stoch_value = tf_tech.get("stoch_k") or tf_tech.get("stoch") or tf_tech.get("stoch_14")
     
     technical_indicators = {
-        "rsi": tf_tech.get("rsi_short"), # 14 period default
+        "rsi": rsi_value, # 14 period default
         "macd": {
-            "line": tf_tech.get("macd"),
-            "signal": tf_tech.get("macd_signal"),
-            "histogram": round((tf_tech.get("macd", 0) or 0) - (tf_tech.get("macd_signal", 0) or 0), 4)
+            "line": macd_line,
+            "signal": macd_signal,
+            "histogram": round((macd_line or 0) - (macd_signal or 0), 4)
         },
-        "adx": tf_tech.get("adx"),
-        "stoch": tf_tech.get("stoch_k"), # Se existir no MTF
+        "adx": adx_value,
+        "stoch": stoch_value, # Se existir no MTF
         "pivots": pivots or {}
     }
 
@@ -373,7 +416,7 @@ def build_ai_input(
     macro_full_context = {
         "session": macro_context.get("trading_session"),
         "phase": macro_context.get("session_phase"),
-        "multi_timeframe_trends": macro_context.get("mtf_trends", {}),
+        "multi_timeframe_trends": mtf,
         "regime": {
             "structure": market_environment.get("market_structure"),
             "trend": market_environment.get("trend_direction"),
@@ -488,10 +531,19 @@ def build_ai_input(
     ai_payload["delta"] = signal.get("delta")
     ai_payload["volume_total"] = signal.get("volume_total")
     ai_payload["preco_fechamento"] = signal.get("preco_fechamento")
-    ai_payload["orderbook_data"] = orderbook_data
+    orderbook_payload = orderbook_data
+    if isinstance(orderbook_data, dict):
+        orderbook_payload = dict(orderbook_data)
+        for side in ("bids", "asks"):
+            levels = orderbook_payload.get(side)
+            if isinstance(levels, list) and len(levels) > 200:
+                orderbook_payload[side] = levels[:50]
+                orderbook_payload[f"{side}_total_levels"] = len(levels)
+                orderbook_payload[f"{side}_truncated"] = True
+    ai_payload["orderbook_data"] = orderbook_payload
     ai_payload["fluxo_continuo"] = flow_metrics
     ai_payload["historical_vp"] = historical_profile
-    ai_payload["multi_tf"] = macro_context.get("mtf_trends", {})
+    ai_payload["multi_tf"] = mtf
     ai_payload["event_history"] = signal.get("event_history", []) # Se houver memória injetada
 
     # === SEÇÃO DE INTELIGÊNCIA QUANTITATIVA ===
@@ -564,6 +616,7 @@ def build_ai_input(
     def _apply_section_cache(payload: Dict[str, Any]) -> Dict[str, Any]:
         cache_path = os.getenv("PAYLOAD_SECTION_CACHE_PATH", "logs/payload_section_cache.json")
         cache = SectionCache(cache_path)
+        cache_meta = payload.setdefault("_section_cache", {})
         now_ms = payload.get("epoch_ms") or int(datetime.now(timezone.utc).timestamp() * 1000)
         cacheable = {
             "macro_context": (cfg.get("cache_ttls_s") or {}).get("macro_context", 3600),
@@ -580,7 +633,8 @@ def build_ai_input(
             entry = cache.get(cache_key)
             if entry and entry.get("ref") == ref_new and is_fresh(entry.get("saved_at_ms"), ttl_s, now_ms):
                 age_s = int(max(0, now_ms - entry.get("saved_at_ms", now_ms)) / 1000)
-                payload[section_name] = {"ref": entry["ref"], "age_s": age_s, "present": False}
+                # Não substituir os dados do payload; apenas registra meta de cache.
+                cache_meta[section_name] = {"hit": True, "ref": entry["ref"], "age_s": age_s}
                 logging.info(
                     "CACHE_HIT section=%s ref=%s age_s=%s",
                     section_name,
@@ -597,12 +651,7 @@ def build_ai_input(
                 )
             else:
                 cache.set(cache_key, ref_new, now_ms, section)
-                payload[section_name] = {
-                    "ref": ref_new,
-                    "age_s": 0,
-                    "present": True,
-                    "data": section,
-                }
+                cache_meta[section_name] = {"hit": False, "ref": ref_new, "age_s": 0}
                 logging.info(
                     "CACHE_MISS section=%s ref=%s",
                     section_name,
@@ -675,6 +724,13 @@ def build_ai_input(
     # Aplica cache de seções apenas para v2
     if ai_payload.get("_v") == 2 and cfg.get("section_cache_enabled", True):
         ai_payload = _apply_section_cache(ai_payload)
+
+    try:
+        optimized_payload = AIPayloadOptimizer.optimize(ai_payload)
+        if isinstance(optimized_payload, dict) and optimized_payload:
+            ai_payload = optimized_payload
+    except Exception as e:
+        logging.debug("Falha ao otimizar payload da IA: %s", e, exc_info=True)
 
     return ai_payload
 

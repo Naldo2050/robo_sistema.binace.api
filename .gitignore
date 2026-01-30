@@ -102,3 +102,10 @@ Thumbs.db
 # Relatórios de performance de IA (não versionar)
 # ==============================
 diagnostics/ai_performance_report.csv
+
+# ==============================
+# Logs gerados em runtime
+# ==============================
+logs/payload_metrics*.jsonl*
+logs/payload_section_cache.json
+logs/*.zip

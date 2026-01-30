@@ -1,4 +1,9 @@
 # market_orchestrator/market_orchestrator.py
+# Otimização de eventos (auto-adicionado)
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 # -*- coding: utf-8 -*-
 """
 Orquestrador de mercado (WebSocket + janelas + DataPipeline + IA) v2.3.2

@@ -1,10 +1,4 @@
 # diagnostics/final_validation.py
-# Otimização de eventos (auto-adicionado)
-from pathlib import Path
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from fix_optimization import clean_event, simplify_historical_vp, remove_enriched_snapshot
-
 # -*- coding: utf-8 -*-
 """
 Script de Validação Final de Integração (Smoke Test).
@@ -183,11 +177,6 @@ def test_db_integration():
     
     # 3. Tenta ler com Backtester
     bt = Backtester(db_path=Path(db_path))
-    # Otimizar ANALYSIS_TRIGGER antes de salvar
-            if event.get("tipo_evento") == "ANALYSIS_TRIGGER":
-                event = clean_event(event)
-                event = simplify_historical_vp(event)
-                event = remove_enriched_snapshot(event)
     df = bt.load_signals()
     
     if not df.empty and len(df) == 1:

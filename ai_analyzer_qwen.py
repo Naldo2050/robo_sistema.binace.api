@@ -53,6 +53,8 @@ import time
 import asyncio
 import threading
 import json
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Literal, TYPE_CHECKING
 
@@ -166,6 +168,7 @@ def _log_payload_tripwires(summary: Dict[str, Any]) -> None:
         )
 from orderbook_core.structured_logging import StructuredLogger
 from market_orchestrator.ai.llm_payload_guardrail import ensure_safe_llm_payload
+from market_orchestrator.ai.ai_payload_builder import get_llm_payload_config
 
 load_dotenv()
 
@@ -208,7 +211,7 @@ else:
 # SYSTEM PROMPT (v2.4.0)
 # ========================
 
-SYSTEM_PROMPT = """Você é analista institucional de fluxo, suporte/resistência e regiões de defesa.
+SYSTEM_PROMPT_LEGACY = """Você é analista institucional de fluxo, suporte/resistência e regiões de defesa.
 
 🔹 HORIZONTE DE ANÁLISE: Focado em entradas rápidas de 5-15 minutos (scalp), com validação em horizontes maiores se disponível.
 
@@ -257,6 +260,31 @@ Não use tags <think> nem mostre seu raciocínio passo a passo; entregue apenas 
 """
 
 
+
+SYSTEM_PROMPT = """Voce e um analista institucional de fluxo, microestrutura e suporte/resistencia.
+
+Horizonte: entradas rapidas de 5-15 minutos (scalp), com confirmacao em tempos maiores quando houver.
+
+Use APENAS os dados fornecidos. Se algum dado critico estiver ausente/indisponivel, seja explicito.
+
+Idioma e privacidade do raciocinio (obrigatorio):
+- Responda sempre e apenas em portugues do Brasil.
+- Nao use ingles em nenhuma parte do conteudo.
+- Nao use tags <think> nem mostre raciocinio passo a passo; entregue apenas a resposta final.
+
+Regra principal (obrigatoria):
+- Use o vies quantitativo (action_bias + confidence_score) como base.
+- So contrarie o vies se houver evidencia MUITO forte no fluxo/orderbook (absorcao massiva, whale activity, divergencia grave).
+- Em duvida/ruido, prefira action=\"wait\" ou action=\"avoid\".
+
+Saida:
+- Responda SOMENTE com um JSON valido (sem Markdown e sem texto extra).
+- Chaves: sentiment, confidence, action, rationale, entry_zone, invalidation_zone, region_type.
+- sentiment: bullish|bearish|neutral
+- action: buy|sell|hold|flat|wait|avoid
+- confidence: numero entre 0 e 1
+- rationale: texto curto em PT-BR (max ~5 linhas)
+"""
 
 ORDERBOOK_TEMPLATE = """
 🧠 **Análise Institucional – {{ ativo }} | {{ tipo_evento }}**
@@ -1172,7 +1200,7 @@ class AIAnalyzer:
         }
         return self._render_template("default", context)
 
-    def _build_structured_prompt(self, payload: Dict[str, Any]) -> str:
+    def _build_structured_prompt_legacy(self, payload: Dict[str, Any]) -> str:
         """
         Constrói o prompt usando o payload padronizado (ai_payload_builder).
         Se algum campo estiver faltando, faz fallback para 'N/A' ou valores simples.
@@ -1330,6 +1358,127 @@ class AIAnalyzer:
 
         return "\n".join(lines)
 
+    def _build_structured_prompt(self, payload: Dict[str, Any]) -> str:
+        """
+        Prompt compacto (reduz tokens) para uso com o payload do ai_payload_builder.
+        Pode ser alternado via config.json: ai.prompt_style = "compact" | "legacy".
+        """
+        try:
+            ai_cfg = self.config.get("ai", {}) if isinstance(self.config, dict) else {}
+            if isinstance(ai_cfg, dict) and ai_cfg.get("prompt_style") == "legacy":
+                return self._build_structured_prompt_legacy(payload)
+        except Exception:
+            pass
+
+        meta = payload.get("signal_metadata") if isinstance(payload.get("signal_metadata"), dict) else {}
+        price = payload.get("price_context") if isinstance(payload.get("price_context"), dict) else {}
+        flow = payload.get("flow_context") if isinstance(payload.get("flow_context"), dict) else {}
+        ob = payload.get("orderbook_context") if isinstance(payload.get("orderbook_context"), dict) else {}
+        macro = payload.get("macro_context") if isinstance(payload.get("macro_context"), dict) else {}
+        quant = payload.get("quant_model") if isinstance(payload.get("quant_model"), dict) else {}
+
+        symbol = payload.get("symbol") or payload.get("ativo") or meta.get("symbol") or "N/A"
+        tipo = meta.get("type") or payload.get("tipo_evento") or "N/A"
+        descricao = meta.get("description") or payload.get("descricao") or ""
+        batalha = meta.get("battle_result") or payload.get("resultado_da_batalha") or "N/A"
+        epoch_ms = payload.get("epoch_ms") or payload.get("timestamp_ms") or payload.get("timestamp")
+
+        header_parts = [f"ativo={symbol}", f"tipo={tipo}"]
+        if epoch_ms is not None:
+            header_parts.append(f"epoch_ms={epoch_ms}")
+        if batalha != "N/A":
+            header_parts.append(f"batalha={batalha}")
+
+        lines: list[str] = [" | ".join(header_parts)]
+        if descricao:
+            lines.append(f"descricao={descricao}")
+
+        ohlc = price.get("ohlc") if isinstance(price.get("ohlc"), dict) else {}
+        cur = price.get("current_price")
+        if cur is not None:
+            lines.append(
+                "preco={cur} ohlc=O{op} H{hi} L{lo} C{cl}".format(
+                    cur=format_price(cur),
+                    op=format_price(ohlc.get("open")),
+                    hi=format_price(ohlc.get("high")),
+                    lo=format_price(ohlc.get("low")),
+                    cl=format_price(ohlc.get("close")),
+                )
+            )
+
+        vp = price.get("volume_profile_daily") if isinstance(price.get("volume_profile_daily"), dict) else {}
+        vp_parts = [
+            "vp_diario:",
+            f"poc={format_price(vp.get('poc'))}",
+            f"vah={format_price(vp.get('vah'))}",
+            f"val={format_price(vp.get('val'))}",
+        ]
+        hvns = vp.get("hvns_nearby")
+        if isinstance(hvns, list) and hvns:
+            vp_parts.append("hvn_near=" + ",".join(format_price(x) for x in hvns[:5]))
+        lvns = vp.get("lvns_nearby")
+        if isinstance(lvns, list) and lvns:
+            vp_parts.append("lvn_near=" + ",".join(format_price(x) for x in lvns[:5]))
+        lines.append(" ".join(vp_parts))
+
+        flow_bits = []
+        if flow.get("net_flow") is not None:
+            flow_bits.append(f"net_flow={format_delta(flow.get('net_flow'))}")
+        if flow.get("cvd_accumulated") is not None:
+            flow_bits.append(f"cvd={format_delta(flow.get('cvd_accumulated'))}")
+        if flow.get("flow_imbalance") is not None:
+            flow_bits.append(f"flow_imb={format_scientific(flow.get('flow_imbalance'), 4)}")
+        if flow.get("aggressive_buyers") is not None:
+            flow_bits.append(f"aggr_buy={format_percent(flow.get('aggressive_buyers'), 1)}")
+        if flow.get("aggressive_sellers") is not None:
+            flow_bits.append(f"aggr_sell={format_percent(flow.get('aggressive_sellers'), 1)}")
+        if flow.get("absorption_type") is not None:
+            flow_bits.append(f"absorption={flow.get('absorption_type')}")
+        if flow_bits:
+            lines.append("fluxo: " + " | ".join(flow_bits))
+
+        ob_bits = []
+        if ob.get("bid_depth_usd") is not None:
+            ob_bits.append(f"bid_depth_usd={format_large_number(ob.get('bid_depth_usd'))}")
+        if ob.get("ask_depth_usd") is not None:
+            ob_bits.append(f"ask_depth_usd={format_large_number(ob.get('ask_depth_usd'))}")
+        if ob.get("imbalance") is not None:
+            ob_bits.append(f"imbalance={format_scientific(ob.get('imbalance'), 4)}")
+        if ob.get("pressure") is not None:
+            ob_bits.append(f"pressure={format_scientific(ob.get('pressure'), 4)}")
+        if ob.get("spread_percent") is not None:
+            ob_bits.append(f"spread={format_percent(ob.get('spread_percent'), 4)}")
+        if ob_bits:
+            lines.append("orderbook: " + " | ".join(ob_bits))
+
+        macro_bits = []
+        if macro.get("session") is not None:
+            macro_bits.append(f"session={macro.get('session')}")
+        if macro.get("phase") is not None:
+            macro_bits.append(f"phase={macro.get('phase')}")
+        regime = macro.get("regime") if isinstance(macro.get("regime"), dict) else {}
+        if regime.get("structure") is not None:
+            macro_bits.append(f"structure={regime.get('structure')}")
+        if regime.get("trend") is not None:
+            macro_bits.append(f"trend={regime.get('trend')}")
+        if regime.get("sentiment") is not None:
+            macro_bits.append(f"risk={regime.get('sentiment')}")
+        if macro_bits:
+            lines.append("macro: " + " | ".join(macro_bits))
+
+        quant_bits = []
+        if quant.get("action_bias") is not None:
+            quant_bits.append(f"action_bias={quant.get('action_bias')}")
+        if quant.get("confidence_score") is not None:
+            quant_bits.append(f"confidence_score={format_percent(quant.get('confidence_score'), 1)}")
+        if quant.get("model_probability_up") is not None:
+            quant_bits.append(f"prob_up={format_percent(quant.get('model_probability_up'), 1)}")
+        if quant_bits:
+            lines.append("quant: " + " | ".join(quant_bits))
+
+        lines.append("SAIDA: responda apenas com JSON (schema do SYSTEM prompt).")
+        return "\n".join(lines)
+
     def _extract_list_counts(self, payload: Dict[str, Any]) -> Dict[str, int]:
         """
         Percorre dict/list procurando listas relevantes para medir tamanho.
@@ -1410,6 +1559,35 @@ class AIAnalyzer:
     # CALLERS (SYNC + ASYNC / STRUCTURED)
     # ====================================================================
 
+    def _get_system_prompt(self) -> str:
+        """Seleciona o SYSTEM prompt conforme config.json (ai.prompt_style)."""
+        ai_cfg = self.config.get("ai", {}) if isinstance(self.config, dict) else {}
+        if isinstance(ai_cfg, dict) and ai_cfg.get("prompt_style") == "legacy":
+            return SYSTEM_PROMPT_LEGACY
+        return SYSTEM_PROMPT
+
+    @staticmethod
+    def _sanitize_llm_text(text: str) -> str:
+        """
+        Remove blocos de raciocinio (ex.: <think>...</think>) e lixo comum
+        para evitar vazamento no log e melhorar a taxa de parse do JSON.
+        """
+        if not isinstance(text, str):
+            return ""
+
+        s = text.strip()
+        if not s:
+            return ""
+
+        # Remove <think>...</think> (quando o modelo inclui raciocinio no content)
+        try:
+            s = re.sub(r"<think>.*?</think>", "", s, flags=re.IGNORECASE | re.DOTALL).strip()
+        except Exception:
+            pass
+
+        s = s.replace("<think>", "").replace("</think>", "").strip()
+        return s
+
     async def _a_call_openai_text(self, prompt: str) -> str:
         """Versão assíncrona simples (texto livre) para OpenAI/Groq com fallbacks."""
         if not self.client_async:
@@ -1417,6 +1595,21 @@ class AIAnalyzer:
 
         # Usar lista centralizada de candidatos
         models_to_try = self._groq_model_candidates if self.mode == "groq" else [self.model_name]
+        ai_cfg = self.config.get("ai", {}) if isinstance(self.config, dict) else {}
+        try:
+            max_tokens_cfg = int((ai_cfg or {}).get("max_tokens", 450) or 450)
+        except Exception:
+            max_tokens_cfg = 450
+        max_tokens_cfg = max(200, min(max_tokens_cfg, 1200))
+        try:
+            temperature_cfg = float((ai_cfg or {}).get("temperature", 0.25) or 0.25)
+        except Exception:
+            temperature_cfg = 0.25
+        temperature_cfg = max(0.0, min(temperature_cfg, 1.0))
+        try:
+            timeout_cfg = int((ai_cfg or {}).get("timeout", 30) or 30)
+        except Exception:
+            timeout_cfg = 30
 
         for model in models_to_try:
             try:
@@ -1425,16 +1618,16 @@ class AIAnalyzer:
                     messages=[
                         {
                             "role": "system",
-                            "content": SYSTEM_PROMPT,
+                            "content": self._get_system_prompt(),
                         },
                         {"role": "user", "content": prompt},
                     ],
-                    max_tokens=700,
-                    temperature=0.25,
-                    timeout=30,
+                    max_tokens=max_tokens_cfg,
+                    temperature=temperature_cfg,
+                    timeout=timeout_cfg,
                 )
                 if response.choices and len(response.choices) > 0:
-                    content = response.choices[0].message.content.strip()
+                    content = self._sanitize_llm_text(response.choices[0].message.content or "")
                     # Sucesso: atualizar modelos se foi fallback
                     if model != self.model_name:
                         logging.info(f"🔄 Modelo trocado de {self.model_name} para {model} devido a decommissioned")
@@ -1460,6 +1653,21 @@ class AIAnalyzer:
         Mantido para fallback e para ping.
         """
         base_delay = 1.0
+        ai_cfg = self.config.get("ai", {}) if isinstance(self.config, dict) else {}
+        try:
+            max_tokens_cfg = int((ai_cfg or {}).get("max_tokens", 450) or 450)
+        except Exception:
+            max_tokens_cfg = 450
+        max_tokens_cfg = max(200, min(max_tokens_cfg, 1200))
+        try:
+            temperature_cfg = float((ai_cfg or {}).get("temperature", 0.25) or 0.25)
+        except Exception:
+            temperature_cfg = 0.25
+        temperature_cfg = max(0.0, min(temperature_cfg, 1.0))
+        try:
+            timeout_cfg = int((ai_cfg or {}).get("timeout", 30) or 30)
+        except Exception:
+            timeout_cfg = 30
         for attempt in range(max_retries):
             try:
                 response = self.client.chat.completions.create(
@@ -1467,16 +1675,16 @@ class AIAnalyzer:
                     messages=[
                         {
                             "role": "system",
-                            "content": SYSTEM_PROMPT,
+                            "content": self._get_system_prompt(),
                         },
                         {"role": "user", "content": prompt},
                     ],
-                    max_tokens=700,
-                    temperature=0.25,
-                    timeout=30,
+                    max_tokens=max_tokens_cfg,
+                    temperature=temperature_cfg,
+                    timeout=timeout_cfg,
                 )
                 if response.choices and len(response.choices) > 0:
-                    content = response.choices[0].message.content.strip()
+                    content = self._sanitize_llm_text(response.choices[0].message.content or "")
                     if len(content) > 10:
                         if self.mode == "groq":
                             logging.debug(f"✅ Groq respondeu ({len(content)} chars)")
@@ -1493,6 +1701,21 @@ class AIAnalyzer:
     def _call_dashscope(self, prompt: str, max_retries: int = 3) -> str:
         """Chama DashScope API com retry (texto livre)."""
         base_delay = 1.0
+        ai_cfg = self.config.get("ai", {}) if isinstance(self.config, dict) else {}
+        try:
+            max_tokens_cfg = int((ai_cfg or {}).get("max_tokens", 450) or 450)
+        except Exception:
+            max_tokens_cfg = 450
+        max_tokens_cfg = max(200, min(max_tokens_cfg, 1200))
+        try:
+            temperature_cfg = float((ai_cfg or {}).get("temperature", 0.25) or 0.25)
+        except Exception:
+            temperature_cfg = 0.25
+        temperature_cfg = max(0.0, min(temperature_cfg, 1.0))
+        try:
+            timeout_cfg = int((ai_cfg or {}).get("timeout", 30) or 30)
+        except Exception:
+            timeout_cfg = 30
         for attempt in range(max_retries):
             try:
                 response = Generation.call(
@@ -1500,16 +1723,16 @@ class AIAnalyzer:
                     messages=[
                         {
                             "role": "system",
-                            "content": SYSTEM_PROMPT,
+                            "content": self._get_system_prompt(),
                         },
                         {"role": "user", "content": prompt},
                     ],
                     result_format="message",
-                    max_tokens=700,
-                    temperature=0.25,
-                    timeout=30,
+                    max_tokens=max_tokens_cfg,
+                    temperature=temperature_cfg,
+                    timeout=timeout_cfg,
                 )
-                content = _extract_dashscope_text(response).strip()
+                content = self._sanitize_llm_text(_extract_dashscope_text(response).strip())
                 if len(content) > 10:
                     return content
                 return ""
@@ -1519,17 +1742,63 @@ class AIAnalyzer:
                     time.sleep(base_delay * (2 ** attempt))
         return ""
 
+    @staticmethod
+    def _try_parse_json_dict(text: str) -> Optional[Dict[str, Any]]:
+        """Best-effort: extrai um dict JSON de uma resposta de LLM."""
+        if not isinstance(text, str):
+            return None
+        s = text.strip()
+        if not s:
+            return None
+
+        # Remove code fences comuns: ```json ... ```
+        if s.startswith("```"):
+            parts = s.split("```")
+            if len(parts) >= 3:
+                s = parts[1].strip()
+                if s.lower().startswith("json"):
+                    s = s[4:].lstrip()
+
+        try:
+            obj = json.loads(s)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            pass
+
+        start = s.find("{")
+        end = s.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+
+        try:
+            obj = json.loads(s[start : end + 1])
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None
+
     def _call_model(self, prompt: str, event_data: Dict[str, Any]) -> tuple[str, Optional[Any]]:
         """
         Chama o provedor atual e retorna (raw_response, structured_or_None).
         """
         # Usar apenas modo texto livre
         if self.mode in ("openai", "groq") and self.client:
-            text = self._call_openai_compatible(prompt)
-            return text, None
+            text = self._sanitize_llm_text(self._call_openai_compatible(prompt))
+            parsed = self._try_parse_json_dict(text)
+            if parsed is not None:
+                try:
+                    text = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+                except Exception:
+                    pass
+            return text, parsed
         elif self.mode == "dashscope":
-            text = self._call_dashscope(prompt)
-            return text, None
+            text = self._sanitize_llm_text(self._call_dashscope(prompt))
+            parsed = self._try_parse_json_dict(text)
+            if parsed is not None:
+                try:
+                    text = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+                except Exception:
+                    pass
+            return text, parsed
         else:
             text = self._generate_mock_analysis(event_data)
             return text, None
@@ -1616,6 +1885,60 @@ class AIAnalyzer:
                     payload_root_name,
                     list(leak_keys.intersection(payload_for_llm.keys())),
                 )
+
+            try:
+                metrics_final = {
+                    "bytes_after_final": payload_bytes,
+                    "schema_version": payload_for_llm.get("_v") or "v1",
+                    "symbol": payload_for_llm.get("symbol") or event_data.get("symbol") or event_data.get("ativo"),
+                    "epoch_ms": (
+                        event_data.get("epoch_ms")
+                        or event_data.get("timestamp_ms")
+                        or event_data.get("timestamp")
+                    ),
+                }
+                append_metric_line(metrics_final)
+            except Exception as e:
+                logging.error(f"Erro ao registrar bytes_after_final: {e}", exc_info=True)
+
+            if os.getenv("DUMP_LLM_PAYLOAD", "0") == "1":
+                try:
+                    flags = {}
+                    try:
+                        llm_cfg = get_llm_payload_config()
+                        flags = {
+                            "v2_enabled": bool(llm_cfg.get("v2_enabled", True)),
+                            "max_bytes": int(llm_cfg.get("max_bytes", 6144) or 6144),
+                            "guardrail_hard_enabled": bool(llm_cfg.get("guardrail_hard_enabled", True)),
+                        }
+                    except Exception:
+                        flags = {}
+
+                    dump_obj = event_data if isinstance(event_data, dict) else {"event_data": event_data}
+                    dump_obj = dict(dump_obj)
+                    dump_obj["_dump_meta"] = {
+                        "payload_bytes_final": payload_bytes,
+                        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                        "flags": flags,
+                    }
+
+                    Path("logs").mkdir(parents=True, exist_ok=True)
+                    Path("logs/last_llm_payload.json").write_text(
+                        json.dumps(dump_obj, ensure_ascii=False, indent=2),
+                        encoding="utf-8"
+                    )
+                    # Loga o tipo real (para matar a dúvida rapidamente)
+                    ap = event_data.get("ai_payload") if isinstance(event_data, dict) else None
+                    mc = (ap or {}).get("macro_context") if isinstance(ap, dict) else None
+                    ca = (ap or {}).get("cross_asset_context") if isinstance(ap, dict) else None
+                    logging.info(
+                        "DUMP_LLM_PAYLOAD wrote=logs/last_llm_payload.json macro_type=%s cross_type=%s has_section_cache=%s",
+                        type(mc).__name__,
+                        type(ca).__name__,
+                        isinstance((ap or {}).get("_section_cache"), dict),
+                    )
+                except Exception:
+                    logging.exception("DUMP_LLM_PAYLOAD failed")
         except Exception as e:
             logging.error(f"Erro ao logar metadados do payload da LLM: {e}", exc_info=True)
 
@@ -1672,6 +1995,13 @@ class AIAnalyzer:
         """
         try:
             analysis_text, structured = self._analyze_internal(event_data)
+
+            structured_out: Optional[Dict[str, Any]] = None
+            if structured is not None:
+                if PYDANTIC_AVAILABLE and hasattr(structured, "model_dump"):
+                    structured_out = structured.model_dump()  # type: ignore[attr-defined]
+                elif isinstance(structured, dict):
+                    structured_out = structured
             
             tipo_evento = event_data.get("tipo_evento", "N/A")
             ativo = event_data.get("ativo") or event_data.get("symbol") or "N/A"
@@ -1691,9 +2021,7 @@ class AIAnalyzer:
             
             return {
                 "raw_response": analysis_text,
-                "structured": (
-                    structured.model_dump() if (PYDANTIC_AVAILABLE and structured is not None) else None
-                ),
+                "structured": structured_out,
                 "tipo_evento": tipo_evento,
                 "ativo": ativo,
                 "timestamp": self.time_manager.now_iso(),

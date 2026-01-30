@@ -1,0 +1,15 @@
+{
+  "timestamp": "2026-01-20T21:35:50.367283",
+  "total_events": 8,
+  "optimization_rate": 0.5,
+  "avg_analysis_trigger_size": 60103.0,
+  "avg_ai_analysis_size": 1665.25,
+  "problems": {
+    "forbidden_fields": 4,
+    "missing_required": 4,
+    "inconsistent": 0
+  },
+  "config_issues": [
+    "\u26a0\ufe0f Nenhum log de cache ou Guardian detectado - sistema provavelmente inativo"
+  ]
+}
