@@ -110,6 +110,7 @@ from flow_analyzer import FlowAnalyzer
 from ai_analyzer_qwen import AIAnalyzer
 from report_generator import generate_ai_analysis_report
 from levels_registry import LevelRegistry
+from src.utils.ai_payload_optimizer import AIPayloadOptimizer, get_optimized_json_minified
 
 # 🔹 NOVOS MÓDULOS
 from time_manager import TimeManager
@@ -772,9 +773,31 @@ class EnhancedMarketBot:
                         "preco": format_price(event_data.get("preco_fechamento"))
                     })
                     
+                    # Otimiza o payload antes de enviar para a IA
+                    event_data_for_ai = event_data
+                    try:
+                        optimized_payload = get_optimized_json_minified(event_data)
+                        
+                        # Calcula economia de tamanho para monitoramento
+                        original_json = json.dumps(event_data, separators=(',', ':'))
+                        original_bytes = len(original_json.encode("utf-8"))
+                        optimized_bytes = len(optimized_payload.encode("utf-8"))
+                        saved_bytes = max(0, original_bytes - optimized_bytes)
+                        reduction_pct = round((saved_bytes / original_bytes * 100.0), 2) if original_bytes else 0.0
+                        
+                        # LOGAR PARA CONFERÊNCIA (Crucial) - Nível INFO para garantir visibilidade em produção
+                        logging.info(f" >>> PAYLOAD OTIMIZADO (Para LLM): {optimized_payload}")
+                        logging.info(f" >>> Tamanho Original: {original_bytes} chars | Otimizado: {optimized_bytes} chars | Redução: {reduction_pct}%")
+                        
+                        # Converte a string JSON otimizada de volta para dict
+                        if optimized_payload:
+                            event_data_for_ai = json.loads(optimized_payload)
+                    except Exception as e:
+                        logging.warning("Falha na otimização, usando payload original: %s", e)
+                    
                     # 🔧 CORREÇÃO: Usa analyze() que retorna Dict
                     if self.ai_analyzer and hasattr(self.ai_analyzer, 'analyze'):
-                        analysis_result = self.ai_analyzer.analyze(event_data)
+                        analysis_result = self.ai_analyzer.analyze(event_data_for_ai)
                     else:
                         logging.warning("⚠️ IA Analyzer não disponível para análise")
                         return
@@ -1287,14 +1310,15 @@ class EnhancedMarketBot:
                     if "timestamp" not in signal:
                         signal["timestamp"] = datetime.fromisoformat(
                             signal.get("timestamp_ny", datetime.now(self.ny_tz).isoformat(timespec="seconds")).replace("Z", "+00:00")
-                        # Otimizar ANALYSIS_TRIGGER antes de salvar
-                                if event.get("tipo_evento") == "ANALYSIS_TRIGGER":
-                                    event = clean_event(event)
-                                    event = simplify_historical_vp(event)
-                                    event = remove_enriched_snapshot(event)
                         ).strftime("%Y-%m-%d %H:%M:%S")
                     
-                    if signal.get("tipo_evento") != "OrderBook":
+                    # Otimizar ANALYSIS_TRIGGER antes de salvar
+                    if isinstance(signal, dict) and signal.get("tipo_evento") == "ANALYSIS_TRIGGER":
+                        signal = clean_event(signal)
+                        signal = simplify_historical_vp(signal)
+                        signal = remove_enriched_snapshot(signal)
+                    
+                    if isinstance(signal, dict) and signal.get("tipo_evento") != "OrderBook":
                         adicionar_memoria_evento(signal)
                     
                     self._log_event(signal)
@@ -1305,6 +1329,7 @@ class EnhancedMarketBot:
                 try:
                     touched = self.levels.check_price(float(preco_atual))
                     for z in touched:
+                        # Usa o primeiro signal se disponível, ou cria um dict vazio
                         zone_event = signals[0].copy() if signals else {}
                         preco_fmt = format_price(preco_atual)
                         low_fmt = format_price(z.low)

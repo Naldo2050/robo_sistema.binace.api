@@ -10,6 +10,7 @@
   "BINANCE_API_KEY": "ixTtRNnf9HIi2tLC3UkLaXKKr6ZT0rPCK2HlNFEGTdX6xKEdLRx24Qrve4bx5MmT",
   "BINANCE_API_SECRET": "kmMCWumZYrDp5Cuts7z3d95EVeiRNoxhnGb6tSLkJ7bVMgtd1bVyB6B3fiwTbgNC",
   "ai": {
+    "payload_compression": true,
     "provider": "groq",
     "groq": {
       "base_url": "https://api.groq.com/openai/v1",

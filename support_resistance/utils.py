@@ -143,19 +143,31 @@ class StatisticalUtils:
         return hashlib.md5(arr.tobytes()).hexdigest()
     
     @staticmethod
-    def clamp(value: float, min_val: float = 0.0, max_val: float = 10.0) -> float:
+    def clamp(value: Union[float, np.floating], min_val: Union[float, np.floating] = 0.0, max_val: Union[float, np.floating] = 10.0) -> float:
         """Limita valor entre min e max"""
         if np.isnan(value) or np.isinf(value):
-            return min_val
+            return float(min_val)
         return float(np.clip(value, min_val, max_val))
     
     @staticmethod
-    def safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
+    def safe_divide(numerator: Union[float, np.floating, np.ndarray], denominator: Union[float, np.floating, np.ndarray], default: float = 0.0) -> float:
         """Divisão segura que evita divisão por zero"""
-        if denominator == 0 or np.isnan(denominator) or np.isinf(denominator):
+        if isinstance(denominator, np.ndarray):
+            if denominator.size == 1:
+                denominator = float(denominator.item())
+            else:
+                # Para arrays, retorna default se qualquer elemento for zero
+                if np.any(denominator == 0) or np.any(np.isnan(denominator)) or np.any(np.isinf(denominator)):
+                    return default
+        elif denominator == 0 or np.isnan(denominator) or np.isinf(denominator):
             return default
+        
         result = numerator / denominator
-        if np.isnan(result) or np.isinf(result):
+        if isinstance(result, np.ndarray):
+            if np.any(np.isnan(result)) or np.any(np.isinf(result)):
+                return default
+            result = float(result.item()) if result.size == 1 else float(np.mean(result))
+        elif np.isnan(result) or np.isinf(result):
             return default
         return float(result)
     
@@ -301,14 +313,14 @@ class StatisticalUtils:
         bootstrap_samples = rng.choice(data, size=(n, len(data)), replace=True)
         
         # Calcular estatística para cada amostra
-        bootstrap_stats = np.apply_along_axis(stat_func, 1, bootstrap_samples)
+        bootstrap_stats = np.apply_along_axis(lambda x: float(stat_func(x)), 1, bootstrap_samples)
         
         # Calcular percentis
         lower_percentile = (1 - confidence) / 2
         upper_percentile = 1 - lower_percentile
         
-        ci_lower = float(np.percentile(bootstrap_stats, lower_percentile * 100))
-        ci_upper = float(np.percentile(bootstrap_stats, upper_percentile * 100))
+        ci_lower = float(np.percentile(bootstrap_stats, lower_percentile * 100, out=None))
+        ci_upper = float(np.percentile(bootstrap_stats, upper_percentile * 100, out=None))
         
         stat_value = float(stat_func(data))
         ci_width = ci_upper - ci_lower
@@ -414,7 +426,7 @@ class StatisticalUtils:
         concentration_score = 10 * (1 - min(cv * 5, 1))
         
         # Verificar outliers usando IQR
-        q1, q3 = np.percentile(cluster, [25, 75])
+        q1, q3 = np.percentile(cluster, [25, 75], out=None)
         iqr = q3 - q1
         
         if iqr == 0:

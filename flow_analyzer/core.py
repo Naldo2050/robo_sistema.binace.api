@@ -62,7 +62,7 @@ from .validation import (
     FlowAnalyzerConfigValidator,
 )
 from .aggregates import RollingAggregate
-from .metrics import PerformanceMonitor, CircuitBreaker, HealthChecker
+from .metrics import PerformanceMonitor, CircuitBreaker, HealthChecker, calculate_buy_sell_ratios
 from .absorption import (
     AbsorptionClassifier,
     AbsorptionAnalyzer,
@@ -154,13 +154,13 @@ class FlowAnalyzer(IFlowAnalyzer):
         # Time Manager
         if time_manager is not None:
             self.time_manager = time_manager
-        elif HAS_TIME_MANAGER:
+        elif HAS_TIME_MANAGER and TimeManager is not None:
             self.time_manager = TimeManager()
         else:
             self.time_manager = None
         
         # Clock Sync
-        self.clock_sync: Optional[IClockSync] = None
+        self.clock_sync: Any = None
         if HAS_CLOCK_SYNC:
             try:
                 self.clock_sync = get_clock_sync()
@@ -212,7 +212,7 @@ class FlowAnalyzer(IFlowAnalyzer):
         
         # === LIQUIDITY HEATMAP ===
         self.liquidity_heatmap = None
-        if HAS_HEATMAP:
+        if HAS_HEATMAP and LiquidityHeatmap is not None:
             try:
                 self.liquidity_heatmap = LiquidityHeatmap(
                     window_size=int(_get_config("LHM_WINDOW_SIZE", DEFAULT_LHM_WINDOW_SIZE)),
@@ -489,6 +489,9 @@ class FlowAnalyzer(IFlowAnalyzer):
                     self._invalid_trades += 1
                 self._error_counts.increment(reason)
                 return
+            
+            # processed é garantido não-None aqui pois valid=True
+            assert processed is not None, "processed should not be None when valid=True"
             
             # Extração
             qty = float(processed["qty"])
@@ -949,72 +952,100 @@ class FlowAnalyzer(IFlowAnalyzer):
         now_ms: int,
         start_time: float
     ) -> Dict[str, Any]:
-        """Computa order flow por janela."""
-        if not self.net_flow_windows_min:
-            return {}
-        
-        order_flow = {}
-        absorcao_por_janela = {}
-        smallest_window = min(self.net_flow_windows_min)
-        
-        for window_min in self.net_flow_windows_min:
-            if not self._check_time_budget(start_time, f"window_{window_min}"):
-                break
-            
-            window_ms = window_min * 60 * 1000
-            start_ms = now_ms - window_ms
-            
-            # Cache ou cálculo
-            degraded = now_ms < self._cache_degraded_until_ms
-            
-            if self._cache_enabled and not degraded and 'window_aggregates' in snapshot:
-                agg_data = snapshot['window_aggregates'].get(window_min)
-                if agg_data:
-                    total_delta_usd = agg_data['sum_delta_usd']
-                    total_delta_btc = agg_data['sum_delta_btc']
-                    ohlc = agg_data['ohlc']
-                else:
-                    total_delta_usd, total_delta_btc, ohlc = self._calc_from_trades(
-                        snapshot['flow_trades'], start_ms, now_ms
-                    )
-            else:
-                total_delta_usd, total_delta_btc, ohlc = self._calc_from_trades(
-                    snapshot['flow_trades'], start_ms, now_ms
-                )
-            
-            w_open, w_high, w_low, w_close = ohlc
-            
-            if not validate_ohlc(w_open, w_high, w_low, w_close):
-                w_open, w_high, w_low, w_close = fix_ohlc(
-                    w_open, w_high, w_low, w_close, snapshot['_last_price']
-                )
-            
-            # Net flow
-            key_net = f"net_flow_{window_min}m"
-            order_flow[key_net] = decimal_round(total_delta_usd, 4)
-            
-            # Absorção
-            rotulo = self._absorption_classifier.classify(
-                total_delta_btc, w_open, w_high, w_low, w_close, self.absorcao_eps
-            )
-            
-            order_flow[f"absorcao_{window_min}m"] = rotulo
-            absorcao_por_janela[window_min] = rotulo
-            
-            # Detalhes para menor janela
-            if window_min == smallest_window:
-                self._compute_detailed_window(
-                    order_flow, snapshot, window_min, start_ms, now_ms,
-                    total_delta_btc, start_time
-                )
-        
-        order_flow["computation_window_min"] = smallest_window
-        order_flow["available_windows_min"] = list(self.net_flow_windows_min)
-        
-        return {
-            "order_flow": order_flow,
-            "tipo_absorcao": absorcao_por_janela.get(smallest_window, "Neutra"),
-        }
+         """Computa order flow por janela."""
+         if not self.net_flow_windows_min:
+             return {}
+         
+         order_flow = {}
+         absorcao_por_janela = {}
+         smallest_window = min(self.net_flow_windows_min)
+         
+         for window_min in self.net_flow_windows_min:
+             if not self._check_time_budget(start_time, f"window_{window_min}"):
+                 break
+             
+             window_ms = window_min * 60 * 1000
+             start_ms = now_ms - window_ms
+             
+             # Cache ou cálculo
+             degraded = now_ms < self._cache_degraded_until_ms
+             
+             if self._cache_enabled and not degraded and 'window_aggregates' in snapshot:
+                 agg_data = snapshot['window_aggregates'].get(window_min)
+                 if agg_data:
+                     total_delta_usd = agg_data['sum_delta_usd']
+                     total_delta_btc = agg_data['sum_delta_btc']
+                     ohlc = agg_data['ohlc']
+                 else:
+                     total_delta_usd, total_delta_btc, ohlc = self._calc_from_trades(
+                         snapshot['flow_trades'], start_ms, now_ms
+                     )
+             else:
+                 total_delta_usd, total_delta_btc, ohlc = self._calc_from_trades(
+                     snapshot['flow_trades'], start_ms, now_ms
+                 )
+             
+             w_open, w_high, w_low, w_close = ohlc
+             
+             if not validate_ohlc(w_open, w_high, w_low, w_close):
+                 w_open, w_high, w_low, w_close = fix_ohlc(
+                     w_open, w_high, w_low, w_close, snapshot['_last_price']
+                 )
+             
+             # Net flow
+             key_net = f"net_flow_{window_min}m"
+             order_flow[key_net] = decimal_round(total_delta_usd, 4)
+             
+             # Absorção
+             rotulo = self._absorption_classifier.classify(
+                 total_delta_btc, w_open, w_high, w_low, w_close, self.absorcao_eps
+             )
+             
+             order_flow[f"absorcao_{window_min}m"] = rotulo
+             absorcao_por_janela[window_min] = rotulo
+             
+             # Detalhes para menor janela
+             if window_min == smallest_window:
+                 self._compute_detailed_window(
+                     order_flow, snapshot, window_min, start_ms, now_ms,
+                     total_delta_btc, start_time
+                 )
+         
+         order_flow["computation_window_min"] = smallest_window
+         order_flow["available_windows_min"] = list(self.net_flow_windows_min)
+         
+         # Buy/Sell Ratio calculation
+         if self._check_time_budget(start_time, "buy_sell_ratio"):
+             flow_data = {
+                 "buy_volume_btc": order_flow.get("buy_volume_btc", 0),
+                 "sell_volume_btc": order_flow.get("sell_volume_btc", 0),
+                 "total_volume": order_flow.get("total_volume", 0),
+                 "sector_flow": {},
+             }
+             
+             # Add net flow for different windows
+             for window_min in self.net_flow_windows_min:
+                 key_net = f"net_flow_{window_min}m"
+                 flow_data[key_net] = order_flow.get(key_net, 0)
+             
+             # Add sector flow
+             sector_flow = {}
+             for name, data in snapshot['sector_flow'].items():
+                 sector_flow[name] = {
+                     "buy": float(data['buy']),
+                     "sell": float(data['sell']),
+                     "delta": float(data['delta'])
+                 }
+             flow_data["sector_flow"] = sector_flow
+             
+             # Calculate and add ratio
+             ratio_result = calculate_buy_sell_ratios(flow_data)
+             order_flow["buy_sell_ratio"] = ratio_result
+         
+         return {
+             "order_flow": order_flow,
+             "tipo_absorcao": absorcao_por_janela.get(smallest_window, "Neutra"),
+         }
     
     def _calc_from_trades(
         self,

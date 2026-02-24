@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional, List, Union
 from datetime import datetime
 
 from .exceptions import AIAnalysisError, RateLimitError, ModelTimeoutError
-from ai_payload_optimizer import AIPayloadOptimizer
+from src.utils.ai_payload_optimizer import AIPayloadOptimizer
 
 
 @dataclass
@@ -192,20 +192,68 @@ class AIRunner:
             if not self.rate_limiter.acquire():
                 raise RateLimitError("Rate limited")
 
-            data_for_ai = market_data
-            try:
-                optimized = AIPayloadOptimizer.optimize(market_data)
-                savings = AIPayloadOptimizer.estimate_savings(market_data)
-                self.logger.debug(
-                    "Payload otimizado: %s%% menor (%sB -> %sB)",
-                    savings.get("reduction_pct"),
-                    savings.get("original_bytes"),
-                    savings.get("optimized_bytes"),
-                )
-                if isinstance(optimized, dict) and optimized:
-                    data_for_ai = optimized
-            except Exception as e:
-                self.logger.warning("Falha na otimização, usando payload original: %s", e)
+            # --- INÍCIO DA COMPRESSÃO FORÇADA (HARDCODED) ---
+            # Define a fonte de dados (tenta pegar do evento)
+            _d = market_data if isinstance(market_data, dict) else {}
+
+            # Extrai sub-contextos com segurança
+            _pc = _d.get('price_context', {})
+            _fc = _d.get('flow_context', {})
+            _ob = _d.get('orderbook_context', {})
+            _mc = _d.get('macro_context', {})
+            _mt = _d.get('technical_indicators', {})
+
+            # CONSTRÓI O PAYLOAD MINIFICADO MANUALMENTE
+            mini_payload = {
+                "s": _d.get('symbol'),
+                "ts": _d.get('epoch_ms'),
+
+                # MKT: Preço e Volume
+                "mkt": {
+                    "p": _pc.get('current_price'),
+                    "v_poc": int(_pc.get('volume_profile_daily', {}).get('poc', 0) or 0),
+                    "r_body": round(_pc.get('price_action', {}).get('candle_body_pct', 0), 3)
+                },
+
+                # FLOW: Fluxo
+                "flow": {
+                    "net": int(_fc.get('net_flow', 0)),
+                    "cvd": round(_fc.get('cvd_accumulated', 0), 2),
+                    "imb": round(_fc.get('flow_imbalance', 0), 2),
+                    "aggr": int(_fc.get('aggressive_buyers', 50))
+                },
+
+                # OB: Orderbook
+                "ob": {
+                    "imb": round(_ob.get('imbalance', 0), 2),
+                    "bid": int(_ob.get('bid_depth_usd', 0)),
+                    "ask": int(_ob.get('ask_depth_usd', 0)),
+                    "walls": 1 if _ob.get('walls_detected') else 0
+                },
+
+                # MACRO & TECH
+                "env": {
+                    "reg": _mc.get('regime', {}).get('structure', '')[:4], # Ex: RANG
+                    "rsi": int(_mt.get('rsi', 50) or 50),
+                    "adx": int(_mt.get('adx', 0) or 0)
+                },
+
+                # SIGNAL
+                "sig": _d.get('signal_metadata', {}).get('battle_result', 'N/A')
+            }
+
+            # Converte para string JSON minificada (sem espaços)
+            final_optimized_string = json.dumps(mini_payload, separators=(',', ':'))
+
+            # LOG PARA PROVA DE FUNCIONAMENTO
+            original_size = len(json.dumps(_d))
+            new_size = len(final_optimized_string)
+            print(f"\n >>> [COMPRESSOR BLINDADO] Original: {original_size} -> Novo: {new_size} bytes")
+            print(f" >>> JSON: {final_optimized_string[:150]}...") # Mostra o começo para confirmar
+
+            # Usa o payload minificado
+            data_for_ai = json.loads(final_optimized_string)
+            # --- FIM DA COMPRESSÃO FORÇADA ---
 
             compressed = self._compress_for_context(data_for_ai)
             prompt_messages = self._prepare_prompt(compressed, analysis_type="orderbook")
@@ -561,7 +609,31 @@ class AIRunner:
             raise AIAnalysisError("AI client not initialized")
 
         try:
-            prompt_messages = self._prepare_prompt({"data": market_data}, analysis_type="general")
+            # Tenta otimizar o payload se for um JSON válido
+            data_for_prompt = {"data": market_data}
+            try:
+                # Se market_data for um JSON string, tenta parsear e otimizar
+                parsed_data = json.loads(market_data)
+                if isinstance(parsed_data, dict):
+                    optimized_payload = AIPayloadOptimizer.optimize(parsed_data)
+                    
+                    # Calcula economia de tamanho para monitoramento
+                    original_bytes = len(market_data.encode("utf-8"))
+                    optimized_bytes = len(optimized_payload.encode("utf-8"))
+                    saved_bytes = max(0, original_bytes - optimized_bytes)
+                    reduction_pct = round((saved_bytes / original_bytes * 100.0), 2) if original_bytes else 0.0
+                    
+                    # LOGAR PARA CONFERÊNCIA (Crucial) - Nível INFO para garantir visibilidade em produção
+                    self.logger.info(f" >>> PAYLOAD OTIMIZADO (Para LLM - método legado): {optimized_payload}")
+                    self.logger.info(f" >>> Tamanho Original: {original_bytes} chars | Otimizado: {optimized_bytes} chars | Redução: {reduction_pct}%")
+                    
+                    # Usa o payload otimizado no prompt
+                    data_for_prompt = json.loads(optimized_payload)
+            except (json.JSONDecodeError, Exception) as e:
+                # Se não for JSON ou falhar na otimização, usa o dado original
+                self.logger.debug("Não foi possível otimizar payload no método legado: %s", e)
+            
+            prompt_messages = self._prepare_prompt(data_for_prompt, analysis_type="general")
             prompt = self._messages_to_prompt(prompt_messages)
             return self.client.generate(prompt)  # type: ignore[attr-defined]
         except ConnectionError:

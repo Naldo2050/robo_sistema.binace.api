@@ -439,7 +439,257 @@ class AbsorptionAnalyzer:
             return "Neutra"
             
         except Exception:
-            return base_label
+             return base_label
+
+
+class AbsorptionZoneMapper:
+    """
+    Mapeia zonas onde absorções significativas ocorreram.
+    
+    Mantém histórico de eventos de absorção com timestamp e preço,
+    agrupa por zona de preço, e identifica zonas recorrentes.
+    
+    Zonas com múltiplas absorções são defesas fortes e confiáveis.
+    
+    Uso:
+        mapper = AbsorptionZoneMapper()
+        mapper.record_event(price=64800, classification="Absorção de Compra",
+                           index=0.65, timestamp_ms=1771888200000)
+        zones = mapper.get_zones(current_price=64892)
+    """
+
+    def __init__(
+        self,
+        zone_tolerance_pct: float = 0.15,
+        max_history_hours: int = 24,
+        min_index_threshold: float = 0.1,
+    ):
+        """
+        Args:
+            zone_tolerance_pct: % de tolerância para agrupar eventos na mesma zona.
+            max_history_hours: Máximo de horas de histórico a manter.
+            min_index_threshold: Índice mínimo de absorção para registrar.
+        """
+        self._tolerance_pct = zone_tolerance_pct
+        self._max_history_ms = max_history_hours * 3600 * 1000
+        self._min_index = min_index_threshold
+        self._events = []
+
+    def record_event(
+        self,
+        price: float,
+        classification: str,
+        index: float = 0,
+        timestamp_ms: Optional[int] = None,
+        buyer_strength: float = 0,
+        seller_exhaustion: float = 0,
+        volume_usd: float = 0,
+    ) -> None:
+        """
+        Registra um evento de absorção.
+        
+        Args:
+            price: Preço onde a absorção ocorreu.
+            classification: Tipo ("Absorção de Compra", "Absorção de Venda",
+                            "STRONG_ABSORPTION", etc.)
+            index: Índice de absorção (0-1).
+            timestamp_ms: Timestamp em ms.
+            buyer_strength: Força do comprador (0-10).
+            seller_exhaustion: Exaustão do vendedor (0-10).
+            volume_usd: Volume em USD durante a absorção.
+        """
+        import time
+
+        if price <= 0:
+            return
+
+        if index < self._min_index and "NONE" not in classification.upper():
+            # Absorção muito fraca, mas se for classificada, registrar
+            if "Neutra" in classification or "NONE" in classification.upper():
+                return
+
+        if timestamp_ms is None:
+            timestamp_ms = int(time.time() * 1000)
+
+        # Normalizar classificação
+        classification_upper = classification.upper()
+        if "COMPRA" in classification_upper or "BUY" in classification_upper:
+            side = "buy"
+        elif "VENDA" in classification_upper or "SELL" in classification_upper:
+            side = "sell"
+        else:
+            side = "neutral"
+
+        self._events.append({
+            "price": price,
+            "side": side,
+            "classification": classification,
+            "index": index,
+            "timestamp_ms": timestamp_ms,
+            "buyer_strength": buyer_strength,
+            "seller_exhaustion": seller_exhaustion,
+            "volume_usd": volume_usd,
+        })
+
+        # Cleanup de eventos antigos (lazy)
+        if len(self._events) > 500:
+            self._cleanup()
+
+    def _cleanup(self) -> None:
+        """Remove eventos fora da janela temporal."""
+        import time
+        now_ms = int(time.time() * 1000)
+        cutoff = now_ms - self._max_history_ms
+        self._events = [e for e in self._events if e["timestamp_ms"] >= cutoff]
+
+    def get_zones(self, current_price: float = 0, top_n: int = 10) -> dict:
+        """
+        Retorna zonas de absorção mapeadas.
+        
+        Args:
+            current_price: Preço atual para calcular distâncias.
+            top_n: Número máximo de zonas a retornar.
+            
+        Returns:
+            Dict com zonas agrupadas, lado dominante e métricas.
+        """
+        import time
+
+        self._cleanup()
+
+        if not self._events:
+            return {
+                "zones": [],
+                "total_zones": 0,
+                "total_events": 0,
+                "buy_zone_count": 0,
+                "sell_zone_count": 0,
+                "status": "no_events",
+            }
+
+        # Agrupar eventos por zona de preço
+        zones_map = {}
+
+        for event in self._events:
+            # Encontrar zona existente ou criar nova
+            assigned = False
+            for zone_key, zone_data in zones_map.items():
+                if abs(event["price"] - zone_data["center"]) / zone_data["center"] * 100 < self._tolerance_pct:
+                    zone_data["events"].append(event)
+                    # Atualizar center como média ponderada
+                    total_events = len(zone_data["events"])
+                    zone_data["center"] = sum(e["price"] for e in zone_data["events"]) / total_events
+                    assigned = True
+                    break
+
+            if not assigned:
+                zone_key = round(event["price"], 0)
+                zones_map[zone_key] = {
+                    "center": event["price"],
+                    "events": [event],
+                }
+
+        # Construir resultado
+        zones_result = []
+        for zone_key, zone_data in zones_map.items():
+            events = zone_data["events"]
+            center = zone_data["center"]
+
+            # Contagem por lado
+            buy_events = [e for e in events if e["side"] == "buy"]
+            sell_events = [e for e in events if e["side"] == "sell"]
+
+            # Métricas
+            total_index = sum(e["index"] for e in events)
+            avg_index = total_index / len(events) if events else 0
+            max_index = max((e["index"] for e in events), default=0)
+            total_volume = sum(e["volume_usd"] for e in events)
+
+            # Último evento
+            latest = max(events, key=lambda e: e["timestamp_ms"])
+            oldest = min(events, key=lambda e: e["timestamp_ms"])
+
+            # Lado dominante
+            if len(buy_events) > len(sell_events):
+                dominant_side = "buy_defense"
+            elif len(sell_events) > len(buy_events):
+                dominant_side = "sell_defense"
+            else:
+                dominant_side = "contested"
+
+            # Distância ao preço atual
+            distance = 0
+            distance_pct = 0
+            direction = "unknown"
+            if current_price > 0:
+                distance = abs(center - current_price)
+                distance_pct = (distance / current_price) * 100
+                direction = "below" if center < current_price else "above"
+
+            zones_result.append({
+                "center": round(center, 2),
+                "range_low": round(min(e["price"] for e in events), 2),
+                "range_high": round(max(e["price"] for e in events), 2),
+                "event_count": len(events),
+                "buy_events": len(buy_events),
+                "sell_events": len(sell_events),
+                "dominant_side": dominant_side,
+                "total_strength": round(total_index, 4),
+                "avg_strength": round(avg_index, 4),
+                "max_strength": round(max_index, 4),
+                "total_volume_usd": round(total_volume, 2),
+                "last_event_ms": latest["timestamp_ms"],
+                "last_classification": latest["classification"],
+                "zone_age_ms": latest["timestamp_ms"] - oldest["timestamp_ms"],
+                "distance_from_price": round(distance, 2),
+                "distance_pct": round(distance_pct, 4),
+                "direction": direction,
+                "reliability": (
+                    "HIGH" if len(events) >= 5 and avg_index > 0.4
+                    else "MEDIUM" if len(events) >= 3 or avg_index > 0.3
+                    else "LOW"
+                ),
+            })
+
+        # Ordenar por força total (mais forte primeiro)
+        zones_result.sort(key=lambda z: z["total_strength"], reverse=True)
+        zones_result = zones_result[:top_n]
+
+        buy_zones = [z for z in zones_result if z["dominant_side"] == "buy_defense"]
+        sell_zones = [z for z in zones_result if z["dominant_side"] == "sell_defense"]
+
+        return {
+            "zones": zones_result,
+            "total_zones": len(zones_result),
+            "total_events": len(self._events),
+            "buy_zone_count": len(buy_zones),
+            "sell_zone_count": len(sell_zones),
+            "strongest_zone": zones_result[0] if zones_result else None,
+            "status": "success",
+        }
+
+    def get_summary(self) -> dict:
+        """Resumo rápido sem cálculos pesados."""
+        if not self._events:
+            return {"status": "empty", "total_events": 0}
+
+        buy_events = sum(1 for e in self._events if e["side"] == "buy")
+        sell_events = sum(1 for e in self._events if e["side"] == "sell")
+
+        return {
+            "status": "ok",
+            "total_events": len(self._events),
+            "buy_absorptions": buy_events,
+            "sell_absorptions": sell_events,
+            "avg_index": round(
+                sum(e["index"] for e in self._events) / len(self._events), 4
+            ),
+            "dominant_side": "buy" if buy_events > sell_events else "sell" if sell_events > buy_events else "balanced",
+        }
+
+    def reset(self) -> None:
+        """Limpa todo o histórico."""
+        self._events.clear()
 
 
 # ==============================================================================

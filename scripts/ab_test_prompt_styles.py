@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import ai_analyzer_qwen as mod
-from ai_payload_optimizer import AIPayloadOptimizer
+from src.utils.ai_payload_optimizer import AIPayloadOptimizer
 
 
 def _read_events(path: Path) -> List[Dict[str, Any]]:

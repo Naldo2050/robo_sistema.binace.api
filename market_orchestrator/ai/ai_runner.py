@@ -30,7 +30,7 @@ from orderbook_core.tracing_utils import TracerWrapper
 
 # [AI_PAYLOAD_BUILDER] Importa o novo construtor de payload
 from .ai_payload_builder import build_ai_input
-from ai_payload_optimizer import AIPayloadOptimizer
+from src.utils.ai_payload_optimizer import AIPayloadOptimizer
 
 # [HYBRID_DECISION] Importa módulo de decisão híbrida
 try:
@@ -515,22 +515,19 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                             pivots=pivots,
                         )
 
-                        try:
-                            optimized_payload = AIPayloadOptimizer.optimize(ai_payload)
-                            savings = AIPayloadOptimizer.estimate_savings(ai_payload)
-                            logging.debug(
-                                "Payload otimizado: %s%% menor (%sB -> %sB)",
-                                savings.get("reduction_pct"),
-                                savings.get("original_bytes"),
-                                savings.get("optimized_bytes"),
-                            )
-                            if isinstance(optimized_payload, dict) and optimized_payload:
-                                ai_payload = optimized_payload
-                        except Exception as e:
-                            logging.warning(
-                                "Falha na otimização, usando payload original: %s",
-                                e,
-                            )
+                        # === PAYLOAD JÁ VEM OTIMIZADO DE build_ai_input() ===
+                        # NÃO aplicar AIPayloadOptimizer.optimize() aqui
+                        # pois build_ai_input() já fez compress_payload() + optimize()
+                        
+                        # Log de tamanho para monitoramento
+                        _payload_json = json.dumps(ai_payload, ensure_ascii=False)
+                        _payload_bytes = len(_payload_json.encode("utf-8"))
+                        logging.info(
+                            "PAYLOAD_READY_FOR_LLM bytes=%d keys=%s v=%s",
+                            _payload_bytes,
+                            list(ai_payload.keys())[:8],
+                            ai_payload.get("_v", 2),
+                        )
 
                         event_data["ai_payload"] = ai_payload
 
@@ -612,6 +609,8 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                     if confidence < 0.7:
                                         ai_result_json["action"] = "wait"
 
+                                # Usar o payload otimizado (formato compacto) ao salvar o evento
+                                # O ai_payload já foi otimizado pelo AIPayloadOptimizer.optimize() acima
                                 ai_event = {
                                     "tipo_evento": "AI_ANALYSIS",
                                     "symbol": symbol,
@@ -619,13 +618,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                     "anchor_price": anchor_price,
                                     "anchor_window_id": anchor_window_id,
                                     "ai_result": ai_result_json,
-                                    "ai_payload": {
-                                        "price_context": ai_payload.get("price_context", {}),
-                                        "flow_context": ai_payload.get("flow_context", {}),
-                                        "orderbook_context": ai_payload.get("orderbook_context", {}),
-                                        "macro_context": ai_payload.get("macro_context", {}),
-                                        "liquidity_heatmap": ai_payload.get("fluxo_continuo", {}).get("liquidity_heatmap", {}),
-                                    },
+                                    "ai_payload": ai_payload,  # Usa o payload já otimizado
                                 }
 
                                 if hasattr(bot, "event_saver") and bot.event_saver:

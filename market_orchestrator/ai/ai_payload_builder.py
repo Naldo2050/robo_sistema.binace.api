@@ -19,15 +19,35 @@ import os
 from functools import lru_cache
 
 import yaml
-from ai_payload_optimizer import AIPayloadOptimizer, compact_historical_vp
 
-# Adiciona o diretório raiz do projeto ao PYTHONPATH
-sys.path.append(str(Path(__file__).parent.parent.parent))
+# Import do otimizador de payload (localizado em src/utils/)
+from src.utils.ai_payload_optimizer import AIPayloadOptimizer, compact_historical_vp
 
 from market_orchestrator.ai.ai_enrichment_context import build_enriched_ai_context
 from market_orchestrator.ai.payload_compressor import compress_payload
 from market_orchestrator.ai.payload_section_cache import SectionCache, canonical_ref, is_fresh
 from market_orchestrator.ai.payload_metrics_aggregator import append_metric_line
+
+
+def _strip_empty(d: dict) -> dict:
+    """Remove recursivamente chaves com valor None, {}, [] ou string vazia."""
+    if not isinstance(d, dict):
+        return d
+    cleaned = {}
+    for k, v in d.items():
+        if v is None:
+            continue
+        if isinstance(v, dict):
+            v = _strip_empty(v)
+            if not v:  # dict vazio após limpeza
+                continue
+        if isinstance(v, list) and len(v) == 0:
+            continue
+        if isinstance(v, str) and v == "":
+            continue
+        cleaned[k] = v
+    return cleaned
+
 
 # Configuração de payload (feature flags)
 DEFAULT_LLM_PAYLOAD_CONFIG = {
@@ -687,6 +707,40 @@ def build_ai_input(
         if price_ctx.get("current_price") is None:
             raise ValueError("payload_v2 inválido: price_context.current_price obrigatório")
 
+    # === MULTI-TIMEFRAME (compactado) ===
+    _multi_tf_raw = None
+    if isinstance(signal, dict):
+        _raw = signal.get("raw_event", {})
+        if isinstance(_raw, dict):
+            _multi_tf_raw = _raw.get("multi_tf")
+            if not isinstance(_multi_tf_raw, dict):
+                _cs = _raw.get("contextual_snapshot", {})
+                if isinstance(_cs, dict):
+                    _multi_tf_raw = _cs.get("multi_tf")
+    
+    if isinstance(_multi_tf_raw, dict) and _multi_tf_raw:
+        tf_compact = {}
+        for tf_key, tf_data in _multi_tf_raw.items():
+            if isinstance(tf_data, dict):
+                tf_entry = {
+                    "trend": tf_data.get("tendencia"),
+                    "price": tf_data.get("preco_atual"),
+                    "mme21": tf_data.get("mme_21"),
+                    "rsi": tf_data.get("rsi_short"),
+                    "macd": tf_data.get("macd"),
+                    "macd_s": tf_data.get("macd_signal"),
+                    "adx": tf_data.get("adx"),
+                    "atr": tf_data.get("atr"),
+                    "regime": tf_data.get("regime"),
+                }
+                # Remover None
+                tf_entry = {k: v for k, v in tf_entry.items() if v is not None}
+                if tf_entry:
+                    tf_compact[tf_key] = tf_entry
+        
+        if tf_compact:
+            ai_payload["multi_tf"] = tf_compact
+
     # === COMPRESSÃO / V2 ===
     v1_bytes = len(json.dumps(ai_payload, ensure_ascii=False).encode("utf-8"))
     action_bias_v1 = (ai_payload.get("quant_model") or {}).get("action_bias")
@@ -731,6 +785,25 @@ def build_ai_input(
             ai_payload = optimized_payload
     except Exception as e:
         logging.debug("Falha ao otimizar payload da IA: %s", e, exc_info=True)
+
+    # Limpar campos nulos/vazios antes de retornar
+    ai_payload = _strip_empty(ai_payload)
+
+    # Remover metadados internos que não ajudam o LLM na análise
+    # NOTA: _v é usado pelo guardrail e deep compression para identificar
+    # payload já comprimido - NÃO remover aqui, é verificado downstream
+    _internal_keys = [
+        "decision_features_hash",  # hash interno
+        "_section_cache",          # metadado de cache
+    ]
+    for _k in _internal_keys:
+        ai_payload.pop(_k, None)
+
+    # Remover total_features do quant_model (não ajuda LLM)
+    _qm = ai_payload.get("quant_model")
+    if isinstance(_qm, dict):
+        _qm.pop("total_features", None)
+        _qm.pop("features_used", None)
 
     return ai_payload
 

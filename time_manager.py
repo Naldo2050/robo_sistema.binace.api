@@ -22,6 +22,53 @@ except Exception as e:
     TZ_SP = timezone(timedelta(hours=-3))
     _ZONEINFO_OK = False
 
+# ═══════════════════════════════════════════════════════════════
+# CALENDÁRIO DE FERIADOS — Mercados TradFi (afeta liquidez crypto)
+# Atualizar anualmente. Crypto opera 24/7 mas liquidez cai
+# significativamente em feriados dos EUA.
+# ═══════════════════════════════════════════════════════════════
+US_MARKET_HOLIDAYS = {
+    2025: {
+        "2025-01-01": "New Year's Day",
+        "2025-01-20": "MLK Day",
+        "2025-02-17": "Presidents Day",
+        "2025-04-18": "Good Friday",
+        "2025-05-26": "Memorial Day",
+        "2025-06-19": "Juneteenth",
+        "2025-07-04": "Independence Day",
+        "2025-09-01": "Labor Day",
+        "2025-11-27": "Thanksgiving",
+        "2025-11-28": "Black Friday (early close)",
+        "2025-12-25": "Christmas",
+    },
+    2026: {
+        "2026-01-01": "New Year's Day",
+        "2026-01-19": "MLK Day",
+        "2026-02-16": "Presidents Day",
+        "2026-04-03": "Good Friday",
+        "2026-05-25": "Memorial Day",
+        "2026-06-19": "Juneteenth",
+        "2026-07-03": "Independence Day (observed)",
+        "2026-09-07": "Labor Day",
+        "2026-11-26": "Thanksgiving",
+        "2026-11-27": "Black Friday (early close)",
+        "2026-12-25": "Christmas",
+    },
+    2027: {
+        "2027-01-01": "New Year's Day",
+        "2027-01-18": "MLK Day",
+        "2027-02-15": "Presidents Day",
+        "2027-03-26": "Good Friday",
+        "2027-05-31": "Memorial Day",
+        "2027-06-18": "Juneteenth (observed)",
+        "2027-07-05": "Independence Day (observed)",
+        "2027-09-06": "Labor Day",
+        "2027-11-25": "Thanksgiving",
+        "2027-11-26": "Black Friday (early close)",
+        "2027-12-24": "Christmas (observed)",
+    },
+}
+
 
 class TimeManager:
     """
@@ -48,7 +95,7 @@ class TimeManager:
     MAX_CORRECTION_ATTEMPTS = 3   # Limite de tentativas de correção
 
     # ------------------ SINGLETON GLOBAL ------------------
-    _instance: "TimeManager" = None
+    _instance: Optional["TimeManager"] = None
     _instance_lock: Lock = Lock()
 
     def __new__(cls, *args, **kwargs):
@@ -810,8 +857,10 @@ class TimeManager:
         logging.info(f"   NY:  {now_ny.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         logging.info(f"   SP:  {now_sp.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         
-        utc_offset_ny = (now_ny.utcoffset().total_seconds() / 3600) if now_ny.utcoffset() else 0
-        utc_offset_sp = (now_sp.utcoffset().total_seconds() / 3600) if now_sp.utcoffset() else 0
+        ny_offset = now_ny.utcoffset()
+        sp_offset = now_sp.utcoffset()
+        utc_offset_ny = (ny_offset.total_seconds() / 3600) if ny_offset is not None else 0
+        utc_offset_sp = (sp_offset.total_seconds() / 3600) if sp_offset is not None else 0
         
         logging.info(f"   Offset NY vs UTC: {utc_offset_ny:+.1f} horas")
         logging.info(f"   Offset SP vs UTC: {utc_offset_sp:+.1f} horas")
@@ -883,6 +932,99 @@ class TimeManager:
                 "auto_corrections": self.auto_corrections,
                 "zoneinfo_ok": _ZONEINFO_OK,
             }
+
+    def get_market_calendar_context(self, dt: Optional[datetime] = None) -> Dict[str, Any]:
+        """
+        Retorna contexto de calendário de mercado.
+        Crypto opera 24/7 mas liquidez cai em feriados TradFi.
+        """
+        if dt is None:
+            dt = datetime.now(TZ_NY)
+        
+        date_str = dt.strftime("%Y-%m-%d")
+        year = dt.year
+        
+        year_holidays = US_MARKET_HOLIDAYS.get(year, {})
+        
+        is_holiday = date_str in year_holidays
+        holiday_name = year_holidays.get(date_str)
+        is_weekend = dt.weekday() >= 5
+        day_of_week = dt.strftime("%A")
+        
+        # Verificar se amanhã é feriado
+        tomorrow = (dt + timedelta(days=1)).strftime("%Y-%m-%d")
+        is_pre_holiday = tomorrow in year_holidays
+        
+        # Verificar se ontem foi feriado
+        yesterday = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
+        is_post_holiday = yesterday in year_holidays
+        
+        # Classificar liquidez esperada
+        if is_holiday:
+            expected_liquidity = "VERY_LOW"
+        elif is_weekend and (is_pre_holiday or is_post_holiday):
+            expected_liquidity = "VERY_LOW"
+        elif is_weekend:
+            expected_liquidity = "LOW"
+        elif is_pre_holiday:
+            expected_liquidity = "REDUCED"
+        elif is_post_holiday:
+            expected_liquidity = "REDUCED"
+        elif day_of_week == "Sunday":
+            expected_liquidity = "LOW"
+        else:
+            expected_liquidity = "NORMAL"
+        
+        return {
+            "day_of_week": day_of_week,
+            "day_of_week_num": dt.weekday(),
+            "is_us_holiday": is_holiday,
+            "holiday_name": holiday_name,
+            "is_weekend": is_weekend,
+            "is_pre_holiday": is_pre_holiday,
+            "is_post_holiday": is_post_holiday,
+            "expected_liquidity": expected_liquidity,
+            "liquidity_warning": expected_liquidity in ("VERY_LOW", "LOW", "REDUCED"),
+        }
+
+    def track_data_latency(self, exchange_timestamp_ms: int) -> Dict[str, Any]:
+        """
+        Calcula e classifica a latência entre o timestamp da exchange
+        e o timestamp local (ajustado com offset Binance).
+        """
+        local_now_ms = self.now()
+        latency_ms = local_now_ms - exchange_timestamp_ms
+        
+        # Proteger contra timestamps futuros (clock skew)
+        if latency_ms < 0:
+            latency_ms = abs(latency_ms)
+        
+        if latency_ms < 50:
+            category = "EXCELLENT"
+            freshness = "REAL_TIME"
+        elif latency_ms < 200:
+            category = "GOOD"
+            freshness = "REAL_TIME"
+        elif latency_ms < 500:
+            category = "ACCEPTABLE"
+            freshness = "NEAR_REAL_TIME"
+        elif latency_ms < 2000:
+            category = "DEGRADED"
+            freshness = "NEAR_REAL_TIME"
+        elif latency_ms < 10000:
+            category = "POOR"
+            freshness = "DELAYED"
+        else:
+            category = "CRITICAL"
+            freshness = "STALE"
+        
+        return {
+            "latency_ms": round(latency_ms),
+            "latency_category": category,
+            "data_freshness": freshness,
+            "is_acceptable": latency_ms < 2000,
+            "is_stale": latency_ms > 10000,
+        }
 
     def __repr__(self) -> str:
         """Representação string do TimeManager."""
