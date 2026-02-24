@@ -15,6 +15,7 @@ from .volume_profile import VolumeProfileAnalyzer
 from .core import AdvancedSupportResistance
 from .monitor import InstitutionalMarketMonitor, HealthCheckResult
 from .system import InstitutionalSupportResistanceSystem
+from .reference_prices import ReferencePrices
 
 def daily_pivot(df):
     """Calculate daily pivot points from OHLC DataFrame"""
@@ -59,6 +60,7 @@ __all__ = [
     'HealthCheckResult',
     'VolumeProfileAnalyzer',
     'InstitutionalPivotPoints',
+    'ReferencePrices',
     'StatisticalUtils',
     'StructuredLogger',
     'timer',

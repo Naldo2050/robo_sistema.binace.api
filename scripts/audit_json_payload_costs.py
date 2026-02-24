@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ai_payload_optimizer import AIPayloadOptimizer
+from src.utils.ai_payload_optimizer import AIPayloadOptimizer
 
 
 def _json_bytes(obj: Any) -> int:

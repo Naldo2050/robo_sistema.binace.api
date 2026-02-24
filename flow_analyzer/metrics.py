@@ -379,3 +379,142 @@ class HealthChecker:
             },
             timestamp=ts_str,
         )
+
+
+# ==============================================================================
+# BUY/SELL RATIO CALCULATOR
+# ==============================================================================
+
+def calculate_buy_sell_ratios(flow_data: dict) -> dict:
+    """
+    Calcula Buy/Sell Ratios em múltiplas janelas temporais.
+    
+    Ratio > 1.0 = mais compra que venda (bullish pressure)
+    Ratio < 1.0 = mais venda que compra (bearish pressure)
+    Ratio = 1.0 = equilibrado
+    
+    Também detecta tendência do ratio (aceleração/desaceleração).
+    
+    Args:
+        flow_data: Dict com dados de fluxo. Espera chaves como:
+            - buy_volume ou buy_volume_btc
+            - sell_volume ou sell_volume_btc
+            - Opcionalmente: net_flow_1m, net_flow_5m, net_flow_15m
+            - Opcionalmente: sector_flow com retail/mid/whale
+            
+    Returns:
+        Dict com ratios por janela e análise de tendência.
+    """
+    # Extrair volumes de compra/venda
+    buy_vol = (
+        flow_data.get("buy_volume_btc")
+        or flow_data.get("buy_volume")
+        or 0
+    )
+    sell_vol = (
+        flow_data.get("sell_volume_btc")
+        or flow_data.get("sell_volume")
+        or 0
+    )
+
+    # Ratio principal
+    if sell_vol > 0:
+        main_ratio = round(buy_vol / sell_vol, 4)
+    else:
+        main_ratio = 1.0 if buy_vol == 0 else 99.0
+
+    # Extrair flows de múltiplas janelas
+    net_flow_1m = flow_data.get("net_flow_1m", 0)
+    net_flow_5m = flow_data.get("net_flow_5m", 0)
+    net_flow_15m = flow_data.get("net_flow_15m", 0)
+    total_volume = flow_data.get("total_volume", 0) or flow_data.get("total_volume_btc", 0)
+
+    # Calcular ratios por janela usando net_flow
+    # net_flow > 0 = mais compra, net_flow < 0 = mais venda
+    ratios = {
+        "current": main_ratio,
+    }
+
+    # Imbalance por janela (normalizado)
+    if total_volume and total_volume > 0:
+        ratios["imbalance_1m"] = round(net_flow_1m / total_volume, 4) if net_flow_1m else 0
+        ratios["imbalance_5m"] = round(net_flow_5m / total_volume, 4) if net_flow_5m else 0
+        ratios["imbalance_15m"] = round(net_flow_15m / total_volume, 4) if net_flow_15m else 0
+
+    # Sector ratios (se disponível)
+    sector_flow = flow_data.get("sector_flow", {})
+    sector_ratios = {}
+    for sector_name, sector_data in sector_flow.items():
+        if isinstance(sector_data, dict):
+            s_buy = sector_data.get("buy", 0)
+            s_sell = sector_data.get("sell", 0)
+            if s_sell > 0:
+                sector_ratios[sector_name] = round(s_buy / s_sell, 4)
+            elif s_buy > 0:
+                sector_ratios[sector_name] = 99.0
+            else:
+                sector_ratios[sector_name] = 1.0
+
+    # Detecção de tendência do fluxo
+    if net_flow_1m != 0 and net_flow_5m != 0 and net_flow_15m != 0:
+        # Todos na mesma direção = tendência forte
+        all_positive = net_flow_1m > 0 and net_flow_5m > 0 and net_flow_15m > 0
+        all_negative = net_flow_1m < 0 and net_flow_5m < 0 and net_flow_15m < 0
+
+        if all_positive:
+            # Verificar se está acelerando (1m > 5m/5 > 15m/15)
+            norm_1m = abs(net_flow_1m)
+            norm_5m = abs(net_flow_5m) / 5
+            norm_15m = abs(net_flow_15m) / 15
+            if norm_1m > norm_5m > norm_15m:
+                trend = "accelerating_buying"
+            elif norm_1m > norm_5m:
+                trend = "increasing_buying"
+            else:
+                trend = "consistent_buying"
+        elif all_negative:
+            norm_1m = abs(net_flow_1m)
+            norm_5m = abs(net_flow_5m) / 5
+            norm_15m = abs(net_flow_15m) / 15
+            if norm_1m > norm_5m > norm_15m:
+                trend = "accelerating_selling"
+            elif norm_1m > norm_5m:
+                trend = "increasing_selling"
+            else:
+                trend = "consistent_selling"
+        else:
+            # Direções mistas
+            if net_flow_1m > 0 and net_flow_5m < 0:
+                trend = "short_term_reversal_to_buy"
+            elif net_flow_1m < 0 and net_flow_5m > 0:
+                trend = "short_term_reversal_to_sell"
+            else:
+                trend = "mixed"
+    else:
+        trend = "insufficient_data"
+
+    # Classificação do pressure
+    if main_ratio > 2.0:
+        pressure = "STRONG_BUY"
+    elif main_ratio > 1.3:
+        pressure = "MODERATE_BUY"
+    elif main_ratio > 1.05:
+        pressure = "SLIGHT_BUY"
+    elif main_ratio > 0.95:
+        pressure = "NEUTRAL"
+    elif main_ratio > 0.7:
+        pressure = "SLIGHT_SELL"
+    elif main_ratio > 0.5:
+        pressure = "MODERATE_SELL"
+    else:
+        pressure = "STRONG_SELL"
+
+    return {
+        "buy_sell_ratio": main_ratio,
+        "ratios": ratios,
+        "sector_ratios": sector_ratios,
+        "pressure": pressure,
+        "flow_trend": trend,
+        "buy_volume": round(buy_vol, 4),
+        "sell_volume": round(sell_vol, 4),
+    }

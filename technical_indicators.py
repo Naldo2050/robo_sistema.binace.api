@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from typing import Optional
 
 def rsi(series: pd.Series, window: int = 14) -> pd.Series:
     """
@@ -89,6 +90,133 @@ def cci(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 20) -> 
     cci = (typical_price - sma_tp) / (0.015 * mean_dev)
     return cci
 
+def williams_r(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> pd.Series:
+    """
+    Williams %R - Oscilador de momentum.
+    Varia de -100 a 0.
+    Acima de -20 = overbought, abaixo de -80 = oversold.
+    """
+    highest_high = high.rolling(window=window).max()
+    lowest_low = low.rolling(window=window).min()
+    denom = highest_high - lowest_low
+    denom = denom.replace(0, float('nan'))
+    wr = ((highest_high - close) / denom) * -100
+    return wr.fillna(-50)
+
+def stochastic_rsi(
+    series: pd.Series,
+    rsi_period: int = 14,
+    stoch_period: int = 14,
+    k_smooth: int = 3,
+    d_smooth: int = 3
+) -> tuple[pd.Series, pd.Series]:
+    """
+    Stochastic RSI - RSI aplicado sobre o próprio RSI.
+    Mais sensível que RSI ou Stochastic isolados.
+    Retorna (K, D) onde ambos variam de 0 a 100.
+    K > 80 = overbought, K < 20 = oversold.
+    Crossover K/D gera sinais.
+    """
+    rsi_values = rsi(series, window=rsi_period)
+    min_rsi = rsi_values.rolling(window=stoch_period).min()
+    max_rsi = rsi_values.rolling(window=stoch_period).max()
+    denom = max_rsi - min_rsi
+    denom = denom.replace(0, float('nan'))
+    stoch_rsi_raw = ((rsi_values - min_rsi) / denom) * 100
+    stoch_rsi_raw = stoch_rsi_raw.fillna(50)
+    k = stoch_rsi_raw.rolling(window=k_smooth).mean()
+    d = k.rolling(window=d_smooth).mean()
+    return k, d
+
+
+def twap(close_prices: pd.Series) -> float:
+    """
+    TWAP (Time-Weighted Average Price).
+    Preço médio ponderado pelo tempo — cada barra tem peso igual.
+    Divergência TWAP vs VWAP indica absorção institucional:
+      - TWAP > VWAP → preço ficou mais tempo em cima (absorção compradora)
+      - TWAP < VWAP → preço ficou mais tempo embaixo (absorção vendedora)
+
+    Args:
+        close_prices: Série de preços de fechamento da sessão/período
+
+    Returns:
+        Valor TWAP (float)
+    """
+    if close_prices.empty:
+        return 0.0
+    return float(close_prices.mean())
+
+
+def twap_vwap_analysis(
+    close_prices: pd.Series,
+    volumes: pd.Series,
+    current_vwap: Optional[float] = None
+) -> dict:
+    """
+    Calcula TWAP e compara com VWAP para detectar absorção.
+
+    Args:
+        close_prices: Série de preços de fechamento
+        volumes: Série de volumes correspondentes
+        current_vwap: VWAP pré-calculado (opcional, calcula se não fornecido)
+
+    Returns:
+        Dict com TWAP, VWAP, divergência e sinal
+    """
+    if close_prices.empty or len(close_prices) < 2:
+        return {
+            "twap": 0.0,
+            "vwap": 0.0,
+            "divergence_pct": 0.0,
+            "signal": "insufficient_data",
+        }
+
+    twap_value = float(close_prices.mean())
+
+    if current_vwap is not None and current_vwap > 0:
+        vwap_value = current_vwap
+    else:
+        # Calcular VWAP
+        total_volume = volumes.sum()
+        if total_volume > 0:
+            vwap_value = float((close_prices * volumes).sum() / total_volume)
+        else:
+            vwap_value = twap_value
+
+    # Divergência
+    if vwap_value > 0:
+        divergence_pct = round((twap_value - vwap_value) / vwap_value * 100, 6)
+    else:
+        divergence_pct = 0.0
+
+    # Classificação do sinal
+    if abs(divergence_pct) < 0.005:
+        signal = "neutral"
+    elif divergence_pct > 0.02:
+        signal = "strong_buy_absorption"
+    elif divergence_pct > 0:
+        signal = "slight_buy_absorption"
+    elif divergence_pct < -0.02:
+        signal = "strong_sell_absorption"
+    else:
+        signal = "slight_sell_absorption"
+
+    return {
+        "twap": round(twap_value, 2),
+        "vwap": round(vwap_value, 2),
+        "divergence_pct": divergence_pct,
+        "signal": signal,
+        "interpretation": (
+            "Price spent more time at higher levels (buy absorption)"
+            if divergence_pct > 0
+            else "Price spent more time at lower levels (sell absorption)"
+            if divergence_pct < 0
+            else "Price time-balanced (no absorption detected)"
+        ),
+    }
+
+
 def realized_volatility(series: pd.Series, window: int = 30) -> pd.Series:
     """
     Compute the realized volatility of a series of prices.
@@ -96,7 +224,7 @@ def realized_volatility(series: pd.Series, window: int = 30) -> pd.Series:
     Returns a pandas Series of annualized volatility.
     """
     series = series.astype(float)
-    log_returns = np.log(series / series.shift())
+    log_returns = pd.Series(np.log(series / series.shift()), index=series.index)
     vol = log_returns.rolling(window=window, min_periods=window).std(ddof=0)
     # annualize assuming 365 days and 24*60/5 minute bars: adjust if sampling different frequency
     return vol * np.sqrt(window)

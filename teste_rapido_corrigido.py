@@ -1,4 +1,4 @@
-﻿from ai_payload_optimizer import AIPayloadOptimizer
+﻿from src.utils.ai_payload_optimizer import AIPayloadOptimizer
 import json
 
 # Simular evento típico

@@ -49,6 +49,7 @@ from .metrics import (
     CircuitState,
     HealthChecker,
     HealthStatus,
+    calculate_buy_sell_ratios,
 )
 
 # Absorption
@@ -85,6 +86,9 @@ from .utils import (
     clamp,
     safe_divide,
 )
+
+# Whale Score (NOVO)
+from .whale_score import WhaleAccumulationCalculator
 
 # Serialization (NOVO)
 from .serialization import (
@@ -166,12 +170,13 @@ __all__ = [
     # Aggregates
     "RollingAggregate",
     
-    # Metrics
-    "PerformanceMonitor",
-    "CircuitBreaker",
-    "CircuitState",
-    "HealthChecker",
-    "HealthStatus",
+     # Metrics
+     "PerformanceMonitor",
+     "CircuitBreaker",
+     "CircuitState",
+     "HealthChecker",
+     "HealthStatus",
+     "calculate_buy_sell_ratios",
     
     # Absorption
     "AbsorptionClassifier",
@@ -202,11 +207,14 @@ __all__ = [
     "clamp",
     "safe_divide",
     
-    # Serialization
-    "DecimalEncoder",
-    "MetricsSerializer",
-    "dumps",
-    "loads",
+     # Whale Score
+     "WhaleAccumulationCalculator",
+     
+     # Serialization
+     "DecimalEncoder",
+     "MetricsSerializer",
+     "dumps",
+     "loads",
     
     # Profiling
     "MemoryProfiler",

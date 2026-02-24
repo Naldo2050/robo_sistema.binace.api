@@ -65,10 +65,16 @@ def ensure_safe_llm_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]
         _log_guardrail(True, bytes_before, 0, "event", "no_safe_candidate")
         return None
 
-    try:
-        compressed = compress_payload(safe_candidate, max_bytes=6144)
-    except Exception:
+    # Se o payload já é v2 (já foi comprimido por build_ai_input),
+    # NÃO comprimir novamente
+    if safe_candidate.get("_v") == 2:
         compressed = safe_candidate
+        logging.debug("GUARDRAIL_SKIP_COMPRESSION payload already v2")
+    else:
+        try:
+            compressed = compress_payload(safe_candidate, max_bytes=6144)
+        except Exception:
+            compressed = safe_candidate
 
     bytes_after = len(json.dumps(compressed, ensure_ascii=False).encode("utf-8"))
     logging.warning(
