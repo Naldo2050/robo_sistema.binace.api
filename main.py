@@ -34,8 +34,8 @@ if os.getenv("DEBUG_CREATE_TASK") == "1":
 # 🔧 FORÇAR UTF-8 NO WINDOWS (DEVE SER A PRIMEIRA COISA)
 if sys.platform == "win32":
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
     except AttributeError:
         # Fallback para Python < 3.7
         sys.stdout = io.TextIOWrapper(
@@ -50,7 +50,7 @@ load_dotenv()
 
 import config
 from market_orchestrator import EnhancedMarketBot
-from utils.heartbeat_manager import HeartbeatManager
+from utils import HeartbeatManager
 
 
 def _validate_required_config() -> None:

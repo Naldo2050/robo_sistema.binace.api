@@ -104,6 +104,12 @@ from .ai.ai_runner import initialize_ai_async, run_ai_analysis_threaded
 from .windows import WindowProcessor, process_window
 from .signals.signal_processor import process_signals
 
+# ====== Institutional Analytics Engine ======
+try:
+    from .analysis.institutional_analytics import InstitutionalAnalyticsEngine
+except Exception:
+    InstitutionalAnalyticsEngine = None
+
 # Ativa filtro anti-eco global
 configure_dedup_logs()
 
@@ -172,6 +178,17 @@ class EnhancedMarketBot:
         self.event_bus = EventBus()
         self.feature_store = FeatureStore(base_dir="features")
         self.levels = LevelRegistry(self.symbol)
+
+        # ====== Institutional Analytics Engine ======
+        self.institutional_analytics = None
+        if InstitutionalAnalyticsEngine is not None:
+            try:
+                self.institutional_analytics = InstitutionalAnalyticsEngine(
+                    symbol=self.symbol
+                )
+                logging.info("✅ InstitutionalAnalyticsEngine inicializado")
+            except Exception as e:
+                logging.warning(f"⚠️ InstitutionalAnalyticsEngine falhou: {e}")
 
         self.health_monitor.heartbeat("main")
 
@@ -1261,6 +1278,84 @@ class EnhancedMarketBot:
                 }
             except Exception as e:
                 logging.debug(f"Falha ao construir market_impact: {e}")
+
+        # ====== Institutional Analytics ======
+        if self.institutional_analytics is not None:
+            try:
+                # Extrair dados disponíveis
+                _vp_daily = (
+                    signal.get("contextual_snapshot", {}).get("historical_vp", {}).get("daily", {})
+                    or (enriched_snapshot or {}).get("historical_vp", {}).get("daily", {})
+                )
+                _weekly_vp = (
+                    signal.get("contextual_snapshot", {}).get("historical_vp", {}).get("weekly", {})
+                )
+                _monthly_vp = (
+                    signal.get("contextual_snapshot", {}).get("historical_vp", {}).get("monthly", {})
+                )
+                _multi_tf = (
+                    signal.get("contextual_snapshot", {}).get("multi_tf", {})
+                    or (enriched_snapshot or {}).get("multi_tf", {})
+                )
+                _derivatives = signal.get("derivatives", {})
+                _pivot_data = signal.get("contextual_snapshot", {}).get("pivots", {})
+
+                # Extrair EMAs dos dados multi-TF
+                _emas = {}
+                for tf_name, tf_data in (_multi_tf or {}).items():
+                    if isinstance(tf_data, dict):
+                        mme = tf_data.get("mme_21")
+                        if mme and mme > 0:
+                            _emas[f"ema_21_{tf_name}"] = mme
+
+                # Construir candles_df do histórico OHLC
+                _candles_df = None
+                if self.pattern_ohlc_history and len(self.pattern_ohlc_history) >= 5:
+                    try:
+                        _candles_df = pd.DataFrame(list(self.pattern_ohlc_history))
+                    except Exception:
+                        pass
+
+                # Construir trades_df da janela
+                _trades_df = None
+                if valid_window_data and len(valid_window_data) > 20:
+                    try:
+                        _trades_df = pd.DataFrame(valid_window_data)
+                    except Exception:
+                        pass
+
+                # Absorption data
+                _absorption = None
+                _flow = signal.get("fluxo_continuo", {})
+                if isinstance(_flow, dict):
+                    _absorption = _flow.get("absorption_analysis", {})
+
+                # Calcular tudo
+                institutional_result = self.institutional_analytics.compute_all(
+                    current_price=signal.get("preco_fechamento", 0) or (
+                        signal.get("contextual_snapshot", {}).get("ohlc", {}).get("close", 0)
+                    ),
+                    flow_metrics=_flow if isinstance(_flow, dict) else None,
+                    vp_data=_vp_daily,
+                    orderbook_data=signal.get("orderbook_data", {}),
+                    candles_df=_candles_df,
+                    trades_df=_trades_df,
+                    macro_context=signal.get("market_context", {}),
+                    derivatives_data=_derivatives,
+                    absorption_data=_absorption,
+                    pivot_data=_pivot_data,
+                    ema_values=_emas,
+                    weekly_vp=_weekly_vp,
+                    monthly_vp=_monthly_vp,
+                    window_close_ms=close_ms,
+                    time_manager=self.time_manager,
+                )
+
+                signal["institutional_analytics"] = institutional_result
+
+            except Exception as e:
+                logging.debug(f"InstitutionalAnalytics error: {e}")
+                signal["institutional_analytics"] = {"status": "error", "error": str(e)}
 
         if signal.get("tipo_evento") == "ANALYSIS_TRIGGER":
             key = (

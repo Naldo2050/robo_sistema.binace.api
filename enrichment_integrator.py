@@ -25,7 +25,16 @@ def build_analysis_trigger_event(symbol: str, raw_event: Dict[str, Any]) -> Dict
     Returns:
         Dicionário representando o evento ANALYSIS_TRIGGER
     """
-    return {
+    # Extrair preço de fechamento de várias fontes possíveis
+    preco_fechamento = (
+        raw_event.get("preco_fechamento") or
+        raw_event.get("price") or 
+        raw_event.get("close") or
+        (raw_event.get("raw_event", {}).get("preco_fechamento") if isinstance(raw_event.get("raw_event"), dict) else None) or
+        (raw_event.get("raw_event", {}).get("price") if isinstance(raw_event.get("raw_event"), dict) else None)
+    )
+    
+    event = {
         "is_signal": True,
         "tipo_evento": "ANALYSIS_TRIGGER",
         "descricao": "Evento automático para análise da IA",
@@ -33,6 +42,17 @@ def build_analysis_trigger_event(symbol: str, raw_event: Dict[str, Any]) -> Dict
         "raw_event": raw_event,
         "resultado_da_batalha": "N/A",
     }
+    
+    # Adicionar preco_fechamento se disponível
+    if preco_fechamento is not None:
+        event["preco_fechamento"] = preco_fechamento
+        # Garantir que também está no raw_event
+        if "raw_event" not in event:
+            event["raw_event"] = {}
+        if isinstance(event["raw_event"], dict):
+            event["raw_event"]["preco_fechamento"] = preco_fechamento
+    
+    return event
 
 
 def enrich_analysis_trigger_event(
@@ -51,7 +71,7 @@ def enrich_analysis_trigger_event(
         raw_event = event.get("raw_event") or {}
         # Verificar preco_fechamento tanto na raiz quanto no nível interno
         inner_raw = raw_event.get("raw_event") if isinstance(raw_event.get("raw_event"), dict) else {}
-        preco_fechamento = raw_event.get("preco_fechamento") or inner_raw.get("preco_fechamento")
+        preco_fechamento = raw_event.get("preco_fechamento") or (inner_raw.get("preco_fechamento") if inner_raw else None)
         if preco_fechamento is None:
             logger.warning("EVENTO sem preco_fechamento (root e inner), não será enriquecido")
             return event

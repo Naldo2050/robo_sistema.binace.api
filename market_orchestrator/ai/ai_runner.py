@@ -172,7 +172,61 @@ def initialize_ai_async(bot) -> None:
                     },
                 }
 
-                analysis = bot.ai_analyzer.analyze(test_event)
+                ai_payload = None
+                try:
+                    from datetime import datetime, timezone
+                    import time
+
+                    now_ms = int(time.time() * 1000)
+                    test_event["symbol"] = bot.symbol
+                    test_event["epoch_ms"] = now_ms
+                    test_event["timestamp_utc"] = datetime.now(timezone.utc).isoformat()
+
+                    # opcionais p/ evitar missing flow/tf no teste:
+                    test_event.setdefault("fluxo_continuo", {
+                        "cvd": 0.0,
+                        "order_flow": {
+                            "net_flow_1m": 0.0,
+                            "flow_imbalance": 0.0,
+                            "aggressive_buy_pct": 50.0,
+                            "aggressive_sell_pct": 50.0,
+                        },
+                    })
+                    test_event.setdefault("multi_tf", {
+                        "1h": {"tendencia": "Neutra", "preco_atual": current_price}
+                    })
+
+                    ml_feats = test_event.get("ml_features") or {}
+                    if not ml_feats and getattr(bot, "ml_engine", None):
+                        try:
+                            ml_feats = bot.ml_engine.extract_ml_features(test_event)  # type: ignore
+                        except Exception as e:
+                            logging.debug("Falha ao extrair ml_features via MLInferenceEngine: %s", e, exc_info=True)
+                            ml_feats = {}
+
+                    ai_payload = build_ai_input(
+                        symbol=bot.symbol,
+                        signal=test_event,
+                        enriched=test_event.get("enriched_snapshot", {}),
+                        flow_metrics=test_event.get("fluxo_continuo", {}),
+                        historical_profile=test_event.get("historical_vp", {}),
+                        macro_context=test_event.get("market_context", {}),
+                        market_environment=test_event.get("market_environment", {}),
+                        orderbook_data=test_event.get("orderbook_data", {}),
+                        ml_features=ml_feats,
+                        ml_prediction={},
+                        pivots=test_event.get("pivots", {}),
+                    )
+
+                    _payload_bytes = len(json.dumps(ai_payload, ensure_ascii=False).encode("utf-8"))
+                    logging.info("PAYLOAD_READY_FOR_LLM bytes=%d keys=%s v=%s",
+                                 _payload_bytes, list(ai_payload.keys())[:8], ai_payload.get("_v", 2))
+
+                except Exception as e:
+                    logging.warning("Falha ao construir ai_payload para teste de conexão: %s", e, exc_info=True)
+
+                analysis_input = ai_payload if isinstance(ai_payload, dict) and ai_payload else test_event
+                analysis = bot.ai_analyzer.analyze(analysis_input)
 
                 min_chars = getattr(config, "AI_TEST_MIN_CHARS", 10)
 

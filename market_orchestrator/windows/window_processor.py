@@ -9,6 +9,31 @@ market_orchestrator.py original, apenas movido para este módulo e
 trocando `self` por `bot`.
 
 Nenhuma lógica foi alterada.
+
+═══════════════════════════════════════════════════════════════════════════════
+ONDE JANELAS SÃO CRIADAS:
+────────────────────────────────────────────────────────────────────────────────
+As janelas são CRIADAS no arquivo principal: market_orchestrator/market_orchestrator.py
+
+1. Definição da janela (linha ~744-750):
+   - `window_end_ms` é inicializado com `_next_boundary_ms(T)` quando chega o primeiro trade
+   - Quando `T >= window_end_ms`, a janela é FECHADA e uma nova é calculada
+
+2. O método `_next_boundary_ms(T)` calcula o próximo limite de janela baseado no
+   timestamp do trade e no tamanho da janela (`window_ms`)
+
+3. O método `_process_window()` é CHAMADO quando a janela é fechada
+   - Este método (em window_processor.py) processa todos os trades acumulados
+
+4. As variáveis de estado das janelas estão em market_orchestrator.py:
+   - `self.window_end_ms` (linha 274): timestamp de fechamento da janela
+   - `self.window_data` (linha 274): lista de trades na janela atual
+   - `self.window_count` (linha 275): contador de janelas processadas
+
+5. O WindowProcessor (esta classe) é apenas um WRAPPER assíncrono que gerencia
+   o processamento de janelas, mas a CRIAÇÃO real acontece no método
+   `_on_message` do EnhancedMarketBot.
+═══════════════════════════════════════════════════════════════════════════════
 """
 
 import asyncio
