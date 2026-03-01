@@ -27,6 +27,8 @@ ALLOWED_TOP_LEVEL = {
     "quant_model",
     "regime_analysis",
     "historical_stats",
+    "multi_tf",
+    "tf",  # alias compactado para multi_tf
 }
 
 FORBIDDEN_KEYS = {
@@ -256,7 +258,7 @@ def _normalize_signal_metadata(meta: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _normalize_timestamps(payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+def _normalize_timestamps(payload: Dict[str, Any]) -> Tuple[int | None, Dict[str, Any]]:
     epoch_ms = payload.get("epoch_ms") or payload.get("timestamp_ms") or payload.get("timestamp")
     try:
         epoch_ms = int(epoch_ms) if epoch_ms is not None else None
@@ -361,5 +363,10 @@ def compress_payload(payload: Dict[str, Any], max_bytes: int = 6144) -> Dict[str
         for opt in optional_fields:
             if opt in compressed and not _size_ok(compressed):
                 compressed.pop(opt, None)
+
+    # Move multi_tf → tf (alias compactado, sem duplicação)
+    # Economiza bytes e padroniza o nome usado pelo consumer
+    if "multi_tf" in compressed and isinstance(compressed["multi_tf"], dict) and compressed["multi_tf"]:
+        compressed["tf"] = compressed.pop("multi_tf")
 
     return compressed

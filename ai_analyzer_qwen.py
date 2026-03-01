@@ -1021,9 +1021,13 @@ class AIAnalyzer:
                     temperature=0.0,
                     timeout=10,
                 )
-                content = (r.choices[0].message.content or "").strip().upper()
+                content = (r.choices[0].message.content or "").strip()
+                # Remover tags de pensamento antes de validar
+                content_clean = re.sub(r'<THINK>.*?</THINK>', '', content, flags=re.IGNORECASE | re.DOTALL).strip()
+                content_clean = content_clean.replace("<THINK>", "").replace("</THINK>", "").strip().upper()
+                
                 # Aceita variações: "OK", "OK.", "OK!", etc.
-                ok = "OK" in content and len(content) < 10
+                ok = "OK" in content_clean and len(content_clean) < 20
 
                 if ok and self.mode == "groq":
                     logging.debug("✅ Groq ping OK")
@@ -1740,8 +1744,8 @@ class AIAnalyzer:
         
         # Signal metadata
         # Signal metadata
-        # Multi-timeframe
-        mtf = ai_payload.get("multi_tf")
+        # Multi-timeframe (fallback para tf compactado)
+        mtf = ai_payload.get("multi_tf") or ai_payload.get("tf")
         if isinstance(mtf, dict) and mtf:
             compressed["tf"] = mtf  # Já vem compactado do builder
 

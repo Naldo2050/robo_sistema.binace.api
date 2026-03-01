@@ -23,16 +23,16 @@ from enum import Enum
 try:
     from metrics_collector import (
         record_trade_late,
-        set_trades_in_buffer,
-        track_latency,
+        update_active_trades_buffer as set_trades_in_buffer,
+        track_operation as track_latency,  # type: ignore[assignment]
         record_timeout
     )
     METRICS_AVAILABLE = True
 except ImportError:
     METRICS_AVAILABLE = False
-    def record_trade_late(): pass
+    def record_trade_late(latency_ms: float): pass
     def set_trades_in_buffer(count): pass
-    def track_latency(operation_type):
+    def track_latency(operation_type: Any = None):
         class DummyContext:
             def __enter__(self): return self
             def __exit__(self, *args): pass
@@ -56,24 +56,15 @@ except ImportError:
     LATENCY_MONITOR_AVAILABLE = False
     latency_monitor = None
 
-# Importar filtro de trades atrasados
-try:
-    from utils.trade_filter import trade_filter
-    TRADE_FILTER_AVAILABLE = True
-except ImportError:
-    TRADE_FILTER_AVAILABLE = False
-    class DummyFilter:
-        def is_trade_valid(self, trade): return True
-    trade_filter = DummyFilter()
+# Importar filtro de trades atrasados (não existe mais - usando fallback sempre)
+TRADE_FILTER_AVAILABLE = False
+class DummyFilter:
+    def is_trade_valid(self, trade): return True
+trade_filter = DummyFilter()
 
-# Importar validador de timestamp (validação na recepção)
-try:
-    from utils.trade_timestamp_validator import TradeTimestampValidator
-    trade_timestamp_validator = TradeTimestampValidator(max_latency_ms=5000)
-    TRADE_TIMESTAMP_VALIDATOR_AVAILABLE = True
-except ImportError:
-    TRADE_TIMESTAMP_VALIDATOR_AVAILABLE = False
-    trade_timestamp_validator = None
+# Importar validador de timestamp (não existe mais - usando fallback sempre)
+TRADE_TIMESTAMP_VALIDATOR_AVAILABLE = False
+trade_timestamp_validator = None
 
 
 class BufferStatus(Enum):
@@ -111,23 +102,25 @@ class AsyncTradeBuffer:
     
     def __init__(
         self,
-        max_size: int = 2000,
+        max_size: int = 5000,
         backpressure_threshold: float = 0.8,
         processing_batch_size: int = 50,
         processing_interval_ms: int = 10,
         max_processing_time_ms: float = 5.0,
-        warning_callback: Optional[Callable[[BufferStatus, int], None]] = None
+        warning_callback: Optional[Callable[[BufferStatus, int], None]] = None,
+        heartbeat_callback: Optional[Callable[[str], None]] = None
     ):
         """
         Inicializa o buffer assíncrono.
         
         Args:
-            max_size: Tamanho máximo do buffer
+            max_size: Tamanho máximo do buffer (aumentado para 5000)
             backpressure_threshold: Limite para ativar backpressure (0.8 = 80%)
             processing_batch_size: Número de trades para processar por batch
             processing_interval_ms: Intervalo entre processamentos em ms
             max_processing_time_ms: Tempo máximo aceitável para processar 1 trade
             warning_callback: Callback para alertas de buffer
+            heartbeat_callback: Callback para enviar heartbeats do módulo
         """
         self.max_size = max_size
         self.backpressure_threshold = backpressure_threshold
@@ -135,6 +128,7 @@ class AsyncTradeBuffer:
         self.processing_interval_ms = processing_interval_ms
         self.max_processing_time_ms = max_processing_time_ms
         self.warning_callback = warning_callback
+        self.heartbeat_callback = heartbeat_callback
         
         # Buffer principal
         self._buffer: deque = deque(maxlen=max_size)
@@ -394,6 +388,13 @@ class AsyncTradeBuffer:
         """Loop de processamento background."""
         while not self._should_stop.is_set():
             try:
+                # Enviar heartbeat para o módulo buffer_critical
+                if self.heartbeat_callback:
+                    try:
+                        self.heartbeat_callback('buffer_critical')
+                    except Exception as e:
+                        logging.debug(f"Erro ao enviar heartbeat: {e}")
+                
                 # Processa batch de trades
                 batch = self._get_batch()
                 if batch:

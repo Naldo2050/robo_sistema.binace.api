@@ -29,6 +29,13 @@ from market_orchestrator.ai.payload_section_cache import SectionCache, canonical
 from market_orchestrator.ai.payload_metrics_aggregator import append_metric_line
 
 
+def _check_in_range(price, low, high):
+    """Helper simples para verificar se preço está em range."""
+    if price is None or low is None or high is None:
+        return None
+    return low <= price <= high
+
+
 def _strip_empty(d: dict) -> dict:
     """Remove recursivamente chaves com valor None, {}, [] ou string vazia."""
     if not isinstance(d, dict):
@@ -47,6 +54,257 @@ def _strip_empty(d: dict) -> dict:
             continue
         cleaned[k] = v
     return cleaned
+
+
+def _inject_institutional_analytics(
+    ai_payload: Dict[str, Any],
+    signal: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Mescla dados do InstitutionalAnalyticsEngine nas seções
+    existentes do payload, de forma comprimida.
+    
+    Adiciona ~80-120 tokens extras ao payload com informações de
+    altíssimo valor analítico.
+    """
+    ia = signal.get("institutional_analytics")
+    if not ia or not isinstance(ia, dict) or ia.get("status") != "ok":
+        return ai_payload
+
+    # ═══════════════════════════════════════════════════════
+    # 1. TECHNICAL INDICATORS — StochRSI, WilliamsR, Candles
+    # ═══════════════════════════════════════════════════════
+    tech = ai_payload.get("technical_indicators")
+    if isinstance(tech, dict):
+        extras = ia.get("technical_extras", {})
+
+        # StochRSI
+        sr = extras.get("stoch_rsi", {})
+        if sr and "error" not in sr:
+            tech["stoch_rsi_k"] = sr.get("k")
+            tech["stoch_rsi_d"] = sr.get("d")
+            tech["stoch_rsi_signal"] = sr.get("crossover", "none")
+
+        # Williams %R
+        wr = extras.get("williams_r", {})
+        if wr and "error" not in wr:
+            tech["williams_r"] = wr.get("value")
+            tech["williams_r_zone"] = wr.get("zone")
+
+        # Candlestick patterns
+        candles = ia.get("candlestick_patterns", {})
+        if candles and candles.get("patterns_detected", 0) > 0:
+            patterns = candles.get("patterns", [])
+            # Acesso seguro com verificação de tipo
+            p0 = patterns[0] if isinstance(patterns, list) and patterns else None
+            p0 = p0 if isinstance(p0, dict) else {}
+            tech["candle_pattern"] = p0.get("name")
+            tech["candle_pattern_type"] = p0.get("type")
+            tech["candle_pattern_conf"] = p0.get("confidence")
+            if len(patterns) > 1:
+                p1 = patterns[1] if isinstance(patterns[1], dict) else {}
+                tech["candle_pattern_2"] = p1.get("name")
+
+    # ═══════════════════════════════════════════════════════
+    # 2. PRICE CONTEXT — TWAP, PoorH/L, Shape, RefPrices
+    # ═══════════════════════════════════════════════════════
+    price = ai_payload.get("price_context")
+    if isinstance(price, dict):
+        extras = ia.get("technical_extras", {})
+        profile = ia.get("profile_analysis", {})
+        sr_data = ia.get("sr_analysis", {})
+
+        # TWAP vs VWAP
+        twap = extras.get("twap_analysis", {})
+        if twap and "error" not in twap:
+            price["twap"] = twap.get("twap")
+            price["twap_vwap_div"] = twap.get("divergence_pct")
+            price["twap_signal"] = twap.get("signal")
+
+        # Poor High/Low
+        poor = profile.get("poor_extremes", {})
+        if poor and poor.get("status") == "success":
+            ph = poor.get("poor_high", {})
+            pl = poor.get("poor_low", {})
+            if ph.get("detected") or pl.get("detected"):
+                price["poor_high"] = ph.get("detected", False)
+                price["poor_low"] = pl.get("detected", False)
+                price["auction_bias"] = poor.get("action_bias")
+
+        # Profile Shape
+        shape = profile.get("profile_shape", {})
+        if shape and shape.get("status") == "success":
+            price["profile_shape"] = shape.get("shape")
+            price["profile_signal"] = shape.get("trading_signal")
+
+        # Value Area Volume %
+        va_pct = profile.get("va_volume_pct", {})
+        if va_pct and "error" not in va_pct:
+            pct = va_pct.get("value_area_volume_pct")
+            if pct:
+                price["va_volume_pct"] = pct
+                price["va_compression"] = va_pct.get("compression_signal", False)
+
+        # Reference Prices (prev day close + distance)
+        refs = sr_data.get("reference_prices", {})
+        if refs and refs.get("status") == "ok":
+            ref_prices = refs.get("reference_prices", {})
+            summary = refs.get("summary", {})
+
+            prev_day = ref_prices.get("prev_day", {})
+            if prev_day:
+                price["prev_day_close"] = prev_day.get("close")
+                price["above_prev_day"] = prev_day.get("above_prev_close")
+                price["dist_prev_day_pct"] = prev_day.get("distance_from_close_pct")
+
+            prev_week = ref_prices.get("prev_week", {})
+            if prev_week:
+                price["prev_week_close"] = prev_week.get("close")
+                price["above_prev_week"] = prev_week.get("above_prev_close")
+
+    # ═══════════════════════════════════════════════════════
+    # 3. FLOW CONTEXT — BuySellRatio, Passive/Agg, Whale
+    # ═══════════════════════════════════════════════════════
+    flow = ai_payload.get("flow_context")
+    if isinstance(flow, dict):
+        flow_data = ia.get("flow_analysis", {})
+
+        # Buy/Sell Ratio
+        bsr = flow_data.get("buy_sell_ratio", {})
+        if bsr and "error" not in bsr:
+            flow["buy_sell_ratio"] = bsr.get("buy_sell_ratio")
+            flow["pressure"] = bsr.get("pressure")
+            flow["flow_trend"] = bsr.get("flow_trend")
+
+        # Passive/Aggressive
+        pa = flow_data.get("passive_aggressive", {})
+        if pa and pa.get("status") == "success":
+            composite = pa.get("composite", {})
+            flow["passive_agg_signal"] = composite.get("signal")
+            flow["passive_agg_conviction"] = composite.get("conviction")
+
+        # Whale Accumulation Score
+        whale = flow_data.get("whale_accumulation", {})
+        if whale and whale.get("status") == "success":
+            flow["whale_score"] = whale.get("score")
+            flow["whale_class"] = whale.get("classification")
+            flow["whale_bias"] = whale.get("bias")
+
+        # Absorption Zones summary
+        abs_zones = flow_data.get("absorption_zones", {})
+        if abs_zones and abs_zones.get("status") == "success":
+            strongest = abs_zones.get("strongest_zone")
+            if strongest:
+                flow["top_absorption_zone"] = strongest.get("center")
+                flow["top_absorption_side"] = strongest.get("dominant_side")
+                flow["absorption_zones_count"] = abs_zones.get("total_zones", 0)
+
+    # ═══════════════════════════════════════════════════════
+    # 4. ORDERBOOK CONTEXT — Spread Percentile
+    # ═══════════════════════════════════════════════════════
+    ob = ai_payload.get("orderbook_context")
+    if isinstance(ob, dict):
+        quality = ia.get("quality", {})
+        sp = quality.get("spread_percentile", {})
+        if sp and sp.get("status") == "ok":
+            ob["spread_percentile"] = sp.get("spread_percentile")
+            ob["liquidity_signal"] = sp.get("liquidity_signal")
+
+    # ═══════════════════════════════════════════════════════
+    # 5. MACRO CONTEXT — Calendar
+    # ═══════════════════════════════════════════════════════
+    macro = ai_payload.get("macro_context")
+    if isinstance(macro, dict):
+        quality = ia.get("quality", {})
+        cal = quality.get("calendar", {})
+        if cal and "error" not in cal:
+            if cal.get("liquidity_warning"):
+                macro["holiday_warning"] = True
+                macro["expected_liquidity"] = cal.get("expected_liquidity")
+                macro["holiday_name"] = cal.get("holiday_name")
+            macro["day_of_week"] = cal.get("day_of_week")
+
+    # ═══════════════════════════════════════════════════════
+    # 6. NEW: SR CONTEXT (compact)
+    # ═══════════════════════════════════════════════════════
+    sr_data = ia.get("sr_analysis", {})
+    sr_context = {}
+
+    # S/R Strength — top 3 supports and resistances
+    sr_str = sr_data.get("sr_strength", {})
+    if sr_str and sr_str.get("status") == "success":
+        nearest_sup = sr_str.get("nearest_support")
+        nearest_res = sr_str.get("nearest_resistance")
+        if nearest_sup:
+            sr_context["nearest_support"] = nearest_sup.get("price")
+            sr_context["support_strength"] = nearest_sup.get("strength")
+            sr_context["support_sources"] = nearest_sup.get("confluence_count", 1)
+        if nearest_res:
+            sr_context["nearest_resistance"] = nearest_res.get("price")
+            sr_context["resistance_strength"] = nearest_res.get("strength")
+            sr_context["resistance_sources"] = nearest_res.get("confluence_count", 1)
+
+    # Defense Zones — strongest buy/sell defense
+    dz = sr_data.get("defense_zones", {})
+    if dz and dz.get("status") == "success":
+        sb = dz.get("strongest_buy")
+        ss = dz.get("strongest_sell")
+        if sb:
+            sr_context["buy_defense_price"] = sb.get("center")
+            sr_context["buy_defense_strength"] = sb.get("strength")
+            sr_context["buy_defense_type"] = sb.get("type")
+        if ss:
+            sr_context["sell_defense_price"] = ss.get("center")
+            sr_context["sell_defense_strength"] = ss.get("strength")
+            sr_context["sell_defense_type"] = ss.get("type")
+        asym = dz.get("defense_asymmetry", {})
+        if asym:
+            sr_context["defense_bias"] = asym.get("bias")
+
+    # No-Man's Land
+    profile = ia.get("profile_analysis", {})
+    nml = profile.get("no_mans_land", {})
+    if nml and nml.get("status") == "success":
+        if nml.get("price_in_no_mans_land"):
+            sr_context["in_no_mans_land"] = True
+            sr_context["nml_warning"] = nml.get("warning")
+        nearest_nml = nml.get("nearest_no_mans_land")
+        if nearest_nml:
+            sr_context["nearest_nml_range"] = [
+                nearest_nml.get("range_low"),
+                nearest_nml.get("range_high"),
+            ]
+            sr_context["nearest_nml_risk"] = nearest_nml.get("risk")
+
+    # HVN/LVN Strength
+    vns = profile.get("volume_node_strength", {})
+    if vns and vns.get("status") == "success":
+        strongest_hvn = vns.get("strongest_hvn")
+        if strongest_hvn:
+            sr_context["strongest_hvn"] = strongest_hvn.get("price")
+            sr_context["strongest_hvn_str"] = strongest_hvn.get("strength")
+            sr_context["hvn_multi_tf"] = strongest_hvn.get("multi_tf_confluence", False)
+
+    if sr_context:
+        ai_payload["sr_context"] = sr_context
+
+    # ═══════════════════════════════════════════════════════
+    # 7. ANOMALY ALERT — Só se risco elevado
+    # ═══════════════════════════════════════════════════════
+    quality = ia.get("quality", {})
+    anomalies = quality.get("anomalies", {})
+    if anomalies and anomalies.get("risk_elevated"):
+        alert_list = anomalies.get("anomalies", [])
+        critical = [a for a in alert_list if a.get("severity") in ("CRITICAL", "HIGH")]
+        if critical:
+            ai_payload["anomaly_alert"] = {
+                "count": len(critical),
+                "types": [a["type"] for a in critical[:3]],
+                "max_severity": anomalies.get("max_severity"),
+                "summary": anomalies.get("summary"),
+            }
+
+    return ai_payload
 
 
 # Configuração de payload (feature flags)
@@ -707,16 +965,42 @@ def build_ai_input(
         if price_ctx.get("current_price") is None:
             raise ValueError("payload_v2 inválido: price_context.current_price obrigatório")
 
+    # === INSTITUTIONAL ANALYTICS (23 módulos) ===
+    ai_payload = _inject_institutional_analytics(ai_payload, signal)
+
     # === MULTI-TIMEFRAME (compactado) ===
     _multi_tf_raw = None
     if isinstance(signal, dict):
-        _raw = signal.get("raw_event", {})
-        if isinstance(_raw, dict):
-            _multi_tf_raw = _raw.get("multi_tf")
-            if not isinstance(_multi_tf_raw, dict):
-                _cs = _raw.get("contextual_snapshot", {})
-                if isinstance(_cs, dict):
-                    _multi_tf_raw = _cs.get("multi_tf")
+        # 0) tenta direto no signal (fallback mais simples)
+        _multi_tf_raw = signal.get("multi_tf")
+
+        # 1) tenta raw_event direto
+        if not isinstance(_multi_tf_raw, dict):
+            _raw = signal.get("raw_event", {})
+            if isinstance(_raw, dict):
+                _multi_tf_raw = _raw.get("multi_tf")
+
+                # 2) tenta raw_event.raw_event (caso aninhado)
+                if not isinstance(_multi_tf_raw, dict):
+                    _raw2 = _raw.get("raw_event", {})
+                    if isinstance(_raw2, dict):
+                        _multi_tf_raw = _raw2.get("multi_tf")
+
+                # 3) tenta contextual_snapshot em ambos níveis
+                if not isinstance(_multi_tf_raw, dict):
+                    _cs = _raw.get("contextual_snapshot", {})
+                    if isinstance(_cs, dict):
+                        _multi_tf_raw = _cs.get("multi_tf")
+
+                if not isinstance(_multi_tf_raw, dict):
+                    _raw2 = _raw.get("raw_event", {})
+                    if isinstance(_raw2, dict):
+                        _cs2 = _raw2.get("contextual_snapshot", {})
+                        if isinstance(_cs2, dict):
+                            _multi_tf_raw = _cs2.get("multi_tf")
+
+    if not isinstance(_multi_tf_raw, dict):
+        _multi_tf_raw = None
     
     if isinstance(_multi_tf_raw, dict) and _multi_tf_raw:
         tf_compact = {}
@@ -747,6 +1031,13 @@ def build_ai_input(
     v2_enabled = bool(cfg.get("v2_enabled", True))
     max_bytes = int(cfg.get("max_bytes", 6144) or 6144)
 
+    # Verifica se multi_tf está presente antes da compressão (debug apenas)
+    _logger = logging.getLogger(__name__)
+    pre_has_multi_tf = "multi_tf" in ai_payload
+    if _logger.isEnabledFor(logging.DEBUG):
+        _logger.debug("PRE_COMPRESS has_multi_tf=%s keys=%s",
+                      pre_has_multi_tf, sorted(ai_payload.keys()))
+
     if v2_enabled:
         try:
             payload_v2 = compress_payload(ai_payload, max_bytes=max_bytes)
@@ -774,6 +1065,20 @@ def build_ai_input(
             _append_payload_metric({"fallback_v1": True, "payload_bytes": v1_bytes, "error": str(e)})
     else:
         logging.info("PAYLOAD_V1_FORCED v1_bytes=%s", v1_bytes)
+
+    # Verifica se multi_tf sobreviveu à compressão (debug + alerta se drop)
+    post_has_multi_tf = "multi_tf" in ai_payload
+    post_has_tf = "tf" in ai_payload  # forma compactada
+    if _logger.isEnabledFor(logging.DEBUG):
+        _logger.debug("POST_COMPRESS has_multi_tf=%s has_tf=%s keys=%s",
+                      post_has_multi_tf, post_has_tf, sorted(ai_payload.keys()))
+
+    # Só alerta se multi_tf existia antes e sumiu depois (possível bug)
+    if pre_has_multi_tf and not (post_has_multi_tf or post_has_tf):
+        _logger.warning(
+            "COMPRESSOR_DROPPED_MULTI_TF pre_has_multi_tf=%s post_has_multi_tf=%s post_has_tf=%s",
+            pre_has_multi_tf, post_has_multi_tf, post_has_tf
+        )
 
     # Aplica cache de seções apenas para v2
     if ai_payload.get("_v") == 2 and cfg.get("section_cache_enabled", True):
@@ -806,6 +1111,7 @@ def build_ai_input(
         _qm.pop("features_used", None)
 
     return ai_payload
+
 
 def build_payload_with_cross_asset(
     symbol: str,
@@ -898,9 +1204,3 @@ def build_payload_with_cross_asset(
     final_payload["cross_asset_context"] = cross_asset_context
 
     return final_payload
-
-def _check_in_range(price, low, high):
-    """Helper simples para verificar se preço está em range."""
-    if price is None or low is None or high is None:
-        return None
-    return low <= price <= high

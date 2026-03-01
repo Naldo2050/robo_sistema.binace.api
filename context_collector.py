@@ -148,7 +148,7 @@ class ContextCollector:
         }
          
         # Async internals
-        self._loop = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread = None
         self._update_task = None
         
@@ -176,7 +176,9 @@ class ContextCollector:
                 "Chrome/124.0.0.0 Safari/537.36"
             )
         }
-        return aiohttp.ClientSession(headers=headers)
+        # Armazenar referência para fechar no stop()
+        self._session = aiohttp.ClientSession(headers=headers)
+        return self._session
 
     async def _yfinance_history(self, symbol: str, period: str = "90d", interval: str = "1d") -> pd.DataFrame:
         """Busca dados históricos do yFinance com retry e proteção contra concorrência."""
@@ -217,8 +219,7 @@ class ContextCollector:
                             df = yf_dl.download(
                                 ticker,
                                 period=period,
-                                interval=interval,
-                                show_errors=False
+                                interval=interval
                             )
                         except Exception as e:
                             logger.debug(f"download() falhou para {ticker}: {e}")
@@ -299,7 +300,7 @@ class ContextCollector:
                     params["from_symbol"] = symbol.split("/")[0]
                     params["to_symbol"] = symbol.split("/")[1]
 
-                async with session.get(self.alpha_vantage_url, params=params, timeout=10) as res:
+                async with session.get(self.alpha_vantage_url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as res:
                     if res.status == 200:
                         data = await res.json()
                         if "Error Message" in data:
@@ -355,7 +356,7 @@ class ContextCollector:
 
     # ---------- Cache genérico (async) ----------
 
-    async def _async_fetch_with_cache(self, cache_key: str, fetch_fn, ttl_seconds: int = None):
+    async def _async_fetch_with_cache(self, cache_key: str, fetch_fn, ttl_seconds: Optional[int] = None):
         ttl = ttl_seconds or self._cache_ttl
         now = asyncio.get_event_loop().time()
         if cache_key in self._api_cache:
@@ -374,7 +375,7 @@ class ContextCollector:
         for attempt in range(max_retries):
             try:
                 params = {"symbol": symbol, "interval": timeframe, "limit": limit}
-                async with session.get(self.klines_api_url, params=params, timeout=10) as res:
+                async with session.get(self.klines_api_url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as res:
                     if res.status == 429:
                         delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
                         logger.warning(
@@ -413,7 +414,7 @@ class ContextCollector:
         cache_key = f"mark_price_{symbol}"
         async def _do_fetch():
             try:
-                async with session.get(self.mark_price_api_url, params={"symbol": symbol}, timeout=5) as r:
+                async with session.get(self.mark_price_api_url, params={"symbol": symbol}, timeout=aiohttp.ClientTimeout(total=5)) as r:
                     r.raise_for_status()
                     data = await r.json()
                     return float(data.get("markPrice", 0.0))
@@ -535,7 +536,7 @@ class ContextCollector:
 
     def _calculate_realized_volatility(self, series: pd.Series) -> float:
         try:
-            returns = np.log(series / series.shift()).dropna()
+            returns = pd.Series(np.log(series / series.shift())).dropna()
             if returns.empty:
                 return 0.0
             return float(returns.std())
@@ -587,7 +588,7 @@ class ContextCollector:
     # ---------- Ambiente de mercado ----------
     
     async def _calculate_market_environment(self, session: aiohttp.ClientSession) -> dict:
-        env = {
+        env: Dict[str, Any] = {
             "volatility_regime": None,
             "trend_direction": None,
             "market_structure": None,
@@ -918,7 +919,7 @@ class ContextCollector:
                 if end_ms > now_ms + 5_000:
                     end_ms = now_ms
                 params = {"symbol": symbol, "startTime": start_ms, "endTime": end_ms, "limit": 1000}
-                async with session.get(self.liquidations_api_url, params=params, timeout=5) as r:
+                async with session.get(self.liquidations_api_url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as r:
                     if r.status == 204 or not await r.text():
                         return []
                     if r.status == 200:
@@ -966,17 +967,17 @@ class ContextCollector:
         derivatives_data = {}
         for sym in self.derivatives_symbols:
             try:
-                async with session.get(self.funding_api_url, params={'symbol': sym}, timeout=5) as fr:
+                async with session.get(self.funding_api_url, params={'symbol': sym}, timeout=aiohttp.ClientTimeout(total=5)) as fr:
                     fr.raise_for_status()
                     fr_data = await fr.json()
                     funding_rate = float(fr_data[0]["fundingRate"]) * 100 if fr_data else 0.0
-                async with session.get(self.open_interest_api_url, params={'symbol': sym}, timeout=5) as oi:
+                async with session.get(self.open_interest_api_url, params={'symbol': sym}, timeout=aiohttp.ClientTimeout(total=5)) as oi:
                     oi.raise_for_status()
                     oi_data = await oi.json()
                     open_interest = float(oi_data.get("openInterest", 0))
                 async with session.get(
                     self.long_short_ratio_api_url,
-                    params={'symbol': sym, 'period': '5m', 'limit': 1}, timeout=5
+                    params={'symbol': sym, 'period': '5m', 'limit': 1}, timeout=aiohttp.ClientTimeout(total=5)
                 ) as ls:
                     ls.raise_for_status()
                     ls_data = await ls.json()
@@ -1088,7 +1089,8 @@ class ContextCollector:
                 await asyncio.sleep(self.update_interval)
 
     async def _async_start(self):
-        self._update_task = self._loop.create_task(self._async_update_loop())
+        loop = asyncio.get_event_loop()
+        self._update_task = loop.create_task(self._async_update_loop())
 
     async def _async_stop(self):
         if self._update_task:
@@ -1097,6 +1099,11 @@ class ContextCollector:
                 await self._update_task
             except asyncio.CancelledError:
                 pass
+        
+        # Fechar sessão aiohttp se existir
+        if hasattr(self, '_session') and self._session and not self._session.closed:
+            await self._session.close()
+            logger.debug("Sessão aiohttp fechada")
 
     async def _async_get_context(self):
         return self._context_data.copy()
@@ -1110,19 +1117,34 @@ class ContextCollector:
 
     def _run_loop(self):
         asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._async_start())
-        self._loop.run_forever()
+        self._loop.run_until_complete(self._async_start())  # type: ignore[union-attr]
+        self._loop.run_forever()  # type: ignore[union-attr]
 
     def stop(self):
         if not self._loop:
             return
-        fut = asyncio.run_coroutine_threadsafe(self._async_stop(), self._loop)
-        fut.result(timeout=5)
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(timeout=5)
         
-        # Shutdown thread pool executor
-        self._executor.shutdown(wait=False)
+        # Verificar se o loop está rodando antes de tentar parar
+        if not self._loop.is_running():
+            logger.debug("Loop já não está rodando")
+            return
+            
+        try:
+            fut = asyncio.run_coroutine_threadsafe(self._async_stop(), self._loop)
+            fut.result(timeout=5)
+        except Exception as e:
+            logger.warning(f"Erro ao parar ContextCollector: {e}")
+        finally:
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            except Exception as e:
+                logger.debug(f"Erro ao parar loop: {e}")
+            
+            if self._thread and self._thread.is_alive():
+                self._thread.join(timeout=5)
+            
+            # Shutdown thread pool executor
+            self._executor.shutdown(wait=False)
 
     def get_context(self) -> dict:
         if not self._loop:

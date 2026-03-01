@@ -7,7 +7,7 @@ Implementa métricas Prometheus e integração com AlertManager
 import logging
 import time
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Sequence
 from collections import deque
 from functools import wraps
 import asyncio
@@ -95,11 +95,13 @@ def create_counter(name: str, description: str):
     return SimulatedCounter(name, description)
 
 
-def create_histogram(name: str, description: str, buckets=None):
+def create_histogram(name: str, description: str, buckets: Optional[Sequence[float]] = None):
     """Cria um histograma Prometheus ou simulado"""
+    default_buckets = (0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0)
+    bucket_list = buckets or default_buckets
     if PROMETHEUS_AVAILABLE:
-        return Histogram(name, description, buckets=buckets)
-    return SimulatedHistogram(name, description, buckets=buckets)
+        return Histogram(name, description, buckets=bucket_list)
+    return SimulatedHistogram(name, description, buckets=bucket_list)
 
 
 def create_gauge(name: str, description: str):
@@ -349,15 +351,16 @@ class LatencyTracker:
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        elapsed = time.perf_counter() - self.start_time
-        if self.metric_name == 'processing':
-            processing_latency.observe(elapsed)
-        elif self.metric_name == 'trade':
-            trade_latency.observe(elapsed)
-        elif self.metric_name == 'enrich':
-            enrich_latency.observe(elapsed)
-        elif self.metric_name == 'api':
-            api_latency.observe(elapsed)
+        if self.start_time is not None:
+            elapsed = time.perf_counter() - self.start_time
+            if self.metric_name == 'processing':
+                processing_latency.observe(elapsed)
+            elif self.metric_name == 'trade':
+                trade_latency.observe(elapsed)
+            elif self.metric_name == 'enrich':
+                enrich_latency.observe(elapsed)
+            elif self.metric_name == 'api':
+                api_latency.observe(elapsed)
         return False
 
 
@@ -373,15 +376,33 @@ class AsyncLatencyTracker:
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        elapsed = time.perf_counter() - self.start_time
-        if self.metric_name == 'processing':
-            processing_latency.observe(elapsed)
-        elif self.metric_name == 'trade':
-            trade_latency.observe(elapsed)
-        elif self.metric_name == 'enrich':
-            enrich_latency.observe(elapsed)
-        elif self.metric_name == 'api':
-            api_latency.observe(elapsed)
+        if self.start_time is not None:
+            elapsed = time.perf_counter() - self.start_time
+            if self.metric_name == 'processing':
+                processing_latency.observe(elapsed)
+            elif self.metric_name == 'trade':
+                trade_latency.observe(elapsed)
+            elif self.metric_name == 'enrich':
+                enrich_latency.observe(elapsed)
+            elif self.metric_name == 'api':
+                api_latency.observe(elapsed)
+        return False
+    
+    def __enter__(self):
+        self.start_time = time.perf_counter()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.start_time is not None:
+            elapsed = time.perf_counter() - self.start_time
+            if self.metric_name == 'processing':
+                processing_latency.observe(elapsed)
+            elif self.metric_name == 'trade':
+                trade_latency.observe(elapsed)
+            elif self.metric_name == 'enrich':
+                enrich_latency.observe(elapsed)
+            elif self.metric_name == 'api':
+                api_latency.observe(elapsed)
         return False
 
 
