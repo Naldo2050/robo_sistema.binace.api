@@ -11,7 +11,8 @@ class OrderBookConfig:
     update_interval_ms: int = 100
     imbalance_threshold: float = 0.7
     volume_threshold: float = 1000.0
-    
+    max_history_size: Optional[int] = None
+
     def __post_init__(self):
         """Validate configuration parameters."""
         if self.depth_levels <= 0:

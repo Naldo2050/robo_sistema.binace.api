@@ -39,7 +39,7 @@ playwright_user_data/
 # ==============================
 # Local Data Folders (NÃO DEVEM SER COMMITADOS)
 # ==============================
-/dados/                 # DBs, logs locais etc.
+dados/                 # DBs, logs locais etc.
 firefox_data/
 gemini_data/
 features/               # FeatureStore em Parquet (produção)

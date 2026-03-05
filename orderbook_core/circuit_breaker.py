@@ -36,9 +36,21 @@ class CircuitBreaker:
     não por tentativa interna de retry (isso é responsabilidade do caller).
     """
 
-    def __init__(self, name: str, config: Optional[CircuitBreakerConfig] = None):
+    def __init__(self, name: str = "", config: Optional[CircuitBreakerConfig] = None, **kwargs):
         self.name = name
-        self.config = config or CircuitBreakerConfig()
+        if config is not None:
+            self.config = config
+        elif kwargs:
+            # Map recovery_timeout → timeout_seconds for convenience
+            if 'recovery_timeout' in kwargs and 'timeout_seconds' not in kwargs:
+                kwargs['timeout_seconds'] = kwargs.pop('recovery_timeout')
+            else:
+                kwargs.pop('recovery_timeout', None)
+            valid = {k: v for k, v in kwargs.items()
+                     if k in CircuitBreakerConfig.__dataclass_fields__}
+            self.config = CircuitBreakerConfig(**valid)
+        else:
+            self.config = CircuitBreakerConfig()
 
         self._lock = threading.Lock()
         self._state = CircuitState.CLOSED
@@ -172,6 +184,19 @@ class CircuitBreaker:
         )
         jitter = random.uniform(0, delay * 0.25)
         return delay + jitter
+
+    def execute(self, func, *args, **kwargs):
+        """Execute a function through the circuit breaker."""
+        if not self.allow_request():
+            from orderbook_core.exceptions import OrderBookError
+            raise OrderBookError(f"CircuitBreaker[{self.name}] is OPEN — request blocked")
+        try:
+            result = func(*args, **kwargs)
+            self.record_success()
+            return result
+        except Exception:
+            self.record_failure()
+            raise
 
     def should_fallback_to_rest(self) -> bool:
         """

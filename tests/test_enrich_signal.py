@@ -52,11 +52,6 @@ class EventSaverStub:
 
 
 @dataclass
-# Otimizar ANALYSIS_TRIGGER antes de salvar
-        if event.get("tipo_evento") == "ANALYSIS_TRIGGER":
-            event = clean_event(event)
-            event = simplify_historical_vp(event)
-            event = remove_enriched_snapshot(event)
 class EventBusStub:
     published: List[Dict[str, Any]] = field(default_factory=list)
 
