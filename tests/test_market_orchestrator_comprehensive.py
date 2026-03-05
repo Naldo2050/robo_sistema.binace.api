@@ -11,7 +11,7 @@ import numpy as np
 
 # Mock para dependências se não puderem ser importadas
 try:
-    from market_orchestrator.orchestrator import MarketOrchestrator, OrchestratorConfig
+    from market_orchestrator.orchestrator import MarketOrchestrator, OrchestratorConfig, Position
     from market_orchestrator.flow.trade_executor import TradeExecutor
     from market_orchestrator.flow.signal_processor import SignalProcessor
     from market_orchestrator.flow.risk_manager import RiskManager

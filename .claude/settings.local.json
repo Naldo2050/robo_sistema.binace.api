@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_orderbook_core_comprehensive.py -q --no-header)",
+      "Bash(python -m pytest tests/test_market_orchestrator_comprehensive.py::TestMarketOrchestratorComprehensive::test_initialization --tb=short -q --no-header)",
+      "Bash(python -m pytest tests/test_orderbook_core_comprehensive.py::TestOrderBookComprehensive::test_get_best_bid_ask --tb=short -q --no-header)",
+      "Bash(python -m pytest tests/test_orderbook_core_comprehensive.py -q --tb=short --maxfail=20 --no-header)"
+    ]
+  }
+}

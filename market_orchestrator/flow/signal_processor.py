@@ -36,6 +36,10 @@ class SignalProcessor:
 
         return processed_signal
 
+    def process(self, signal: Dict[str, Any]) -> Dict[str, Any]:
+        """Compatibility alias for process_signal."""
+        return self.process_signal(signal)
+
     def batch_process_signals(self, signals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Process multiple signals in batch."""
         results = []

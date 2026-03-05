@@ -1,0 +1,177 @@
+"""
+Config - Configurações do Sistema
+
+Este módulo contém arquivos de configuração do sistema
+de trading automatizado.
+"""
+
+# Importar configurações do arquivo config.py na raiz
+# Usamos importlib para evitar importação circular
+import importlib.util
+import sys
+import os
+
+# Obter o diretório onde está o arquivo config.py (raiz do projeto)
+_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_config_path = os.path.join(_root_dir, "config.py")
+
+# Verificar se o arquivo existe
+if not os.path.exists(_config_path):
+    raise FileNotFoundError(f"config.py não encontrado em {_config_path}")
+
+# Carregar config.py dinamicamente
+_spec = importlib.util.spec_from_file_location("config_module", _config_path)
+if _spec is None or _spec.loader is None:
+    raise ImportError(f"Não foi possível carregar config.py de {_config_path}")
+
+config_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(config_module)
+
+# Adicionar ao sys.modules para permitir imports subsequentes
+sys.modules['config_module'] = config_module
+
+# Exportar todas as constantes de config.py
+from config_module import (  # type: ignore[attr-defined]
+    # ===== CONFIGURAÇÕES DE ORDERBOOK ANALYZER =====
+    ORDER_BOOK_DEPTH_LEVELS,
+    SPREAD_TIGHT_THRESHOLD_BPS,
+    SPREAD_AVG_WINDOWS_MIN,
+    ORDERBOOK_CRITICAL_IMBALANCE,
+    ORDERBOOK_MIN_DOMINANT_USD,
+    ORDERBOOK_MIN_RATIO_DOM,
+    ORDERBOOK_REQUEST_TIMEOUT,
+    ORDERBOOK_RETRY_DELAY,
+    ORDERBOOK_MAX_RETRIES,
+    ORDERBOOK_MAX_REQUESTS_PER_MIN,
+    ORDERBOOK_CACHE_TTL,
+    ORDERBOOK_MAX_STALE,
+    ORDERBOOK_MIN_DEPTH_USD,
+    ORDERBOOK_ALLOW_PARTIAL,
+    ORDERBOOK_USE_FALLBACK,
+    ORDERBOOK_FALLBACK_MAX_AGE,
+    ORDERBOOK_EMERGENCY_MODE,
+    
+    # ===== CONFIGURAÇÕES DE CIRCUIT BREAKER (ORDERBOOK) =====
+    ORDERBOOK_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+    ORDERBOOK_CIRCUIT_BREAKER_SUCCESS_THRESHOLD,
+    ORDERBOOK_CIRCUIT_BREAKER_TIMEOUT_SECONDS,
+    ORDERBOOK_CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS,
+    ORDERBOOK_CIRCUIT_BREAKER_ENABLE_FALLBACK,
+    ORDERBOOK_CIRCUIT_BREAKER_MAX_RETRY_ATTEMPTS,
+    ORDERBOOK_CIRCUIT_BREAKER_BASE_RETRY_DELAY,
+    ORDERBOOK_CIRCUIT_BREAKER_MAX_RETRY_DELAY,
+    
+    # ===== CONFIGURAÇÕES DE FALLBACK REST API =====
+    ORDERBOOK_REST_FALLBACK_ENABLED,
+    ORDERBOOK_REST_REQUEST_TIMEOUT,
+    ORDERBOOK_REST_MAX_RETRIES,
+    ORDERBOOK_REST_RETRY_BACKOFF,
+    ORDERBOOK_REST_JITTER_RANGE,
+    
+    # ===== CONFIGURAÇÕES DE WEBSOCKET ORDERBOOK =====
+    ORDERBOOK_WS_ENABLED,
+    ORDERBOOK_WS_ENDPOINT,
+    ORDERBOOK_WS_RECONNECT_ATTEMPTS,
+    ORDERBOOK_WS_RECONNECT_DELAY,
+    ORDERBOOK_WS_MAX_RECONNECT_DELAY,
+    ORDERBOOK_WS_BACKOFF_FACTOR,
+    ORDERBOOK_WS_PING_INTERVAL,
+    ORDERBOOK_WS_PING_TIMEOUT,
+    ORDERBOOK_WS_CONNECT_TIMEOUT,
+    ORDERBOOK_WS_MESSAGE_TIMEOUT,
+    ORDERBOOK_WS_RATE_LIMIT_PER_MIN,
+    ORDERBOOK_WS_MAX_RETRIES,
+    ORDERBOOK_WS_HEARTBEAT_TIMEOUT,
+    
+    # ===== CONFIGURAÇÕES DE HEALTH MONITOR =====
+    HEALTH_CHECK_TIMEOUT,
+    HEALTH_CHECK_CRITICAL,
+    HEALTH_CHECK_INTERVAL,
+    
+    # ===== CONFIGURAÇÕES DE CONTEXT COLLECTOR =====
+    CONTEXT_TIMEFRAMES,
+    CONTEXT_EMA_PERIOD,
+    CONTEXT_ATR_PERIOD,
+    CONTEXT_UPDATE_INTERVAL_SECONDS,
+    INTERMARKET_SYMBOLS,
+    DERIVATIVES_SYMBOLS,
+    VP_NUM_DAYS_HISTORY,
+    VP_VALUE_AREA_PERCENT,
+    LIQUIDATION_MAP_DEPTH,
+    EXTERNAL_MARKETS,
+    ENABLE_ONCHAIN,
+    ONCHAIN_PROVIDERS,
+    STABLECOIN_FLOW_TRACKING,
+    ENABLE_ALPHAVANTAGE,
+    CORRELATION_LOOKBACK,
+    VOLATILITY_PERCENTILES,
+    ADX_PERIOD,
+    RSI_PERIODS,
+    MACD_FAST_PERIOD,
+    MACD_SLOW_PERIOD,
+    MACD_SIGNAL_PERIOD,
+    
+    # ===== CONFIGURAÇÕES DE HISTORICAL PROFILER =====
+    VP_ADVANCED,
+    
+    # ===== CONFIGURAÇÕES DE INTERVALOS =====
+    CROSS_ASSET_INTERVAL,
+    ECONOMIC_DATA_INTERVAL,
+    
+    # ===== CONFIGURAÇÕES DE OCI =====
+    OCI_COMPARTMENT_ID,
+    
+    # ===== PARÂMETROS DE TRADING =====
+    SYMBOL,
+    STREAM_URL,
+    WINDOW_SIZE_MINUTES,
+    VOL_FACTOR_EXH,
+    HISTORY_SIZE,
+    DELTA_STD_DEV_FACTOR,
+    CONTEXT_SMA_PERIOD,
+    LIQUIDITY_FLOW_ALERT_PERCENTAGE,
+    WALL_STD_DEV_FACTOR,
+    
+    # ===== CONFIGURACOES DO TRADE BUFFER =====
+    TRADES_BUFFER_SIZE,
+    TRADES_BUFFER_BACKPRESSURE,
+    TRADES_BUFFER_BATCH_SIZE,
+    TRADES_BUFFER_PROCESSING_INTERVAL_MS,
+    TRADES_BUFFER_MAX_PROCESSING_MS,
+    
+    # ===== CONFIGURAÇÕES DE EVENT SAVER =====
+    EVENT_SAVER_WRITE_JSON,
+    EVENT_SAVER_WRITE_JSONL,
+    EVENT_SAVER_MAX_JSON_EVENTS,
+    EVENT_SAVER_MAX_JSON_MB,
+    
+    # ===== CREDENCIAIS BINANCE =====
+    BINANCE_API_KEY,
+    BINANCE_API_SECRET,
+    
+    # ===== API KEYS ADICIONAIS =====
+    ALPHAVANTAGE_API_KEY,
+    GROQ_API_KEY,
+    OPENAI_API_KEY,
+    
+    # ===== ENRICHMENT / ADAPTIVE THRESHOLDS =====
+    ENABLE_DATA_ENRICHMENT,
+    ABSORPTION_THRESHOLD_BASE,
+    FLOW_THRESHOLD_BASE,
+    MIN_VOL_FACTOR,
+    MAX_VOL_FACTOR,
+    
+    # ===== LOGGING CONFIGURATION =====
+    LOG_LEVEL,
+    
+    # ===== OTIMIZAÇÕES DE LATÊNCIA =====
+    MACRO_CACHE_TTL,
+    CORRELATION_CALC_INTERVAL,
+    PARALLEL_WORKERS,
+    CRYPTO_POLLING_INTERVAL,
+    CRYPTO_INTERVAL,
+    AI_ANALYSIS_INTERVAL,
+    AI_SKIP_VOLUME_THRESHOLD,
+)
+
+__version__ = "1.0.0"

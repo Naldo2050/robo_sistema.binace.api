@@ -50,6 +50,10 @@ class RiskManager:
 
         return {'approved': True, 'reason': 'Risk checks passed'}
 
+    def check_trade_request(self, trade_request: Dict[str, Any]) -> Dict[str, Any]:
+        """Compatibility alias for check_risk_limits."""
+        return self.check_risk_limits(trade_request)
+
     def update_position(self, symbol: str, position_data: Dict[str, Any]) -> None:
         """Update position data."""
         self.current_positions[symbol] = position_data
