@@ -66,10 +66,13 @@ def ensure_safe_llm_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]
         return None
 
     # Se o payload já é v2 (já foi comprimido por build_ai_input),
+    # ou é compact payload (tem "price" e "quant" — build_compact_payload),
     # NÃO comprimir novamente
-    if safe_candidate.get("_v") == 2:
+    _is_compact = isinstance(safe_candidate, dict) and "price" in safe_candidate and "quant" in safe_candidate
+    if safe_candidate.get("_v") == 2 or _is_compact:
         compressed = safe_candidate
-        logging.debug("GUARDRAIL_SKIP_COMPRESSION payload already v2")
+        logging.debug("GUARDRAIL_SKIP_COMPRESSION payload already compressed (v2=%s, compact=%s)",
+                      safe_candidate.get("_v") == 2, _is_compact)
     else:
         try:
             compressed = compress_payload(safe_candidate, max_bytes=6144)
