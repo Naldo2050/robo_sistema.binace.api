@@ -409,12 +409,19 @@ class AsyncTradeBuffer:
                     
                     batch_time = (time.perf_counter() - batch_start) * 1000
                     
-                    # Log de performance se muito lento
-                    if batch_time > self.max_processing_time_ms * len(batch):
+                    # Log de performance se muito lento (>3x o threshold para warning)
+                    avg_time = batch_time / len(batch)
+                    if avg_time > self.max_processing_time_ms * 3:
                         logging.warning(
                             f"Batch processing slow: {batch_time:.2f}ms "
                             f"for {len(batch)} trades "
-                            f"(avg: {batch_time/len(batch):.2f}ms/trade)"
+                            f"(avg: {avg_time:.2f}ms/trade)"
+                        )
+                    elif batch_time > self.max_processing_time_ms * len(batch):
+                        logging.debug(
+                            f"Batch processing above target: {batch_time:.2f}ms "
+                            f"for {len(batch)} trades "
+                            f"(avg: {avg_time:.2f}ms/trade)"
                         )
 
                     # Se ainda houver backlog, drena sem dormir

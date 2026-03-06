@@ -550,8 +550,6 @@ class VolumeProfileAnalyzer:
         default = {
             "scored_hvns": [],
             "scored_lvns": [],
-            "strongest_hvn": None,
-            "strongest_lvn": None,
             "status": "no_data",
         }
 
@@ -670,11 +668,11 @@ class VolumeProfileAnalyzer:
         scored_lvns = [_score_node(l, "lvn") for l in lvn_list if l > 0]
         scored_lvns.sort(key=lambda x: x["strength"], reverse=True)
 
+        # scored_hvns/lvns já ordenados por strength desc — [0] é o strongest.
+        # Não duplicar em strongest_hvn/strongest_lvn separados.
         return {
-            "scored_hvns": scored_hvns[:10],  # Top 10
-            "scored_lvns": scored_lvns[:10],
-            "strongest_hvn": scored_hvns[0] if scored_hvns else None,
-            "strongest_lvn": scored_lvns[0] if scored_lvns else None,
+            "scored_hvns": scored_hvns[:5],  # Top 5 (reduzido de 10)
+            "scored_lvns": scored_lvns[:5],  # Top 5 (reduzido de 10)
             "total_hvns": len(scored_hvns),
             "total_lvns": len(scored_lvns),
             "avg_hvn_strength": round(

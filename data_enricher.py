@@ -85,7 +85,7 @@ class DataEnricher:
             symbol = raw_event.get("symbol", inner.get("symbol", self.symbol))
 
             if price is None:
-                logger.warning("raw_event sem preco_fechamento (root e inner), não será enriquecido")
+                logger.debug("raw_event sem preco_fechamento (root e inner), não será enriquecido")
                 if METRICS_AVAILABLE:
                     record_enrich_error()
                 return {}

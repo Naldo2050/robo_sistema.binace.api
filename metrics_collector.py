@@ -14,7 +14,41 @@ import asyncio
 
 logger = logging.getLogger(__name__)
 
-# Tentar importar prometheus_client, com fallback para implementação simulada
+# ---------------------------------------------------------------------------
+# NOTA: platform._wmi_query() pode travar indefinidamente no Windows.
+# O fix principal está em main.py.  Fallback aqui caso este módulo
+# seja importado diretamente (ex: testes).
+# ---------------------------------------------------------------------------
+import sys as _sys
+import os as _os
+
+if _sys.platform == "win32":
+    import platform as _platform
+    if not getattr(_platform, '_wmi_patched', False):
+        try:
+            _wv = _sys.getwindowsversion()
+            _fake_wmi = {
+                "Version": f"{_wv.major}.{_wv.minor}.{_wv.build}",
+                "ProductType": str(_wv.product_type),
+                "Caption": f"Microsoft Windows {_wv.major}",
+                "CSName": _os.environ.get("COMPUTERNAME", ""),
+                "Architecture": {"AMD64": "9", "x86": "0", "ARM64": "12"}.get(
+                    _os.environ.get("PROCESSOR_ARCHITECTURE", "AMD64"), "9"
+                ),
+                "Manufacturer": (
+                    _os.environ.get("PROCESSOR_IDENTIFIER", "").split(",")[-1].strip()
+                    if _os.environ.get("PROCESSOR_IDENTIFIER") else ""
+                ),
+            }
+
+            def _safe_wmi_query(_table, *keys):  # type: ignore[misc]
+                return (str(_fake_wmi.get(k, "")) for k in keys)
+
+            _platform._wmi_query = _safe_wmi_query  # type: ignore[attr-defined]
+            _platform._wmi_patched = True  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
 try:
     from prometheus_client import Counter, Histogram, Gauge, Summary, start_http_server, REGISTRY, CollectorRegistry
     PROMETHEUS_AVAILABLE = True

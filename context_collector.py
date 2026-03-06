@@ -67,13 +67,13 @@ from metrics_collector import record_fred_fallback
 # Mapeamento de tickers para yFinance
 TICKER_MAPPING = {
     'BTC': 'BTC-USD',
-    'DXY': 'DX-Y.NYB',     # ✅ Corrigido
-    'NASDAQ': '^IXIC',
-    'SP500': '^GSPC',
+    'DXY': 'UUP',           # UUP (USD Bull ETF) como proxy - DX-Y.NYB quebrado no yfinance 1.0
+    'NASDAQ': 'QQQ',        # QQQ ETF mais confiavel que ^IXIC no yfinance 1.0
+    'SP500': 'SPY',         # SPY ETF mais confiavel que ^GSPC no yfinance 1.0
     'TNX': '^TNX',
-    'GOLD': 'GC=F',        # ✅ Corrigido
-    'XAUUSD': 'GC=F',      # ✅ Corrigido
-    'CL': 'CL=F',          # ✅ Corrigido
+    'GOLD': 'GC=F',
+    'XAUUSD': 'GC=F',
+    'CL': 'CL=F',
     'WTI': 'CL=F',
 }
 
@@ -201,30 +201,31 @@ class ContextCollector:
                     # 🆕 Tentar múltiplos métodos
                     df = None
 
-                    # Método 1: history()
+                    # Método 1: history() com raise_errors=False para yfinance 1.0
                     try:
-                        df = ticker_obj.history(
-                            period=period,
-                            interval=interval,
-                            timeout=15,
-                            raise_errors=False
-                        )
+                        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FTE
+                        def _yf_hist():
+                            return ticker_obj.history(
+                                period=period,
+                                interval=interval,
+                                raise_errors=False
+                            )
+                        # Hard timeout - yfinance timeout param nao funciona no v1.0
+                        with ThreadPoolExecutor(max_workers=1) as ex:
+                            fut = ex.submit(_yf_hist)
+                            try:
+                                df = fut.result(timeout=15)
+                            except FTE:
+                                logger.warning(f"⏰ Timeout (15s) ao buscar {ticker}")
+                                df = None
                     except Exception as e:
                         logger.debug(f"history() falhou para {ticker}: {e}")
 
-                    # Método 2: download() (fallback)
-                    if df is None or df.empty:
-                        try:
-                            import yfinance as yf_dl
-                            df = yf_dl.download(
-                                ticker,
-                                period=period,
-                                interval=interval
-                            )
-                        except Exception as e:
-                            logger.debug(f"download() falhou para {ticker}: {e}")
+                    # NOTA: yf.download() removido - bugado no yfinance 1.0 para
+                    # tickers com caracteres especiais (DX-Y.NYB, ^GSPC, etc.)
+                    # Causa "'NoneType' object is not subscriptable"
 
-                    # 🆕 Verificar formato
+                    # Verificar formato
                     if df is not None and not df.empty:
                         logger.debug(f"Colunas retornadas para {ticker}: {df.columns.tolist()}")
 

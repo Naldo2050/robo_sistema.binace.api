@@ -230,11 +230,16 @@ def _inject_institutional_analytics(
     sr_data = ia.get("sr_analysis", {})
     sr_context = {}
 
-    # S/R Strength — top 3 supports and resistances
+    # S/R Strength — derivar nearest de levels[] (sem duplicar arrays)
     sr_str = sr_data.get("sr_strength", {})
     if sr_str and sr_str.get("status") == "success":
-        nearest_sup = sr_str.get("nearest_support")
-        nearest_res = sr_str.get("nearest_resistance")
+        levels = sr_str.get("levels", [])
+        # Derivar nearest support/resistance direto de levels[] por type
+        nearest_sup = next((l for l in levels if l.get("type") == "support"), None)
+        nearest_res = next((l for l in levels if l.get("type") == "resistance"), None)
+        # Fallback: nearest_support/nearest_resistance antigos (backward compat)
+        nearest_sup = nearest_sup or sr_str.get("nearest_support")
+        nearest_res = nearest_res or sr_str.get("nearest_resistance")
         if nearest_sup:
             sr_context["nearest_support"] = nearest_sup.get("price")
             sr_context["support_strength"] = nearest_sup.get("strength")
@@ -276,10 +281,11 @@ def _inject_institutional_analytics(
             ]
             sr_context["nearest_nml_risk"] = nearest_nml.get("risk")
 
-    # HVN/LVN Strength
+    # HVN/LVN Strength — derivar de scored_hvns[0] (sem campo duplicado)
     vns = profile.get("volume_node_strength", {})
     if vns and vns.get("status") == "success":
-        strongest_hvn = vns.get("strongest_hvn")
+        scored_hvns = vns.get("scored_hvns", [])
+        strongest_hvn = scored_hvns[0] if scored_hvns else vns.get("strongest_hvn")
         if strongest_hvn:
             sr_context["strongest_hvn"] = strongest_hvn.get("price")
             sr_context["strongest_hvn_str"] = strongest_hvn.get("strength")
@@ -411,7 +417,8 @@ def build_ai_input(
     orderbook_data: Dict[str, Any],
     ml_features: Dict[str, Any],
     ml_prediction: Optional[Dict[str, Any]] = None,
-    pivots: Optional[Dict[str, Any]] = None
+    pivots: Optional[Dict[str, Any]] = None,
+    skip_v2_compress: bool = False,
 ) -> Dict[str, Any]:
     """
     Constrói um dicionário estruturado e limpo para o analisador de IA.
@@ -558,13 +565,12 @@ def build_ai_input(
     }
     
     flow_context = {
-        "net_flow": order_flow.get("net_flow_1m"),  # Delta da janela
+        "net_flow": order_flow.get("net_flow_1m"),
         "cvd_accumulated": flow_metrics.get("cvd"),
         "flow_imbalance": order_flow.get("flow_imbalance"),
         "aggressive_buyers": order_flow.get("aggressive_buy_pct"),
-        "aggressive_sellers": order_flow.get("aggressive_sell_pct"),
+        # aggressive_sellers omitido (= 100 - aggressive_buyers)
         "whale_activity": whale_flow,
-        "liquidity_clusters_count": len(flow_metrics.get("liquidity_heatmap", {}).get("clusters", [])),
         "absorption_type": flow_metrics.get("tipo_absorcao", "Neutra")
     }
 
@@ -628,66 +634,44 @@ def build_ai_input(
     cross_asset_context = {}
     if symbol == "BTCUSDT" and get_cross_asset_features is not None:
         try:
-            # Calcula correlações em tempo real para a IA
             correlations = get_cross_asset_features(datetime.now(timezone.utc))
-            
             if correlations.get("status") == "ok":
                 cross_asset_context = {
                     "btc_eth_correlations": {
                         "short_term_7d": correlations.get("btc_eth_corr_7d"),
                         "long_term_30d": correlations.get("btc_eth_corr_30d"),
-                        "relationship": "cripto_major_pair",
-                        "timeframe": "1h data"
                     },
-                    "btc_dxy_correlations": {  # 🆕 Foco especial (inversa esperada)
+                    "btc_dxy_correlations": {
                         "medium_term_30d": correlations.get("btc_dxy_corr_30d"),
                         "long_term_90d": correlations.get("btc_dxy_corr_90d"),
-                        "relationship": "inverse_usd_strength",
-                        "interpretation": "BTC tende a se mover inversamente ao DXY",
-                        "timeframe": "daily data"
                     },
                     "btc_ndx_correlations": {
                         "medium_term_30d": correlations.get("btc_ndx_corr_30d"),
-                        "relationship": "tech_risk_correlation",
-                        "timeframe": "daily data"
                     },
                     "dxy_momentum": {
                         "return_5d": correlations.get("dxy_return_5d"),
                         "return_20d": correlations.get("dxy_return_20d"),
-                        "momentum": correlations.get("dxy_momentum")
                     },
-                    "cross_asset_sentiment": {
-                        "dxy_inverse_strength": correlations.get("btc_dxy_inverse_strength", 0),
-                        "correlation_stability": correlations.get("btc_dxy_correlation_stability", 0),
-                        "crypto_leadership": correlations.get("btc_eth_corr_30d", 0)
-                    }
                 }
         except Exception as e:
-            cross_asset_context = {
-                "error": f"Falha ao calcular correlações: {str(e)}",
-                "fallback_data": cross_asset_data
-            }
+            cross_asset_context = {"error": str(e)[:80]}
     else:
-        # Usa dados das ml_features como fallback
         cross_asset_context = {
             "btc_eth_correlations": {
                 "short_term_7d": cross_asset_data.get("btc_eth_corr_7d"),
                 "long_term_30d": cross_asset_data.get("btc_eth_corr_30d"),
-                "relationship": "cripto_major_pair"
             },
             "btc_dxy_correlations": {
                 "medium_term_30d": cross_asset_data.get("btc_dxy_corr_30d"),
                 "long_term_90d": cross_asset_data.get("btc_dxy_corr_90d"),
-                "relationship": "inverse_usd_strength"
             },
             "btc_ndx_correlations": {
                 "medium_term_30d": cross_asset_data.get("btc_ndx_corr_30d"),
-                "relationship": "tech_risk_correlation"
             },
             "dxy_momentum": {
                 "return_5d": cross_asset_data.get("dxy_return_5d"),
-                "return_20d": cross_asset_data.get("dxy_return_20d")
-            }
+                "return_20d": cross_asset_data.get("dxy_return_20d"),
+            },
         }
 
     # 5. Contexto Macro e Regime
@@ -762,7 +746,7 @@ def build_ai_input(
                 "signals_summary": regime.signals_summary
             }
         except Exception as e:
-            print(f"Erro ao analisar regime: {e}")
+            logging.debug("Erro ao analisar regime: %s", e)
             regime_analysis = {}
 
     # 6. Metadados do Sinal
@@ -775,7 +759,27 @@ def build_ai_input(
         "description": signal.get("descricao")
     }
 
-    # 7. Estrutura Final
+    # 7. Volume Profile compacto para os 3 timeframes (RESTAURADO - essencial para IA)
+    vp_all_tf = {}
+    if isinstance(historical_profile, dict):
+        for tf_name in ("daily", "weekly", "monthly"):
+            tf_vp = historical_profile.get(tf_name, {})
+            if tf_vp and tf_vp.get("poc"):
+                vp_all_tf[tf_name] = {
+                    "poc": tf_vp.get("poc"),
+                    "vah": tf_vp.get("vah"),
+                    "val": tf_vp.get("val"),
+                }
+    # Adicionar hvns/lvns nearby do daily (ja compactados)
+    if vp_compact_daily:
+        hvns = vp_compact_daily.get("hvns_nearby")
+        if isinstance(hvns, list) and hvns:
+            vp_all_tf.setdefault("daily", {})["hvns_nearby"] = hvns[:3]
+        lvns = vp_compact_daily.get("lvns_nearby")
+        if isinstance(lvns, list) and lvns:
+            vp_all_tf.setdefault("daily", {})["lvns_nearby"] = lvns[:3]
+
+    # 8. Estrutura Final
     ai_payload = {
         "symbol": symbol,
         "timestamp": signal.get("timestamp"),
@@ -787,12 +791,13 @@ def build_ai_input(
         ),
         "signal_metadata": signal_metadata,
         "price_context": price_context,
+        "volume_profile": vp_all_tf,
         "flow_context": flow_context,
         "orderbook_context": ob_context,
         "technical_indicators": technical_indicators,
-        "cross_asset_context": cross_asset_context,  # 🆕 Contexto cross-asset
+        "cross_asset_context": cross_asset_context,
         "macro_context": macro_full_context,
-        "ml_features": ml_features, # Repassa features brutas para análise quantitativa da IA
+        "ml_features": ml_features,
         "historical_stats": signal.get("historical_confidence", {})
     }
 
@@ -801,28 +806,20 @@ def build_ai_input(
         ai_payload["regime_analysis"] = regime_analysis
 
     # === CAMPOS DE COMPATIBILIDADE (Legacy Support) ===
-    # Mantém chaves na raiz para não quebrar templates Jinja/f-strings existentes no ai_analyzer_qwen.py
-    # que esperam acessar payload['delta'], payload['orderbook_data'], etc.
+    # Campos escalares leves para templates Jinja/f-strings existentes
     ai_payload["tipo_evento"] = signal.get("tipo_evento")
     ai_payload["ativo"] = symbol
     ai_payload["descricao"] = signal.get("descricao")
     ai_payload["delta"] = signal.get("delta")
     ai_payload["volume_total"] = signal.get("volume_total")
     ai_payload["preco_fechamento"] = signal.get("preco_fechamento")
-    orderbook_payload = orderbook_data
-    if isinstance(orderbook_data, dict):
-        orderbook_payload = dict(orderbook_data)
-        for side in ("bids", "asks"):
-            levels = orderbook_payload.get(side)
-            if isinstance(levels, list) and len(levels) > 200:
-                orderbook_payload[side] = levels[:50]
-                orderbook_payload[f"{side}_total_levels"] = len(levels)
-                orderbook_payload[f"{side}_truncated"] = True
-    ai_payload["orderbook_data"] = orderbook_payload
-    ai_payload["fluxo_continuo"] = flow_metrics
-    ai_payload["historical_vp"] = historical_profile
+    # REMOVIDOS para redução de custo (dados já estão em seções estruturadas):
+    # - fluxo_continuo  → já resumido em flow_context
+    # - historical_vp   → já compactado em price_context.volume_profile_daily (+ FORBIDDEN pelo guardrail)
+    # - orderbook_data  → já resumido em orderbook_context
+    # multi_tf mantido pois compressor qwen usa diretamente
     ai_payload["multi_tf"] = mtf
-    ai_payload["event_history"] = signal.get("event_history", []) # Se houver memória injetada
+    ai_payload["event_history"] = signal.get("event_history", [])  # Memória injetada
 
     # === SEÇÃO DE INTELIGÊNCIA QUANTITATIVA ===
     # Se houver previsão ML, adiciona ao contexto
@@ -835,54 +832,16 @@ def build_ai_input(
         prob = ml_prediction.get("prob_up", 0.5)
         confidence = ml_prediction.get("confidence", 0.0)
 
-        # Traduz probabilidade para texto
-        if prob > 0.75:
-            sentiment = "BULLISH FORTE (Alta Probabilidade)"
-            action_bias = "compra"
-        elif prob > 0.60:
-            sentiment = "BULLISH (Moderado)"
-            action_bias = "compra"
-        elif prob < 0.25:
-            sentiment = "BEARISH FORTE (Alta Probabilidade)"
-            action_bias = "venda"
-        elif prob < 0.40:
-            sentiment = "BEARISH (Moderado)"
-            action_bias = "venda"
-        else:
-            sentiment = "NEUTRO / INDEFINIDO"
-            action_bias = "aguardar"
-
         quant_context = {
             "model_probability_up": float(prob),
-            "model_probability_down": 1.0 - float(prob),
-            "model_sentiment": sentiment,
-            "action_bias": action_bias,
+            # model_probability_down omitido (= 1 - prob_up)
+            # model_sentiment e action_bias derivaveis de prob_up pela LLM
             "confidence_score": float(confidence),
-            "features_used": ml_prediction.get("features_used", 0),
-            "total_features": ml_prediction.get("total_features", 0),
         }
 
     # Adiciona ao payload principal
     ai_payload["quant_model"] = quant_context
-
-    # String formatada para templates legacy
-    if quant_context:
-        prob_pct = quant_context['model_probability_up'] * 100
-        confidence_pct = quant_context['confidence_score'] * 100
-
-        # Adiciona ao contexto de ML (para compatibilidade)
-        ai_payload["ml_str"] = (
-            f"\n🤖 **INTELIGÊNCIA QUANTITATIVA (XGBoost)**\n"
-            f"   📈 Probabilidade de Alta: {prob_pct:.1f}%\n"
-            f"   📉 Probabilidade de Baixa: {(100-prob_pct):.1f}%\n"
-            f"   🎯 Viés Matemático: {quant_context['model_sentiment']}\n"
-            f"   📊 Confiança do Modelo: {confidence_pct:.1f}%\n"
-            f"   🔍 Features: {quant_context['features_used']}/{quant_context['total_features']}\n"
-        )
-    else:
-        # Fallback para compatibilidade
-        if "ml_str" not in ai_payload:
-            ai_payload["ml_str"] = ""
+    ai_payload["ml_str"] = ""  # Templates constroem ml_str proprio via qwen_patch2
 
     # 🔧 ENRICHMENT: Adiciona contextos de targets/opções/on-chain/risco
     enriched_ctx = build_enriched_ai_context(signal)
@@ -1028,7 +987,8 @@ def build_ai_input(
     # === COMPRESSÃO / V2 ===
     v1_bytes = len(json.dumps(ai_payload, ensure_ascii=False).encode("utf-8"))
     action_bias_v1 = (ai_payload.get("quant_model") or {}).get("action_bias")
-    v2_enabled = bool(cfg.get("v2_enabled", True))
+    # Se V3 vai comprimir no runner, pular V2 para evitar dupla compressão
+    v2_enabled = bool(cfg.get("v2_enabled", True)) and not skip_v2_compress
     max_bytes = int(cfg.get("max_bytes", 6144) or 6144)
 
     # Verifica se multi_tf está presente antes da compressão (debug apenas)

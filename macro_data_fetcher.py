@@ -12,6 +12,7 @@ Fontes: yfinance, CoinGecko, APIs locais
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import requests
@@ -22,15 +23,15 @@ logger = logging.getLogger("MacroDataFetcher")
 
 # Tickers de fallback por ativo (expandido)
 _FALLBACK_TICKERS = {
-    "BTC-USD": ["BTC-USD", "BTCUSD=X", "BTC=F"],
-    "DXY": ["DX=F", "DXY", "DX-Y.NYB"],  # Priorizar Yahoo Finance
-    "NDX": ["^IXIC", "QQQ", "NDX"],
-    "SPX": ["^GSPC", "SPY", "SPX"],
-    "VIX": ["^VIX", "VIX", "VIXC"],           # Fear Index
-    "US10Y": ["^TNX", "TNX", "US10Y"],       # Treasury 10Y
-    "US2Y": ["^TNY", "TNY", "US2Y"],         # Treasury 2Y
-    "GOLD": ["GC=F", "XAUUSD=X", "GOLD"],    # Gold futures/spot
-    "OIL": ["CL=F", "USO", "OIL"],           # WTI Oil futures/ETF
+    "BTC-USD": ["BTC-USD"],                        # BTCUSD=X quebrado no yfinance 1.0
+    "DXY": ["DX-Y.NYB", "UUP"],                   # Dollar Index / USD Bull ETF proxy
+    "NDX": ["QQQ", "^IXIC"],                      # ETF Nasdaq / Nasdaq Comp
+    "SPX": ["SPY", "^GSPC"],                      # ETF S&P / S&P 500 indice
+    "VIX": ["^VIX"],                              # Fear Index
+    "US10Y": ["^TNX"],                            # Treasury 10Y
+    "US2Y": ["^TNY"],                             # Treasury 2Y
+    "GOLD": ["GC=F", "GLD"],                      # Gold futures / Gold ETF
+    "OIL": ["CL=F", "USO"],                       # WTI Oil futures / Oil ETF
 }
 
 # Mapeamento de crypto dominance (CoinGecko)
@@ -50,32 +51,44 @@ def _fetch_yfinance_data_with_fallbacks(name: str, period: str = "90d", interval
         try:
             import yfinance as yf
             logger.debug(f"Tentando buscar {ticker} para {name}...")
-            
-            df = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=False)
-            
+
+            def _fetch(t=ticker):
+                return yf.Ticker(t).history(
+                    period=period, interval=interval, raise_errors=False
+                )
+
+            # Hard timeout de 15s (yfinance timeout param nao funciona no v1.0)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_fetch)
+                try:
+                    df = future.result(timeout=15)
+                except FuturesTimeoutError:
+                    logger.warning(f"⏰ Timeout (15s) ao buscar {ticker} para {name}")
+                    continue
+
             if df is None or df.empty:
                 logger.debug(f"Dados vazios para {ticker}")
                 continue
-            
+
             # Verifica se tem dados válidos
             if 'Close' not in df.columns or df['Close'].isna().all():
                 logger.debug(f"Coluna Close inválida para {ticker}")
                 continue
-            
+
             # Normaliza colunas
             df = df.rename(columns={'Close': 'close'})
             result_df = df[['close']].dropna()
-            
+
             if len(result_df) >= 5:  # Pelo menos 5 pontos de dados
                 logger.info(f"✅ Sucesso: {ticker} forneceu {len(result_df)} pontos para {name}")
                 return result_df
             else:
                 logger.debug(f"Dados insuficientes em {ticker}: {len(result_df)} pontos")
-                
+
         except Exception as e:
             logger.debug(f"Erro ao buscar {ticker}: {e}")
             continue
-    
+
     logger.warning(f"❌ Falha: nenhum ticker funcionou para {name} (candidatos={candidates})")
     return pd.DataFrame()
 

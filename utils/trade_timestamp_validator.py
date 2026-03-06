@@ -55,8 +55,12 @@ class TradeLatencyMonitor:
         with self._lock:
             self.stats['total_processed'] += 1
         
-        # Timestamp atual em ms
-        now_ms = int(time.time() * 1000)
+        # Timestamp atual em ms (usando TimeManager para compensar offset)
+        try:
+            from time_manager import TimeManager
+            now_ms = TimeManager().now()
+        except Exception:
+            now_ms = int(time.time() * 1000)
         
         # Extrair timestamp do trade
         trade_time_ms = self._extract_timestamp(trade)

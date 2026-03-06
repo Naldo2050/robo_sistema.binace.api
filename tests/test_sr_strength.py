@@ -41,8 +41,6 @@ class TestSRStrengthScorer:
         
         assert result["status"] == "no_candidates"
         assert len(result["levels"]) == 0
-        assert len(result["supports"]) == 0
-        assert len(result["resistances"]) == 0
 
     def test_score_levels_invalid_price(self):
         """Test score levels with invalid current price."""
@@ -85,10 +83,11 @@ class TestSRStrengthScorer:
         
         assert result["status"] == "success"
         assert len(result["levels"]) > 0
-        assert len(result["supports"]) > 0
-        assert len(result["resistances"]) > 0
-        assert result["nearest_support"] is not None
-        assert result["nearest_resistance"] is not None
+        # supports/resistances deriváveis de levels[] por campo "type"
+        supports = [l for l in result["levels"] if l.get("type") == "support"]
+        resistances = [l for l in result["levels"] if l.get("type") == "resistance"]
+        assert len(supports) > 0
+        assert len(resistances) > 0
         
         # Verificar que todos os scores estão entre 0-100
         for level in result["levels"]:

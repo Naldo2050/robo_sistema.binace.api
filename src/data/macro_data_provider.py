@@ -439,28 +439,36 @@ class MacroDataProvider:
         cached = self._get_yfinance_cached("vix")
         if cached is not None:
             return cached
-        
+
         try:
             loop = asyncio.get_running_loop()
-            
+
             def _fetch_vix_sync():
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FTE
                 import yfinance as yf
-                vix = yf.Ticker("^VIX")
-                hist = vix.history(period="1d")
-                if not hist.empty:
-                    return float(hist['Close'].iloc[-1])
-                return None
-            
-            # Executar em thread separada para não bloquear o event loop
+                def _inner():
+                    vix = yf.Ticker("^VIX")
+                    hist = vix.history(period="5d", raise_errors=False)
+                    if hist is not None and not hist.empty and 'Close' in hist.columns:
+                        return float(hist['Close'].iloc[-1])
+                    return None
+                with ThreadPoolExecutor(max_workers=1) as ex:
+                    fut = ex.submit(_inner)
+                    try:
+                        return fut.result(timeout=15)
+                    except FTE:
+                        logger.warning("⏰ Timeout (15s) ao buscar VIX")
+                        return None
+
             value = await loop.run_in_executor(None, _fetch_vix_sync)
-            
+
             if value is not None:
                 logger.debug(f"✅ VIX (Yahoo): {value:.2f}")
                 self._set_yfinance_cache("vix", value)
                 return value
         except Exception as e:
             logger.warning(f"⚠️ Erro ao buscar VIX: {e}")
-        
+
         return None
     
     async def get_treasury_10y(self) -> Optional[float]:
@@ -507,14 +515,22 @@ class MacroDataProvider:
             loop = asyncio.get_running_loop()
             
             def _fetch_treasury_sync():
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FTE
                 import yfinance as yf
-                tnx = yf.Ticker("^TNX")
-                hist = tnx.history(period="1d")
-                if not hist.empty:
-                    return float(hist['Close'].iloc[-1])
-                return None
-            
-            # Executar em thread separada para não bloquear o event loop
+                def _inner():
+                    tnx = yf.Ticker("^TNX")
+                    hist = tnx.history(period="5d", raise_errors=False)
+                    if hist is not None and not hist.empty and 'Close' in hist.columns:
+                        return float(hist['Close'].iloc[-1])
+                    return None
+                with ThreadPoolExecutor(max_workers=1) as ex:
+                    fut = ex.submit(_inner)
+                    try:
+                        return fut.result(timeout=15)
+                    except FTE:
+                        logger.warning("⏰ Timeout (15s) ao buscar Treasury 10Y")
+                        return None
+
             value = await loop.run_in_executor(None, _fetch_treasury_sync)
             
             if value is not None:
@@ -544,39 +560,56 @@ class MacroDataProvider:
         return value
     
     async def _fetch_dxy_impl(self) -> Optional[float]:
-        """Implementação real de busca do DXY - Yahoo Finance como fonte de verdade"""
+        """Implementação real de busca do DXY - Yahoo Finance com fallbacks"""
         # Verificação RÍGIDA de cache ANTES de qualquer conexão
         cached = self._get_yfinance_cached("dxy")
         if cached is not None:
             return cached
-        
-        try:
-            loop = asyncio.get_running_loop()
-            
-            def _fetch_dxy_sync():
-                import yfinance as yf
-                dxy = yf.Ticker("DX-Y.NYB")
-                hist = dxy.history(period="1d")
-                if not hist.empty:
-                    return float(hist['Close'].iloc[-1])
-                return None
-            
-            # Executar em thread separada para não bloquear o event loop
-            value = await loop.run_in_executor(None, _fetch_dxy_sync)
-            
-            if value is not None:
-                logger.debug(f"✅ DXY (Yahoo Finance - DX-Y.NYB): {value:.2f}")
-                self._set_yfinance_cache("dxy", value)
-                return value
-        except Exception as e:
-            logger.warning(f"⚠️ Erro ao buscar DXY do Yahoo Finance: {e}")
-        
+
+        # Tickers em ordem de prioridade:
+        # DX-Y.NYB (ICE DXY), UUP (USD Bull ETF como proxy)
+        dxy_tickers = ["DX-Y.NYB", "UUP"]
+
+        loop = asyncio.get_running_loop()
+
+        for ticker in dxy_tickers:
+            try:
+                def _fetch_sync(t=ticker):
+                    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FTE
+                    import yfinance as yf
+                    def _inner():
+                        obj = yf.Ticker(t)
+                        hist = obj.history(period="5d", raise_errors=False)
+                        if hist is not None and not hist.empty and 'Close' in hist.columns:
+                            return float(hist['Close'].iloc[-1])
+                        return None
+                    with ThreadPoolExecutor(max_workers=1) as ex:
+                        fut = ex.submit(_inner)
+                        try:
+                            return fut.result(timeout=15)
+                        except FTE:
+                            logger.warning(f"⏰ Timeout (15s) ao buscar DXY via {t}")
+                            return None
+
+                value = await loop.run_in_executor(None, _fetch_sync)
+
+                if value is not None:
+                    # UUP eh ETF, nao eh DXY direto - mas serve como proxy
+                    if ticker == "UUP":
+                        logger.info(f"✅ DXY proxy (UUP ETF): {value:.2f}")
+                    else:
+                        logger.debug(f"✅ DXY (Yahoo Finance - {ticker}): {value:.2f}")
+                    self._set_yfinance_cache("dxy", value)
+                    return value
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao buscar DXY via {ticker}: {e}")
+
         # Retornar último valor cacheado se disponível
         cached = self._get_cached_thread_safe("dxy")
         if cached is not None:
             logger.warning(f"⚠️ Usando último valor cacheado para DXY: {cached}")
             return cached
-        
+
         logger.error("❌ Não foi possível obter DXY de nenhuma fonte")
         return None
     
@@ -667,14 +700,22 @@ class MacroDataProvider:
             loop = asyncio.get_running_loop()
             
             def _fetch_oil_sync():
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FTE
                 import yfinance as yf
-                oil = yf.Ticker("CL=F")
-                hist = oil.history(period="5d")
-                if not hist.empty:
-                    return float(hist['Close'].iloc[-1])
-                return None
-            
-            # Executar em thread separada para não bloquear o event loop
+                def _inner():
+                    oil = yf.Ticker("CL=F")
+                    hist = oil.history(period="5d", raise_errors=False)
+                    if hist is not None and not hist.empty and 'Close' in hist.columns:
+                        return float(hist['Close'].iloc[-1])
+                    return None
+                with ThreadPoolExecutor(max_workers=1) as ex:
+                    fut = ex.submit(_inner)
+                    try:
+                        return fut.result(timeout=15)
+                    except FTE:
+                        logger.warning("⏰ Timeout (15s) ao buscar Oil")
+                        return None
+
             value = await loop.run_in_executor(None, _fetch_oil_sync)
             
             if value is not None:
@@ -822,7 +863,7 @@ class MacroDataProvider:
     async def _safe_fetch(self, name: str, coro) -> Any:
         """Wrapper para fetch com timeout individual"""
         try:
-            return await asyncio.wait_for(coro, timeout=8)
+            return await asyncio.wait_for(coro, timeout=25)
         except asyncio.TimeoutError:
             logger.warning(f"⚠️ Timeout buscando {name}")
             return None

@@ -1167,10 +1167,7 @@ class EnhancedMarketBot:
                 if not flow_valid:
                     signal["flow_data_quality"] = "incomplete"
             signal["fluxo_continuo"] = flow_metrics
-
-            # Add liquidity_heatmap directly to payload for dashboard compatibility
-            if "liquidity_heatmap" in flow_metrics:
-                signal["liquidity_heatmap"] = flow_metrics["liquidity_heatmap"]
+            # liquidity_heatmap já está dentro de fluxo_continuo — não duplicar na raiz
 
         if (
             signal.get("volume_compra", 0) == 0
@@ -1194,7 +1191,16 @@ class EnhancedMarketBot:
         signal.setdefault("features_window_id", str(close_ms))
         signal["ml_features"] = ml_payload
         signal["enriched_snapshot"] = enriched_snapshot
-        signal["contextual_snapshot"] = contextual_snapshot
+        # Contextual snapshot: remover chaves que já existem no signal root para não duplicar
+        # (flow_metrics já está em fluxo_continuo, historical_vp/multi_tf/derivatives/
+        #  market_context/market_environment/orderbook_data já estão no signal root)
+        _ctx_dedup_keys = {
+            "flow_metrics", "historical_vp", "orderbook_data",
+            "multi_tf", "derivatives", "market_context", "market_environment",
+        }
+        signal["contextual_snapshot"] = {
+            k: v for k, v in contextual_snapshot.items() if k not in _ctx_dedup_keys
+        }
 
         if support_resistance:
             signal["support_resistance"] = support_resistance
@@ -1207,8 +1213,7 @@ class EnhancedMarketBot:
         ):
             if "orderbook_data" in ob_event:
                 signal["orderbook_data"] = ob_event["orderbook_data"]
-            if "spread_metrics" in ob_event:
-                signal["spread_metrics"] = ob_event["spread_metrics"]
+            # spread_metrics removido — dados já estão em orderbook_data (mid, spread, bid/ask_depth)
             if "order_book_depth" in ob_event:
                 signal["order_book_depth"] = ob_event["order_book_depth"]
             if "spread_analysis" in ob_event:
@@ -1394,17 +1399,9 @@ class EnhancedMarketBot:
     def _build_institutional_event(
         self, signal: Dict[str, Any]
     ) -> Dict[str, Any]:
-        # (Aqui manter o mesmo conteúdo que você tinha no original,
-        # é um bloco grande. Se quiser, posso te enviar só este
-        # bloco na próxima mensagem para colar, para não estourar
-        # o tamanho desta resposta.)
-        return {
-            "tipo_evento": signal.get("tipo_evento"),
-            "resultado_da_batalha": signal.get("resultado_da_batalha"),
-            "descricao": signal.get("descricao"),
-            "symbol": signal.get("ativo") or signal.get("symbol") or self.symbol,
-            "raw_event": signal,
-        }
+        # Retorna o signal diretamente sem re-embrulhar em outro raw_event
+        # (antes criava raw_event.raw_event desnecessário, duplicando ~100% dos dados)
+        return signal
 
     # ========================================
     # (Demais métodos auxiliares do original)
