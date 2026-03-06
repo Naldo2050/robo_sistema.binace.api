@@ -29,7 +29,9 @@ def _r(val: Any, dec: int = 2) -> Any:
 _REG = {
     "Alta": "UP", "Baixa": "DOWN", "Lateral": "SIDE",
     "Acumulacao": "ACCUM", "Manipulacao": "MANIP",
+    "Acumulação": "ACCUM", "Manipulação": "MANIP",
     "Distribuicao": "DIST", "Expansao": "EXPAN", "Range": "RANGE",
+    "Distribuição": "DIST", "Expansão": "EXPAN",
 }
 
 _FT = {
@@ -71,8 +73,14 @@ def build_compact_payload(event_data: dict) -> dict:
     # OHLC: buscar em contextual_snapshot ou enriched_snapshot
     ohlc = cs.get("ohlc", es.get("ohlc", {}))
 
-    # Multi TF: buscar em raw_event
-    multi_tf = raw.get("multi_tf", event_data.get("multi_tf", {}))
+    # Multi TF: buscar em multiplos locais
+    multi_tf = (
+        event_data.get("multi_tf")
+        or raw.get("multi_tf")
+        or cs.get("multi_tf")
+        or es.get("multi_tf")
+        or {}
+    )
 
     # Historical VP: buscar em raw_event ou evento
     hvp = raw.get("historical_vp", event_data.get("historical_vp", {}))

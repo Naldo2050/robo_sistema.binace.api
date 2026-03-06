@@ -1269,15 +1269,15 @@ class AIAnalyzer:
                 # Prioridade 1: Se ai_payload v2/v3 existe, usar DIRETO
                 # V2: comprimido por build_ai_input() → compress_payload() (_v=2)
                 # V3: comprimido por compress_payload_v3() (chaves compactas: price, ob, flow)
-                _is_v2 = isinstance(ai_p, dict) and ai_p.get("_v") == 2 and len(ai_p) > 3
+                # COMPACT: build_compact_payload() — sempre tem "price" e "quant", ob/flow opcionais
                 _is_v3 = (
                     isinstance(ai_p, dict)
                     and "price" in ai_p
-                    and "ob" in ai_p
-                    and "flow" in ai_p
+                    and "quant" in ai_p
                     and len(ai_p) > 3
                 )
-                if _is_v2 or _is_v3:
+                _is_v2 = isinstance(ai_p, dict) and ai_p.get("_v") == 2 and len(ai_p) > 3 and not _is_v3
+                if _is_v3 or _is_v2:
                     use_ai_payload_direct = True
                     compression_source_name = "ai_payload_v3_direct" if _is_v3 else "ai_payload_v2_direct"
                     logging.debug(
@@ -1333,7 +1333,8 @@ class AIAnalyzer:
 
                     # Injetar multi-timeframe do event_data original
                     # (não está no ai_payload v2 mas é crítico para análise)
-                    _raw_for_tf = event_data.get("raw_event")
+                    # Pular se já tem tf (compact payload já inclui tf processado)
+                    _raw_for_tf = None if compressed.get("tf") else event_data.get("raw_event")
                     if isinstance(_raw_for_tf, dict):
                         _mtf = _raw_for_tf.get("multi_tf")
                         if not isinstance(_mtf, dict):

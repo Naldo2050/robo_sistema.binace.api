@@ -511,21 +511,18 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                         pass
 
                     # [RAW_EVENT_DEDUP] Deduplicar evento ANTES de construir payload
-                    # NOTA: NÃO reatribuir event_data aqui — ele é capturado
-                    # da closure externa e qualquer `event_data = ...` faria
-                    # Python tratá-lo como variável local em todo ai_worker(),
-                    # causando UnboundLocalError na linha do tracer.start_span.
+                    # NOTA: deep_copy=True para não corromper o evento original.
+                    # Não fazemos clear()+update() pois build_compact_payload
+                    # lê direto do event_data original — dedup é só para o LLM.
                     try:
-                        _deduped = deduplicate_event(event_data, deep_copy=False)
-                        _dedup_stats = getattr(_deduped, '_dedup_stats', None)
-                        event_data.clear()
-                        event_data.update(_deduped)
+                        _deduped = deduplicate_event(event_data, deep_copy=True)
                         logging.info(
                             "RAW_EVENT_DEDUP: deduplicacao aplicada, keys=%d",
-                            len(event_data),
+                            len(_deduped),
                         )
                     except Exception as _dedup_err:
                         logging.warning("Dedup falhou (não-crítico): %s", _dedup_err)
+                        _deduped = event_data
 
                     # [BUILD_COMPACT] Payload compacto direto do event_data
                     try:
@@ -541,8 +538,9 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                         event_data["ai_payload"] = ai_payload
 
                     except Exception as e:
-                        logging.debug(
-                            f"Falha ao construir ai_payload: {e}",
+                        logging.error(
+                            "ERRO_BUILD_COMPACT: %s",
+                            e,
                             exc_info=True,
                         )
 
