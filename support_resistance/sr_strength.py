@@ -76,13 +76,12 @@ class SRStrengthScorer:
         Returns:
             Dict com:
               - levels: Lista de níveis pontuados [{price, type, source, strength, ...}]
-              - supports: Top suportes ordenados por strength
-              - resistances: Top resistências ordenados por strength
-              - nearest_support: Suporte mais forte abaixo do preço
-              - nearest_resistance: Resistência mais forte acima do preço
+                        (cada item tem "type": "support" ou "resistance")
+              - total_levels_found: Total de níveis encontrados
+              - status: "success", "no_candidates" ou "invalid_price"
         """
         if current_price <= 0:
-            return {"levels": [], "supports": [], "resistances": [], "status": "invalid_price"}
+            return {"levels": [], "status": "invalid_price"}
 
         # 1. Coletar todos os candidatos a S/R
         candidates = self._collect_candidates(
@@ -90,7 +89,7 @@ class SRStrengthScorer:
         )
 
         if not candidates:
-            return {"levels": [], "supports": [], "resistances": [], "status": "no_candidates"}
+            return {"levels": [], "status": "no_candidates"}
 
         # 2. Mesclar candidatos próximos (evitar duplicatas)
         merged = self._merge_nearby_levels(candidates, current_price)
@@ -107,20 +106,10 @@ class SRStrengthScorer:
         # 4. Ordenar por strength
         scored.sort(key=lambda x: x["strength"], reverse=True)
 
-        # 5. Classificar como suporte ou resistência
-        supports = [l for l in scored if l["price"] < current_price]
-        resistances = [l for l in scored if l["price"] >= current_price]
-
-        # Nearest strong support/resistance
-        nearest_support = supports[0] if supports else None
-        nearest_resistance = resistances[0] if resistances else None
-
+        # levels[] já contém campo "type" ("support"/"resistance") em cada item.
+        # Não duplicar em arrays separados — consumidores podem filtrar por type.
         return {
-            "levels": scored[:20],  # Top 20
-            "supports": supports[:10],
-            "resistances": resistances[:10],
-            "nearest_support": nearest_support,
-            "nearest_resistance": nearest_resistance,
+            "levels": scored[:20],  # Top 20 (cada item tem "type": "support" ou "resistance")
             "total_levels_found": len(scored),
             "status": "success",
         }

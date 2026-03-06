@@ -197,8 +197,8 @@ class EnhancedRegimeDetector:
     ) -> CorrelationRegime:
         """Determina se BTC está seguindo macro ou não"""
         
-        spy_corr = cross_asset.get("correlation_spy", 0)
-        dxy_corr = cross_asset.get("btc_dxy_corr_30d", 0)
+        spy_corr = cross_asset.get("correlation_spy") or 0
+        dxy_corr = cross_asset.get("btc_dxy_corr_30d") or 0
         
         # Se correlação com SPY forte (>0.5 ou <-0.5)
         if abs(spy_corr) > 0.5:

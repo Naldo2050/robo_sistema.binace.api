@@ -33,10 +33,12 @@ poc_levels = [l for l in result["levels"] if "poc" in l.get("primary_source", ""
 if poc_levels:
     print(f"  POC strength: {poc_levels[0]['strength']}")
 
-if result["nearest_support"]:
-    print(f"  Nearest support: {result['nearest_support']['price']} (str={result['nearest_support']['strength']})")
-if result["nearest_resistance"]:
-    print(f"  Nearest resistance: {result['nearest_resistance']['price']} (str={result['nearest_resistance']['strength']})")
+nearest_sup = next((l for l in result["levels"] if l.get("type") == "support"), None)
+nearest_res = next((l for l in result["levels"] if l.get("type") == "resistance"), None)
+if nearest_sup:
+    print(f"  Nearest support: {nearest_sup['price']} (str={nearest_sup['strength']})")
+if nearest_res:
+    print(f"  Nearest resistance: {nearest_res['price']} (str={nearest_res['strength']})")
 print("✅ #4 S/R Strength OK")
 
 

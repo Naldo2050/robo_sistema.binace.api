@@ -534,9 +534,23 @@ REGRAS OBRIGATORIAS (CRITICAS):
 
 Horizonte: entradas rapidas de 5-15 minutos (scalp).
 
-Use o vies quantitativo (action_bias + confidence_score) como base.
+Use o vies quantitativo (quant.prob_up + quant.confidence) como base.
 So contrarie o vies se houver evidencia MUITO forte no fluxo/orderbook.
 Em duvida/ruido, prefira action="wait" ou action="avoid".
+
+CHAVES COMPACTAS DO PAYLOAD:
+price: c=close,o=open,h=high,l=low,vwap=vwap,close_pos=posicao_do_close,shape=perfil,auction=vies_leilao
+vp: d=diario,w=semanal,m=mensal (cada um com poc/vah/val), hvn=nos_alto_volume, lvn=nos_baixo_volume, in_va=dentro_area_valor
+regime: market=regime_mercado,vol=volatilidade,trend=tendencia,structure=estrutura,sentiment=sentimento,confidence=confianca,fear_greed=medo_ganancia,session=sessao,vix=vix
+ob: bid=profundidade_compra,ask=profundidade_venda,imb=desequilibrio,top5_imb=deseq_top5
+flow: net=fluxo_liquido,cvd=cvd_acumulado,imb=desequilibrio,agg_buy=compradores_agressivos(%),pressure=pressao,trend=tendencia_fluxo,absorption=absorcao
+whale: score=pontuacao,class=classificacao,bias=vies
+deriv: btc_oi=open_interest_btc,btc_lsr=long_short_ratio_btc,eth_lsr=long_short_ratio_eth
+cross: eth_7d/30d=correlacao_eth,dxy_30d/90d=correlacao_dxy,ndx_30d=correlacao_nasdaq
+tf: t=tendencia,ema=ema21,rsi=rsi,macd=[linha,sinal],adx=adx,atr=atr,reg=regime
+quant: prob_up=probabilidade_alta,confidence=confianca
+sr: levels com type=support|resistance,price,score
+aggressive_sellers = 100 - agg_buy (nao enviado)
 
 FORMATO DE SAIDA (OBRIGATORIO):
 Responda SOMENTE com um JSON valido, sem markdown, sem texto extra:
@@ -1252,14 +1266,23 @@ class AIAnalyzer:
                 
                 ai_p = event_data.get("ai_payload")
                 
-                # Prioridade 1: Se ai_payload v2 existe, usar DIRETO
-                # Ele já foi comprimido por build_ai_input() → compress_payload()
-                # Não precisa rebuild → recompress (ciclo inútil)
-                if isinstance(ai_p, dict) and ai_p.get("_v") == 2 and len(ai_p) > 3:
+                # Prioridade 1: Se ai_payload v2/v3 existe, usar DIRETO
+                # V2: comprimido por build_ai_input() → compress_payload() (_v=2)
+                # V3: comprimido por compress_payload_v3() (chaves compactas: price, ob, flow)
+                _is_v2 = isinstance(ai_p, dict) and ai_p.get("_v") == 2 and len(ai_p) > 3
+                _is_v3 = (
+                    isinstance(ai_p, dict)
+                    and "price" in ai_p
+                    and "ob" in ai_p
+                    and "flow" in ai_p
+                    and len(ai_p) > 3
+                )
+                if _is_v2 or _is_v3:
                     use_ai_payload_direct = True
-                    compression_source_name = "ai_payload_v2_direct"
+                    compression_source_name = "ai_payload_v3_direct" if _is_v3 else "ai_payload_v2_direct"
                     logging.debug(
-                        "COMPRESSION_SOURCE using ai_payload v2 direct, keys=%d, bytes=%d",
+                        "COMPRESSION_SOURCE using %s, keys=%d, bytes=%d",
+                        compression_source_name,
                         len(ai_p),
                         len(json.dumps(ai_p, ensure_ascii=False).encode("utf-8")),
                     )
@@ -1290,7 +1313,7 @@ class AIAnalyzer:
                                 if k != "ai_payload"
                             }
                             compression_source_name = "event_data_sans_ai_payload"
-                        logging.warning(
+                        logging.debug(
                             "COMPRESSION_SOURCE raw_event not found (type=%s), using %s",
                             type(event_data.get("raw_event")).__name__,
                             compression_source_name,
@@ -1300,9 +1323,13 @@ class AIAnalyzer:
                 # COMPRESSÃO ou USO DIRETO
                 # ============================================================
                 if use_ai_payload_direct and isinstance(ai_p, dict):
-                    # ai_payload v2 já está otimizado — converter direto para
-                    # formato comprimido sem passar pelo _deep_fn
-                    compressed = self._v2_to_compressed_prompt(ai_p)
+                    # V3: payload já está 100% comprimido com chaves compactas
+                    # (price, ob, flow, tf, regime, etc.) — usar direto
+                    if _is_v3:
+                        compressed = dict(ai_p)
+                    else:
+                        # V2: converter de chaves originais para formato comprimido
+                        compressed = self._v2_to_compressed_prompt(ai_p)
 
                     # Injetar multi-timeframe do event_data original
                     # (não está no ai_payload v2 mas é crítico para análise)
@@ -2037,6 +2064,16 @@ class AIAnalyzer:
         ai_cfg = self.config.get("ai", {})
         if isinstance(ai_cfg, dict) and ai_cfg.get("prompt_style") == "legacy":
             return self._build_structured_prompt_legacy(payload)
+
+        # Se payload já veio comprimido pelo compress_payload_v3 (chaves compactas),
+        # enviar direto como JSON minificado — já está otimizado para tokens.
+        if "price" in payload and "ob" in payload and "flow" in payload:
+            prompt = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            logging.info(
+                "STRUCTURED_PROMPT_V3 compressed_json len=%d chars (~%d tokens)",
+                len(prompt), int(len(prompt) / 3.5),
+            )
+            return prompt
 
         meta = payload.get("signal_metadata") or {}
         price = payload.get("price_context") or {}

@@ -1164,8 +1164,8 @@ def create_absorption_event(
                 eps = 1.0
             rotulo_recalc = FlowAnalyzer.classificar_absorcao_por_delta(delta_btc, eps)
             if rotulo_recalc != "Neutra" and resultado != rotulo_recalc:
-                logging.warning(
-                    f"[ABSORCAO_RECALC] Inconsistência de rótulo: "
+                logging.debug(
+                    f"[ABSORCAO_RECALC] Rótulo ajustado: "
                     f"delta={delta_btc:.4f}, original='{resultado}', recalculado='{rotulo_recalc}'"
                 )
                 resultado = rotulo_recalc

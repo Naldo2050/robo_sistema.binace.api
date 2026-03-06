@@ -233,8 +233,12 @@ class TradeLatencyMonitor:
         """
         self.stats['total_processed'] += 1
         
-        # Calcular latência
-        now_ms = int(time.time() * 1000)
+        # Calcular latência usando TimeManager (compensa offset do relógio)
+        try:
+            from time_manager import TimeManager
+            now_ms = TimeManager().now()
+        except Exception:
+            now_ms = int(time.time() * 1000)
         trade_time_ms = trade.get('T') or trade.get('timestamp', now_ms)
         
         # Converter se necessário

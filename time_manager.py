@@ -419,32 +419,21 @@ class TimeManager:
         elif offset_abs > self.max_acceptable_offset_ms:
             is_stable = self._is_offset_stable(offset_abs)
             
-            if offset_abs <= 1000 and is_stable:
+            if offset_abs <= 10000 and is_stable:
                 if self._correction_attempts == 0:
-                    logging.warning(
-                        f"⚠️ Offset {offset_abs}ms > {self.max_acceptable_offset_ms}ms "
-                        f"mas ESTÁVEL e < 1000ms"
-                    )
-                    logging.warning("   Isso parece ser LATÊNCIA DE REDE (não erro de relógio).")
-                    logging.warning("   ✅ ACEITANDO offset. Sistema operará normalmente.")
-                    logging.warning(
-                        f"   💡 Para reduzir avisos, considere ajustar "
-                        f"'max_acceptable_offset_ms' para {offset_abs + 100}ms no config."
+                    logging.info(
+                        f"Offset {offset_abs}ms > {self.max_acceptable_offset_ms}ms "
+                        f"mas ESTÁVEL e < 10s — aceitando como latência/drift normal."
                     )
                 self._correction_attempts = 0
                 return
-            
+
             if self._correction_attempts >= self.MAX_CORRECTION_ATTEMPTS:
-                if offset_abs <= 1000:
-                    logging.warning(
-                        f"⚠️ Offset {offset_abs}ms não corrigível após "
-                        f"{self.MAX_CORRECTION_ATTEMPTS} tentativas."
-                    )
-                    logging.warning("   Provável causa: LATÊNCIA DE REDE (não erro de relógio).")
-                    logging.warning("   ✅ ACEITANDO offset. Sistema operará normalmente.")
-                    logging.warning(
-                        f"   💡 Recomendação: Ajuste 'max_acceptable_offset_ms' "
-                        f"para {offset_abs + 100}ms no config.py"
+                if offset_abs <= 10000:
+                    logging.info(
+                        f"Offset {offset_abs}ms estável após "
+                        f"{self.MAX_CORRECTION_ATTEMPTS} tentativas — "
+                        f"aceitando como drift/latência normal."
                     )
                     self._correction_attempts = 0
                     return

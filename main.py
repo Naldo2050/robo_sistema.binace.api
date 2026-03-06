@@ -48,6 +48,40 @@ if sys.platform == "win32":
 # Carrega variáveis de ambiente do .env
 load_dotenv()
 
+# ---------------------------------------------------------------------------
+# FIX: platform._wmi_query() pode travar indefinidamente no Windows.
+# Vários módulos (prometheus_client, oci) chamam platform.system(),
+# platform.platform() ou platform.processor() no import-time, e todos
+# passam por _wmi_query() para obter dados do WMI.
+# Correção: substituir _wmi_query por versão que usa os.environ/sys
+# (instantâneo, sem WMI).  DEVE rodar ANTES de qualquer outro import.
+# ---------------------------------------------------------------------------
+if sys.platform == "win32":
+    import platform as _platform
+    try:
+        _wv = sys.getwindowsversion()
+        _fake_wmi = {
+            "Version": f"{_wv.major}.{_wv.minor}.{_wv.build}",
+            "ProductType": str(_wv.product_type),
+            "Caption": f"Microsoft Windows {_wv.major}",
+            "CSName": os.environ.get("COMPUTERNAME", ""),
+            "Architecture": {"AMD64": "9", "x86": "0", "ARM64": "12"}.get(
+                os.environ.get("PROCESSOR_ARCHITECTURE", "AMD64"), "9"
+            ),
+            "Manufacturer": (
+                os.environ.get("PROCESSOR_IDENTIFIER", "").split(",")[-1].strip()
+                if os.environ.get("PROCESSOR_IDENTIFIER") else ""
+            ),
+        }
+
+        def _safe_wmi_query(_table, *keys):  # type: ignore[misc]
+            return (str(_fake_wmi.get(k, "")) for k in keys)
+
+        _platform._wmi_query = _safe_wmi_query  # type: ignore[attr-defined]
+        _platform._wmi_patched = True  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
 import config
 from market_orchestrator import EnhancedMarketBot
 from utils import HeartbeatManager

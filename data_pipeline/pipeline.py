@@ -602,18 +602,17 @@ class DataPipeline:
         try:
             self.logger.runtime_info("🔧 Chamando enrich_event_with_advanced_analysis...")
             updated_event = self._data_enricher.enrich_event_with_advanced_analysis(event)
-            if updated_event and updated_event != event:
-                # Atualizar o evento com os dados modificados
-                event.update(updated_event)
-                
-                # Garantir que o raw_event também seja atualizado se necessário
-                if "raw_event" in updated_event:
-                    event["raw_event"] = updated_event["raw_event"]
-                    
-                # Log de diagnóstico para verificar se advanced_analysis foi adicionado
-                raw_event = event.get("raw_event", {})
-                if "advanced_analysis" in raw_event:
-                    advanced = raw_event["advanced_analysis"]
+            if updated_event:
+                # A função modifica event in-place e retorna o mesmo objeto
+                # Verificar se advanced_analysis foi adicionado corretamente
+                raw_event = updated_event.get("raw_event", {})
+                inner_raw = raw_event.get("raw_event", {})
+                has_advanced = (
+                    "advanced_analysis" in inner_raw
+                    or "advanced_analysis" in raw_event
+                )
+                if has_advanced:
+                    advanced = inner_raw.get("advanced_analysis", raw_event.get("advanced_analysis", {}))
                     self.logger.runtime_info(
                         f"✅ advanced_analysis adicionado com sucesso - "
                         f"keys={list(advanced.keys()) if isinstance(advanced, dict) else 'N/A'}"
