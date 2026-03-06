@@ -28,13 +28,11 @@ from format_utils import (
 from orderbook_core.structured_logging import StructuredLogger
 from orderbook_core.tracing_utils import TracerWrapper
 
-# [AI_PAYLOAD_BUILDER] Importa o novo construtor de payload
-from .ai_payload_builder import build_ai_input
-from src.utils.ai_payload_optimizer import AIPayloadOptimizer
+# [BUILD_COMPACT] Payload compacto direto do event_data
+from build_compact_payload import build_compact_payload
 
-# [DEDUP + COMPRESS V3] Pipeline de otimização
+# [DEDUP] Deduplicador de eventos
 from .raw_event_deduplicator import deduplicate_event
-from .payload_compressor_v3 import compress_payload_v3
 
 # [HYBRID_DECISION] Importa módulo de decisão híbrida
 try:
@@ -200,27 +198,7 @@ def initialize_ai_async(bot) -> None:
                         "1h": {"tendencia": "Neutra", "preco_atual": current_price}
                     })
 
-                    ml_feats = test_event.get("ml_features") or {}
-                    if not ml_feats and getattr(bot, "ml_engine", None):
-                        try:
-                            ml_feats = bot.ml_engine.extract_ml_features(test_event)  # type: ignore
-                        except Exception as e:
-                            logging.debug("Falha ao extrair ml_features via MLInferenceEngine: %s", e, exc_info=True)
-                            ml_feats = {}
-
-                    ai_payload = build_ai_input(
-                        symbol=bot.symbol,
-                        signal=test_event,
-                        enriched=test_event.get("enriched_snapshot", {}),
-                        flow_metrics=test_event.get("fluxo_continuo", {}),
-                        historical_profile=test_event.get("historical_vp", {}),
-                        macro_context=test_event.get("market_context", {}),
-                        market_environment=test_event.get("market_environment", {}),
-                        orderbook_data=test_event.get("orderbook_data", {}),
-                        ml_features=ml_feats,
-                        ml_prediction={},
-                        pivots=test_event.get("pivots", {}),
-                    )
+                    ai_payload = build_compact_payload(test_event)
 
                     _payload_bytes = len(json.dumps(ai_payload, ensure_ascii=False).encode("utf-8"))
                     logging.info("PAYLOAD_READY_FOR_LLM bytes=%d keys=%s v=%s",
@@ -549,73 +527,16 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                     except Exception as _dedup_err:
                         logging.warning("Dedup falhou (não-crítico): %s", _dedup_err)
 
-                    # [AI_PAYLOAD_BUILDER] Construção do payload
+                    # [BUILD_COMPACT] Payload compacto direto do event_data
                     try:
-                        enriched = event_data.get("enriched_snapshot", {})
-                        flow_metrics = event_data.get("fluxo_continuo", {})
-                        historical_profile = event_data.get("historical_vp", {})
-                        macro_ctx = event_data.get("market_context", {})
-                        market_env = event_data.get("market_environment", {})
-                        pivots = event_data.get("pivots", {})
-                        ob_data = event_data.get("orderbook_data", {})
-                        ml_feats = event_data.get("ml_features") or {}
+                        ai_payload = build_compact_payload(event_data)
 
-                        if not ml_feats and getattr(bot, "ml_engine", None):
-                            try:
-                                ml_feats = bot.ml_engine.extract_ml_features(event_data)
-                            except Exception as e:
-                                logging.debug(
-                                    f"Falha ao extrair ml_features via MLInferenceEngine: {e}",
-                                    exc_info=True,
-                                )
-                                ml_feats = {}
-
-                        if not ml_feats:
-                            logging.warning(
-                                "⚠️ Nenhuma ml_feature disponível para este evento; "
-                                "IA Generativa operará com menos contexto quantitativo."
-                            )
-
-                        ai_payload = build_ai_input(
-                            symbol=bot.symbol,
-                            signal=event_data,
-                            enriched=enriched,
-                            flow_metrics=flow_metrics,
-                            historical_profile=historical_profile,
-                            macro_context=macro_ctx,
-                            market_environment=market_env,
-                            orderbook_data=ob_data,
-                            ml_features=ml_feats,
-                            ml_prediction=ml_prediction,
-                            pivots=pivots,
-                            skip_v2_compress=True,  # V3 comprime abaixo
-                        )
-
-                        # [COMPRESS_V3] Comprimir payload para LLM (~59% economia)
-                        try:
-                            _pre_bytes = len(json.dumps(ai_payload, ensure_ascii=False).encode("utf-8"))
-
-                            # DEBUG: logar chaves antes da compressão V3
-                            logging.info(
-                                "DEBUG_PAYLOAD_KEYS_BEFORE_V3: %s",
-                                json.dumps(list(ai_payload.keys())),
-                            )
-                            logging.info(
-                                "DEBUG_PAYLOAD_TYPES_BEFORE_V3: %s",
-                                json.dumps({k: type(v).__name__ for k, v in ai_payload.items()}),
-                            )
-
-                            ai_payload = compress_payload_v3(ai_payload)
-                            _post_bytes = len(json.dumps(ai_payload, ensure_ascii=False).encode("utf-8"))
-                            logging.info(
-                                "PAYLOAD_COMPRESSED_V3 before=%d after=%d saved=%d%% keys=%s",
-                                _pre_bytes,
-                                _post_bytes,
-                                int((1 - _post_bytes / max(_pre_bytes, 1)) * 100),
-                                list(ai_payload.keys())[:10],
-                            )
-                        except Exception as _comp_err:
-                            logging.debug("Compress V3 falhou (usando original): %s", _comp_err)
+                        # Preencher quant model com ML prediction real
+                        if ml_prediction.get("status") == "ok":
+                            ai_payload["quant"] = {
+                                "prob_up": round(float(ml_prediction.get("prob_up", 0.5)), 2),
+                                "conf": round(float(ml_prediction.get("confidence", 0.0)), 2),
+                            }
 
                         event_data["ai_payload"] = ai_payload
 
