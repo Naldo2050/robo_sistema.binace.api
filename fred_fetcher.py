@@ -54,7 +54,7 @@ class FREDFetcher:
         self._failure_ttl = 3600  # 1 hora de TTL para falhas
         
         if self.api_key:
-            logger.info(f"✅ FRED API inicializada | Key: {self.api_key[:8]}...")
+            logger.info("✅ FRED API inicializada")
         else:
             logger.warning("⚠️ FRED_API_KEY não encontrada no .env")
     

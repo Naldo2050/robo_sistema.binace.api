@@ -93,10 +93,11 @@ class DataValidator:
         data = self._fix_utf8_encoding(data)
         
         # 2. Validar e corrigir timestamps ANTES de outras validações
-        data = self._validate_and_fix_timestamps(data)
-        if data is None:
+        _ts_result = self._validate_and_fix_timestamps(data)
+        if _ts_result is None:
             self._record_quality_metric("discarded", ["timestamp_validation_failed"], start_time)
             return None
+        data = _ts_result
         
         # 3. Validar estrutura e remover duplicatas
         if not self._validate_structure(data):
@@ -572,8 +573,16 @@ class DataValidator:
     def _validate_data_integrity(self, data: Dict) -> bool:
         """Valida a integridade dos dados após correções."""
         if 'indice_absorcao' in data and abs(data['indice_absorcao']) < self.min_absorption_index:
-            self.logger.warning(f"Índice de absorção muito baixo: {data['indice_absorcao']:.4%}")
-            return False
+            # Eventos cujo tipo_evento é Absorção são válidos independente do índice
+            tipo = data.get('tipo_evento', '')
+            if 'Absor' in str(tipo):
+                self.logger.debug(
+                    f"Índice de absorção baixo ({data['indice_absorcao']:.4%}) "
+                    f"ignorado para evento do tipo '{tipo}'"
+                )
+            else:
+                self.logger.warning(f"Índice de absorção muito baixo: {data['indice_absorcao']:.4%}")
+                return False
         
         if 'orderbook_data' in data and not self._validate_orderbook(data['orderbook_data']):
             return False

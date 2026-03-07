@@ -131,6 +131,7 @@ def process_signals(
             if current_ohlc:
                 bars.append(
                     {
+                        "open": float(current_ohlc.get("open", current_ohlc.get("close", 0.0))),
                         "high": float(current_ohlc.get("high", 0.0)),
                         "low": float(current_ohlc.get("low", 0.0)),
                         "close": float(current_ohlc.get("close", 0.0)),

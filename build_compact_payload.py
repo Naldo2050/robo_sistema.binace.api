@@ -138,8 +138,9 @@ def build_compact_payload(event_data: dict) -> dict:
         price["auction"] = auction
 
     # ======================================
-    # REGIME (market_environment + market_context)
+    # REGIME (market_environment + market_context + external_markets)
     # ======================================
+    ext = event_data.get("external_markets", {})
     session = mc.get("trading_session", "")
     phase = mc.get("session_phase", "")
     session_str = f"{session}_{phase}" if phase else session
@@ -147,6 +148,13 @@ def build_compact_payload(event_data: dict) -> dict:
     dow = mc.get("day_of_week", "")
     day_names = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
     day_str = day_names.get(dow, str(dow)) if isinstance(dow, int) else str(dow)[:3]
+
+    # VIX e Fear&Greed reais dos mercados externos
+    vix_entry = ext.get("VIX", {})
+    vix_val = vix_entry.get("preco_atual") if isinstance(vix_entry, dict) else None
+    fng_entry = ext.get("FEAR_GREED", {})
+    fng_val = fng_entry.get("preco_atual") if isinstance(fng_entry, dict) else None
+    fng_class = fng_entry.get("classification") if isinstance(fng_entry, dict) else None
 
     regime = {
         "vol": me.get("volatility_regime", ""),
@@ -156,7 +164,13 @@ def build_compact_payload(event_data: dict) -> dict:
         "session": session_str,
         "day": day_str,
     }
-    regime = {k: v for k, v in regime.items() if v}
+    if vix_val is not None:
+        regime["vix"] = _r(vix_val, 1)
+    if fng_val is not None:
+        regime["fear_greed"] = int(fng_val)
+    if fng_class:
+        regime["fng_class"] = fng_class
+    regime = {k: v for k, v in regime.items() if v is not None and v != ""}
 
     # ======================================
     # VOLUME PROFILE

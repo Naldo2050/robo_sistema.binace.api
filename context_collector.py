@@ -18,6 +18,7 @@ import logging
 import threading
 import os
 import random
+import time
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from typing import Tuple, Optional, Dict, Any
@@ -64,6 +65,19 @@ from time_manager import TimeManager
 from fred_fetcher import FREDFetcher
 from metrics_collector import record_fred_fallback
 
+# Fetchers reais (on-chain e funding agregado)
+try:
+    from onchain_fetcher import OnchainFetcher
+    _ONCHAIN_FETCHER_AVAILABLE = True
+except ImportError:
+    _ONCHAIN_FETCHER_AVAILABLE = False
+
+try:
+    from funding_aggregator import FundingAggregator
+    _FUNDING_AGG_AVAILABLE = True
+except ImportError:
+    _FUNDING_AGG_AVAILABLE = False
+
 # Mapeamento de tickers para yFinance
 TICKER_MAPPING = {
     'BTC': 'BTC-USD',
@@ -75,14 +89,17 @@ TICKER_MAPPING = {
     'XAUUSD': 'GC=F',
     'CL': 'CL=F',
     'WTI': 'CL=F',
+    'VIX': '^VIX',
 }
 
 # Configurações para yFinance
-YFINANCE_CONFIG = {
+YFINANCE_CONFIG: Dict[str, Any] = {
     'timeout': 15,  # 🆕 Aumentado de 10 para 15
     'retries': 2,   # 🆕 Reduzido de 3 para 2 (já tem lock)
     'interval': '1d'
 }
+YFINANCE_RETRIES: int = int(YFINANCE_CONFIG['retries'])
+YFINANCE_INTERVAL: str = str(YFINANCE_CONFIG['interval'])
 
 logger = logging.getLogger("ContextCollector")
 
@@ -126,7 +143,7 @@ class ContextCollector:
          
         # Cache simples
         self._api_cache = {}
-        self._cache_ttl = 60  # s
+        self._cache_ttl = 300  # s (era 60s — reduz chamadas yFinance em 5x)
          
         # Alpha Vantage
         self.alpha_vantage_api_key = os.getenv("ALPHAVANTAGE_API_KEY", "KC4IE0MBOEXK88Y3")
@@ -137,7 +154,13 @@ class ContextCollector:
             if not self.alpha_vantage_api_key or self.alpha_vantage_api_key == "demo":
                 logger.warning("⚠️ Alpha Vantage habilitado mas API key inválida/demo!")
          
+        # Fetchers reais de on-chain e funding agregado
+        self._onchain_fetcher = OnchainFetcher() if _ONCHAIN_FETCHER_AVAILABLE else None
+        self._funding_aggregator = FundingAggregator() if _FUNDING_AGG_AVAILABLE else None
+
         # Fallbacks
+        self._dxy_cache: Optional[Dict[str, Any]] = None
+        self._dxy_cache_time: float = 0.0
         self._dxy_candidates = ["DXY"]
         self._fallback_map = {
             "S&P500": ["GSPC", "SPY"],
@@ -244,7 +267,7 @@ class ContextCollector:
                     logger.debug(f"_sync_fetch erro para {ticker}: {e}")
                     return pd.DataFrame()
 
-            for attempt in range(YFINANCE_CONFIG['retries']):
+            for attempt in range(YFINANCE_RETRIES):
                 try:
                     loop = asyncio.get_running_loop()
                     df = await loop.run_in_executor(self._executor, _sync_fetch)
@@ -274,10 +297,10 @@ class ContextCollector:
                 except Exception as e:
                     logger.warning(f"⚠️ Erro yFinance para {symbol} (tentativa {attempt+1}): {e}")
 
-                if attempt < YFINANCE_CONFIG['retries'] - 1:
+                if attempt < YFINANCE_RETRIES - 1:
                     await asyncio.sleep(3)
 
-            logger.error(f"❌ Falha total yFinance para {symbol} após {YFINANCE_CONFIG['retries']} tentativas")
+            logger.error(f"❌ Falha total yFinance para {symbol} após {YFINANCE_RETRIES} tentativas")
             return pd.DataFrame()
 
     async def _alpha_vantage_history(self, session: aiohttp.ClientSession, symbol: str, function: str = "ECONOMIC_INDICATORS", interval: str = "1min"):
@@ -432,7 +455,7 @@ class ContextCollector:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                import requests
+                import requests  # type: ignore[import-untyped]
                 res = requests.get("https://fapi.binance.com/fapi/v1/time", timeout=5)
                 res.raise_for_status()
                 server_time_ms = res.json().get("serverTime")
@@ -701,7 +724,7 @@ class ContextCollector:
             ext_hist = await self._yfinance_history(
                 symbol_key,
                 period="180d",
-                interval=YFINANCE_CONFIG['interval']
+                interval=YFINANCE_INTERVAL
             )
             if ext_hist.empty or 'close' not in ext_hist.columns:
                 return None
@@ -792,15 +815,17 @@ class ContextCollector:
         if not ENABLE_ALPHAVANTAGE:
             return data
         
-        # 🆕 Buscar DXY via FRED (fallback do yfinance)
+        # 🆕 Buscar DXY via FRED (fallback do yfinance) + cache
         try:
-            # 🆕 Verificar se FRED está em modo fallback para DXY
+            dxy_result = None
+
+            # Tentativa 1: FRED ou yfinance
             if self.fred_fetcher.is_failing("DXY"):
                 logger.debug("FRED: DXY em modo fallback, usando yfinance diretamente")
                 hist = await self._yfinance_history("DXY", period="5d", interval="1d")
                 if not hist.empty:
                     last = float(hist["close"].iloc[-1])
-                    data["DXY"] = {
+                    dxy_result = {
                         "preco_atual": round(last, 2),
                         "movimento": "Neutro",
                         "source": "yfinance",
@@ -809,11 +834,11 @@ class ContextCollector:
                     logger.info(f"✅ DXY obtido via yfinance (fallback): {last:.2f}")
             else:
                 dxy_value = await self.fred_fetcher.fetch_latest_value("DXY", session)
-                
+
                 if dxy_value is not None:
-                    data["DXY"] = {
+                    dxy_result = {
                         "preco_atual": round(dxy_value, 2),
-                        "movimento": "Neutro",  # FRED não retorna movimento, só valor
+                        "movimento": "Neutro",
                         "source": "FRED",
                         "ticker": "DTWEXBGS"
                     }
@@ -821,26 +846,50 @@ class ContextCollector:
                 else:
                     # Fallback para yfinance se FRED falhar
                     logger.debug("DXY via FRED falhou, tentando yfinance...")
-                    record_fred_fallback()  # Instrumentar métrica de fallback
+                    record_fred_fallback()
                     hist = await self._yfinance_history("DXY", period="5d", interval="1d")
                     if not hist.empty:
                         last = float(hist["close"].iloc[-1])
-                        data["DXY"] = {
+                        dxy_result = {
                             "preco_atual": round(last, 2),
                             "movimento": "Neutro",
                             "source": "yfinance",
                             "ticker": "DX-Y.NYB"
                         }
                         logger.info(f"✅ DXY obtido via yfinance: {last:.2f}")
+
+            # Salvar em cache se obtivemos resultado
+            if dxy_result:
+                data["DXY"] = dxy_result
+                self._dxy_cache = dxy_result.copy()
+                self._dxy_cache_time = time.time()
+            elif self._dxy_cache and (time.time() - self._dxy_cache_time) < 3600:
+                # Tentativa 2: Cache recente (< 1 hora)
+                cached = self._dxy_cache.copy()
+                age_min = round((time.time() - self._dxy_cache_time) / 60, 1)
+                cached["source"] = f"{cached.get('source', 'unknown')}_cached"
+                cached["cache_age_min"] = age_min
+                data["DXY"] = cached
+                logger.info(f"✅ DXY obtido via cache ({age_min}min): {cached.get('preco_atual')}")
+            else:
+                logger.warning("⚠️ DXY indisponível: FRED, yfinance e cache falharam")
         except Exception as e:
-            logger.warning(f"⚠️ Erro ao buscar DXY: {e}")
+            # Em caso de exceção, tentar cache antes de desistir
+            if self._dxy_cache and (time.time() - self._dxy_cache_time) < 3600:
+                cached = self._dxy_cache.copy()
+                cached["source"] = f"{cached.get('source', 'unknown')}_cached"
+                cached["cache_age_min"] = round((time.time() - self._dxy_cache_time) / 60, 1)
+                data["DXY"] = cached
+                logger.info(f"✅ DXY via cache após erro: {cached.get('preco_atual')}")
+            else:
+                logger.warning(f"⚠️ Erro ao buscar DXY: {e}")
         
         return data
 
     async def _fetch_external_markets(self, session: aiohttp.ClientSession):
         """Busca dados externos com FRED como fallback."""
-        ext_data = {}
-        
+        ext_data: Dict[str, Any] = {}
+
         if not ENABLE_ALPHAVANTAGE:
             logger.info("External markets desabilitados")
             return ext_data
@@ -848,14 +897,15 @@ class ContextCollector:
         # Símbolos que o FRED pode fornecer
         fred_symbols = ["DXY", "TNX"]
         
-        # Símbolos que precisam do yfinance
+        # Símbolos que precisam do yfinance (inclui VIX)
         yfinance_symbols = {
             "SP500": "^GSPC",
             "NASDAQ": "^IXIC",
             "GOLD": "GC=F",
-            "WTI": "CL=F"
+            "WTI": "CL=F",
+            "VIX": "^VIX",
         }
-        
+
         # 1. Buscar via FRED primeiro (mais confiável para indicadores econômicos)
         for symbol in fred_symbols:
             try:
@@ -863,9 +913,9 @@ class ContextCollector:
                 if self.fred_fetcher.is_failing(symbol):
                     logger.debug(f"FRED: {symbol} em modo fallback, pulando")
                     continue
-                    
+
                 value = await self.fred_fetcher.fetch_latest_value(symbol, session)
-                
+
                 if value is not None:
                     ext_data[symbol] = {
                         "preco_atual": round(value, 4),
@@ -878,16 +928,16 @@ class ContextCollector:
                     logger.debug(f"⚠️ {symbol} não disponível via FRED")
             except Exception as e:
                 logger.warning(f"⚠️ Erro FRED para {symbol}: {e}")
-        
-        # 2. Buscar via yfinance (índices e commodities)
+
+        # 2. Buscar via yfinance (índices, commodities e VIX)
         for name, ticker in yfinance_symbols.items():
             try:
                 hist = await self._yfinance_history(name, period="5d", interval="1d")
-                
+
                 if not hist.empty:
                     last = float(hist["close"].iloc[-1])
                     prev = float(hist["close"].iloc[-2]) if len(hist) > 1 else last
-                    
+
                     ext_data[name] = {
                         "preco_atual": round(last, 2),
                         "movimento": "Alta" if last > prev else "Baixa" if last < prev else "Neutro",
@@ -898,11 +948,39 @@ class ContextCollector:
                     logger.info(f"✅ {name}: ${last:.2f} (yfinance)")
                 else:
                     logger.debug(f"⚠️ {name} ({ticker}) vazio via yfinance")
-                    
+
             except Exception as e:
                 logger.warning(f"⚠️ Erro yfinance para {name}: {e}")
                 continue
-        
+
+        # 3. Fear & Greed Index via alternative.me (gratuito, sem API key)
+        try:
+            async with session.get(
+                "https://api.alternative.me/fng/?limit=2&format=json",
+                timeout=aiohttp.ClientTimeout(total=8)
+            ) as resp:
+                if resp.status == 200:
+                    fng_data = await resp.json()
+                    entries = fng_data.get("data", [])
+                    if entries:
+                        current = entries[0]
+                        prev_entry = entries[1] if len(entries) > 1 else current
+                        fng_value = int(current.get("value", 50))
+                        fng_prev = int(prev_entry.get("value", fng_value))
+                        ext_data["FEAR_GREED"] = {
+                            "preco_atual": fng_value,
+                            "prev": fng_prev,
+                            "movimento": "Alta" if fng_value > fng_prev else "Baixa" if fng_value < fng_prev else "Neutro",
+                            "classification": current.get("value_classification", "Unknown"),
+                            "source": "alternative.me",
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        logger.info(f"✅ Fear&Greed: {fng_value} ({current.get('value_classification', '')})")
+                else:
+                    logger.debug(f"⚠️ Fear&Greed API status {resp.status}")
+        except Exception as e:
+            logger.debug(f"Fear&Greed indisponível: {e}")
+
         return ext_data
 
     # ---------- Derivativos ----------
@@ -1007,7 +1085,7 @@ class ContextCollector:
 
     async def _calculate_pivots(self, session: aiohttp.ClientSession) -> dict:
         """Calcula Pivot Points Clássicos (D/W/M) usando klines históricos."""
-        pivots = {"daily": {}, "weekly": {}, "monthly": {}}
+        pivots: Dict[str, Any] = {"daily": {}, "weekly": {}, "monthly": {}}
         try:
             # Daily (últimos 5 dias para garantir)
             df_d = await self._fetch_klines(session, self.symbol, '1d', limit=5)
@@ -1032,27 +1110,29 @@ class ContextCollector:
 
     # ---------- On-chain / Sentimento ----------
     
-    async def _fetch_onchain_sentiment(self):
-        sentiment = {"onchain": {}, "funding_agg": {}}
-        try:
-            if ENABLE_ONCHAIN:
-                sentiment["onchain"] = {
-                    "btc_exchange_inflow": 1200,
-                    "btc_exchange_outflow": 900,
-                    "stablecoin_inflow": 5_000_000 if STABLECOIN_FLOW_TRACKING else 0,
-                    "stablecoin_outflow": 4_500_000 if STABLECOIN_FLOW_TRACKING else 0
-                }
-        except Exception as e:
-            logger.debug(f"Dados on-chain indisponíveis: {e}")
-        try:
-            sentiment["funding_agg"] = {
-                "avg_funding": 0.02,
-                "binance_funding": 0.025,
-                "okx_funding": 0.018,
-                "cme_basis": -0.005
-            }
-        except Exception as e:
-            logger.debug(f"Sentimento funding indisponível: {e}")
+    async def _fetch_onchain_sentiment(self, session: Optional[aiohttp.ClientSession] = None):
+        sentiment: Dict[str, Any] = {"onchain": {}, "funding_agg": {}}
+
+        # On-chain REAL (blockchain.info + mempool.space - gratuito)
+        if self._onchain_fetcher:
+            try:
+                sentiment["onchain"] = await self._onchain_fetcher.fetch_all(session)
+            except Exception as e:
+                logger.debug(f"Dados on-chain reais indisponíveis: {e}")
+                sentiment["onchain"] = {"status": "fetch_error", "is_real_data": False}
+        else:
+            sentiment["onchain"] = {"status": "fetcher_not_available", "is_real_data": False}
+
+        # Funding agregado REAL (Binance premiumIndex - gratuito)
+        if self._funding_aggregator:
+            try:
+                sentiment["funding_agg"] = await self._funding_aggregator.fetch_all(session)
+            except Exception as e:
+                logger.debug(f"Funding agregado indisponível: {e}")
+                sentiment["funding_agg"] = {"status": "fetch_error", "is_real_data": False}
+        else:
+            sentiment["funding_agg"] = {"status": "fetcher_not_available", "is_real_data": False}
+
         return sentiment
 
     # ---------- Consolidação ----------
@@ -1063,7 +1143,7 @@ class ContextCollector:
             "intermarket": await self._fetch_intermarket_data(session),
             "external": await self._fetch_external_markets(session),
             "derivatives": await self._fetch_derivatives_data(session),
-            "sentiment": await self._fetch_onchain_sentiment(),
+            "sentiment": await self._fetch_onchain_sentiment(session),
             "profile": await asyncio.to_thread(self.historical_profiler.update_profiles),
             "market_context": self._calculate_market_context(),
             "market_environment": await self._calculate_market_environment(session),
