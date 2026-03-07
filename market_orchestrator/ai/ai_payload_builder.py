@@ -696,27 +696,57 @@ def build_ai_input(
         try:
             # Inicializa o detector de regime (stateful)
             regime_detector = EnhancedRegimeDetector()
-            
-            # Cria dados macro mock para evitar chamadas assíncronas
+
+            # Extrai dados reais de mercados externos do contexto do coletor
+            _ext = macro_context.get("external", {})
+            _cross = ml_features.get("cross_asset", {}) if isinstance(ml_features, dict) else {}
+
+            def _ext_price(key: str):
+                """Retorna preco_atual do mercado externo ou None."""
+                entry = _ext.get(key)
+                if isinstance(entry, dict):
+                    return entry.get("preco_atual")
+                return None
+
+            _dxy_val   = _ext_price("DXY")
+            _tnx_val   = _ext_price("TNX")
+            _gold_val  = _ext_price("GOLD")
+            _wti_val   = _ext_price("WTI")
+            _sp500_val = _ext_price("SP500")
+            _vix_val   = _ext_price("VIX")
+
+            # Fear & Greed real (alternative.me)
+            _fng_entry = _ext.get("FEAR_GREED", {})
+            _fng_val   = _fng_entry.get("preco_atual") if isinstance(_fng_entry, dict) else None
+
+            # yield_spread: 10Y - 2Y (usa TNX como proxy do 10Y quando disponível)
+            _t10y = _tnx_val
+            _t2y  = None  # não coletado diretamente
+            _yield_spread = (_t10y - _t2y) if (_t10y and _t2y) else None
+
+            # dxy_momentum: usa retorno 5d do cross_asset já calculado
+            _dxy_mom = _cross.get("dxy_return_5d") or _cross.get("dxy_momentum")
+
             macro_data = {
-                "vix": 12.5,
-                "treasury_10y": 4.5,
-                "treasury_2y": 3.8,
-                "dxy": 105.2,
-                "gold": 1950.0,
-                "oil": 85.0,
-                "btc_dominance": 45.0,
-                "eth_dominance": 18.0,
-                "usdt_dominance": 5.0,
-                "yield_spread": 0.7,
+                "vix": _vix_val,           # real via yfinance ^VIX (delay 15min, suficiente)
+                "fear_greed_index": _fng_val,  # real via alternative.me (gratuito)
+                "treasury_10y": _t10y,
+                "treasury_2y": _t2y,
+                "dxy": _dxy_val,
+                "gold": _gold_val,
+                "oil": _wti_val,
+                "btc_dominance": None,     # requer CoinGecko/CMC — omitido
+                "eth_dominance": None,
+                "usdt_dominance": None,
+                "yield_spread": _yield_spread,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
-            
-            # Dados de exemplo para cross_asset_features e current_price_data
+
+            # Dados de cross_asset reais para correlações
             cross_asset_features = {
                 "correlation_spy": market_environment.get("correlation_spy"),
-                "btc_dxy_corr_30d": market_environment.get("correlation_dxy"),
-                "dxy_momentum": 0.3
+                "btc_dxy_corr_30d": market_environment.get("correlation_dxy") or _cross.get("btc_dxy_corr_30d"),
+                "dxy_momentum": _dxy_mom,
             }
             
             current_price_data = {

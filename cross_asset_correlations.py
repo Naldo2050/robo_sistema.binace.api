@@ -14,9 +14,10 @@ Fontes de dados:
 
 import logging
 import asyncio
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Dict, Any, Optional, Union
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 
@@ -533,7 +534,7 @@ def get_enhanced_cross_asset_correlations(now_utc: Optional[datetime] = None) ->
     """
     result: Dict[str, Any] = {
         "status": "ok",
-        "timestamp": datetime.utcnow().isoformat() if now_utc is None else now_utc.isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat() if now_utc is None else now_utc.isoformat()
     }
     
     # 1. CORRELAÇÕES TRADICIONAIS
@@ -679,18 +680,28 @@ def get_enhanced_cross_asset_correlations(now_utc: Optional[datetime] = None) ->
     return result
 
 
+_CORR_CACHE: Dict[str, Any] = {}
+_CORR_CACHE_TTL = 300  # 5 minutos — correlações diárias não mudam a cada janela
+
+
 def get_all_correlations(now_utc: Optional[datetime] = None) -> Dict[str, Any]:
     """
     Calcula todas as correlações cross-asset para BTCUSDT.
-    
-    Args:
-        now_utc: Timestamp atual em UTC (opcional)
-        
-    Returns:
-        Dict combinado com todas as correlações e status consolidado
+    Usa cache com TTL de 5 minutos para evitar requisições redundantes.
     """
-    # Usa a nova função enhanced
-    return get_enhanced_cross_asset_correlations(now_utc)
+    global _CORR_CACHE
+    now_ts = time.monotonic()
+    cached = _CORR_CACHE.get("result")
+    cached_at = _CORR_CACHE.get("cached_at", 0.0)
+
+    if cached is not None and (now_ts - cached_at) < _CORR_CACHE_TTL:
+        logger.debug("cross_asset_correlations: cache hit (age=%.0fs)", now_ts - cached_at)
+        return cached
+
+    result = get_enhanced_cross_asset_correlations(now_utc)
+    _CORR_CACHE["result"] = result
+    _CORR_CACHE["cached_at"] = now_ts
+    return result
 
 
 # Função principal para integração com ml_features

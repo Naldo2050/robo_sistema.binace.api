@@ -1452,6 +1452,7 @@ class EventSaver:
 
             json_block = self._optimize_json_display(json_block)
             entry = header + json_block + "\n"
+            entry = self._fix_utf8_visual(entry)
 
             lock_file = None
             lock_acquired = False
@@ -1478,34 +1479,60 @@ class EventSaver:
         except Exception as e:
             self.logger.error(f"Erro ao adicionar entrada no log visual: {e}", exc_info=True)
 
+    @staticmethod
+    def _fix_utf8_visual(text: str) -> str:
+        """Corrige encoding UTF-8 duplo em strings do log visual."""
+        replacements = {
+            "AbsorÃ§Ã£o": "Absorção",
+            "AcumulaÃ§Ã£o": "Acumulação",
+            "ManipulaÃ§Ã£o": "Manipulação",
+            "DistribuiÃ§Ã£o": "Distribuição",
+            "ConsolidaÃ§Ã£o": "Consolidação",
+            "ExaustÃ£o": "Exaustão",
+            "AgressÃ£o": "Agressão",
+            "anÃ¡lise": "análise",
+            "automÃ¡tico": "automático",
+            "resistÃªncia": "resistência",
+            "mÃ©dia": "média",
+            "PreÃ§o": "Preço",
+            "Ã­ndice": "índice",
+            "Î": "Δ",
+        }
+        for wrong, right in replacements.items():
+            text = text.replace(wrong, right)
+        return text
+
     def _compress_volume_nodes_for_visual(self, event: Dict) -> Dict:
-        """Compacta 'volume_nodes' para log visual."""
-        def _compress_vn_dict(vn: Dict):
+        """Converte volume_nodes de [[price,vol,str],...] para [{"price":..,"vol":..,"str":..},...]."""
+        def _convert_vn_dict(vn: Dict):
             for key in ("hvn_nodes", "lvn_nodes"):
                 nodes = vn.get(key)
                 if not isinstance(nodes, list) or not nodes:
                     continue
-                max_nodes = 10
-                display_nodes = nodes
-                if len(nodes) > max_nodes:
-                    display_nodes = nodes[:5] + [["...", "...", "..."]] + nodes[-5:]
-                parts = []
+                # Limitar a 10 nós por tipo
+                display_nodes = nodes[:5] + nodes[-5:] if len(nodes) > 10 else nodes
+                converted = []
                 for triplet in display_nodes:
-                    if (isinstance(triplet, (list, tuple)) and len(triplet) == 3 and all(isinstance(x, (int, float, str)) for x in triplet)):
-                        p, v, s = triplet
+                    if isinstance(triplet, (list, tuple)) and len(triplet) == 3:
                         try:
-                            parts.append(f"{float(p):.0f}|{float(v):.2f}|{float(s):.2f}")
-                        except Exception:
-                            parts.append(str(triplet))
+                            converted.append({
+                                "price": round(float(triplet[0]), 0),
+                                "vol": round(float(triplet[1]), 2),
+                                "str": round(float(triplet[2]), 2),
+                            })
+                        except (ValueError, TypeError):
+                            converted.append({"raw": str(triplet)})
+                    elif isinstance(triplet, dict):
+                        converted.append(triplet)  # Já é JSON
                     else:
-                        parts.append(str(triplet))
-                vn[key] = "; ".join(parts)
+                        converted.append({"raw": str(triplet)})
+                vn[key] = converted
 
         def _walk(obj):
             if isinstance(obj, dict):
                 for k, v in obj.items():
                     if k == "volume_nodes" and isinstance(v, dict):
-                        _compress_vn_dict(v)
+                        _convert_vn_dict(v)
                     else:
                         _walk(v)
             elif isinstance(obj, list):
@@ -1515,7 +1542,7 @@ class EventSaver:
         try:
             _walk(event)
         except Exception as e:
-            self.logger.debug(f"Erro ao compactar volume_nodes para visual: {e}")
+            self.logger.debug(f"Erro ao converter volume_nodes para visual: {e}")
         return event
 
     def _optimize_json_display(self, json_str: str) -> str:

@@ -56,7 +56,26 @@ from event_memory import (
     obter_memoria_eventos,
     adicionar_memoria_evento,
     calcular_probabilidade_historica,
+    avaliar_outcomes_pendentes,
 )
+
+# Similarity search para eventos passados (memória longa)
+try:
+    from event_similarity import EventSimilaritySearch
+    _similarity_search = EventSimilaritySearch()
+    _SIMILARITY_OK = True
+except ImportError:
+    _similarity_search = None
+    _SIMILARITY_OK = False
+
+# Outcome tracker para confiança estatística
+try:
+    from outcome_tracker import OutcomeTracker
+    _outcome_tracker = OutcomeTracker()
+    _OUTCOME_OK = True
+except ImportError:
+    _outcome_tracker = None
+    _OUTCOME_OK = False
 from orderbook_analyzer import OrderBookAnalyzer
 from event_saver import EventSaver
 from context_collector import ContextCollector
@@ -94,6 +113,15 @@ try:
     from pattern_recognition import recognize_patterns
 except Exception:
     recognize_patterns = None
+
+# ====== Enriquecedor institucional (Onda 1 + 2) ======
+try:
+    from institutional_enricher import enrich_signal as _institutional_enrich
+    _INSTITUTIONAL_ENRICHER_OK = True
+except Exception as _ie_err:
+    _institutional_enrich = None
+    _INSTITUTIONAL_ENRICHER_OK = False
+    logging.warning(f"institutional_enricher indisponível: {_ie_err}")
 
 # ====== Submódulos refatorados ======
 from .utils.logging_utils import configure_dedup_logs
@@ -1185,21 +1213,29 @@ class EnhancedMarketBot:
                 signal["market_environment"] = macro_context.get(
                     "market_environment", {}
                 )
+            if "external_markets" not in signal:
+                signal["external_markets"] = macro_context.get(
+                    "external", {}
+                )
         except Exception:
             pass
 
         signal.setdefault("features_window_id", str(close_ms))
         signal["ml_features"] = ml_payload
-        signal["enriched_snapshot"] = enriched_snapshot
-        # Contextual snapshot: remover chaves que já existem no signal root para não duplicar
-        # (flow_metrics já está em fluxo_continuo, historical_vp/multi_tf/derivatives/
-        #  market_context/market_environment/orderbook_data já estão no signal root)
-        _ctx_dedup_keys = {
+        # Deduplica enriched_snapshot: remove chaves já presentes no signal root
+        # ou em contextual_snapshot para reduzir tamanho do evento
+        _enrich_dedup_keys = {
             "flow_metrics", "historical_vp", "orderbook_data",
             "multi_tf", "derivatives", "market_context", "market_environment",
         }
+        signal["enriched_snapshot"] = {
+            k: v for k, v in enriched_snapshot.items() if k not in _enrich_dedup_keys
+        }
+        # Contextual snapshot: remover chaves que já existem no signal root para não duplicar
+        # (flow_metrics já está em fluxo_continuo, historical_vp/multi_tf/derivatives/
+        #  market_context/market_environment/orderbook_data já estão no signal root)
         signal["contextual_snapshot"] = {
-            k: v for k, v in contextual_snapshot.items() if k not in _ctx_dedup_keys
+            k: v for k, v in contextual_snapshot.items() if k not in _enrich_dedup_keys
         }
 
         if support_resistance:
@@ -1288,19 +1324,22 @@ class EnhancedMarketBot:
         if self.institutional_analytics is not None:
             try:
                 # Extrair dados disponíveis
-                _vp_daily = (
-                    signal.get("contextual_snapshot", {}).get("historical_vp", {}).get("daily", {})
-                    or (enriched_snapshot or {}).get("historical_vp", {}).get("daily", {})
+                # historical_vp: buscar no top-level (promovido), contextual, ou enriched (param)
+                _hvp = (
+                    signal.get("historical_vp")
+                    or signal.get("contextual_snapshot", {}).get("historical_vp")
+                    or (enriched_snapshot or {}).get("historical_vp")
+                    or {}
                 )
-                _weekly_vp = (
-                    signal.get("contextual_snapshot", {}).get("historical_vp", {}).get("weekly", {})
-                )
-                _monthly_vp = (
-                    signal.get("contextual_snapshot", {}).get("historical_vp", {}).get("monthly", {})
-                )
+                _vp_daily = _hvp.get("daily", {})
+                _weekly_vp = _hvp.get("weekly", {})
+                _monthly_vp = _hvp.get("monthly", {})
+                # multi_tf: buscar no top-level (promovido), contextual, ou enriched (param)
                 _multi_tf = (
-                    signal.get("contextual_snapshot", {}).get("multi_tf", {})
-                    or (enriched_snapshot or {}).get("multi_tf", {})
+                    signal.get("multi_tf")
+                    or signal.get("contextual_snapshot", {}).get("multi_tf")
+                    or (enriched_snapshot or {}).get("multi_tf")
+                    or {}
                 )
                 _derivatives = signal.get("derivatives", {})
                 _pivot_data = signal.get("contextual_snapshot", {}).get("pivots", {})
@@ -1362,6 +1401,38 @@ class EnhancedMarketBot:
                 logging.debug(f"InstitutionalAnalytics error: {e}")
                 signal["institutional_analytics"] = {"status": "error", "error": str(e)}
 
+        # ====== Promoção de campos para ANALYSIS_TRIGGER ======
+        # Garante que multi_tf, historical_vp, flow_metrics estejam no top-level
+        # (iguala a estrutura com eventos de Absorção)
+        raw_evt = signal.get("raw_event", {}) or {}
+        for _promote_key in ("multi_tf", "historical_vp"):
+            if _promote_key not in signal and isinstance(raw_evt, dict):
+                _val = raw_evt.get(_promote_key)
+                if _val:
+                    signal[_promote_key] = _val
+        # flow_metrics do raw_event → fluxo_continuo (se ainda não existir)
+        if "fluxo_continuo" not in signal and isinstance(raw_evt, dict):
+            _fm = raw_evt.get("flow_metrics")
+            if _fm and isinstance(_fm, dict):
+                signal["fluxo_continuo"] = _fm
+
+        # Limpar chaves duplicadas do raw_event após promoção ao top-level
+        if isinstance(raw_evt, dict):
+            for _dup_key in ("multi_tf", "historical_vp"):
+                if _dup_key in raw_evt and _dup_key in signal:
+                    raw_evt.pop(_dup_key, None)
+            if "flow_metrics" in raw_evt and "fluxo_continuo" in signal:
+                raw_evt.pop("flow_metrics", None)
+
+        # ====== Enriquecimento Institucional (Onda 1 + 2) ======
+        # Injeta campos faltantes: pivot_points, fibonacci, bid/ask, alertas,
+        # volume_profile_advanced, volatility_metrics, whale_activity, etc.
+        if _INSTITUTIONAL_ENRICHER_OK and _institutional_enrich is not None:
+            try:
+                _institutional_enrich(signal, valid_window_data=valid_window_data)
+            except Exception as _enrich_err:
+                logging.debug(f"institutional_enrich error (não crítico): {_enrich_err}")
+
         if signal.get("tipo_evento") == "ANALYSIS_TRIGGER":
             key = (
                 signal.get("tipo_evento"),
@@ -1390,6 +1461,30 @@ class EnhancedMarketBot:
 
         if signal.get("tipo_evento") != "OrderBook":
             adicionar_memoria_evento(signal)
+
+            # Avaliar outcomes pendentes de sinais anteriores
+            current_price = signal.get("preco_fechamento", 0)
+            current_epoch = signal.get("epoch_ms", 0)
+            if current_price > 0 and current_epoch > 0:
+                avaliar_outcomes_pendentes(current_price, current_epoch)
+
+            # Enriquecer com similarity search (eventos passados similares)
+            if _SIMILARITY_OK and _similarity_search:
+                try:
+                    similar = _similarity_search.find_similar(signal, top_k=5)
+                    if similar.get("status") == "ok":
+                        signal["similar_events"] = similar.get("summary", {})
+                except Exception as e:
+                    logging.debug(f"Similarity search falhou: {e}")
+
+            # Enriquecer com confiança estatística real
+            if _OUTCOME_OK and _outcome_tracker:
+                try:
+                    confidence = _outcome_tracker.get_confidence_for_event(signal)
+                    if confidence.get("has_data"):
+                        signal["statistical_confidence"] = confidence
+                except Exception as e:
+                    logging.debug(f"Outcome confidence falhou: {e}")
 
         self._log_event(signal)
 
@@ -1622,6 +1717,7 @@ class EnhancedMarketBot:
             if ohlc:
                 self.pattern_ohlc_history.append(
                     {
+                        "open": float(ohlc.get("open", ohlc.get("close", 0.0))),
                         "high": float(ohlc.get("high", 0.0)),
                         "low": float(ohlc.get("low", 0.0)),
                         "close": float(ohlc.get("close", 0.0)),

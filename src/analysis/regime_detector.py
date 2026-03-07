@@ -106,6 +106,14 @@ class EnhancedRegimeDetector:
             market_regime, corr_regime, current_price_data
         )
         
+        # Fear & Greed: usa índice real (0-100) da alternative.me quando disponível
+        fng_raw = macro_data.get("fear_greed_index")
+        if fng_raw is not None:
+            # Normaliza 0-100 → -1.0 (fear=0) a +1.0 (greed=100)
+            fear_greed = round((float(fng_raw) - 50.0) / 50.0, 4)
+        else:
+            fear_greed = self._calculate_fear_greed(vol_regime, crypto_fear)
+
         return RegimeAnalysis(
             market_regime=market_regime,
             correlation_regime=corr_regime,
@@ -113,7 +121,7 @@ class EnhancedRegimeDetector:
             regime_confidence=self._calculate_confidence(),
             regime_stability=self._calculate_stability(),
             risk_score=risk_score,
-            fear_greed_proxy=self._calculate_fear_greed(vol_regime, crypto_fear),
+            fear_greed_proxy=fear_greed,
             regime_change_warning=regime_change,
             divergence_alert=divergence,
             primary_driver=self._identify_driver(macro_data),
@@ -326,13 +334,20 @@ class EnhancedRegimeDetector:
     def _identify_driver(self, macro_data: Dict) -> str:
         """Identifica principal driver do regime"""
         vix = macro_data.get("vix")
-        if vix and vix > 30:
+        if vix is not None and vix > 30:
             return "VIX_ELEVATED"
-        
+
+        fng = macro_data.get("fear_greed_index")
+        if fng is not None:
+            if fng <= 25:
+                return "EXTREME_FEAR"
+            if fng >= 75:
+                return "EXTREME_GREED"
+
         usdt_dom = macro_data.get("usdt_dominance")
         if usdt_dom and usdt_dom > 8:
             return "CRYPTO_FEAR"
-        
+
         return "MIXED_SIGNALS"
     
     def _summarize_signals(
@@ -341,10 +356,17 @@ class EnhancedRegimeDetector:
         cross_asset: Dict
     ) -> Dict[str, str]:
         """Resume todos os sinais para debug"""
+        vix_val = macro_data.get("vix")
+        fng_val = macro_data.get("fear_greed_index")
+        btc_dom = macro_data.get("btc_dominance")
+        usdt_dom = macro_data.get("usdt_dominance")
+        spy_corr = cross_asset.get("correlation_spy")
+        dxy_mom = cross_asset.get("dxy_momentum")
         return {
-            "vix": f"{macro_data.get('vix', 'N/A')}",
-            "btc_dominance": f"{macro_data.get('btc_dominance', 'N/A'):.1f}%",
-            "usdt_dominance": f"{macro_data.get('usdt_dominance', 'N/A')}%",
-            "spy_correlation": f"{cross_asset.get('correlation_spy', 'N/A'):.2f}",
-            "dxy_momentum": f"{cross_asset.get('dxy_momentum', 'N/A')}"
+            "vix": str(round(vix_val, 1)) if vix_val is not None else "N/A",
+            "fear_greed": str(int(fng_val)) if fng_val is not None else "N/A",
+            "btc_dominance": f"{btc_dom:.1f}%" if btc_dom is not None else "N/A",
+            "usdt_dominance": f"{usdt_dom}%" if usdt_dom is not None else "N/A",
+            "spy_correlation": f"{spy_corr:.2f}" if spy_corr is not None else "N/A",
+            "dxy_momentum": str(round(dxy_mom, 3)) if dxy_mom is not None else "N/A",
         }

@@ -71,7 +71,7 @@ ORDERBOOK_EMERGENCY_MODE = False
 CONTEXT_TIMEFRAMES = ["15m", "1h", "4h", "1d"]
 CONTEXT_EMA_PERIOD = 21
 CONTEXT_ATR_PERIOD = 14
-CONTEXT_UPDATE_INTERVAL_SECONDS = 60
+CONTEXT_UPDATE_INTERVAL_SECONDS = 300  # 5 min (era 60s — reduzia chamadas yFinance)
 INTERMARKET_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 DERIVATIVES_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 VP_NUM_DAYS_HISTORY = 30
@@ -103,7 +103,7 @@ VP_ADVANCED = True
 # ===== PARÂMETROS DE TRADING =====
 SYMBOL = "BTCUSDT"
 STREAM_URL = f"wss://stream.binance.com:9443/ws/{SYMBOL.lower()}@trade"
-WINDOW_SIZE_MINUTES = 2
+WINDOW_SIZE_MINUTES = 5
 VOL_FACTOR_EXH = 2.5
 HISTORY_SIZE = 100
 DELTA_STD_DEV_FACTOR = 2.0
@@ -112,9 +112,9 @@ LIQUIDITY_FLOW_ALERT_PERCENTAGE = 0.15
 WALL_STD_DEV_FACTOR = 3.0
 
 # ===== CONFIGURACOES DO TRADE BUFFER =====
-TRADES_BUFFER_SIZE = 5000
-TRADES_BUFFER_BACKPRESSURE = 0.6
-TRADES_BUFFER_BATCH_SIZE = 200
+TRADES_BUFFER_SIZE = 10000          # Aumentado de 5000 para evitar overflow
+TRADES_BUFFER_BACKPRESSURE = 0.8    # Aumentado de 0.6 para 0.8 (alerta mais tarde)
+TRADES_BUFFER_BATCH_SIZE = 500      # Aumentado de 200 para drenar mais rapido
 TRADES_BUFFER_PROCESSING_INTERVAL_MS = 5
 TRADES_BUFFER_MAX_PROCESSING_MS = 500.0
 
@@ -173,3 +173,16 @@ AI_ANALYSIS_INTERVAL = 300     # 5 minutos (Evita spammar a Groq)
 
 # Otimização de IA - pula análise quando volume baixo em regime lateral
 AI_SKIP_VOLUME_THRESHOLD = 100_000  # USD - threshold para pular IA em sideways
+
+# ===== CONFIGURAÇÕES DE IA / PIPELINE =====
+AI_MIN_INTERVAL_SEC = 60       # Intervalo mínimo entre análises da IA (segundos)
+AI_TEST_MIN_CHARS = 10         # Mínimo de chars para teste da IA ser considerado ok
+MIN_TRADES_FOR_PIPELINE = 10   # Mínimo de trades por janela para processar pipeline
+WARMUP_WINDOWS = 3             # Janelas de aquecimento após reconexão
+
+# ===== CONFIGURAÇÕES DO PAYLOAD TRIPWIRE =====
+PAYLOAD_TRIPWIRE_GUARDRAIL_MAX = 0.30   # Max 30% de bloqueios (era sem config, default implícito)
+PAYLOAD_TRIPWIRE_ABORT_MAX = 0.02       # Max 2% de aborts
+PAYLOAD_TRIPWIRE_FALLBACK_MAX = 0.03    # Max 3% de fallbacks
+PAYLOAD_TRIPWIRE_BYTES_P95_MAX = 90000  # Max 90KB no P95
+PAYLOAD_TRIPWIRE_CACHE_HIT_MIN = 0.10   # Min 10% de cache hits

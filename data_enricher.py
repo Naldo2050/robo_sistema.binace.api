@@ -15,28 +15,48 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 import logging
+import asyncio
 
 # Importar métricas do sistema
 try:
-    from metrics_collector import (
+    from metrics_collector import (  # type: ignore[import]
         record_enrich_error,
-        record_event_processed,
-        track_latency
+        track_latency,
     )
     METRICS_AVAILABLE = True
 except ImportError:
     METRICS_AVAILABLE = False
-    def record_enrich_error(): pass
-    def record_event_processed(event_type): pass
-    def track_latency(operation_type):
-        class DummyContext:
-            def __enter__(self): return self
-            def __exit__(self, *args): pass
-        return DummyContext()
+
+    def record_enrich_error(event_type: str, error: Optional[str] = None) -> None:  # type: ignore[misc]
+        pass
+
+    def track_latency(metric_name: str):  # type: ignore[misc]
+        def decorator(func):  # type: ignore[misc]
+            return func
+        return decorator
 
 logger = logging.getLogger(__name__)
+
+# Importar fetchers reais (on-chain e funding)
+try:
+    from onchain_fetcher import OnchainFetcher
+    _ONCHAIN_FETCHER = OnchainFetcher()
+    _ONCHAIN_OK = True
+except ImportError:
+    _ONCHAIN_OK = False
+    _ONCHAIN_FETCHER = None
+    logger.warning("onchain_fetcher indisponível, usando dados parciais")
+
+try:
+    from funding_aggregator import FundingAggregator
+    _FUNDING_AGG = FundingAggregator()
+    _FUNDING_OK = True
+except ImportError:
+    _FUNDING_OK = False
+    _FUNDING_AGG = None
+    logger.warning("funding_aggregator indisponível, usando dados parciais")
 
 
 @dataclass
@@ -74,57 +94,59 @@ class DataEnricher:
         self.max_vol_factor = config.get("MAX_VOL_FACTOR", 2.0)
 
     def enrich_from_raw_event(self, raw_event: Dict[str, Any]) -> Dict[str, Any]:
-        with track_latency("enrich_event"):
-            # Suporta dois formatos:
-            # A) preco_fechamento e volume_total no root
-            # B) preco_fechamento e volume_total dentro de raw_event["raw_event"]
-            inner = raw_event.get("raw_event") if isinstance(raw_event.get("raw_event"), dict) else {}
+        # Suporta dois formatos:
+        # A) preco_fechamento e volume_total no root
+        # B) preco_fechamento e volume_total dentro de raw_event["raw_event"]
+        inner = raw_event.get("raw_event") if isinstance(raw_event.get("raw_event"), dict) else {}
+        assert isinstance(inner, dict)
 
-            price = raw_event.get("preco_fechamento", inner.get("preco_fechamento"))
-            volume = raw_event.get("volume_total", inner.get("volume_total", 0.0))
-            symbol = raw_event.get("symbol", inner.get("symbol", self.symbol))
+        price = (
+            raw_event.get("preco_fechamento")
+            or inner.get("preco_fechamento")
+            or (raw_event.get("ohlc") or {}).get("close")
+            or (inner.get("ohlc") or {}).get("close")
+        ) or None
+        volume = raw_event.get("volume_total", inner.get("volume_total", 0.0))
+        symbol = raw_event.get("symbol", inner.get("symbol", self.symbol))
 
-            if price is None:
-                logger.debug("raw_event sem preco_fechamento (root e inner), não será enriquecido")
-                if METRICS_AVAILABLE:
-                    record_enrich_error()
-                return {}
-
-            # timestamp vem do outer (porque inner não tem)
-            timestamp = (
-                raw_event.get("timestamp_utc")
-                or raw_event.get("timestamp")
-                or inner.get("timestamp_utc")
-                or inner.get("timestamp")
-            )
-
-            # A partir daqui, use raw_event externo completo (ele tem historical_vp, multi_tf, liquidity_heatmap)
-            try:
-                price_targets = self._build_price_targets(raw_event, current_price=price)
-                price_targets_dicts = [pt.to_dict() for pt in price_targets]
-            except Exception as e:
-                logger.error(f"[DataEnricher] Erro ao gerar price_targets: {e}", exc_info=True)
-                if METRICS_AVAILABLE:
-                    record_enrich_error()
-                price_targets_dicts = []
-
-            options_metrics = self._build_options_metrics()
-            onchain_metrics = self._build_onchain_metrics()
-            adaptive_thresholds = self._build_adaptive_thresholds(raw_event)
-
+        if price is None:
+            logger.debug("raw_event sem preco_fechamento nem ohlc.close, não será enriquecido")
             if METRICS_AVAILABLE:
-                record_event_processed("enrich")
+                record_enrich_error("enrich_from_raw_event")
+            return {}
 
-            return {
-                "symbol": symbol,
-                "timestamp": timestamp,
-                "price": price,
-                "volume": volume,
-                "price_targets": price_targets_dicts,
-                "options_metrics": options_metrics,
-                "onchain_metrics": onchain_metrics,
-                "adaptive_thresholds": adaptive_thresholds,
-            }
+        # timestamp vem do outer (porque inner não tem)
+        timestamp = (
+            raw_event.get("timestamp_utc")
+            or raw_event.get("timestamp")
+            or inner.get("timestamp_utc")
+            or inner.get("timestamp")
+        )
+
+        # A partir daqui, use raw_event externo completo (ele tem historical_vp, multi_tf, liquidity_heatmap)
+        try:
+            price_targets = self._build_price_targets(raw_event, current_price=price)
+            price_targets_dicts = [pt.to_dict() for pt in price_targets]
+        except Exception as e:
+            logger.error(f"[DataEnricher] Erro ao gerar price_targets: {e}", exc_info=True)
+            if METRICS_AVAILABLE:
+                record_enrich_error("price_targets")
+            price_targets_dicts = []
+
+        options_metrics = self._build_options_metrics()
+        onchain_metrics = self._build_onchain_metrics()
+        adaptive_thresholds = self._build_adaptive_thresholds(raw_event)
+
+        return {
+            "symbol": symbol,
+            "timestamp": timestamp,
+            "price": price,
+            "volume": volume,
+            "price_targets": price_targets_dicts,
+            "options_metrics": options_metrics,
+            "onchain_metrics": onchain_metrics,
+            "adaptive_thresholds": adaptive_thresholds,
+        }
 
     def enrich_event_with_advanced_analysis(self, event: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -209,27 +231,12 @@ class DataEnricher:
                     "absorption_threshold": 0.3,
                     "flow_threshold": 0.2
                 },
-                "options_metrics": inner_raw.get("advanced_analysis", {}).get("options_metrics", {
-                    "put_call_ratio": 0.85,
-                    "implied_volatility": 0.65,
-                    "iv_percentile": 0.72,
-                    "iv_rank": 0.68,
-                    "gamma_exposure": 15000000,
-                    "max_pain": 42000,
-                    "vix": 25.5,
-                    "skew": 1.05
-                }),
-                "onchain_metrics": inner_raw.get("advanced_analysis", {}).get("onchain_metrics", {
-                    "exchange_netflow": -125.5,
-                    "whale_transactions": 42,
-                    "miner_flows": 250.8,
-                    "exchange_reserves": 2400000,
-                    "active_addresses": 850000,
-                    "hash_rate": 550.2,
-                    "difficulty": 81.2,
-                    "sopr": 1.02,
-                    "funding_rates": {"Binance": 0.0001, "Bybit": 0.0002, "Deribit": 0.0003}
-                })
+                "options_metrics": inner_raw.get("advanced_analysis", {}).get(
+                    "options_metrics", self._build_options_metrics()
+                ),
+                "onchain_metrics": inner_raw.get("advanced_analysis", {}).get(
+                    "onchain_metrics", self._build_onchain_metrics()
+                )
             }
 
             logger.debug("[DEBUG] advanced_analysis calculado:")
@@ -478,36 +485,57 @@ class DataEnricher:
         )
 
     # ------------------------------
-    #   OPTIONS / ON-CHAIN (MOCK)
+    #   OPTIONS (requer API paga - Deribit)
     # ------------------------------
 
     def _build_options_metrics(self) -> Dict[str, Any]:
+        """
+        Options metrics requer API paga (Deribit/Laevitas).
+        Retorna estrutura vazia sinalizada para a IA saber que não tem dados reais.
+        """
         return {
-            "put_call_ratio": 0.85,
-            "implied_volatility": 0.65,
-            "iv_percentile": 0.72,
-            "iv_rank": 0.68,
-            "gamma_exposure": 15_000_000.0,
-            "max_pain": 42000.0,
-            "vix": 25.5,
-            "skew": 1.05,
+            "status": "requires_paid_api",
+            "provider_needed": "Deribit/Laevitas/TradingView",
+            "put_call_ratio": None,
+            "implied_volatility": None,
+            "iv_percentile": None,
+            "iv_rank": None,
+            "gamma_exposure": None,
+            "max_pain": None,
+            "skew": None,
+            "is_real_data": False,
         }
 
+    # ------------------------------
+    #   ON-CHAIN (DADOS REAIS via APIs gratuitas)
+    # ------------------------------
+
     def _build_onchain_metrics(self) -> Dict[str, Any]:
+        """
+        Busca métricas on-chain REAIS de APIs gratuitas.
+        blockchain.info + mempool.space (sem chave de API).
+        Campos que requerem API paga são sinalizados com None.
+        """
+        if _ONCHAIN_OK and _ONCHAIN_FETCHER is not None:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        future = pool.submit(asyncio.run, _ONCHAIN_FETCHER.fetch_all())
+                        return future.result(timeout=15)
+                else:
+                    return asyncio.run(_ONCHAIN_FETCHER.fetch_all())
+            except Exception as e:
+                logger.warning(f"Falha ao buscar on-chain real: {e}")
+
+        # Fallback mínimo se fetcher falhar
         return {
-            "exchange_netflow": -125.5,  # BTC
-            "whale_transactions": 42,
-            "miner_flows": 250.8,
-            "exchange_reserves": 2_400_000.0,
-            "active_addresses": 850_000,
-            "hash_rate": 550.2,
-            "difficulty": 81.2,
-            "sopr": 1.02,
-            "funding_rates": {
-                "Binance": 0.0001,
-                "Bybit": 0.0002,
-                "Deribit": 0.0003,
-            },
+            "hash_rate": 0,
+            "difficulty": 0,
+            "mempool_size": 0,
+            "is_real_data": False,
+            "status": "fetcher_unavailable",
         }
 
     # ------------------------------

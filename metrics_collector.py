@@ -122,9 +122,11 @@ class SimulatedSummary(SimulatedMetric):
 # Factory de métricas
 # ----------------------------------------------------------------------
 
-def create_counter(name: str, description: str):
+def create_counter(name: str, description: str, labelnames: Optional[Sequence[str]] = None):
     """Cria um contador Prometheus ou simulado"""
     if PROMETHEUS_AVAILABLE:
+        if labelnames:
+            return Counter(name, description, labelnames)
         return Counter(name, description)
     return SimulatedCounter(name, description)
 
@@ -172,22 +174,26 @@ fred_fallback_used = create_counter(
 
 data_corrections = create_counter(
     'trading_data_corrections_total',
-    'Correções de dados aplicadas'
+    'Correções de dados aplicadas',
+    labelnames=['type']
 )
 
 parse_errors = create_counter(
     'trading_parse_errors_total',
-    'Erros de parsing de dados'
+    'Erros de parsing de dados',
+    labelnames=['type']
 )
 
 enrich_errors = create_counter(
     'trading_enrich_errors_total',
-    'Erros no enrichment de eventos'
+    'Erros no enrichment de eventos',
+    labelnames=['type']
 )
 
 connection_losses = create_counter(
     'trading_connection_losses_total',
-    'Perdas de conexão'
+    'Perdas de conexão',
+    labelnames=['type']
 )
 
 # Histogramas de latência

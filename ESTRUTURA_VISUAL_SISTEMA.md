@@ -11,6 +11,7 @@ robo_sistema.binace.api/
 │   ├── __init__.py
 │   └── model_config.yaml
 │
+├── .env                                       # Variáveis de ambiente
 ├── config.json                                # Configuração principal
 ├── config.py                                  # Módulo de configuração
 ├── requirements.txt                           # Dependências Python
@@ -18,18 +19,19 @@ robo_sistema.binace.api/
 ├── pyproject.toml                             # Configuração do projeto
 ├── pytest.ini                                 # Configuração de testes
 ├── mypy.ini                                   # Configuração MyPy
+├── pyrightconfig.json                         # Configuração Pyright
 ├── .gitignore                                 # Ignorar arquivos Git
 ├── .dockerignore                              # Ignorar arquivos Docker
 ├── Dockerfile                                 # Imagem Docker
-└── docker-compose.yml                         # Orquestração Docker
+├── docker-compose.yml                         # Orquestração Docker
 │
 ├─────────────────────────────────────────────────────────────────────────────┐
 │                         🚀 PONTO DE ENTRADA                                 │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │
 ├── main.py                                    # Ponto de entrada principal
-├── main.patched.py                            # Versão com patches
-├── dashboard.py                               # Dashboard de visualização
+├── main.patched.py                           # Versão com patches
+├── dashboard.py                              # Dashboard de visualização
 │
 ├─────────────────────────────────────────────────────────────────────────────┐
 │                         🤖 INTELIGÊNCIA ARTIFICIAL                           │
@@ -59,9 +61,11 @@ robo_sistema.binace.api/
 │   │   ├── ai_payload_builder.py
 │   │   ├── ai_enrichment_context.py
 │   │   ├── payload_compressor.py
+│   │   ├── payload_compressor_v3.py
 │   │   ├── llm_payload_guardrail.py
 │   │   ├── payload_metrics_aggregator.py
-│   │   └── payload_section_cache.py
+│   │   ├── payload_section_cache.py
+│   │   └── raw_event_deduplicator.py
 │   │
 │   ├── analysis/                              # Análises institucionais
 │   │   └── institutional_analytics.py
@@ -84,8 +88,8 @@ robo_sistema.binace.api/
 │   ├── utils/                                 # Utilitários
 │   │   ├── logging_utils.py
 │   │   └── price_fetcher.py
-│   │
-│   ├── windows/                               # Processamento de janelas
+│ ├── windows/                                 │
+│   # Processamento de janelas
 │   │   └── window_processor.py
 │   │
 │   ├── __init__.py
@@ -219,21 +223,15 @@ robo_sistema.binace.api/
 │
 ├── ml/                                        # ML Models
 │   │
-│   ├── datasets/                              # Datasets
-│   │   └── training_dataset.parquet
+│   ├── datasets/                              # Datasets (Parquet)
 │   │
 │   ├── models/                                # Modelos treinados
-│   │   ├── xgb_model_latest.json
-│   │   ├── model_metadata_latest.json
-│   │   ├── feature_importance_*.csv
-│   │   └── error_log_*.txt
 │   │
 │   ├── generate_dataset.py                    # Gerador de dataset
 │   ├── train_model.py                         # Treinamento
 │   ├── inference_engine.py                    # Engine de inferência
 │   ├── model_inference.py                     # Inferência
-│   ├── hybrid_decision.py                     # Decisão híbrida
-│   └── training.log                           # Log de treinamento
+│   └── hybrid_decision.py                     # Decisão híbrida
 │
 ├── ml_features.py                             # Features ML
 ├── feature_store.py                           # Feature store
@@ -311,14 +309,9 @@ robo_sistema.binace.api/
 │   └── event_store.py
 │
 ├── dados/                                     # Dados da aplicação
-│   ├── eventos-fluxo.json
-│   ├── eventos_fluxo.jsonl
-│   ├── eventos_visuais.log
-│   └── trading_bot.db
 │
 ├── memory/                                    # Memória/cache
-│   ├── __init__.py
-│   └── levels_BTCUSDT.json
+│   └── __init__.py
 │
 ├── features/                                  # Features (Parquet)
 │   ├── date=2025-12-08/
@@ -348,13 +341,14 @@ robo_sistema.binace.api/
 │   ├── date=2026-02-23/
 │   ├── date=2026-02-24/
 │   ├── date=2026-02-25/
-│   └── date=2026-03-01/
+│   ├── date=2026-03-01/
+│   ├── date=2026-03-05/
+│   ├── date=2026-03-06/
+│   └── date=2026-03-07/
 │
 ├── logs/                                      # Logs
 │   ├── eventos-fluxo.optimized.jsonl
-│   ├── last_llm_payload.json
-│   ├── payload_metrics.jsonl
-│   └── payload_section_cache.json
+│   └── last_llm_payload.json
 │
 ├─────────────────────────────────────────────────────────────────────────────┐
 │                         🔧 UTILITÁRIOS E FERRAMENTAS                        │
@@ -380,6 +374,8 @@ robo_sistema.binace.api/
 │   ├── backup_to_oci.py
 │   ├── validate_regime_system.py
 │   ├── test_fixes.py
+│   ├── test_fixes_simple.py
+│   ├── test_fixes_final.py
 │   ├── disaster_recovery.sh
 │   └── remote_health_check.sh
 │
@@ -403,6 +399,8 @@ robo_sistema.binace.api/
 │   │   └── sample_analysis_trigger.json
 │   │
 │   ├── payload/                               # Testes de payload
+│   │   ├── conftest.py
+│   │   ├── pytest.ini
 │   │   ├── test_payload_compressor.py
 │   │   ├── test_payload_guardrail.py
 │   │   ├── test_payload_metrics_aggregator.py
@@ -415,15 +413,28 @@ robo_sistema.binace.api/
 │   ├── mock_ai_responses.py                   # Mock IA
 │   ├── mock_qwen.py                           # Mock Qwen
 │   ├── regime_scenario_tester.py              # Teste de cenários
+│   ├── fixtures.py                            # Fixtures
+│   ├── config_test.py                        # Configuração de testes
 │   │
 │   ├── test_ai_runner.py                      # Testes AI Runner
 │   ├── test_ai_runner_comprehensive.py
 │   ├── test_market_orchestrator_comprehensive.py
 │   ├── test_orderbook_analyzer.py
 │   ├── test_orderbook_analyzer_comprehensive.py
+│   ├── test_orderbook_analyzer_coverage.py
+│   ├── test_orderbook_analyzer_full_coverage.py
+│   ├── test_orderbook_analyzer_missing.py
 │   ├── test_orderbook_core_comprehensive.py
+│   ├── test_orderbook_analyze_core.py
+│   ├── test_orderbook_config_injection.py
+│   ├── test_orderbook_helpers.py
+│   ├── test_orderbook_validate_snapshot.py
+│   ├── test_orderbook_wrapper_fallback.py
+│   ├── test_orderbook_wrapper_fetch_with_retry.py
 │   ├── test_flow_analyzer.py
 │   ├── test_data_pipeline.py
+│   ├── test_data_validator.py
+│   ├── test_data_quality_validator.py
 │   ├── test_support_resistance_consolidated.py
 │   ├── test_support_resistance_modular.py
 │   ├── test_defense_zones.py
@@ -431,9 +442,7 @@ robo_sistema.binace.api/
 │   ├── test_risk_manager_comprehensive.py
 │   ├── test_regime_integration.py
 │   ├── test_cross_asset_integration.py
-│   ├── test_enhanced_cross_asset.py
 │   ├── test_macro_data_provider.py
-│   ├── test_data_validator.py
 │   ├── test_event_bus.py
 │   ├── test_trade_flow_analyzer.py
 │   ├── test_window_processor.py
@@ -446,7 +455,20 @@ robo_sistema.binace.api/
 │   ├── test_institutional_alerts.py
 │   ├── test_performance_benchmarks.py
 │   ├── test_trade_buffer_optimization.py
-│   └── ... (outros 50+ arquivos de teste)
+│   ├── test_rate_limiter.py
+│   ├── test_integration_full_flow.py
+│   ├── test_orchestrator_initialization.py
+│   ├── test_absorption_zone_mapper.py
+│   ├── test_passive_aggressive_flow.py
+│   ├── test_patch_2_fallback_controlado.py
+│   ├── test_patch_2_simples.py
+│   ├── test_invariant_fix.py
+│   ├── test_update_histories.py
+│   ├── fix_broken_tests.py
+│   ├── fix_qwen_import.py
+│   ├── verify_day4_implementations.py
+│   ├── verify_patch_2.py
+│   └── verify_prune_logic_only.py
 │
 ├─────────────────────────────────────────────────────────────────────────────┐
 │                         🔍 DIAGNÓSTICO E DEBUG                              │
@@ -501,14 +523,18 @@ robo_sistema.binace.api/
 ├── PATCH_SUMMARY.md                           # Resumo patches
 ├── CORRECAO_ENRICH_EVENT_SUMMARY.md           # Correções
 ├── CORRECAO_FETCH_INTERMARKET_DATA.md
-└── orderbook_severity_analysis.md
+├── orderbook_severity_analysis.md
 │
 ├─────────────────────────────────────────────────────────────────────────────┐
 │                         🏗️ INFRAESTRUTURA                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │
 ├── infrastructure/                            # Infraestrutura
+│   ├── __init__.py
+│   ├── market-bot.service                    # Serviço systemd
+│   │
 │   ├── oci/                                   # Oracle Cloud
+│   │   ├── __init__.py
 │   │   ├── monitoring.py
 │   │   ├── vault_helper.py
 │   │   └── security_config.md
@@ -539,16 +565,16 @@ robo_sistema.binace.api/
 ├─────────────────────────────────────────────────────────────────────────────┤
 │
 ├── MQL5/                                      # MetaTrader 5
-│   ├── Indicators/
-│   │   └── ChartSignalsFromCSV.mq5
-│   └── __init__.py
+│   ├── __init__.py
+│   └── Indicators/
+│       └── ChartSignalsFromCSV.mq5
 │
 ├─────────────────────────────────────────────────────────────────────────────┐
 │                         🧪 LEGADO E BACKUPS                                 │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │
 ├── legacy/                                    # Código legado
-│   ├── data_pipeline_legacy.py
+│   ├── data_pipeline_legacy..py
 │   ├── market_analyzer_2_3_0.py
 │   └── support_resistance_legacy.py
 │
@@ -564,12 +590,12 @@ robo_sistema.binace.api/
 |-----------|----------------------|
 | **Core** | `main.py`, `market_orchestrator/`, `orderbook_core/` |
 | **Análise** | `flow_analyzer/`, `support_resistance/`, `orderbook_analyzer/` |
-| **Dados** | `data_pipeline/`, `src/`, `database/`, `dados/`, `features/` |
+| **Dados** | `data_pipeline/`, `src/`, `database/`, `features/` |
 | **IA/ML** | `ai_runner/`, `ml/`, `context_collector.py` |
 | **Infra** | `infrastructure/`, `config/`, `Dockerfile` |
-| **Testes** | `tests/` (241 arquivos) |
+| **Testes** | `tests/` (130+ arquivos de teste) |
 | **Docs** | `docs/`, `*.md` |
 
 ---
 
-**Total: 60.266 arquivos | 2.823 diretórios | 27.568 arquivos Python**
+**Total: ~27.500+ arquivos Python | 2.800+ diretórios**

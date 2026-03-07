@@ -46,6 +46,31 @@ try:
 except ImportError:
     logging.info("ai_payload_optimizer deep compression not available")
 
+# AI Response Validator (validação rígida de respostas)
+try:
+    from ai_response_validator import (
+        AIResponseValidator,
+        validate_ai_response,
+        is_fallback_response,
+        FALLBACK_RESPONSE as _FALLBACK_RESPONSE,
+    )
+    AI_VALIDATOR_AVAILABLE = True
+except ImportError:
+    AI_VALIDATOR_AVAILABLE = False
+    AIResponseValidator = None
+    validate_ai_response = None
+    is_fallback_response = None
+    _FALLBACK_RESPONSE = {
+        "sentiment": "neutral",
+        "confidence": 0.0,
+        "action": "wait",
+        "rationale": "invalid_llm_output",
+        "entry_zone": None,
+        "invalidation_zone": None,
+        "region_type": None,
+        "_is_fallback": True,
+    }
+
 # ========================
 # CARREGAR .env
 # ========================
@@ -525,12 +550,14 @@ Não use tags <think> nem mostre seu raciocínio passo a passo; entregue apenas 
 
 SYSTEM_PROMPT = """Voce e um analista institucional de fluxo, microestrutura e suporte/resistencia.
 
-REGRAS OBRIGATORIAS (CRITICAS):
+REGRAS OBRIGATORIAS (CRITICAS - QUALQUER VIOLACAO INVALIDA A RESPOSTA):
 1. Responda APENAS em portugues do Brasil
 2. NAO use ingles em NENHUMA parte
 3. NAO mostre raciocinio, pensamentos ou analise passo a passo
 4. NAO comece com "Okay", "Let me", "First", "Looking at" ou similares
-5. Responda DIRETAMENTE com o JSON, sem texto antes ou depois
+5. NAO inclua NENHUM texto antes ou depois do JSON — apenas o objeto JSON puro
+6. NAO use markdown, blocos de codigo, backticks ou qualquer formatacao adicional
+7. A resposta DEVE comecar exatamente com { e terminar exatamente com }
 
 Horizonte: entradas rapidas de 5-15 minutos (scalp).
 
@@ -716,7 +743,7 @@ class AIAnalyzer:
         self.max_failures_before_mock: int = 3
 
         logging.info(
-            "🧠 IA Analyzer v2.5.1 inicializada - GroqCloud (modo texto livre)"
+            "🧠 IA Analyzer v2.5.1 inicializada - GroqCloud (JSON strict mode)"
         )
         
         # Inicializa API
@@ -914,8 +941,7 @@ class AIAnalyzer:
         self.enabled = True
         
         logging.info(
-            f"🚀 GroqCloud ATIVO | Modelo: {self.model_name} | "
-            f"Chave: {groq_key[:10]}...{groq_key[-4:]}"
+            f"🚀 GroqCloud ATIVO | Modelo: {self.model_name}"
         )
         
         try:
@@ -1280,11 +1306,13 @@ class AIAnalyzer:
                 if _is_v3 or _is_v2:
                     use_ai_payload_direct = True
                     compression_source_name = "ai_payload_v3_direct" if _is_v3 else "ai_payload_v2_direct"
+                    _ai_p_len = len(ai_p) if ai_p is not None else 0
+                    _ai_p_bytes = len(json.dumps(ai_p, ensure_ascii=False).encode("utf-8")) if ai_p is not None else 0
                     logging.debug(
                         "COMPRESSION_SOURCE using %s, keys=%d, bytes=%d",
                         compression_source_name,
-                        len(ai_p),
-                        len(json.dumps(ai_p, ensure_ascii=False).encode("utf-8")),
+                        _ai_p_len,
+                        _ai_p_bytes,
                     )
                 else:
                     # Prioridade 2: raw_event disponível → compressão completa
@@ -2573,13 +2601,17 @@ class AIAnalyzer:
                     {"role": "system", "content": self._get_system_prompt()},
                     {"role": "user", "content": prompt},
                 ]
-                response = self.client.chat.completions.create(
+                create_kwargs: Dict[str, Any] = dict(
                     model=self.model_name,
                     messages=messages,  # type: ignore[arg-type]
                     max_tokens=params["max_tokens"],
                     temperature=params["temperature"],
                     timeout=params["timeout"],
                 )
+                # Groq suporta JSON mode — força saída estruturada
+                if self.mode == "groq":
+                    create_kwargs["response_format"] = {"type": "json_object"}
+                response = self.client.chat.completions.create(**create_kwargs)
                 if response.choices and len(response.choices) > 0:
                     content = self._sanitize_llm_text(
                         response.choices[0].message.content or ""
@@ -2877,30 +2909,94 @@ class AIAnalyzer:
         try:
             analysis_text, structured = self._analyze_internal(event_data)
 
+            # ============================================================
+            # VALIDAÇÃO RIGOROSA DA RESPOSTA (Parte 2)
+            # ============================================================
             structured_out: Optional[Dict[str, Any]] = None
-            if structured is not None:
-                if isinstance(structured, dict):
-                    structured_out = structured
-                elif hasattr(structured, "model_dump"):
-                    structured_out = structured.model_dump()  # type: ignore[union-attr]
+            validation_error: Optional[str] = None
+            is_valid = False
+            
+            # Usa validador se disponível
+            if AI_VALIDATOR_AVAILABLE and validate_ai_response is not None:
+                # Tenta primeiro o structured existente, senão usa raw_response
+                if structured is not None and isinstance(structured, dict):
+                    # Structured já existe, vamos validá-lo
+                    try:
+                        json_str = json.dumps(structured, ensure_ascii=False)
+                        validated_data, is_valid = validate_ai_response(json_str)
+                        if is_valid:
+                            structured_out = validated_data
+                        else:
+                            validation_error = validated_data.get("_validation_error", "unknown")
+                            logging.warning(f"AI_RESPONSE_INVALID | structured parse error: {validation_error}")
+                    except Exception as e:
+                        validation_error = str(e)
+                        logging.warning(f"AI_RESPONSE_VALIDATION_ERROR: {e}")
+                else:
+                    # Não tem structured, valida raw_response
+                    validated_data, is_valid = validate_ai_response(analysis_text)
+                    if is_valid:
+                        structured_out = validated_data
+                    else:
+                        validation_error = validated_data.get("_validation_error", "unknown")
+                        # Log seguro - apenas motivo e tamanho
+                        logging.warning(
+                            f"AI_RESPONSE_INVALID | erro={validation_error} | "
+                            f"tamanho={len(analysis_text)}"
+                        )
+            else:
+                # Fallback para comportamento original (sem validador)
+                if structured is not None:
+                    if isinstance(structured, dict):
+                        structured_out = structured
+                    elif hasattr(structured, "model_dump"):
+                        structured_out = structured.model_dump()
+                is_valid = structured_out is not None
 
             tipo_evento = event_data.get("tipo_evento", "N/A")
             ativo = event_data.get("ativo") or event_data.get("symbol") or "N/A"
 
-            logging.info(
-                f"✅ IA [{self.mode or 'mock'}] analisou: {tipo_evento} - {ativo}"
-            )
+            # ============================================================
+            # EMITE EVENTO DE SUCESSO APENAS APÓS VALIDAÇÃO
+            # ============================================================
+            if is_valid and structured_out is not None:
+                # Log da análise validada
+                try:
+                    json_log = json.dumps(structured_out, ensure_ascii=False, separators=(",", ":"))
+                    logging.info(f"✅ AI_ANALYSIS_VALIDATED: {json_log}")
+                except Exception:
+                    pass
+                
+                # Emite evento de sucesso APENAS se validação passou
+                try:
+                    self.slog.info(
+                        "ai_analyze_ok",
+                        mode=self.mode or "mock",
+                        model=self.model_name,
+                        tipo_evento=tipo_evento,
+                        ativo=ativo,
+                        confidence=structured_out.get("confidence", 0.0),
+                        action=structured_out.get("action", "wait"),
+                    )
+                except Exception:
+                    pass
+            else:
+                # Resposta inválida - emite evento de erro
+                try:
+                    self.slog.warning(
+                        "ai_response_invalid",
+                        mode=self.mode or "mock",
+                        error=validation_error or "validation_failed",
+                        tipo_evento=tipo_evento,
+                        ativo=ativo,
+                    )
+                except Exception:
+                    pass
 
-            try:
-                self.slog.info(
-                    "ai_analyze_ok",
-                    mode=self.mode or "mock",
-                    model=self.model_name,
-                    tipo_evento=tipo_evento,
-                    ativo=ativo,
-                )
-            except Exception:
-                pass
+            logging.info(
+                f"✅ IA [{self.mode or 'mock'}] analisou: {tipo_evento} - {ativo} | "
+                f"valid={is_valid}"
+            )
 
             return {
                 "raw_response": analysis_text,
@@ -2908,9 +3004,10 @@ class AIAnalyzer:
                 "tipo_evento": tipo_evento,
                 "ativo": ativo,
                 "timestamp": self.time_manager.now_iso(),
-                "success": True,
+                "success": is_valid,
                 "mode": self.mode or "mock",
                 "model": self.model_name,
+                "validation_error": validation_error,
             }
 
         except Exception as e:
@@ -3024,7 +3121,7 @@ class AIAnalyzer:
 
 if __name__ == "__main__":
     print("\n" + "=" * 70)
-    print("🧪 TESTANDO AI_ANALYZER v2.5.1 (GroqCloud - modo texto livre)")
+    print("🧪 TESTANDO AI_ANALYZER v2.5.1 (GroqCloud - JSON strict mode)")
     print("=" * 70)
 
     logging.basicConfig(
