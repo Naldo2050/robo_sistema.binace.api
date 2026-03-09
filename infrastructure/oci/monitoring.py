@@ -58,7 +58,21 @@ class OCIMonitor:
                 self.auth_method = "config_file"
                 logger.info("✅ OCI Monitoring: Autenticado via Config File")
             except Exception as e2:
-                logger.warning(f"⚠️ OCI Monitoring DESATIVADO: Falha na autenticação. {e2}")
+                error_message = str(e2 or "")
+                config_path_hint = "~/.oci/config"
+                if "Could not find config file" in error_message:
+                    logger.warning(
+                        "⚠️ OCI Monitoring DESATIVADO: falha na autenticação. "
+                        "Verifique Instance Principal ou o arquivo %s.",
+                        config_path_hint,
+                    )
+                else:
+                    logger.warning(
+                        "⚠️ OCI Monitoring DESATIVADO: falha na autenticação. "
+                        "Verifique Instance Principal ou o arquivo %s. motivo=%s",
+                        config_path_hint,
+                        error_message,
+                    )
                 self.enabled = False
 
     def post_metrics(self, metrics_dict):

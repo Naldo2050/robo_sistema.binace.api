@@ -12,8 +12,41 @@ Correções:
 """
 
 import sys
-import io
 import os
+import io
+
+# ══════════════════════════════════════════════════════════════════
+# FIX DE ENCODING PARA WINDOWS - VERSÃO SEGURA
+# ══════════════════════════════════════════════════════════════════
+def _fix_encoding_windows() -> None:
+    """
+    Corrige encoding no Windows sem fechar streams.
+    Evita 'I/O operation on closed file'.
+    """
+    if sys.platform != "win32":
+        return
+
+    try:
+        # Só reconfigura se o stream estiver aberto e for um TextIOWrapper
+        # Usa getattr para evitar erro de tipo estático do Pylance
+        reconfigure = getattr(sys.stdout, 'reconfigure', None)
+        if reconfigure is not None and not sys.stdout.closed:
+            reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
+    try:
+        reconfigure = getattr(sys.stderr, 'reconfigure', None)
+        if reconfigure is not None and not sys.stderr.closed:
+            reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
+    # Variável de ambiente para subprocessos
+    os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
+
+_fix_encoding_windows()
+
 import logging
 import asyncio
 import traceback
@@ -30,20 +63,6 @@ if os.getenv("DEBUG_CREATE_TASK") == "1":
         return _real_create_task(coro, *args, **kwargs)
 
     asyncio.create_task = traced_create_task
-
-# 🔧 FORÇAR UTF-8 NO WINDOWS (DEVE SER A PRIMEIRA COISA)
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore
-    except AttributeError:
-        # Fallback para Python < 3.7
-        sys.stdout = io.TextIOWrapper(
-            sys.stdout.buffer, encoding="utf-8", errors="replace"
-        )
-        sys.stderr = io.TextIOWrapper(
-            sys.stderr.buffer, encoding="utf-8", errors="replace"
-        )
 
 # Carrega variáveis de ambiente do .env
 load_dotenv()
@@ -169,9 +188,13 @@ async def main() -> int:
     log_level_name = getattr(config, "LOG_LEVEL", "INFO").upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
 
+    handler = logging.StreamHandler(
+        stream=io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace") if hasattr(sys.stdout, "buffer") else sys.stdout
+    )
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[handler]
     )
     logging.info(f"📊 Nível de log configurado: {log_level_name}")
 

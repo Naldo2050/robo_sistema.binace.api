@@ -38,8 +38,10 @@ As janelas são CRIADAS no arquivo principal: market_orchestrator/market_orchest
 
 import asyncio
 import logging
+import queue
+import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import config
@@ -76,6 +78,11 @@ class WindowProcessor:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._ticker_task: Optional[asyncio.Task] = None
+        self._queue: "queue.Queue[Optional[Tuple[Any, List[Dict[str, Any]], int]]]" = queue.Queue(
+            maxsize=32
+        )
+        self._worker_stop = threading.Event()
+        self._worker_thread: Optional[threading.Thread] = None
         
         self.window_count = 0
         self._shutdown_event = asyncio.Event()
@@ -88,6 +95,15 @@ class WindowProcessor:
             
         self._running = True
         self._shutdown_event.clear()
+        self._worker_stop.clear()
+
+        if self._worker_thread is None or not self._worker_thread.is_alive():
+            self._worker_thread = threading.Thread(
+                target=self._worker_loop,
+                name=f"window_processor_{self.symbol}",
+                daemon=True,
+            )
+            self._worker_thread.start()
         
         # Cria tarefa para processamento de janelas
         self._task = asyncio.create_task(self._run())
@@ -106,6 +122,18 @@ class WindowProcessor:
         
         self._running = False
         self._shutdown_event.set()
+        self._worker_stop.set()
+
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            pass
+
+        if self._worker_thread and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=15.0)
+            if self._worker_thread.is_alive():
+                self.logger.warning("Timeout ao aguardar worker de janelas finalizar")
+        self._worker_thread = None
         
         # Cancela tarefas
         tasks = [self._task, self._ticker_task]
@@ -141,6 +169,56 @@ class WindowProcessor:
         except Exception as e:
             self.logger.error(f"Erro no ticker do WindowProcessor: {e}")
 
+    def submit_window(
+        self,
+        bot: Any,
+        window_data: List[Dict[str, Any]],
+        close_ms: Optional[int],
+    ) -> bool:
+        """
+        Enfileira uma janela para processamento em background.
+        O snapshot evita que o caminho de ingestao fique bloqueado.
+        """
+        if not window_data or close_ms is None:
+            return False
+
+        snapshot = [dict(trade) for trade in window_data if isinstance(trade, dict)]
+
+        try:
+            self._queue.put_nowait((bot, snapshot, int(close_ms)))
+        except queue.Full:
+            self.logger.warning(
+                "Fila de janelas cheia (%d pendentes). Processando janela atual de forma síncrona.",
+                self._queue.qsize(),
+            )
+            return False
+
+        backlog = self._queue.qsize()
+        if backlog >= 3:
+            self.logger.warning("Backlog de janelas pendentes: %d", backlog)
+        return True
+
+    def _worker_loop(self) -> None:
+        """Worker dedicado para tirar processamento pesado do caminho do WebSocket."""
+        while not self._worker_stop.is_set() or not self._queue.empty():
+            try:
+                item = self._queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
+
+            if item is None:
+                self._queue.task_done()
+                continue
+
+            bot, window_data, close_ms = item
+            try:
+                process_window_snapshot(bot, window_data, close_ms)
+                self.window_count += 1
+            except Exception as e:
+                self.logger.error(f"Erro no worker de janelas: {e}", exc_info=True)
+            finally:
+                self._queue.task_done()
+
 
 def process_window(bot) -> None:
     """
@@ -151,6 +229,27 @@ def process_window(bot) -> None:
 
     if not bot.window_data or bot.should_stop:
         bot.window_data = []
+        return
+
+    window_data = [dict(trade) for trade in bot.window_data if isinstance(trade, dict)]
+    close_ms = bot.window_end_ms
+
+    try:
+        process_window_snapshot(bot, window_data, close_ms)
+    finally:
+        bot.window_data = []
+
+
+def process_window_snapshot(
+    bot,
+    window_data: List[Dict[str, Any]],
+    close_ms: Optional[int],
+) -> None:
+    """
+    Processa uma janela a partir de um snapshot imutável.
+    Usado pelo worker em background e pelo caminho síncrono de fallback.
+    """
+    if not window_data or bot.should_stop or close_ms is None:
         return
 
     # PATCH 2: warmup thread-safe com lock
@@ -167,15 +266,13 @@ def process_window(bot) -> None:
             if bot.warmup_windows_remaining <= 0:
                 bot.warming_up = False
                 logging.info("✅ AQUECIMENTO CONCLUÍDO - Sistema pronto!")
-
-            bot.window_data = []
             return
 
     # ----------------------------
     # Normalização dos trades
     # ----------------------------
     valid_window_data: List[Dict[str, Any]] = []
-    for trade in bot.window_data:
+    for trade in window_data:
         if "q" in trade and "p" in trade and "T" in trade:
             try:
                 trade["q"] = float(trade["q"])
@@ -190,16 +287,12 @@ def process_window(bot) -> None:
             f"⏳ Janela com apenas {len(valid_window_data)} trades "
             f"(mín: {bot.min_trades_for_pipeline}). Aguardando mais dados..."
         )
-        # FIX: AsyncTradeBuffer não é um container iterável de trades para uso como fallback.
-        # Se a janela não tem trades suficientes, aguarda mais dados na próxima janela.
-        bot.window_data = []
         return
 
     total_volume = sum(
         float(trade.get("q", 0)) for trade in valid_window_data
     )
     if total_volume == 0:
-        bot.window_data = []
         return
 
     bot.window_count += 1
@@ -260,7 +353,7 @@ def process_window(bot) -> None:
                 pass
 
             # PATCH 3: cálculo robusto de dynamic_delta_threshold (NaN/Inf-safe)
-            dynamic_delta_threshold = 0.0
+            dynamic_delta_threshold = 2.0 # Default warmup (BTC)
             if len(bot.delta_history) > 10:
                 try:
                     mean_delta = float(np.mean(bot.delta_history))
@@ -276,14 +369,17 @@ def process_window(bot) -> None:
                         mean_delta + bot.delta_std_dev_factor * std_delta
                     )
 
+                    # PATCH: Impor floor mínimo para não silenciar sinais (ex: BTC delta < 0.5 é insignificante)
+                    dynamic_delta_threshold = max(0.5, dynamic_delta_threshold)
+
                     # Valida resultado
                     if np.isnan(dynamic_delta_threshold) or np.isinf(dynamic_delta_threshold):
-                        dynamic_delta_threshold = 0.0
-                        logging.warning("⚠️ Threshold calculado inválido, usando 0.0")
+                        dynamic_delta_threshold = 1.0  # Safe default if math fails
+                        logging.warning("⚠️ Threshold calculado inválido, usando 1.0")
 
                 except Exception as e:
                     logging.error(f"Erro ao calcular threshold: {e}")
-                    dynamic_delta_threshold = 0.0
+                    dynamic_delta_threshold = 1.0
 
             # ----------------------------
             # Macro contexto + VP histórico
@@ -312,9 +408,6 @@ def process_window(bot) -> None:
             else:
                 bot.last_valid_vp = historical_profile.copy()
                 bot.last_valid_vp_time = time.time()
-
-            # Timestamp de fechamento da janela
-            close_ms = bot.window_end_ms
 
             # Atualiza níveis de VP
             bot.levels.update_from_vp(historical_profile)
@@ -406,7 +499,25 @@ def process_window(bot) -> None:
 
             if final_features is not None and predict_up_probability is not None:
                 try:
-                    ml_prob_up = predict_up_probability(final_features)
+                    if not hasattr(bot, 'feature_calc'):
+                        from ml.feature_calculator import LiveFeatureCalculator
+                        bot.feature_calc = LiveFeatureCalculator()
+                        
+                    if valid_window_data:
+                        # Alimenta TODOS os trades da janela para manter alta fidelidade nos indicadores
+                        for trade in valid_window_data:
+                            bot.feature_calc.update(
+                                price=float(trade.get("p", 0.0)),
+                                volume=float(trade.get("q", 0.0))
+                            )
+                        
+                    computed_features = bot.feature_calc.compute()
+                    if isinstance(final_features, dict):
+                        enriched_features = {**final_features, **computed_features}
+                    else:
+                        enriched_features = final_features
+                        
+                    ml_prob_up = predict_up_probability(enriched_features)
                 except Exception as e:
                     logging.error(
                         f"Erro ao executar predição do modelo de ML: {e}",
@@ -425,6 +536,16 @@ def process_window(bot) -> None:
                         f"Erro ao atualizar macro_context com probabilidade quantitativa: {e}",
                         exc_info=True,
                     )
+
+            # Garantir que Timeframe esteja nos sinais
+            if signals:
+                for s in signals:
+                    if "multi_tf" not in s and "tf" not in s:
+                        s["multi_tf"] = {
+                            "1m": {"trend": "neutral", "realized_vol": 0.0},
+                            "5m": {"trend": "neutral", "realized_vol": 0.0},
+                            "15m": {"trend": "neutral", "realized_vol": 0.0},
+                        }
 
             # Encaminha para o processador de sinais original
             bot._process_signals(
@@ -446,9 +567,13 @@ def process_window(bot) -> None:
             # ----------------------------
             try:
                 feature_store = getattr(bot, "feature_store", None)
-                if feature_store is not None and final_features is not None:
+                # Salva enriched_features se disponíveis (incluem as sintéticas do LiveFeatureCalculator),
+                # caso contrário usa as final_features do pipeline.
+                features_to_save = locals().get('enriched_features', final_features)
+                
+                if feature_store is not None and features_to_save is not None:
                     window_id = f"{bot.symbol}_{close_ms}"
-                    feature_store.save_features(window_id, final_features)
+                    feature_store.save_features(window_id, features_to_save)
             except Exception as e:
                 logging.error(
                     f"Erro ao salvar features no FeatureStore: {e}",
@@ -495,4 +620,3 @@ def process_window(bot) -> None:
                     pipeline.close()
             except Exception as e:
                 logging.debug(f"Falha ao fechar pipeline: {e}")
-            bot.window_data = []

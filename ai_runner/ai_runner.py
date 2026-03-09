@@ -615,20 +615,33 @@ class AIRunner:
                 # Se market_data for um JSON string, tenta parsear e otimizar
                 parsed_data = json.loads(market_data)
                 if isinstance(parsed_data, dict):
-                    optimized_payload = AIPayloadOptimizer.optimize(parsed_data)
+                    optimized_result = AIPayloadOptimizer.optimize(parsed_data)
                     
-                    # Calcula economia de tamanho para monitoramento
-                    original_bytes = len(market_data.encode("utf-8"))
-                    optimized_bytes = len(optimized_payload.encode("utf-8"))
-                    saved_bytes = max(0, original_bytes - optimized_bytes)
-                    reduction_pct = round((saved_bytes / original_bytes * 100.0), 2) if original_bytes else 0.0
-                    
-                    # LOGAR PARA CONFERÊNCIA (Crucial) - Nível INFO para garantir visibilidade em produção
-                    self.logger.info(f" >>> PAYLOAD OTIMIZADO (Para LLM - método legado): {optimized_payload}")
-                    self.logger.info(f" >>> Tamanho Original: {original_bytes} chars | Otimizado: {optimized_bytes} chars | Redução: {reduction_pct}%")
-                    
-                    # Usa o payload otimizado no prompt
-                    data_for_prompt = json.loads(optimized_payload)
+                    # Verificar se o resultado é string ou dict
+                    if isinstance(optimized_result, str):
+                        # Usar como string diretamente
+                        optimized_payload_str = optimized_result
+                        data_for_prompt = json.loads(optimized_payload_str)
+                        
+                        # Calcula economia de tamanho para monitoramento
+                        original_bytes = len(market_data.encode("utf-8"))
+                        optimized_bytes = len(optimized_payload_str.encode("utf-8"))
+                        saved_bytes = max(0, original_bytes - optimized_bytes)
+                        reduction_pct = round((saved_bytes / original_bytes * 100.0), 2) if original_bytes else 0.0
+                        
+                        # LOGAR PARA CONFERÊNCIA (Crucial) - Nível INFO para garantir visibilidade em produção
+                        self.logger.info(f" >>> PAYLOAD OTIMIZADO (Para LLM - método legado): [string {len(optimized_payload_str)} chars]")
+                        self.logger.info(f" >>> Tamanho Original: {original_bytes} chars | Otimizado: {optimized_bytes} chars | Redução: {reduction_pct}%")
+                    elif isinstance(optimized_result, dict):
+                        # Usar como dict diretamente
+                        data_for_prompt = optimized_result
+                        original_bytes = len(market_data.encode("utf-8"))
+                        optimized_bytes = len(json.dumps(optimized_result).encode("utf-8"))
+                        saved_bytes = max(0, original_bytes - optimized_bytes)
+                        reduction_pct = round((saved_bytes / original_bytes * 100.0), 2) if original_bytes else 0.0
+                        
+                        self.logger.info(f" >>> PAYLOAD OTIMIZADO (Para LLM - método legado): dict com {len(optimized_result)} chaves")
+                        self.logger.info(f" >>> Tamanho Original: {original_bytes} chars | Otimizado: {optimized_bytes} chars | Redução: {reduction_pct}%")
             except (json.JSONDecodeError, Exception) as e:
                 # Se não for JSON ou falhar na otimização, usa o dado original
                 self.logger.debug("Não foi possível otimizar payload no método legado: %s", e)

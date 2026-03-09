@@ -86,6 +86,38 @@ class EventStore:
                     "CREATE INDEX IF NOT EXISTS idx_events_window ON events(window_id);"
                 )
 
+                # Tabela de outcomes dos sinais (criada aqui para garantir existência atômica)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS signal_outcomes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        signal_epoch_ms INTEGER NOT NULL,
+                        event_type TEXT NOT NULL,
+                        battle_result TEXT,
+                        entry_price REAL NOT NULL,
+                        symbol TEXT DEFAULT 'BTCUSDT',
+                        context_json TEXT,
+                        outcome_5m_pct REAL,
+                        outcome_15m_pct REAL,
+                        outcome_30m_pct REAL,
+                        outcome_60m_pct REAL,
+                        outcome_direction_5m TEXT,
+                        outcome_direction_15m TEXT,
+                        outcome_direction_30m TEXT,
+                        outcome_direction_60m TEXT,
+                        evaluated_at INTEGER,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_outcomes_type ON signal_outcomes(event_type);"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_outcomes_battle ON signal_outcomes(battle_result);"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_outcomes_epoch ON signal_outcomes(signal_epoch_ms);"
+                )
+
         except Exception as e:
             self.logger.critical(f"Erro fatal ao inicializar banco de dados: {e}")
             raise

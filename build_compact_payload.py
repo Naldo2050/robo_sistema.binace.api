@@ -13,6 +13,7 @@ Uso no ai_runner.py:
 """
 
 import logging
+import time
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,34 @@ _ABS = {
     "Forte Vendedora": "STRONG_SELL",
     "Absorcao de Compra": "BUY_ABS", "Absorcao de Venda": "SELL_ABS",
 }
+
+
+def _default_tf_payload(
+    event_data: dict,
+    raw: dict,
+    current_price: Any,
+    market_environment: dict,
+) -> dict:
+    """Gera um bloco TF mínimo e consistente quando o evento não traz multi_tf."""
+    tf_name = (
+        event_data.get("timeframe")
+        or raw.get("timeframe")
+        or event_data.get("tf")
+        or "1m"
+    )
+    trend = market_environment.get("trend_direction") or "Lateral"
+    structure = market_environment.get("market_structure") or "Range"
+    return {
+        str(tf_name): {
+            "t": _REG.get(str(trend), "SIDE"),
+            "ema": _r(current_price, 0),
+            "rsi": 50.0,
+            "macd": [0, 0],
+            "adx": None,
+            "atr": None,
+            "reg": _REG.get(str(structure), "RANGE"),
+        }
+    }
 
 
 def build_compact_payload(event_data: dict) -> dict:
@@ -283,13 +312,27 @@ def build_compact_payload(event_data: dict) -> dict:
             "reg": _REG.get(regime_str, regime_str[:4].upper() if regime_str else "?"),
         }
 
+    if not tf_out:
+        tf_out = _default_tf_payload(event_data, raw, current_price, me)
+        logger.warning(
+            "BUILD_COMPACT: TF ausente no evento, aplicando default consistente | trigger=%s | tf_keys=%s",
+            event_data.get("tipo_evento", "UNKNOWN"),
+            list(tf_out.keys()),
+        )
+
     # ======================================
     # MONTAR RESULTADO FINAL
     # ======================================
     result = {
         "symbol": event_data.get("symbol", "BTCUSDT"),
         "window": event_data.get("janela_numero"),
-        "epoch_ms": event_data.get("epoch_ms"),
+        "epoch_ms": (
+            event_data.get("epoch_ms")
+            or event_data.get("timestamp_ms")
+            or event_data.get("event_timestamp_ms")
+            or (int(event_data.get("timestamp", 0) * 1000) if event_data.get("timestamp") else None)
+            or int(time.time() * 1000)
+        ),
         "trigger": event_data.get("tipo_evento", "UNKNOWN"),
         "price": price,
     }
@@ -325,12 +368,14 @@ def build_compact_payload(event_data: dict) -> dict:
         missing.append("PRICE")
     if not result.get("tf"):
         missing.append("TF")
-    if not result.get("vp"):
-        missing.append("VP")
     if not result.get("ob"):
         missing.append("OB")
     if not result.get("flow"):
         missing.append("FLOW")
+
+    optional_missing = []
+    if not result.get("vp"):
+        optional_missing.append("VP")
 
     if missing:
         logger.error(
@@ -338,11 +383,21 @@ def build_compact_payload(event_data: dict) -> dict:
             missing, list(event_data.keys())[:10], list(raw.keys())[:10]
         )
     else:
+        if optional_missing:
+            logger.info(
+                "BUILD_COMPACT: DADOS OPCIONAIS AUSENTES %s | trigger=%s",
+                optional_missing,
+                event_data.get("tipo_evento", "UNKNOWN"),
+            )
+
         import json
         size = len(json.dumps(result, separators=(",", ":")))
         logger.info(
             "BUILD_COMPACT: OK | price=%s | sections=%d | size=%d chars | ~%d tokens",
-            result["price"].get("c"), len(result), size, size // 4
+            result["price"].get("c"),
+            len(result),
+            size,
+            size // 4,
         )
 
     return result

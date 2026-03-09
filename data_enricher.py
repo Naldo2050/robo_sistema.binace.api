@@ -5,6 +5,8 @@ Enriquecimento de dados para o sistema:
   - Fibonacci (pattern_recognition.fibonacci_levels)
   - HVNs (historical_vp.*.volume_nodes.hvn_nodes)
   - Liquidity clusters (liquidity_heatmap.clusters)
+  - NOVO: ATR-based targets (calculado do multi_tf)
+  - NOVO: Volume Profile POC/VAH/VAL como targets primários
 - Adiciona métricas mock de:
   - options_metrics
   - onchain_metrics
@@ -21,7 +23,7 @@ import asyncio
 
 # Importar métricas do sistema
 try:
-    from metrics_collector import (  # type: ignore[import]
+    from metrics_collector import (
         record_enrich_error,
         track_latency,
     )
@@ -29,17 +31,17 @@ try:
 except ImportError:
     METRICS_AVAILABLE = False
 
-    def record_enrich_error(event_type: str, error: Optional[str] = None) -> None:  # type: ignore[misc]
+    def record_enrich_error(event_type: str, error: Optional[str] = None) -> None:
         pass
 
-    def track_latency(metric_name: str):  # type: ignore[misc]
-        def decorator(func):  # type: ignore[misc]
+    def track_latency(metric_name: str):
+        def decorator(func):
             return func
         return decorator
 
 logger = logging.getLogger(__name__)
 
-# Importar fetchers reais (on-chain e funding)
+# Importar fetchers reais
 try:
     from onchain_fetcher import OnchainFetcher
     _ONCHAIN_FETCHER = OnchainFetcher()
@@ -62,8 +64,8 @@ except ImportError:
 @dataclass
 class PriceTarget:
     level: float
-    confidence: float  # 0-1
-    source: str        # 'fib_...', 'hvn_daily', 'liquidity_cluster', etc.
+    confidence: float
+    source: str
     weight: float
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
@@ -80,23 +82,24 @@ class PriceTarget:
 class DataEnricher:
     """
     Enriquecedor de dados baseado APENAS no raw_event atual.
-    Não depende de DataFrame histórico externo.
+    
+    v2: Melhorias no price_targets:
+    - Extrai POC/VAH/VAL do historical_vp como targets primários (SEMPRE disponíveis)
+    - Gera targets baseados em ATR quando multi_tf disponível
+    - Fallback matemático robusto baseado em volatilidade
     """
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.symbol = config.get("SYMBOL", "BTCUSDT")
 
-        # Parâmetros base para thresholds adaptativos
         self.abs_base = config.get("ABSORPTION_THRESHOLD_BASE", 0.15)
         self.flow_base = config.get("FLOW_THRESHOLD_BASE", 0.10)
         self.min_vol_factor = config.get("MIN_VOL_FACTOR", 0.5)
         self.max_vol_factor = config.get("MAX_VOL_FACTOR", 2.0)
+        self._cached_historical_vp = None
 
     def enrich_from_raw_event(self, raw_event: Dict[str, Any]) -> Dict[str, Any]:
-        # Suporta dois formatos:
-        # A) preco_fechamento e volume_total no root
-        # B) preco_fechamento e volume_total dentro de raw_event["raw_event"]
         inner = raw_event.get("raw_event") if isinstance(raw_event.get("raw_event"), dict) else {}
         assert isinstance(inner, dict)
 
@@ -115,7 +118,6 @@ class DataEnricher:
                 record_enrich_error("enrich_from_raw_event")
             return {}
 
-        # timestamp vem do outer (porque inner não tem)
         timestamp = (
             raw_event.get("timestamp_utc")
             or raw_event.get("timestamp")
@@ -123,7 +125,6 @@ class DataEnricher:
             or inner.get("timestamp")
         )
 
-        # A partir daqui, use raw_event externo completo (ele tem historical_vp, multi_tf, liquidity_heatmap)
         try:
             price_targets = self._build_price_targets(raw_event, current_price=price)
             price_targets_dicts = [pt.to_dict() for pt in price_targets]
@@ -152,81 +153,68 @@ class DataEnricher:
         """
         Calcula advanced_analysis usando dados COMPLETOS do raw_event externo.
         """
+        outer_raw = {}
+        inner_raw = {}
         try:
             logger.debug("[DEBUG] enrich_event_with_advanced_analysis CHAMADA!")
 
-            # Pegar o raw_event EXTERNO (completo)
             outer_raw = event.get("raw_event", {})
-            logger.debug(f"[DEBUG] outer_raw keys: {list(outer_raw.keys())}")
-
-            # Pegar o raw_event INTERNO (onde está preço/volume e onde salvar resultado)
             inner_raw = outer_raw.get("raw_event", {})
-            logger.debug(f"[DEBUG] inner_raw keys: {list(inner_raw.keys())}")
 
-            # Extrair dados do EXTERNO (completo)
-            multi_tf = outer_raw.get("multi_tf", {})
-            logger.debug(f"[DEBUG] multi_tf presente: {bool(multi_tf)}")
-
-            historical_vp = outer_raw.get("historical_vp", {})
-            logger.debug(f"[DEBUG] historical_vp presente: {bool(historical_vp)}")
-
-            liquidity_heatmap = outer_raw.get("liquidity_heatmap", {})
-            timestamp_utc = outer_raw.get("timestamp_utc")
-            logger.debug(f"[DEBUG] timestamp_utc: {timestamp_utc}")
-
-            # Extrair preço/volume do INTERNO (compatibilidade com formatos antigos)
-            price = inner_raw.get("preco_fechamento", outer_raw.get("preco_fechamento", outer_raw.get("ohlc", {}).get("close")))
+            price = (
+                inner_raw.get("preco_fechamento")
+                or outer_raw.get("preco_fechamento")
+                or outer_raw.get("ohlc", {}).get("close")
+            )
             if price is None:
-                # Valor padrão baseado no último preço conhecido do BTC (evita confiança 0%)
-                price = 45000.0  # Último preço conhecido aproximado
+                price = 45000.0
                 logger.warning(f"preco_fechamento ausente, usando valor padrão: {price}")
+            
             volume = inner_raw.get("volume_total", outer_raw.get("volume_total", 0))
 
-            # Calcular volatilidade do multi_tf (NÃO usar fallback 0.01)
-            current_volatility = 0.01  # fallback apenas se não houver dados
+            multi_tf = outer_raw.get("multi_tf", {})
+            timestamp_utc = outer_raw.get("timestamp_utc")
+
+            # Volatilidade do multi_tf
+            current_volatility = 0.01
             if multi_tf:
-                logger.debug(f"[DEBUG] multi_tf keys: {list(multi_tf.keys())}")
-                # Prioridade: 1d > 4h > 1h > 15m
                 for tf in ["1d", "4h", "1h", "15m"]:
                     if tf in multi_tf and "realized_vol" in multi_tf[tf]:
                         current_volatility = multi_tf[tf]["realized_vol"]
-                        logger.debug(f"[DEBUG] multi_tf['{tf}']['realized_vol']: {current_volatility}")
                         break
 
-            # Calcular price_targets do historical_vp
-            price_targets = []
-            if historical_vp:
-                for period in ["daily", "weekly", "monthly"]:
-                    if period in historical_vp:
-                        vp = historical_vp[period]
-                        if vp.get("vah"):
-                            price_targets.append({
-                                "type": "resistance",
-                                "price": vp["vah"],
-                                "source": f"vah_{period}"
-                            })
-                        if vp.get("val"):
-                            price_targets.append({
-                                "type": "support",
-                                "price": vp["val"],
-                                "source": f"val_{period}"
-                            })
-                        if vp.get("poc"):
-                            price_targets.append({
-                                "type": "poc",
-                                "price": vp["poc"],
-                                "source": f"poc_{period}"
-                            })
+            # Resolver historical_vp de múltiplas fontes
+            historical_vp_src = (
+                outer_raw.get("historical_vp")
+                or outer_raw.get("volume_profile_historical")
+                or outer_raw.get("contextual", {}).get("historical_vp")
+                or outer_raw.get("enriched", {}).get("contextual", {}).get("historical_vp")
+                or getattr(self, '_last_historical_vp', None)
+                or getattr(self, '_cached_historical_vp', None)
+            )
 
-            # Construir advanced_analysis COMPLETO
+            if historical_vp_src and historical_vp_src != getattr(self, '_cached_historical_vp', None):
+                self._cached_historical_vp = historical_vp_src
+
+            if historical_vp_src:
+                self._last_historical_vp = historical_vp_src
+                if "historical_vp" not in outer_raw:
+                    outer_raw["historical_vp"] = historical_vp_src
+
+            # ── NOVO: Construir price_targets com método melhorado ──
+            price_targets = self._build_price_targets_enhanced(
+                outer_raw, price, current_volatility, historical_vp_src
+            )
+
+            # Construir advanced_analysis
             advanced_analysis = {
                 "symbol": outer_raw.get("symbol", inner_raw.get("symbol", "BTCUSDT")),
                 "price": price,
                 "volume": volume,
-                "timestamp": timestamp_utc,  # ← NOVO: agora tem timestamp
-                "price_targets": price_targets,  # ← NOVO: agora tem targets
+                "timestamp": timestamp_utc,
+                "price_targets": price_targets,
                 "adaptive_thresholds": {
-                    "current_volatility": current_volatility,  # ← CORRIGIDO: usa multi_tf
+                    "current_volatility": current_volatility,
                     "volatility_factor": min(2.0, max(0.5, current_volatility * 100)),
                     "absorption_threshold": 0.3,
                     "flow_threshold": 0.2
@@ -239,12 +227,7 @@ class DataEnricher:
                 )
             }
 
-            logger.debug("[DEBUG] advanced_analysis calculado:")
-            logger.debug(f"[DEBUG]   timestamp: {timestamp_utc}")
-            logger.debug(f"[DEBUG]   current_volatility: {current_volatility}")
-            logger.debug(f"[DEBUG]   price_targets count: {len(price_targets)}")
-
-            # Salvar no raw_event INTERNO se existir, senão no EXTERNO (compatibilidade)
+            # Salvar no raw_event
             if inner_raw:
                 inner_raw["advanced_analysis"] = advanced_analysis
             else:
@@ -254,34 +237,194 @@ class DataEnricher:
 
         except Exception as e:
             logger.error(
-                "[DataEnricher] ERRO CRÍTICO em enrich_event_with_advanced_analysis: %s | "
-                "outer_raw keys: %s | inner_raw keys: %s | traceback: %s",
-                e,
-                list(outer_raw.keys()) if 'outer_raw' in dir() else 'N/A',
-                list(inner_raw.keys()) if 'inner_raw' in dir() else 'N/A',
-                exc_info=True
+                "[DataEnricher] ERRO CRÍTICO em enrich_event_with_advanced_analysis: %s",
+                e, exc_info=True
             )
             return {}
 
-    # ------------------------------
-    #   PRICE TARGETS
-    # ------------------------------
+    # ──────────────────────────────────────────────────────────────────────
+    #   NOVO: Price targets melhorado (nunca retorna vazio)
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _build_price_targets_enhanced(
+        self,
+        raw_event: Dict[str, Any],
+        current_price: float,
+        volatility: float,
+        historical_vp: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Constrói price_targets garantindo que NUNCA retorna vazio.
+        
+        Prioridade:
+        1. VP levels (POC/VAH/VAL) - sempre disponíveis após 1ª janela
+        2. Fibonacci levels
+        3. HVN nodes
+        4. Liquidity clusters
+        5. ATR-based targets (do multi_tf)
+        6. Fallback matemático (volatilidade)
+        """
+        targets: List[PriceTarget] = []
+
+        # 1. VP Levels (POC/VAH/VAL) - fonte PRIMÁRIA
+        if historical_vp:
+            targets.extend(self._extract_vp_levels(historical_vp, current_price))
+
+        # 2. Fibonacci
+        pr = raw_event.get("pattern_recognition", {})
+        fib_levels = pr.get("fibonacci_levels") or {}
+        targets.extend(self._extract_fibonacci_targets(fib_levels, current_price))
+
+        # 3. HVNs
+        hvp = raw_event.get("historical_vp", {})
+        targets.extend(self._extract_hvn_targets(hvp))
+
+        # 4. Liquidity clusters
+        lh = raw_event.get("liquidity_heatmap")
+        if not lh:
+            lh = raw_event.get("fluxo_continuo", {}).get("liquidity_heatmap")
+        if lh:
+            targets.extend(self._extract_liquidity_cluster_targets(lh))
+
+        # 5. ATR-based targets
+        multi_tf = raw_event.get("multi_tf", {})
+        targets.extend(self._extract_atr_targets(multi_tf, current_price))
+
+        # Consolidar
+        consolidated = self._consolidate_price_targets(targets)
+        result = [pt.to_dict() for pt in consolidated]
+
+        # 6. Fallback se ainda vazio
+        if not result:
+            vol_factor = max(0.005, volatility or 0.01)
+            result = [
+                {"level": round(current_price * (1 + vol_factor), 2), "confidence": 0.3,
+                 "source": "fallback_r1", "weight": 0.1},
+                {"level": round(current_price * (1 + vol_factor * 2), 2), "confidence": 0.2,
+                 "source": "fallback_r2", "weight": 0.05},
+                {"level": round(current_price * (1 - vol_factor), 2), "confidence": 0.3,
+                 "source": "fallback_s1", "weight": 0.1},
+                {"level": round(current_price * (1 - vol_factor * 2), 2), "confidence": 0.2,
+                 "source": "fallback_s2", "weight": 0.05},
+                {"level": round(current_price, 2), "confidence": 0.4,
+                 "source": "fallback_poc", "weight": 0.15},
+            ]
+            logger.info(f"[PT] Usando fallback matemático (vol={vol_factor:.4f})")
+        else:
+            logger.info(f"[PT] ✅ {len(result)} price targets gerados")
+
+        return result
+
+    def _extract_vp_levels(
+        self, historical_vp: Dict[str, Any], current_price: float
+    ) -> List[PriceTarget]:
+        """Extrai POC/VAH/VAL de todos os períodos do volume profile."""
+        targets: List[PriceTarget] = []
+        
+        # Peso por timeframe (daily mais importante que weekly/monthly)
+        tf_weights = {"daily": 0.35, "weekly": 0.25, "monthly": 0.20}
+        
+        for period, weight in tf_weights.items():
+            vp = historical_vp.get(period, {})
+            if not isinstance(vp, dict):
+                continue
+            
+            poc = vp.get("poc")
+            vah = vp.get("vah")
+            val = vp.get("val")
+            
+            if isinstance(poc, (int, float)) and poc > 0:
+                distance = abs(poc - current_price) / current_price
+                conf = max(0.4, min(0.95, 1.0 - distance * 5))
+                targets.append(PriceTarget(
+                    level=poc, confidence=conf,
+                    source=f"poc_{period}", weight=weight
+                ))
+            
+            if isinstance(vah, (int, float)) and vah > 0:
+                distance = abs(vah - current_price) / current_price
+                conf = max(0.3, min(0.9, 1.0 - distance * 5))
+                targets.append(PriceTarget(
+                    level=vah, confidence=conf,
+                    source=f"vah_{period}", weight=weight * 0.9
+                ))
+            
+            if isinstance(val, (int, float)) and val > 0:
+                distance = abs(val - current_price) / current_price
+                conf = max(0.3, min(0.9, 1.0 - distance * 5))
+                targets.append(PriceTarget(
+                    level=val, confidence=conf,
+                    source=f"val_{period}", weight=weight * 0.9
+                ))
+        
+        return targets
+
+    def _extract_atr_targets(
+        self, multi_tf: Dict[str, Any], current_price: float
+    ) -> List[PriceTarget]:
+        """Gera targets baseados em ATR/volatilidade do multi_tf."""
+        targets: List[PriceTarget] = []
+        
+        if not multi_tf:
+            return targets
+        
+        # Usar ATR do 1h ou 4h se disponível
+        for tf in ["1h", "4h", "1d"]:
+            tf_data = multi_tf.get(tf, {})
+            atr = tf_data.get("atr") or tf_data.get("realized_vol")
+            if not isinstance(atr, (int, float)) or atr <= 0:
+                continue
+            
+            # Para realized_vol (percentual), converter para preço
+            if atr < 1:
+                atr_price = current_price * atr
+            else:
+                atr_price = atr
+            
+            targets.append(PriceTarget(
+                level=current_price + atr_price,
+                confidence=0.35,
+                source=f"atr_{tf}_r1",
+                weight=0.15,
+            ))
+            targets.append(PriceTarget(
+                level=current_price - atr_price,
+                confidence=0.35,
+                source=f"atr_{tf}_s1",
+                weight=0.15,
+            ))
+            targets.append(PriceTarget(
+                level=current_price + atr_price * 1.5,
+                confidence=0.25,
+                source=f"atr_{tf}_r2",
+                weight=0.10,
+            ))
+            targets.append(PriceTarget(
+                level=current_price - atr_price * 1.5,
+                confidence=0.25,
+                source=f"atr_{tf}_s2",
+                weight=0.10,
+            ))
+            break  # Usar apenas o primeiro TF disponível
+        
+        return targets
+
+    # ──────────────────────────────────────────────────────────────────────
+    #   PRICE TARGETS (originais mantidos)
+    # ──────────────────────────────────────────────────────────────────────
 
     def _build_price_targets(
         self, raw_event: Dict[str, Any], current_price: float
     ) -> List[PriceTarget]:
         targets: List[PriceTarget] = []
 
-        # Fibonacci em pattern_recognition.fibonacci_levels
         pr = raw_event.get("pattern_recognition", {})
         fib_levels = pr.get("fibonacci_levels") or {}
         targets.extend(self._extract_fibonacci_targets(fib_levels, current_price))
 
-        # HVNs do historical_vp.*.volume_nodes.hvn_nodes
         historical_vp = raw_event.get("historical_vp", {})
         targets.extend(self._extract_hvn_targets(historical_vp))
 
-        # Liquidity clusters
         lh = raw_event.get("liquidity_heatmap")
         if not lh:
             lh = raw_event.get("fluxo_continuo", {}).get("liquidity_heatmap")
@@ -310,45 +453,30 @@ class DataEnricher:
             confidence = max(0.2, 1.0 - distance_pct * 4)
             confidence = min(0.95, confidence)
 
-            targets.append(
-                PriceTarget(
-                    level=value,
-                    confidence=confidence,
-                    source=f"fib_{key.replace('.', '_')}",
-                    weight=0.15,
-                )
-            )
+            targets.append(PriceTarget(
+                level=value, confidence=confidence,
+                source=f"fib_{key.replace('.', '_')}", weight=0.15,
+            ))
 
         if isinstance(high, (int, float)):
-            targets.append(
-                PriceTarget(
-                    level=high,
-                    confidence=0.3,
-                    source="fib_swing_high",
-                    weight=0.1,
-                )
-            )
+            targets.append(PriceTarget(
+                level=high, confidence=0.3,
+                source="fib_swing_high", weight=0.1,
+            ))
         if isinstance(low, (int, float)):
-            targets.append(
-                PriceTarget(
-                    level=low,
-                    confidence=0.3,
-                    source="fib_swing_low",
-                    weight=0.1,
-                )
-            )
+            targets.append(PriceTarget(
+                level=low, confidence=0.3,
+                source="fib_swing_low", weight=0.1,
+            ))
 
         return targets
 
     def _extract_hvn_targets(self, historical_vp: Dict[str, Any]) -> List[PriceTarget]:
-        """
-        Lê strings hvn_nodes de daily/weekly/monthly e transforma em targets.
-        Formato: "89999|28.68|8.70; 90054|12.84|3.90; ..."
-        Usa o segundo campo (28.68 etc.) como proxy de peso relativo.
-        """
         targets: List[PriceTarget] = []
 
         for timeframe, vp in historical_vp.items():
+            if not isinstance(vp, dict):
+                continue
             vol_nodes = vp.get("volume_nodes", {})
             hvn_str = vol_nodes.get("hvn_nodes")
             if not hvn_str or not isinstance(hvn_str, str):
@@ -365,9 +493,8 @@ class DataEnricher:
                     parts = e.split("|")
                     if len(parts) < 2:
                         continue
-                    price_str, score_str = parts[0], parts[1]
-                    price = float(price_str)
-                    score = float(score_str)
+                    price = float(parts[0])
+                    score = float(parts[1])
                     parsed.append((price, score))
                 except Exception:
                     continue
@@ -378,23 +505,18 @@ class DataEnricher:
             max_score = max(s for _, s in parsed) or 1.0
             for price, score in parsed:
                 vol_ratio = score / max_score
-                targets.append(
-                    PriceTarget(
-                        level=price,
-                        confidence=min(0.9, 0.5 + 0.5 * vol_ratio),
-                        source=f"hvn_{timeframe}",
-                        weight=0.25,
-                    )
-                )
+                targets.append(PriceTarget(
+                    level=price,
+                    confidence=min(0.9, 0.5 + 0.5 * vol_ratio),
+                    source=f"hvn_{timeframe}",
+                    weight=0.25,
+                ))
 
         return targets
 
     def _extract_liquidity_cluster_targets(
         self, heatmap: Dict[str, Any]
     ) -> List[PriceTarget]:
-        """
-        Usa liquidity_heatmap.clusters[*].center / total_volume
-        """
         targets: List[PriceTarget] = []
         clusters = heatmap.get("clusters", [])
         if not isinstance(clusters, list) or not clusters:
@@ -411,33 +533,25 @@ class DataEnricher:
         for c in clusters:
             center = c.get("center")
             vol = c.get("total_volume")
-            if not isinstance(center, (int, float)) or not isinstance(
-                vol, (int, float)
-            ):
+            if not isinstance(center, (int, float)) or not isinstance(vol, (int, float)):
                 continue
-
             vol_ratio = vol / max_vol
-            targets.append(
-                PriceTarget(
-                    level=center,
-                    confidence=min(0.9, 0.4 + 0.6 * vol_ratio),
-                    source="liquidity_cluster",
-                    weight=0.2,
-                )
-            )
+            targets.append(PriceTarget(
+                level=center,
+                confidence=min(0.9, 0.4 + 0.6 * vol_ratio),
+                source="liquidity_cluster",
+                weight=0.2,
+            ))
 
         return targets
 
-    # ------------------------------
+    # ──────────────────────────────────────────────────────────────────────
     #   CONSOLIDAÇÃO
-    # ------------------------------
+    # ──────────────────────────────────────────────────────────────────────
 
     def _consolidate_price_targets(
         self, targets: List[PriceTarget], consolidation_pct: float = 0.005
     ) -> List[PriceTarget]:
-        """
-        Agrupa alvos de preço próximos (ex: dentro de 0.5%).
-        """
         if not targets:
             return []
 
@@ -484,15 +598,11 @@ class DataEnricher:
             weight=min(0.5, avg_weight * 1.5),
         )
 
-    # ------------------------------
-    #   OPTIONS (requer API paga - Deribit)
-    # ------------------------------
+    # ──────────────────────────────────────────────────────────────────────
+    #   OPTIONS (requer API paga)
+    # ──────────────────────────────────────────────────────────────────────
 
     def _build_options_metrics(self) -> Dict[str, Any]:
-        """
-        Options metrics requer API paga (Deribit/Laevitas).
-        Retorna estrutura vazia sinalizada para a IA saber que não tem dados reais.
-        """
         return {
             "status": "requires_paid_api",
             "provider_needed": "Deribit/Laevitas/TradingView",
@@ -506,30 +616,24 @@ class DataEnricher:
             "is_real_data": False,
         }
 
-    # ------------------------------
-    #   ON-CHAIN (DADOS REAIS via APIs gratuitas)
-    # ------------------------------
+    # ──────────────────────────────────────────────────────────────────────
+    #   ON-CHAIN
+    # ──────────────────────────────────────────────────────────────────────
 
     def _build_onchain_metrics(self) -> Dict[str, Any]:
-        """
-        Busca métricas on-chain REAIS de APIs gratuitas.
-        blockchain.info + mempool.space (sem chave de API).
-        Campos que requerem API paga são sinalizados com None.
-        """
         if _ONCHAIN_OK and _ONCHAIN_FETCHER is not None:
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
+                try:
+                    asyncio.get_running_loop()
                     import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor() as pool:
                         future = pool.submit(asyncio.run, _ONCHAIN_FETCHER.fetch_all())
                         return future.result(timeout=15)
-                else:
+                except RuntimeError:
                     return asyncio.run(_ONCHAIN_FETCHER.fetch_all())
             except Exception as e:
                 logger.warning(f"Falha ao buscar on-chain real: {e}")
 
-        # Fallback mínimo se fetcher falhar
         return {
             "hash_rate": 0,
             "difficulty": 0,
@@ -538,14 +642,11 @@ class DataEnricher:
             "status": "fetcher_unavailable",
         }
 
-    # ------------------------------
+    # ──────────────────────────────────────────────────────────────────────
     #   ADAPTIVE THRESHOLDS
-    # ------------------------------
+    # ──────────────────────────────────────────────────────────────────────
 
     def _build_adaptive_thresholds(self, raw_event: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Usa multi_tf.realized_vol (1d -> 4h -> 1h -> 15m) para ajustar thresholds.
-        """
         mtf = raw_event.get("multi_tf", {}) or {}
         realized_vol = None
 
@@ -557,7 +658,7 @@ class DataEnricher:
                 break
 
         if realized_vol is None:
-            realized_vol = 0.01  # fallback
+            realized_vol = 0.01
 
         vol_factor = 0.5 / realized_vol
         vol_factor = max(self.min_vol_factor, min(self.max_vol_factor, vol_factor))

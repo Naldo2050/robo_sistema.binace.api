@@ -566,9 +566,9 @@ class MacroDataProvider:
         if cached is not None:
             return cached
 
-        # Tickers em ordem de prioridade:
-        # DX-Y.NYB (ICE DXY), UUP (USD Bull ETF como proxy)
-        dxy_tickers = ["DX-Y.NYB", "UUP"]
+        # Fonte de verdade absoluta para DXY no Yahoo Finance.
+        # Nao usar UUP aqui porque o ETF distorce a escala do indice.
+        dxy_tickers = ["DX-Y.NYB"]
 
         loop = asyncio.get_running_loop()
 
@@ -594,11 +594,7 @@ class MacroDataProvider:
                 value = await loop.run_in_executor(None, _fetch_sync)
 
                 if value is not None:
-                    # UUP eh ETF, nao eh DXY direto - mas serve como proxy
-                    if ticker == "UUP":
-                        logger.info(f"✅ DXY proxy (UUP ETF): {value:.2f}")
-                    else:
-                        logger.debug(f"✅ DXY (Yahoo Finance - {ticker}): {value:.2f}")
+                    logger.debug(f"✅ DXY (Yahoo Finance - {ticker}): {value:.2f}")
                     self._set_yfinance_cache("dxy", value)
                     return value
             except Exception as e:

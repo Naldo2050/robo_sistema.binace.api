@@ -36,7 +36,7 @@ def test_patch_2_configuracao():
                 "provider": "groq",
                 "provider_fallbacks": [],
                 "groq": {
-                    "model": "llama-3.3-70b-versatile",
+                    "model": "llama-3.1-8b-instant",
                     "model_fallbacks": [
                         "llama-3.1-70b-versatile",
                         "llama-3.1-8b-instant"
@@ -70,7 +70,7 @@ def test_patch_2_configuracao():
                 "provider": "groq",
                 "provider_fallbacks": ["openai", "dashscope"],
                 "groq": {
-                    "model": "llama-3.3-70b-versatile",
+                    "model": "llama-3.1-8b-instant",
                     "model_fallbacks": [
                         "llama-3.1-70b-versatile",
                         "llama-3.1-8b-instant"

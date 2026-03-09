@@ -97,12 +97,17 @@ class FeatureStore:
             return
 
         df = pd.DataFrame(self.buffer)
+        
+        # Converte para numérico onde possível
         for col in df.columns:
             if df[col].dtype == "object":
                 df[col] = self.safe_to_numeric(df[col])
 
         df["saved_at"] = pd.to_datetime(df["saved_at"])
         df["date"] = df["saved_at"].dt.strftime("%Y-%m-%d")
+
+        # Desfragmenta o frame após as inserções/modificações
+        df = df.copy()
 
         grouped = df.groupby("date")
         for date_str, group in grouped:

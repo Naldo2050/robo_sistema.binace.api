@@ -137,6 +137,7 @@ class FlowAnalyzerLogger:
                 log_file,
                 maxBytes=max_bytes,
                 backupCount=backup_count,
+                encoding="utf-8",
             )
             file_handler.setFormatter(JSONFormatter())
             self.logger.addHandler(file_handler)

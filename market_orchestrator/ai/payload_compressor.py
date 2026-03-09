@@ -261,8 +261,20 @@ def _normalize_signal_metadata(meta: Dict[str, Any]) -> Dict[str, Any]:
 def _normalize_timestamps(payload: Dict[str, Any]) -> Tuple[int | None, Dict[str, Any]]:
     epoch_ms = payload.get("epoch_ms") or payload.get("timestamp_ms") or payload.get("timestamp")
     try:
-        epoch_ms = int(epoch_ms) if epoch_ms is not None else None
-    except Exception:
+        if isinstance(epoch_ms, str):
+            # Tenta converter string numérica primeiro
+            if epoch_ms.isdigit() or (epoch_ms.startswith('-') and epoch_ms[1:].isdigit()):
+                epoch_ms = int(epoch_ms)
+            else:
+                # É uma string de data/hora (com "T" ou espaço)
+                from datetime import datetime
+                # Substituir 'Z' e preencher possíveis UTC offsets
+                clean_str = epoch_ms.replace("Z", "+00:00")
+                epoch_ms = int(datetime.fromisoformat(clean_str).timestamp() * 1000)
+        else:
+            epoch_ms = int(epoch_ms) if epoch_ms is not None else None
+    except Exception as e:
+        logger.warning(f"[PAYLOAD_COMPRESSOR] Falha ao converter epoch_ms '{epoch_ms}': {e}")
         epoch_ms = None
 
     cleaned = dict(payload)

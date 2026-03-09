@@ -49,6 +49,7 @@ class HealthMonitor:
 
         # Inicia thread de verificação
         self._stop_event = threading.Event()
+        self._stopped = False
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._monitor_thread.start()
 
@@ -175,6 +176,9 @@ class HealthMonitor:
 
     def stop(self):
         """Para o monitor de saúde."""
+        if self._stopped:
+            return
+        self._stopped = True
         self._stop_event.set()
         if self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=5)

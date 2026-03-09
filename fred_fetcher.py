@@ -109,7 +109,7 @@ class FREDFetcher:
         self, 
         symbol: str, 
         session: aiohttp.ClientSession,
-        days_lookback: int = 7
+        days_lookback: int = 30
     ) -> Optional[float]:
         """
         Busca o valor mais recente de um símbolo.
