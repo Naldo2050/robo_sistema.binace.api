@@ -199,5 +199,18 @@ async def test_dxy_no_cache_no_api(macro_provider):
         assert result is None
 
 
+@pytest.mark.asyncio
+async def test_dxy_does_not_fallback_to_uup(macro_provider):
+    """DXY deve usar apenas DX-Y.NYB; UUP não pode ser consultado como proxy."""
+    with patch("yfinance.Ticker") as mock_yahoo_ticker:
+        mock_yahoo_ticker.side_effect = Exception("Yahoo API Error")
+
+        result = await macro_provider._fetch_dxy_impl()
+
+        assert result is None
+        assert mock_yahoo_ticker.call_count == 1
+        mock_yahoo_ticker.assert_called_with("DX-Y.NYB")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

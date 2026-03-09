@@ -367,43 +367,9 @@ except ImportError as e:
 
 def add_enriched_context_to_ai_payload(ai_payload: Dict[str, Any], raw_event: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Adiciona contextos enriquecidos ao ai_payload.
-    
-    Esta função mescla contextos adicionais do raw_event no ai_payload
-    para garantir que todas as informações relevantes estejam disponíveis
-    para a análise da IA.
-    
-    Args:
-        ai_payload (Dict[str, Any]): O payload principal da IA
-        raw_event (Dict[str, Any]): O evento bruto com dados originais
-        
-    Returns:
-        Dict[str, Any]: O ai_payload atualizado com contextos enriquecidos
+    [V5] REMOVIDO: Injeção redundante de raw_event desativada para evitar bloat de 60KB.
+    O ai_payload construído em build_ai_input já contém as informações necessárias.
     """
-    # Verifica se raw_event contém dados válidos
-    if not raw_event or not isinstance(raw_event, dict):
-        return ai_payload
-    
-    # Extrai contextos enriquecidos do raw_event
-    enriched_contexts = {}
-    
-    # Adiciona contexto raw_event se presente
-    if "raw_event" in raw_event:
-        enriched_contexts["raw_event_context"] = raw_event["raw_event"]
-    
-    # Adiciona contexto avançado se presente
-    if "advanced_analysis" in raw_event:
-        enriched_contexts["advanced_analysis_context"] = raw_event["advanced_analysis"]
-    
-    # Adiciona outros contextos específicos do evento
-    for key in ["features_window_id", "enriched_snapshot", "contextual_snapshot"]:
-        if key in raw_event:
-            enriched_contexts[key] = raw_event[key]
-    
-    # Mescla os contextos no ai_payload
-    if enriched_contexts:
-        ai_payload["enriched_contexts"] = enriched_contexts
-    
     return ai_payload
 
 def build_ai_input(

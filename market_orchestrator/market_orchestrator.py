@@ -803,6 +803,16 @@ class EnhancedMarketBot:
     # PONTOS DE DELEGAÇÃO PARA SUBMÓDULOS
     # ========================================
     def _process_window(self) -> None:
+        if self.window_processor is not None and self.window_data:
+            window_snapshot = [dict(trade) for trade in self.window_data if isinstance(trade, dict)]
+            close_ms = self.window_end_ms
+            self.window_data = []
+
+            if self.window_processor.submit_window(self, window_snapshot, close_ms):
+                return
+
+            self.window_data = window_snapshot
+
         process_window(self)
 
     def _process_signals(

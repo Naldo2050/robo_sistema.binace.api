@@ -1,6 +1,6 @@
 {
   "SYMBOL": "BTCUSDT",
-  "WINDOW_SIZE_MINUTES": 5,
+  "WINDOW_SIZE_MINUTES": 1,
   "VOL_FACTOR_EXH": 2.5,
   "HISTORY_SIZE": 100,
   "DELTA_STD_DEV_FACTOR": 2.0,
@@ -14,8 +14,10 @@
     "provider": "groq",
     "groq": {
       "base_url": "https://api.groq.com/openai/v1",
-      "model": "qwen/qwen3-32b"
+      "model": "llama-3.1-8b-instant"
     },
-    "dashscope": { "enabled": false }
+    "dashscope": {
+      "enabled": false
+    }
   }
 }

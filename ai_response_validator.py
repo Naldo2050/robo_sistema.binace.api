@@ -16,6 +16,7 @@ antes de marcar como sucesso. Garante que:
 import json
 import re
 import logging
+from copy import deepcopy
 from typing import Any, Dict, Optional, Tuple
 from dataclasses import dataclass
 
@@ -26,17 +27,38 @@ VALID_SENTIMENTS = {"bullish", "bearish", "neutral"}
 VALID_ACTIONS = {"buy", "sell", "hold", "flat", "wait", "avoid"}
 
 # Fallback estruturado para respostas inválidas
+MAX_RATIONALE_CHARS = 160
+
 FALLBACK_RESPONSE = {
     "sentiment": "neutral",
     "confidence": 0.0,
     "action": "wait",
-    "rationale": "invalid_llm_output",
+    "rationale": "llm_error_unknown",
     "entry_zone": None,
     "invalidation_zone": None,
     "region_type": None,
     "_is_fallback": True,
+    "_fallback_reason": "unknown",
     "_validation_error": None,
 }
+
+
+def _normalize_reason(reason: Optional[str]) -> str:
+    """Normaliza o identificador de motivo de fallback."""
+    text = str(reason or "unknown").strip().lower()
+    text = re.sub(r"[^a-z0-9_]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text or "unknown"
+
+
+def build_fallback_response(reason: Optional[str], *, error_key: str = "_validation_error") -> Dict[str, Any]:
+    """Constroi o fallback estruturado único do pipeline de IA."""
+    normalized_reason = _normalize_reason(reason)
+    fallback = deepcopy(FALLBACK_RESPONSE)
+    fallback["rationale"] = f"llm_error_{normalized_reason}"[:MAX_RATIONALE_CHARS]
+    fallback["_fallback_reason"] = normalized_reason
+    fallback[error_key] = normalized_reason
+    return fallback
 
 
 @dataclass
@@ -287,23 +309,22 @@ class AIResponseValidator:
         normalized["action"] = data.get("action", "wait").lower()
         
         # Normaliza rationale
-        normalized["rationale"] = str(data.get("rationale", "")).strip()
-        
+        normalized["rationale"] = str(data.get("rationale", "")).strip()[:MAX_RATIONALE_CHARS]
+
         # Preserva campos opcionais
         for field in self.OPTIONAL_FIELDS:
-            if field in data:
-                normalized[field] = data[field]
-        
+            normalized[field] = data.get(field)
+
         # Marca como não-fallback
         normalized["_is_fallback"] = False
-        
+        normalized["_fallback_reason"] = None
+        normalized["_validation_error"] = None
+
         return normalized
     
     def _get_fallback_response(self, error_type: str) -> Dict[str, Any]:
         """Retorna o fallback estruturado."""
-        fallback = dict(FALLBACK_RESPONSE)
-        fallback["_validation_error"] = error_type
-        return fallback
+        return build_fallback_response(error_type)
     
     def get_retry_prompt(self) -> str:
         """
@@ -323,7 +344,8 @@ Não inclua explicações, raciocínio ou formatação markdown. Apenas o JSON."
         """Loga falha de validação de forma segura (sem expor segredos)."""
         # Não logue a resposta bruta completa
         preview = raw_response[:200] if raw_response else "(vazio)"
-        
+        preview = re.sub(r"\s+", " ", preview).strip()
+
         logger.warning(
             f"AI_RESPONSE_INVALID | erro={error} | tamanho={len(raw_response)} | preview={preview}..."
         )

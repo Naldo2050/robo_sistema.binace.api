@@ -105,23 +105,30 @@ try:
     JINJA_AVAILABLE = True
 except Exception:
     JINJA_AVAILABLE = False
-    Environment = None  # type: ignore
-    BaseLoader = object  # type: ignore
+    Environment = None  # type: ignore[assignment, misc]
+    BaseLoader = None  # type: ignore[assignment, misc]
 
-# Pydantic para structured output (opcional)
-try:
+# Pydantic for structured output (optional)
+if TYPE_CHECKING:
     from pydantic import BaseModel
     PYDANTIC_AVAILABLE = True
-except Exception:
-    PYDANTIC_AVAILABLE = False
-    BaseModel = object  # type: ignore
+else:
+    try:
+        from pydantic import BaseModel
+        PYDANTIC_AVAILABLE = True
+    except Exception:
+        PYDANTIC_AVAILABLE = False
+        # Use a dummy class for runtime when Pydantic is not available
+        class BaseModel:  # type: ignore[no-redef]
+            pass
 
 from time_manager import TimeManager
 from orderbook_core.structured_logging import StructuredLogger
 
 # Regime Detector integration
+# Sempre use type: ignore pois o módulo pode não existir
 try:
-    from src.analysis.regime_detector import RegimeDetector
+    from src.analysis.regime_detector import RegimeDetector  # type: ignore[import-not-found,reportAttributeAccessIssue]
     REGIME_DETECTOR_AVAILABLE = True
 except ImportError as e:
     logging.warning(f"Regime detector não disponível: {e}")
@@ -152,7 +159,8 @@ if PYDANTIC_AVAILABLE:
         invalidation_zone: Optional[str] = None
         region_type: Optional[str] = None
 else:
-    AITradeAnalysis = None  # type: ignore
+    # Define as None when Pydantic is not available
+    AITradeAnalysis = None  # type: ignore[assignment,misc]
 
 
 # ========================
@@ -160,7 +168,11 @@ else:
 # ========================
 
 if JINJA_AVAILABLE:
-    _jinja_env = Environment(loader=BaseLoader(), trim_blocks=True, lstrip_blocks=True)
+    try:
+        # BaseLoader() é a classe base do Jinja2, não uma instância
+        _jinja_env = Environment(loader=BaseLoader(), trim_blocks=True, lstrip_blocks=True)  # type: ignore[arg-type]
+    except Exception:
+        _jinja_env = None
 else:
     _jinja_env = None
 
@@ -689,6 +701,8 @@ class AIAnalyzer:
     async def _ping_once_async(self) -> bool:
         """Versão assíncrona do ping para um modelo."""
         try:
+            if self.client_async is None:
+                return False
             # Tenta uma chamada simples
             response = await self.client_async.chat.completions.create(
                 model=self.model_name,
@@ -722,6 +736,8 @@ class AIAnalyzer:
         ok = True
         try:
             if self.mode == "openai" or self.mode == "groq":
+                if self.client is None:
+                    return False
                 r = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=[
@@ -743,7 +759,7 @@ class AIAnalyzer:
             elif self.mode == "dashscope":
                 r = Generation.call(
                     model=self.model_name,
-                    messages=[
+                    messages=[  # type: ignore[arg-type]
                         {"role": "system", "content": "Diagnóstico curto. Responda apenas 'OK'."},
                         {"role": "user", "content": prompt},
                     ],
@@ -1352,7 +1368,7 @@ class AIAnalyzer:
         base_delay = 1.0
         for attempt in range(max_retries):
             try:
-                response = self.client.chat.completions.create(
+                response = self.client.chat.completions.create(  # type: ignore[union-attr]
                     model=self.model_name,
                     messages=[
                         {
@@ -1374,7 +1390,7 @@ class AIAnalyzer:
                 return ""
             except Exception as e:
                 logging.error(
-                    f"Erro {self.mode.upper()} (tentativa {attempt+1}/{max_retries}): {e}"
+                    f"Erro {(self.mode or 'unknown').upper()} (tentativa {attempt+1}/{max_retries}): {e}"
                 )
                 if attempt < max_retries - 1:
                     time.sleep(base_delay * (2 ** attempt))
@@ -1387,7 +1403,7 @@ class AIAnalyzer:
             try:
                 response = Generation.call(
                     model=self.model_name,
-                    messages=[
+                    messages=[  # type: ignore[arg-type]
                         {
                             "role": "system",
                             "content": SYSTEM_PROMPT,

@@ -31,7 +31,7 @@ class OCIVaultHelper:
                 if os.getenv("ENVIRONMENT", "dev").lower() == "dev":
                     logger.info(f"ℹ️ OCI Vault não configurado (Modo Dev - Ignorando): {e}")
                 else:
-                    logger.warning(f"⚠️ OCI Vault indisponível: {e}")
+                    logger.info(f"ℹ️ OCI Vault indisponível: {e} (verifique em ~/.oci/config se necessário)")
                 self.enabled = False
 
     def get_secret(self, secret_ocid):

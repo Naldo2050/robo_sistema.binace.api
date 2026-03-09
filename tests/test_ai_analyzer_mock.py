@@ -7,7 +7,7 @@ import ai_analyzer_qwen as mod
 def test_ai_analyzer_mock_mode(monkeypatch):
     """
     Garante que, forçando _initialize_api a modo mock, analyze()
-    retorna um dict de sucesso e mode='mock', sem chamar provedores externos.
+    retorna fallback estruturado e mode='mock', sem chamar provedores externos.
     """
 
     # Monkeypatch de _initialize_api para não bater em Groq/OpenAI/DashScope
@@ -33,7 +33,9 @@ def test_ai_analyzer_mock_mode(monkeypatch):
     result = analyzer.analyze(event)
 
     assert isinstance(result, dict)
-    assert result["success"] is True
+    assert result["success"] is False
+    assert result["is_fallback"] is True
+    assert result["structured"]["_is_fallback"] is True
     assert result["mode"] == "mock"
     assert "raw_response" in result
     assert len(result["raw_response"]) > 0

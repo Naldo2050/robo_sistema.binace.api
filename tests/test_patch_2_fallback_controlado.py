@@ -51,7 +51,7 @@ class TestPatch2FallbackControlado(unittest.TestCase):
                 "provider": provider,
                 "provider_fallbacks": provider_fallbacks or [],
                 "groq": {
-                    "model": "llama-3.3-70b-versatile",
+                    "model": "llama-3.1-8b-instant",
                     "model_fallbacks": [
                         "llama-3.1-70b-versatile",
                         "llama-3.1-8b-instant"

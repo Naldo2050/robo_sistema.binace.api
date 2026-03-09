@@ -111,6 +111,7 @@ class RobustConnectionManager:
         self.reconnect_count = 0
         self.is_connected = False
         self.should_stop = False
+        self._disconnect_called = False
 
         # Estatísticas
         self.total_messages_received = 0
@@ -236,6 +237,9 @@ class RobustConnectionManager:
 
     async def disconnect(self) -> None:
         """Fecha a conexão graciosamente."""
+        if self._disconnect_called:
+            return
+        self._disconnect_called = True
         logger.info("🛑 Desconectando...")
         try:
             self.slog.info("ws_disconnect_called")

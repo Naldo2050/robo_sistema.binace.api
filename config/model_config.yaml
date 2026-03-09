@@ -2,10 +2,9 @@
   provider: groq
   provider_fallbacks: []  # Lista de providers para fallback automatico (so usar se necessario)
   groq:
-    model: llama-3.3-70b-versatile   # Modelo padrao atualizado para Llama 3.3 70B
+    model: llama-3.1-8b-instant   # Modelo padrao atualizado para Llama 3.1 8B
     model_fallbacks:
       - llama-3.1-70b-versatile
-      - llama-3.1-8b-instant
       - mixtral-8x7b-32768
 
 model:

@@ -76,6 +76,7 @@ class EventBus:
         self._processing = False
         self._thread = None
         self._stop = False
+        self._shutdown = False
         self._dedup_cache = {}
         self._dedup_window = deduplication_window
         self._logger = logging.getLogger("EventBus")
@@ -590,6 +591,9 @@ class EventBus:
 
     def shutdown(self):
         """Para thread de processamento."""
+        if self._shutdown:
+            return
+        self._shutdown = True
         self._stop = True
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
