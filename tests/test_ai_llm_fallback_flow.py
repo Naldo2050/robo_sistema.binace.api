@@ -334,8 +334,16 @@ async def test_shutdown_is_idempotent(monkeypatch, caplog):
         stream_url="wss://example.invalid/ws",
         symbol="BTCUSDT",
     )
-    await manager.disconnect()
-    await manager.disconnect()
+    try:
+        await manager.disconnect()
+    except Exception as e:
+        logger.error(f"Erro em operação async: {e}")
+        raise
+    try:
+        await manager.disconnect()
+    except Exception as e:
+        logger.error(f"Erro em operação async: {e}")
+        raise
 
     messages = [rec.getMessage() for rec in caplog.records]
     assert sum("EventBus desligado" in msg for msg in messages) == 1

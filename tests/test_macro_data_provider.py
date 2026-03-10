@@ -56,7 +56,11 @@ async def test_treasury_10y_twelve_data_success(macro_provider):
         
         # Configurar chave da API
         with patch.dict(os.environ, {"TWELVEDATA_API_KEY": "test_key"}):
-            result = await macro_provider._fetch_treasury_10y_impl()
+            try:
+                result = await macro_provider._fetch_treasury_10y_impl()
+            except Exception as e:
+                logger.error(f"Erro em operação async: {e}")
+                raise
             
             # Verificar que a chamada foi feita corretamente
             assert result == 4.25
@@ -85,7 +89,11 @@ async def test_treasury_10y_twelve_data_fallback_to_yahoo(macro_provider):
         
         # Configurar chave da API
         with patch.dict(os.environ, {"TWELVEDATA_API_KEY": "test_key"}):
-            result = await macro_provider._fetch_treasury_10y_impl()
+            try:
+                result = await macro_provider._fetch_treasury_10y_impl()
+            except Exception as e:
+                logger.error(f"Erro em operação async: {e}")
+                raise
             
             # Verificar que o fallback funcionou
             assert result == 4.30
@@ -110,7 +118,11 @@ async def test_treasury_10y_cache_fallback(macro_provider):
         
         # Configurar chave da API
         with patch.dict(os.environ, {"TWELVEDATA_API_KEY": "test_key"}):
-            result = await macro_provider._fetch_treasury_10y_impl()
+            try:
+                result = await macro_provider._fetch_treasury_10y_impl()
+            except Exception as e:
+                logger.error(f"Erro em operação async: {e}")
+                raise
             
             # Verificar que o valor cacheado foi retornado
             assert result == 4.50
@@ -131,7 +143,11 @@ async def test_treasury_10y_no_cache_no_apis(macro_provider):
         
         # Configurar chave da API
         with patch.dict(os.environ, {"TWELVEDATA_API_KEY": "test_key"}):
-            result = await macro_provider._fetch_treasury_10y_impl()
+            try:
+                result = await macro_provider._fetch_treasury_10y_impl()
+            except Exception as e:
+                logger.error(f"Erro em operação async: {e}")
+                raise
             
             # Verificar que None foi retornado
             assert result is None
@@ -163,7 +179,11 @@ async def test_dxy_yahoo_finance_success(macro_provider):
         mock_yahoo_ticker.return_value = mock_yahoo_data
         mock_yahoo_data.history.return_value = mock_yahoo_data
         
-        result = await macro_provider._fetch_dxy_impl()
+        try:
+            result = await macro_provider._fetch_dxy_impl()
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
         
         # Verificar que o valor foi obtido corretamente
         assert result == 102.50
@@ -180,7 +200,11 @@ async def test_dxy_cache_fallback(macro_provider):
         # Configurar Yahoo Finance para falhar
         mock_yahoo_ticker.side_effect = Exception("Yahoo API Error")
         
-        result = await macro_provider._fetch_dxy_impl()
+        try:
+            result = await macro_provider._fetch_dxy_impl()
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
         
         # Verificar que o valor cacheado foi retornado
         assert result == 103.25
@@ -193,7 +217,11 @@ async def test_dxy_no_cache_no_api(macro_provider):
         # Configurar Yahoo Finance para falhar
         mock_yahoo_ticker.side_effect = Exception("Yahoo API Error")
         
-        result = await macro_provider._fetch_dxy_impl()
+        try:
+            result = await macro_provider._fetch_dxy_impl()
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
         
         # Verificar que None foi retornado
         assert result is None
@@ -205,7 +233,11 @@ async def test_dxy_does_not_fallback_to_uup(macro_provider):
     with patch("yfinance.Ticker") as mock_yahoo_ticker:
         mock_yahoo_ticker.side_effect = Exception("Yahoo API Error")
 
-        result = await macro_provider._fetch_dxy_impl()
+        try:
+            result = await macro_provider._fetch_dxy_impl()
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
 
         assert result is None
         assert mock_yahoo_ticker.call_count == 1

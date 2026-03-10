@@ -395,7 +395,11 @@ async def validate_fred_integration() -> bool:
             return {"source": "fallback", "value": 0.0}
     
     client_retry = FREDClientWithRetry()
-    result = await client_retry.fetch_with_retry("GDP")
+    try:
+        result = await client_retry.fetch_with_retry("GDP")
+    except Exception as e:
+        logger.error(f"Erro em operação async: {e}")
+        raise
     if result["source"] == "fred" and client_retry.attempts == 3:
         print_success(f"Retry funcionou após {client_retry.attempts} tentativas")
     else:

@@ -64,8 +64,8 @@ POR:
             # Garante que o gerenciador de conexão pare e feche o WS
             try:
                 self.connection_manager.should_stop = True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Erro ignorado: {e}")
 
             try:
                 await self.connection_manager.disconnect()

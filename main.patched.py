@@ -278,8 +278,8 @@ class RobustConnectionManager:
                 if self.external_heartbeat_cb:
                     try:
                         self.external_heartbeat_cb()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Erro ignorado: {e}")
                 
                 if not self._test_connection():
                     raise ConnectionError("Falha no teste de conectividade")
@@ -1528,8 +1528,8 @@ class EnhancedMarketBot:
         logging.info(f"🚀 Bot iniciado para {self.symbol} - Fuso: New York (America/New_York)")
         try:
             self.health_monitor.heartbeat("main")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Erro ignorado: {e}")
     
     def on_close(self, ws, code, msg):
         if self.window_data and not self.should_stop:

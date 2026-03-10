@@ -153,3 +153,13 @@ htmlcov/
 # ==============================
 *.err.log
 *.out.log
+
+# ==============================
+# Arquivos temporários
+# ==============================
+erro.txt
+
+# ==============================
+# Documentação local (não código)
+# ==============================
+Regras/ARQUIVOS DE MONITORAMENTO.odt

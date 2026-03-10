@@ -262,14 +262,18 @@ async def test_fred():
         print("📝 Obtenha em: https://fred.stlouisfed.org/docs/api/api_key.html")
         return
     
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
         symbols = ["DXY", "TNX", "TNY", "FED_RATE"]
         
         print("\n[TESTE] Testando FRED API...")
         print("=" * 60)
 
         for symbol in symbols:
-            value = await fetcher.fetch_latest_value(symbol, session)
+            try:
+                value = await fetcher.fetch_latest_value(symbol, session)
+            except Exception as e:
+                logger.error(f"Erro em operação async: {e}")
+                raise
             if value is not None:
                 print(f"[OK] {symbol:12} = {value:>10.4f}")
             else:
@@ -281,7 +285,11 @@ async def test_fred():
 
         # Teste histórico
         print("\n[HISTORICO] Teste de dados históricos (DXY, 30 dias):")
-        df = await fetcher.fetch_historical("DXY", session, days=30)
+        try:
+            df = await fetcher.fetch_historical("DXY", session, days=30)
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
         if not df.empty:
             print(f"[OK] {len(df)} pontos obtidos")
             print(df.tail(3))
