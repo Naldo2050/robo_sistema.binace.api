@@ -21,7 +21,7 @@ class LatencyTester:
     async def test_binance_latency(self, count=10):
         """Testa latência com Binance"""
         url = "https://api.binance.com/api/v3/time"
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             for i in range(count):
                 start = time.perf_counter()
                 try:
@@ -44,7 +44,7 @@ class LatencyTester:
         url = "https://api.groq.com/openai/v1/models"
         headers = {"Authorization": f"Bearer {api_key}"}
         
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             for i in range(count):
                 start = time.perf_counter()
                 try:

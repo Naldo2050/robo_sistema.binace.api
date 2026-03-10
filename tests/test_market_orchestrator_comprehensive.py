@@ -537,7 +537,11 @@ except ImportError:
                     }
                 
                 # 4. Executa trade
-                execution_result = await self.trade_executor.execute_trade(trade_request)
+                try:
+                    execution_result = await self.trade_executor.execute_trade(trade_request)
+                except Exception as e:
+                    logger.error(f"Erro em operação async: {e}")
+                    raise
                 
                 if not execution_result['success']:
                     return {

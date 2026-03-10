@@ -57,7 +57,11 @@ async def main():
     # Desconectar
     print("🛑 Desconectando...")
     manager.should_stop = True
-    await manager.disconnect()
+    try:
+        await manager.disconnect()
+    except Exception as e:
+        logger.error(f"Erro em operação async: {e}")
+        raise
     
     # Aguardar task finalizar
     if not connect_task.done():

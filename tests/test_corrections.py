@@ -105,8 +105,8 @@ def _remove_db(path):
             p = pathlib.Path(path + ext)
             if p.exists():
                 p.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Erro ignorado: {e}")
 
 
 def test_existing_db_gets_signal_outcomes():
