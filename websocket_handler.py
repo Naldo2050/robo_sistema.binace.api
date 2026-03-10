@@ -109,7 +109,11 @@ class RobustWebSocketHandler:
                 
             except aiohttp.ClientError as e:
                 logger.error(f"❌ Erro de conexão WebSocket: {e}")
-                await self._handle_disconnect()
+                try:
+                    await self._handle_disconnect()
+                except Exception as e:
+                    logger.error(f"Erro em operação async: {e}")
+                    raise
                 
             except asyncio.CancelledError:
                 logger.info("⏹️ Conexão WebSocket cancelada")
@@ -117,7 +121,11 @@ class RobustWebSocketHandler:
                 
             except Exception as e:
                 logger.error(f"❌ Erro inesperado na conexão: {e}", exc_info=True)
-                await self._handle_disconnect()
+                try:
+                    await self._handle_disconnect()
+                except Exception as e:
+                    logger.error(f"Erro em operação async: {e}")
+                    raise
         
         if self.reconnect_count >= self.max_reconnect_attempts:
             logger.critical(

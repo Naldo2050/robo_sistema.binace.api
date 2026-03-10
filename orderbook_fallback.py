@@ -362,4 +362,8 @@ async def fetch_with_fallback(
         Snapshot do orderbook ou None
     """
     fallback = get_fallback_instance()
-    return await fallback.fetch_orderbook_fallback(symbol, limit, session)
+    try:
+        return await fallback.fetch_orderbook_fallback(symbol, limit, session)
+    except Exception as e:
+        logger.error(f"Erro em operação async: {e}")
+        raise

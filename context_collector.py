@@ -23,22 +23,45 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from typing import Tuple, Optional, Dict, Any
 from datetime import datetime, timedelta
-from functools import lru_cache
 
-from config import (
-    CONTEXT_TIMEFRAMES, CONTEXT_EMA_PERIOD, CONTEXT_ATR_PERIOD,
-    CONTEXT_UPDATE_INTERVAL_SECONDS, INTERMARKET_SYMBOLS, DERIVATIVES_SYMBOLS,
-    VP_NUM_DAYS_HISTORY, VP_VALUE_AREA_PERCENT, LIQUIDATION_MAP_DEPTH,
-    EXTERNAL_MARKETS, ENABLE_ONCHAIN, ONCHAIN_PROVIDERS, STABLECOIN_FLOW_TRACKING
-)
+# Importações de config com try/except para resolver erros do Pylance
+try:
+    from config import (
+        CONTEXT_TIMEFRAMES, CONTEXT_EMA_PERIOD, CONTEXT_ATR_PERIOD,
+        CONTEXT_UPDATE_INTERVAL_SECONDS, INTERMARKET_SYMBOLS, DERIVATIVES_SYMBOLS,
+        VP_NUM_DAYS_HISTORY, VP_VALUE_AREA_PERCENT, LIQUIDATION_MAP_DEPTH,
+        EXTERNAL_MARKETS
+    )
+except (ImportError, AttributeError):
+    # Fallbacks para constantes do Context Collector
+    CONTEXT_TIMEFRAMES = ["15m", "1h", "4h", "1d"]
+    CONTEXT_EMA_PERIOD = 21
+    CONTEXT_ATR_PERIOD = 14
+    CONTEXT_UPDATE_INTERVAL_SECONDS = 300
+    INTERMARKET_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+    DERIVATIVES_SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+    VP_NUM_DAYS_HISTORY = 30
+    VP_VALUE_AREA_PERCENT = 0.7
+    LIQUIDATION_MAP_DEPTH = 500.0
+    EXTERNAL_MARKETS = {
+        "SP500": "^GSPC",
+        "DXY": "DX-Y.NYB",
+        "NASDAQ": "^IXIC",
+        "TNX": "^TNX",
+        "GOLD": "GC=F",
+        "WTI": "CL=F",
+    }
+    ENABLE_ONCHAIN = False
+    ONCHAIN_PROVIDERS = []
+    STABLECOIN_FLOW_TRACKING = False
 
 # [SUPPORT_RESISTANCE] Importa cálculo de Pivots
 from support_resistance import daily_pivot, weekly_pivot, monthly_pivot
 
-# Configurações opcionais
+# Configurações opcionais - com try/except para compatibilidade com Pylance
 try:
     from config import ENABLE_ALPHAVANTAGE
-except Exception:
+except (ImportError, AttributeError):
     ENABLE_ALPHAVANTAGE = True
 
 try:
@@ -51,7 +74,7 @@ try:
         MACD_SLOW_PERIOD,
         MACD_SIGNAL_PERIOD,
     )
-except Exception:
+except (ImportError, AttributeError):
     CORRELATION_LOOKBACK = 50
     VOLATILITY_PERCENTILES = (0.35, 0.65)
     ADX_PERIOD = 14
@@ -382,7 +405,7 @@ class ContextCollector:
 
     async def _async_fetch_with_cache(self, cache_key: str, fetch_fn, ttl_seconds: Optional[int] = None):
         ttl = ttl_seconds or self._cache_ttl
-        now = asyncio.get_event_loop().time()
+        now = asyncio.get_running_loop().time()
         if cache_key in self._api_cache:
             cached_data, timestamp = self._api_cache[cache_key]
             if now - timestamp < ttl:
@@ -449,28 +472,45 @@ class ContextCollector:
 
     # ---------- Tempo ----------
     
-    def _get_binance_server_time(self) -> int:
-        # Keep sync for simplicity, as it's fast
-        import time
+    async def _get_binance_server_time_async(self) -> int:
+        """Versão async para buscar tempo do servidor Binance."""
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                import requests  # type: ignore[import-untyped]
-                res = requests.get("https://fapi.binance.com/fapi/v1/time", timeout=5)
-                res.raise_for_status()
-                server_time_ms = res.json().get("serverTime")
-                if not server_time_ms:
-                    raise ValueError("serverTime ausente")
-                now_ms = self.time_manager.now()
-                if abs(server_time_ms - now_ms) > 5000:
-                    logger.debug(f"Skew {abs(server_time_ms - now_ms)}ms; retry...")
-                    time.sleep(0.5)
-                    continue
-                return server_time_ms
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        "https://fapi.binance.com/fapi/v1/time",
+                        timeout=aiohttp.ClientTimeout(total=5)
+                    ) as res:
+                        res.raise_for_status()
+                        data = await res.json()
+                        server_time_ms = data.get("serverTime")
+                        if not server_time_ms:
+                            raise ValueError("serverTime ausente")
+                        now_ms = self.time_manager.now()
+                        if abs(server_time_ms - now_ms) > 5000:
+                            logger.debug(f"Skew {abs(server_time_ms - now_ms)}ms; retry...")
+                            await asyncio.sleep(0.5)
+                            continue
+                        return server_time_ms
             except Exception as e:
                 logger.debug(f"get time falha ({attempt+1}/{max_retries}): {e}")
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
         return self.time_manager.now()
+
+    def _get_binance_server_time(self) -> int:
+        """Método síncrono que chama versão async."""
+        try:
+            return asyncio.run(self._get_binance_server_time_async())
+        except RuntimeError:
+            # Já existe event loop rodando nesta thread (ex.: Jupyter/FastAPI)
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(lambda: asyncio.run(self._get_binance_server_time_async()))
+                return int(fut.result(timeout=10))
+        except Exception as e:
+            logger.debug(f"Erro ao buscar tempo Binance: {e}")
+            return self.time_manager.now()
 
     # ---------- Cálculos técnicos (sync, wrap if needed) ----------
     
@@ -1170,7 +1210,9 @@ class ContextCollector:
                 await asyncio.sleep(self.update_interval)
 
     async def _async_start(self):
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
+        if self._yfinance_lock is None:
+            self._yfinance_lock = asyncio.Lock()
         self._update_task = loop.create_task(self._async_update_loop())
 
     async def _async_stop(self):
@@ -1197,9 +1239,24 @@ class ContextCollector:
         self._thread.start()
 
     def _run_loop(self):
+        assert self._loop is not None
         asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._async_start())  # type: ignore[union-attr]
-        self._loop.run_forever()  # type: ignore[union-attr]
+        try:
+            self._loop.run_until_complete(self._async_start())
+            self._loop.run_forever()
+        finally:
+            try:
+                pending = asyncio.all_tasks(loop=self._loop)
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            try:
+                self._loop.close()
+            except Exception:
+                pass
 
     def stop(self):
         if not self._loop:

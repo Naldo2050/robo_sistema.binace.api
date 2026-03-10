@@ -109,3 +109,47 @@ diagnostics/ai_performance_report.csv
 logs/payload_metrics*.jsonl*
 logs/payload_section_cache.json
 logs/*.zip
+
+# ==============================
+# Auto-Fixer System - Output Files
+# ==============================
+auto_fixer/output/
+!auto_fixer/output/.gitkeep
+
+# ==============================
+# Backups
+# ==============================
+backups/
+*.bak
+*.backup_*
+
+# ==============================
+# LibreOffice Locks
+# ==============================
+.~lock*
+
+# ==============================
+# Database Files
+# ==============================
+*.db
+*.sqlite3
+
+# ==============================
+# Coverage and Test Reports
+# ==============================
+coverage_report.txt
+pytest_output.txt
+test_output.txt
+htmlcov/
+
+# ==============================
+# Keys and Secrets
+# ==============================
+*.pem
+*.key
+
+# ==============================
+# Large Log Files
+# ==============================
+*.err.log
+*.out.log

@@ -1729,7 +1729,11 @@ class OrderBookAnalyzer:
 
             return converted, None
 
-        snap = await self._fetch_orderbook(limit=self.ob_limit_fetch)
+        try:
+            snap = await self._fetch_orderbook(limit=self.ob_limit_fetch)
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
         if not snap:
             return None, "fetch_failed"
         return snap, None

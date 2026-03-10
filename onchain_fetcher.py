@@ -47,7 +47,7 @@ class OnchainFetcher:
 
         own_session = session is None
         if own_session:
-            session = aiohttp.ClientSession()
+            session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
 
         try:
             results = await asyncio.gather(

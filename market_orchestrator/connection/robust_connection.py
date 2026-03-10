@@ -178,7 +178,7 @@ class RobustConnectionManager:
         ):
             while not self.should_stop:
                 try:
-                    async with aiohttp.ClientSession() as session:
+                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                         self._session = session
 
                         # Tentativa de conexão
@@ -189,8 +189,8 @@ class RobustConnectionManager:
                                     reconnect_count=self.reconnect_count,
                                     current_delay=self.current_delay,
                                 )
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.warning(f"Erro ignorado: {e}")
 
                             async with session.ws_connect(
                                 self.stream_url,
@@ -214,10 +214,18 @@ class RobustConnectionManager:
 
                         except (aiohttp.ClientError, socket.gaierror) as e:
                             logger.error(f"❌ Erro de conexão/rede: {e}")
-                            await self._handle_reconnect()
+                            try:
+                                await self._handle_reconnect()
+                            except Exception as e:
+                                logger.error(f"Erro em operação async: {e}")
+                                raise
                         except Exception as e:
                             logger.error(f"❌ Erro inesperado no WebSocket: {e}", exc_info=True)
-                            await self._handle_reconnect()
+                            try:
+                                await self._handle_reconnect()
+                            except Exception as e:
+                                logger.error(f"Erro em operação async: {e}")
+                                raise
 
                 except Exception as e:
                     logger.critical(f"💀 Erro crítico na sessão aiohttp: {e}")
@@ -231,8 +239,8 @@ class RobustConnectionManager:
                             reconnect_count=self.reconnect_count,
                             max_reconnect_attempts=self.max_reconnect_attempts,
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Erro ignorado: {e}")
                     break
 
     async def disconnect(self) -> None:
@@ -243,8 +251,8 @@ class RobustConnectionManager:
         logger.info("🛑 Desconectando...")
         try:
             self.slog.info("ws_disconnect_called")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Erro ignorado: {e}")
         self.should_stop = True
         if self._ws and not self._ws.closed:
             await self._ws.close()
@@ -270,8 +278,8 @@ class RobustConnectionManager:
                 reconnect_count=self.reconnect_count,
                 connection_start_time=self.connection_start_time.isoformat(),
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Erro ignorado: {e}")
         
         if self.on_open_callback:
             # Suporta callbacks sync e async
@@ -333,7 +341,11 @@ class RobustConnectionManager:
                 except Exception as e:
                     logger.error(f"Erro no callback on_message: {e}", exc_info=True)
                     # Em caso de erro no callback, tentamos reconectar
-                    await self._handle_reconnect()
+                    try:
+                        await self._handle_reconnect()
+                    except Exception as e:
+                        logger.error(f"Erro em operação async: {e}")
+                        raise
         
         elif msg.type == WSMsgType.ERROR:
             logger.error(f"Erro no WebSocket: {msg.data}")
@@ -361,8 +373,8 @@ class RobustConnectionManager:
                 delay_seconds=self.current_delay,
                 total_reconnects=self.total_reconnects,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Erro ignorado: {e}")
         
         if self.on_close_callback:
              # Passamos códigos genéricos pois aiohttp abstrai isso no loop
@@ -394,7 +406,11 @@ class RobustConnectionManager:
             
             if self.on_reconnect_callback:
                 if asyncio.iscoroutinefunction(self.on_reconnect_callback):
-                    await self.on_reconnect_callback()
+                    try:
+                        await self.on_reconnect_callback()
+                    except Exception as e:
+                        logger.error(f"Erro em operação async: {e}")
+                        raise
                 else:
                     self.on_reconnect_callback()
 
