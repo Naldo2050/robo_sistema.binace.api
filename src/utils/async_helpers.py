@@ -292,7 +292,11 @@ async def async_yfinance_fetch(ticker_symbol: str, period: str = "1d") -> Any:
     Wrapper async para fetching de dados yfinance de forma não-bloqueante.
     
     Usage:
-        value = await async_yfinance_fetch("^VIX", "1d")
+        try:
+            value = await async_yfinance_fetch("^VIX", "1d")
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
@@ -306,7 +310,11 @@ async def async_fred_fetch(series_id: str, api_key: str) -> Any:
     Wrapper async para fetching de dados FRED de forma não-bloqueante.
     
     Usage:
-        series = await async_fred_fetch("GDP", fred_api_key)
+        try:
+            series = await async_fred_fetch("GDP", fred_api_key)
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(

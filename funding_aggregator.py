@@ -52,7 +52,7 @@ class FundingAggregator:
 
         own_session = session is None
         if own_session:
-            session = aiohttp.ClientSession()
+            session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
 
         try:
             result = await self._fetch_premium_index_all(session)

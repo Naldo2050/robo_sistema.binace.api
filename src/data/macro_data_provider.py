@@ -23,7 +23,7 @@ try:
     if parent_dir not in sys.path:
         sys.path.insert(0, parent_dir)
     from config import CROSS_ASSET_INTERVAL, ECONOMIC_DATA_INTERVAL
-except ImportError:
+except (ImportError, AttributeError, ModuleNotFoundError):
     # Fallback caso config.py não esteja disponível
     CROSS_ASSET_INTERVAL = 900  # 15 minutos
     ECONOMIC_DATA_INTERVAL = 14400  # 4 horas
@@ -380,41 +380,58 @@ class MacroDataProvider:
     # FALLBACK SÍNCRONO PARA DOMINANCE (evita problemas de event loop)
     # ══════════════════════════════════════════════════════════════════════════
     
+    # ════════════════════════════════════════════════════════════════════════════
+    # FALLBACK ASSÍNCRONO PARA DOMINANCE (versão async com aiohttp)
+    # ════════════════════════════════════════════════════════════════════════════
+    
+    async def _calculate_dominance_async(self, coin: str = "BTC") -> Optional[float]:
+        """
+        Calcula dominância de forma ASSÍNCRONA usando aiohttp.
+        Versão principal agora é async.
+        """
+        try:
+            await self._wait_for_rate_limit("binance")
+            session = await self._get_session()
+            async with session.get(
+                "https://api.binance.com/api/v3/ticker/24hr",
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status != 200:
+                    return None
+                
+                data = await response.json()
+                
+                coin_volume = 0
+                total_volume = 0
+                
+                for ticker in data:
+                    symbol = ticker.get("symbol", "")
+                    quote_volume = float(ticker.get("quoteVolume", 0))
+                    
+                    if symbol.endswith("USDT"):
+                        total_volume += quote_volume
+                        if symbol.startswith(coin):
+                            coin_volume += quote_volume
+                
+                if total_volume > 0:
+                    dominance = (coin_volume / total_volume) * 100
+                    logger.info(f"✅ {coin} Dominance (async): {dominance:.2f}%")
+                    return dominance
+                
+                return None
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Erro calculando {coin} dominance (async): {e}")
+            return None
+
     def _calculate_dominance_sync(self, coin: str = "BTC") -> Optional[float]:
         """
         Calcula dominância de forma SÍNCRONA (fallback).
-        Evita problemas de event loop.
+        Usa asyncio.run para chamar a versão async com aiohttp.
         """
         try:
-            response = requests.get(
-                "https://api.binance.com/api/v3/ticker/24hr",
-                timeout=10
-            )
-            
-            if response.status_code != 200:
-                return None
-            
-            data = response.json()
-            
-            coin_volume = 0
-            total_volume = 0
-            
-            for ticker in data:
-                symbol = ticker.get("symbol", "")
-                quote_volume = float(ticker.get("quoteVolume", 0))
-                
-                if symbol.endswith("USDT"):
-                    total_volume += quote_volume
-                    if symbol.startswith(coin):
-                        coin_volume += quote_volume
-            
-            if total_volume > 0:
-                dominance = (coin_volume / total_volume) * 100
-                logger.info(f"✅ {coin} Dominance (sync): {dominance:.2f}%")
-                return dominance
-            
-            return None
-            
+            # Usar a versão async via asyncio.run para evitar requests síncrono
+            return asyncio.run(self._calculate_dominance_async(coin))
         except Exception as e:
             logger.warning(f"⚠️ Erro calculando {coin} dominance (sync): {e}")
             return None
@@ -429,7 +446,11 @@ class MacroDataProvider:
         if cached is not None:
             return cached
         
-        value = await self._fetch_vix_impl()
+        try:
+            value = await self._fetch_vix_impl()
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
         self._set_cache_thread_safe("vix", value)
         return value
     
@@ -477,7 +498,11 @@ class MacroDataProvider:
         if cached is not None:
             return cached
         
-        value = await self._fetch_treasury_10y_impl()
+        try:
+            value = await self._fetch_treasury_10y_impl()
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
         self._set_cache_thread_safe("treasury_10y", value)
         return value
     
@@ -555,7 +580,11 @@ class MacroDataProvider:
         if cached is not None:
             return cached
         
-        value = await self._fetch_dxy_impl()
+        try:
+            value = await self._fetch_dxy_impl()
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
         self._set_cache_thread_safe("dxy", value)
         return value
     
@@ -615,7 +644,11 @@ class MacroDataProvider:
         if cached is not None:
             return cached
 
-        value = await self._fetch_sp500_impl()
+        try:
+            value = await self._fetch_sp500_impl()
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
         self._set_cache_thread_safe("sp500", value)
         return value
 
@@ -648,7 +681,11 @@ class MacroDataProvider:
         if cached is not None:
             return cached
 
-        value = await self._fetch_gold_impl()
+        try:
+            value = await self._fetch_gold_impl()
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
         self._set_cache_thread_safe("gold", value)
         return value
     
@@ -681,7 +718,11 @@ class MacroDataProvider:
         if cached is not None:
             return cached
         
-        value = await self._fetch_oil_impl()
+        try:
+            value = await self._fetch_oil_impl()
+        except Exception as e:
+            logger.error(f"Erro em operação async: {e}")
+            raise
         self._set_cache_thread_safe("oil", value)
         return value
     

@@ -1,8 +1,30 @@
 {
-  "include": ["."],
-  "extraPaths": [".", "src"],
-  "pythonVersion": "3.12",
-  "typeCheckingMode": "basic",
-  "reportMissingImports": false,
-  "reportMissingModuleSource": false
+    "include": [
+        "."
+    ],
+    "exclude": [
+        "**/__pycache__",
+        "**/node_modules",
+        "**/.git",
+        "**/.venv",
+        "**/venv",
+        "**/backups",
+        "**/legacy",
+        "**/features",
+        "**/auto_fixer/output",
+        "**/.mypy_cache",
+        "**/.pytest_cache",
+        "**/*.bak*"
+    ],
+    "pythonVersion": "3.12",
+    "pythonPlatform": "Windows",
+    "venvPath": ".",
+    "venv": ".venv",
+    "typeCheckingMode": "basic",
+    "reportPossiblyUnbound": "none",
+    "reportMissingImports": "warning",
+    "reportAttributeAccessIssue": "none",
+    "reportOptionalMemberAccess": "none",
+    "reportUnusedImport": "warning",
+    "reportMissingTypeStubs": "none"
 }

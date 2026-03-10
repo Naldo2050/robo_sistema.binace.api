@@ -495,8 +495,8 @@ class EnhancedMarketBot:
                 # Aqui garantimos apenas que qualquer loop interno pare.
                 try:
                     self.connection_manager.should_stop = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Erro ignorado: {e}")
                 logging.info("✅ Connection Manager sinalizada para parada.")
         except Exception as e:
             logging.error(f"❌ Erro ao sinalizar parada da Connection Manager: {e}")
@@ -2031,8 +2031,8 @@ class EnhancedMarketBot:
         )
         try:
             self.health_monitor.heartbeat("main")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Erro ignorado: {e}")
 
     def on_close(self, ws: Any, code: int, msg: str) -> None:
         if self.window_data and not self.should_stop:
@@ -2239,8 +2239,8 @@ class EnhancedMarketBot:
             # Garante que o gerenciador de conexão pare e feche o WS
             try:
                 self.connection_manager.should_stop = True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Erro ignorado: {e}")
 
             try:
                 # disconnect é async; aqui ainda estamos dentro do event loop

@@ -1,0 +1,25 @@
+{
+    "ai": {
+        "provider": "groq",
+        "api_key": "",
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "llama-3.1-70b-versatile"
+    },
+    "scanner": {
+        "ignore_dirs": ["__pycache__", ".git", "venv", "backups", "features"],
+        "max_file_size_mb": 10
+    },
+    "chunker": {
+        "max_lines_per_chunk": 400,
+        "overlap_lines": 20
+    },
+    "analyzers": {
+        "enabled": ["async", "api", "websocket", "import"],
+        "severity_threshold": "LOW"
+    },
+    "patcher": {
+        "auto_apply": false,
+        "require_validation": true,
+        "max_patches_per_run": 10
+    }
+}
