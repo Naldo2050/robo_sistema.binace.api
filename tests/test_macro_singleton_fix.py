@@ -8,7 +8,7 @@ import sys
 import os
 
 # Adicionar o diretório raiz ao path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Configurar logging para ver as mensagens de debug
 logging.basicConfig(
