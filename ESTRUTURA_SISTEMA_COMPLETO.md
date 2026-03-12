@@ -1,82 +1,211 @@
-# 📁 Estrutura Completa do Sistema - Robo Binance API
+# Estrutura Completa do Sistema - Robo Binance API
 
-## Visão Geral do Projeto
+## Visao Geral do Projeto
 
-Este é um sistema de trading automatizado para Binance com análise de fluxo de ordens, suporte/resistência, detecção de regime de mercado e integração com IA.
+Sistema de trading automatizado para Binance com analise de fluxo de ordens, suporte/resistencia, deteccao de regime de mercado e integracao com IA.
 
 ---
 
-## 📂 Raiz do Projeto (Root)
+## Raiz do Projeto (Root)
 
-### Arquivos de Configuração
-| Arquivo | Descrição |
+### Arquivos de Configuracao
+| Arquivo | Descricao |
 |---------|-----------|
-| `.gitignore` | Configurações de gitignore |
-| `.coveragerc` | Configuração de coverage de testes |
-| `.dockerignore` | Configuração Docker ignore |
-| `mypy.ini` | Configuração de type checking |
-| `pyproject.toml` | Configuração do projeto Python |
-| `pyrightconfig.json` | Configuração do pyright |
-| `pytest.ini` | Configuração do pytest |
-| `docker-compose.yml` | Orquestração de containers |
+| `.gitignore` | Configuracoes de gitignore |
+| `.coveragerc` | Configuracao de coverage de testes |
+| `.dockerignore` | Configuracao Docker ignore |
+| `mypy.ini` | Configuracao de type checking |
+| `pyproject.toml` | Configuracao do projeto Python |
+| `pyrightconfig.json` | Configuracao do pyright |
+| `pytest.ini` | Configuracao do pytest |
+| `docker-compose.yml` | Orquestracao de containers |
 | `Dockerfile` | Imagem Docker do projeto |
-| `requirements.txt` | Dependências Python |
-| `requirements-dev.txt` | Dependências de desenvolvimento |
+| `requirements.txt` | Dependencias Python |
+| `requirements-dev.txt` | Dependencias de desenvolvimento |
 
-### Arquivos Principais
-| Arquivo | Descrição |
+### Arquivos Principais (Raiz)
+| Arquivo | Descricao |
 |---------|-----------|
 | `main.py` | Ponto de entrada principal |
-| `main.patched.py` | Versão com patches aplicados |
-| `config.py` | Configurações globais |
-| `config.json` | Arquivo de configuração JSON |
-| `fix_bot_run.py` | Script de correção do bot |
-| `test_connection.py` | Teste de conexão |
-| `validation_check.py` | Validação de dados |
+| `config.py` | Configuracoes globais |
+| `config.json` | Arquivo de configuracao JSON |
+
+### Modulos de Producao (Raiz)
+
+Modulos que permanecem na raiz por terem muitos importadores no codigo de producao:
+
+| Arquivo | Descricao | Importadores |
+|---------|-----------|--------------|
+| `ai_analyzer_qwen.py` | Analisador IA principal (150KB) | 8 |
+| `orderbook_analyzer.py` | Analisador de orderbook (123KB) | 14 |
+| `institutional_enricher.py` | Enriquecedor institucional (85KB) | 1 (dinamico) |
+| `build_compact_payload.py` | Construtor de payload compactado | 4 |
+| `context_collector.py` | Coletor de contexto (VIX, Fear&Greed, macro) | 1 |
+| `enrichment_integrator.py` | Integrador de enriquecimento | 4 |
+| `export_signals.py` | Exportador de sinais para CSV/MQL5 | 2 |
+| `feature_store.py` | Store de features (Parquet particionado) | 2 |
+| `historical_profiler.py` | Profiler historico de volume | 1 |
+| `orderbook_fallback.py` | Fallback do orderbook | 3 |
+| `report_generator.py` | Gerador de relatorios | 2 |
+| `ai_payload_compressor.py` | Compressor de payload IA | 1 |
+| `ai_response_validator.py` | Validador de respostas IA | 1 |
+| `optimize_ai_payload.py` | Otimizador de payload IA | 1 |
+| `payload_optimizer_config.py` | Configuracao do otimizador | 1 |
+| `fix_optimization.py` | Correcao de otimizacao (usado em producao) | 3 |
+| `diagnose_optimization.py` | Diagnostico de otimizacao | 1 |
+
+### Proxies de Compatibilidade (Raiz)
+
+Arquivos pequenos (3-4 linhas) que redirecionam imports para os novos pacotes:
+
+| Proxy | Redireciona para |
+|-------|------------------|
+| `event_bus.py` | `events/event_bus.py` |
+| `event_saver.py` | `events/event_saver.py` |
+| `event_memory.py` | `events/event_memory.py` |
+| `trade_buffer.py` | `trading/trade_buffer.py` |
+| `fred_fetcher.py` | `fetchers/fred_fetcher.py` |
+| `cross_asset_correlations.py` | `market_analysis/cross_asset_correlations.py` |
+| `dynamic_volume_profile.py` | `market_analysis/dynamic_volume_profile.py` |
+| `levels_registry.py` | `market_analysis/levels_registry.py` |
+| `data_handler.py` | `data_processing/data_handler.py` |
+| `data_enricher.py` | `data_processing/data_enricher.py` |
+| `data_validator.py` | `data_processing/data_validator.py` |
+| `data_quality_validator.py` | `data_processing/data_quality_validator.py` |
+| `time_manager.py` | `monitoring/time_manager.py` |
+| `health_monitor.py` | `monitoring/health_monitor.py` |
+| `metrics_collector.py` | `monitoring/metrics_collector.py` |
+| `format_utils.py` | `common/format_utils.py` |
 
 ---
 
-## 📂 Módulos Principais
+## Pacotes Organizados (NOVO - Reorganizacao 03/2026)
 
-### 🤖 [`ai_runner/`](ai_runner/)
-Módulo de execução de IA para análise de mercado
+### `events/` - Sistema de Eventos
+```
+events/
+├── __init__.py
+├── event_bus.py          # Barramento de eventos
+├── event_saver.py        # Persistencia de eventos (JSONL/JSON)
+├── event_memory.py       # Memoria de eventos com OutcomeTracker
+├── event_similarity.py   # Similaridade entre eventos
+└── event_stats_model.py  # Modelo estatistico de eventos
+```
 
+---
+
+### `trading/` - Trading e Execucao
+```
+trading/
+├── __init__.py
+├── trade_buffer.py       # AsyncTradeBuffer com backpressure
+├── trade_validator.py    # Validacao de trades
+├── alert_engine.py       # Motor de alertas
+├── alert_manager.py      # Gerenciador de alertas
+└── outcome_tracker.py    # Rastreador de resultados
+```
+
+---
+
+### `fetchers/` - Coletores de Dados Externos
+```
+fetchers/
+├── __init__.py
+├── fred_fetcher.py       # Coletor do FRED API
+├── macro_data_fetcher.py # Coletor de dados macroeconomicos
+├── macro_fetcher.py      # Fetcher de macro alternativo
+├── onchain_fetcher.py    # Coletor de dados on-chain
+└── funding_aggregator.py # Agregador de funding rates
+```
+
+---
+
+### `market_analysis/` - Analise de Mercado
+```
+market_analysis/
+├── __init__.py
+├── cross_asset_correlations.py  # Correlacoes BTC/ETH/DXY/NDX
+├── dynamic_volume_profile.py    # Perfil de volume dinamico
+├── levels_registry.py           # Registro de niveis de preco
+├── liquidity_heatmap.py         # Mapa de calor de liquidez
+├── market_impact.py             # Analise de impacto de mercado
+└── pattern_recognition.py       # Reconhecimento de padroes
+```
+
+---
+
+### `data_processing/` - Processamento de Dados
+```
+data_processing/
+├── __init__.py
+├── data_handler.py           # Manipulador de dados (eventos, absorcao)
+├── data_enricher.py          # Enriquecedor de dados
+├── data_validator.py         # Validador de dados
+└── data_quality_validator.py # Validador de qualidade
+```
+
+---
+
+### `monitoring/` - Monitoramento e Sistema
+```
+monitoring/
+├── __init__.py
+├── time_manager.py        # Gerenciador de tempo (sincronizacao Binance)
+├── health_monitor.py      # Monitor de saude do sistema
+├── metrics_collector.py   # Coletor de metricas (Prometheus)
+├── clock_sync.py          # Sincronizacao de relogio
+├── websocket_handler.py   # Manipulador WebSocket
+└── orderbook_ws_manager.py # Gerenciador WebSocket do orderbook
+```
+
+---
+
+### `common/` - Utilitarios Comuns
+```
+common/
+├── __init__.py
+├── format_utils.py         # Formatacao de precos, quantidades, percentuais
+├── technical_indicators.py # Indicadores tecnicos (EMA, RSI, etc.)
+└── ml_features.py          # Features de ML (cross-asset)
+```
+
+---
+
+## Modulos Principais (Pre-existentes)
+
+### `ai_runner/` - Executor de IA
 ```
 ai_runner/
 ├── __init__.py
 ├── ai_runner.py         # Executor principal de IA
-└── exceptions.py        # Exceções específicas
+└── exceptions.py        # Excecoes especificas
 ```
 
 ---
 
-### 📊 [`flow_analyzer/`](flow_analyzer/)
-Sistema de análise de fluxo de ordens (Order Flow)
-
+### `flow_analyzer/` - Analise de Fluxo de Ordens
 ```
 flow_analyzer/
 ├── __init__.py
-├── absorption.py        # Detecção de absorção
-├── aggregates.py        # Agregação de dados
-├── constants.py         # Constantes do módulo
-├── core.py              # Motor principal
+├── absorption.py        # Deteccao de absorcao
+├── aggregates.py        # Agregacao de dados (RollingAggregate)
+├── constants.py         # Constantes do modulo
+├── core.py              # Motor principal (FlowAnalyzer)
 ├── errors.py            # Tratamento de erros
-├── logging_config.py    # Configuração de logging
-├── metrics.py           # Métricas do módulo
-├── profiling.py         # Ferramentas de profiling
-├── prometheus_metrics.py# Integração Prometheus
-├── protocols.py         # Definições de protocolos
-├── serialization.py     # Serialização de dados
-├── utils.py             # Utilitários
-├── validation.py        # Validação de dados
+├── logging_config.py    # Configuracao de logging
+├── metrics.py           # Metricas e CircuitBreaker
+├── profiling.py         # Memory e lock profiling
+├── prometheus_metrics.py # Integracao Prometheus
+├── protocols.py         # Definicoes de protocolos
+├── serialization.py     # Serializacao (Decimal-safe JSON)
+├── utils.py             # Utilitarios
+├── validation.py        # Validacao de dados
 └── whale_score.py       # Score de whales
 ```
 
 ---
 
-### 🏛️ [`market_orchestrator/`](market_orchestrator/)
-Orquestrador principal do mercado
-
+### `market_orchestrator/` - Orquestrador Principal
 ```
 market_orchestrator/
 ├── __init__.py
@@ -87,106 +216,98 @@ market_orchestrator/
 │   ├── ai_enrichment_context.py   # Contexto de enriquecimento
 │   ├── ai_payload_builder.py       # Construtor de payload (50KB)
 │   ├── ai_runner.py                # Executor de IA (31KB)
-│   ├── llm_payload_guardrail.py   # Guardrails
-│   ├── llm_response_validator.py  # Validador de respostas IA
+│   ├── llm_payload_guardrail.py   # Guardrails de payload
+│   ├── llm_response_validator.py  # Validador de respostas LLM
 │   ├── payload_compressor.py      # Compressor v1
-│   ├── payload_compressor_v3.py    # Compressor v3 (39KB)
+│   ├── payload_compressor_v3.py   # Compressor v3 (39KB)
 │   ├── payload_metrics_aggregator.py
-│   ├── payload_section_cache.py    # Cache de seções
-│   └── raw_event_deduplicator.py   # Deduplicador
+│   ├── payload_section_cache.py   # Cache de secoes
+│   └── raw_event_deduplicator.py  # Deduplicador de eventos
 ├── analysis/
 │   ├── __init__.py
-│   └── institutional_analytics.py  # Análise institucional
+│   └── institutional_analytics.py
 ├── connection/
-│   └── robust_connection.py  # Conexão robusta
+│   └── robust_connection.py       # Conexao robusta com reconnect
 ├── flow/
 │   ├── __init__.py
-│   ├── risk_manager.py       # Gerenciamento de risco
-│   ├── signal_processor.py  # Processador de sinais
-│   ├── trade_executor.py     # Execução de trades
+│   ├── risk_manager.py            # Gerenciamento de risco
+│   ├── signal_processor.py        # Processador de sinais
+│   ├── trade_executor.py          # Execucao de trades
 │   └── trade_flow_analyzer.py
 ├── orderbook/
 │   ├── __init__.py
-│   └── orderbook_wrapper.py  # Wrapper do orderbook
+│   └── orderbook_wrapper.py
 ├── signals/
 │   ├── __init__.py
-│   └── signal_processor.py   # Processador de sinais
+│   └── signal_processor.py
 ├── utils/
 │   ├── __init__.py
 │   ├── logging_utils.py
 │   └── price_fetcher.py
 └── windows/
     ├── __init__.py
-    └── window_processor.py   # Processador de janelas
+    └── window_processor.py        # Processador de janelas
 ```
 
 ---
 
-### 📈 [`support_resistance/`](support_resistance/)
-Sistema de Suporte e Resistência
-
+### `support_resistance/` - Suporte e Resistencia
 ```
 support_resistance/
 ├── __init__.py
-├── config.py              # Configurações
+├── config.py              # Configuracoes
 ├── constants.py           # Constantes
 ├── core.py                # Motor principal
 ├── defense_zones.py       # Zonas de defesa
 ├── monitor.py             # Monitor em tempo real
-├── pivot_points.py        # Pontos de pivô
-├── reference_prices.py    # Preços de referência
-├── sr_strength.py         # Força de S/R
+├── pivot_points.py        # Pontos de pivo
+├── reference_prices.py    # Precos de referencia
+├── sr_strength.py         # Forca de S/R
 ├── system.py              # Sistema completo
-├── utils.py               # Utilitários
-├── validation.py         # Validação
+├── utils.py               # Utilitarios
+├── validation.py          # Validacao
 └── volume_profile.py      # Perfil de volume
 ```
 
 ---
 
-### 🧠 [`ml/`](ml/)
-Machine Learning e Inferência
-
+### `ml/` - Machine Learning
 ```
 ml/
 ├── feature_calculator.py   # Calculador de features
-├── generate_dataset.py     # Geração de datasets
-├── hybrid_decision.py      # Decisão híbrida
-├── inference_engine.py     # Motor de inferência
-├── model_inference.py      # Inferência de modelo
+├── generate_dataset.py     # Geracao de datasets
+├── hybrid_decision.py      # Decisao hibrida (ML + IA)
+├── inference_engine.py     # Motor de inferencia
+├── model_inference.py      # Inferencia XGBoost
 ├── train_model.py          # Treinamento de modelo
 ├── datasets/
-│   └── training_dataset.parquet  # Dataset de treinamento
+│   └── training_dataset.parquet
 └── models/
-    ├── error_log_*.txt           # Logs de erros
-    ├── feature_importance_*.csv  # Importância de features
-    ├── model_metadata*.json      # Metadados dos modelos
-    ├── xgb_model_*.json          # Modelos XGBoost
-    └── model_metadata_latest.json
+    ├── xgb_model_*.json
+    ├── model_metadata_latest.json
+    └── feature_importance_*.csv
 ```
 
 ---
 
-### 🔄 [`data_pipeline/`](data_pipeline/)
-Pipeline de processamento de dados
-
+### `data_pipeline/` - Pipeline de Dados
 ```
 data_pipeline/
 ├── __init__.py
 ├── config.py
 ├── logging_utils.py
-├── pipeline.py              # Pipeline principal
+├── pipeline.py              # Pipeline principal por janela
 ├── cache/
 │   ├── __init__.py
-│   ├── buffer.py            # Buffer de cache
-│   └── lru_cache.py         # Cache LRU
+│   ├── buffer.py
+│   └── lru_cache.py
 ├── fallback/
 │   ├── __init__.py
-│   └── registry.py          # Registro de fallbacks (NOVO 03/2026)
+│   └── registry.py
 ├── metrics/
 │   ├── __init__.py
-│   ├── data_quality_metrics.py  # Métricas de qualidade (NOVO 03/2026)
-│   └── processor.py         # Processador de métricas (NOVO 03/2026)
+│   ├── data_quality_metrics.py
+│   └── processor.py
 └── validation/
     ├── __init__.py
     ├── adaptive.py
@@ -195,137 +316,17 @@ data_pipeline/
 
 ---
 
-### 📦 [`src/`](src/)
-Código fonte principal
-
-```
-src/
-├── analysis/
-│   ├── ai_payload_integrator.py
-│   ├── integrate_regime_detector.py
-│   ├── regime_detector.py
-│   └── regime_integration.py
-├── bridges/
-│   ├── __init__.py
-│   └── async_bridge.py
-├── data/
-│   ├── indices_futures.csv
-│   ├── macro_data.json
-│   └── macro_data_provider.py  # Provider de dados macro
-├── rules/
-│   └── regime_rules.py
-├── services/
-│   ├── __init__.py
-│   ├── macro_service.py
-│   └── macro_update_service.py
-└── utils/
-    ├── __init__.py
-    ├── ai_payload_optimizer.py
-    ├── async_helpers.py
-    └── types_fredapi.pyi
-```
-
----
-
-### 📚 [`tests/`](tests/)
-Suíte de testes
-
-```
-tests/
-├── __init__.py
-├── backtester.py
-├── config_test.py
-├── conftest.py
-├── fixtures.py
-├── fixtures/
-│   └── sample_analysis_trigger.json
-├── mock_ai_responses.py
-├── mock_qwen.py
-├── regime_scenario_tester.py
-├── test_absorption_zone_mapper.py
-├── test_ai_analyzer_language_and_think_strip.py
-├── test_ai_analyzer_mock.py
-├── test_ai_llm_fallback_flow.py
-├── test_ai_response_validator.py
-├── test_ai_runner.py
-├── test_ai_runner_comprehensive.py
-├── test_circuit_breaker.py
-├── test_corrections.py
-├── test_data_pipeline.py
-├── test_data_quality_validator.py
-├── test_data_validator.py
-├── test_defense_zones.py
-├── test_enrich_signal.py
-├── test_event_bus.py
-├── test_event_saver_jsonl_guardian.py
-├── test_fix_optimization_storage.py
-├── test_flow_analyzer.py
-├── test_institutional_alerts.py
-├── test_integration_full_flow.py
-├── test_invariant_fix.py
-├── test_macro_data_provider.py
-├── test_market_orchestrator_comprehensive.py
-├── test_ml_frozen_detector.py
-├── test_orchestrator_initialization.py
-├── test_orderbook_analyze_core.py
-├── test_orderbook_analyzer.py
-├── test_orderbook_analyzer_coverage.py
-├── test_orderbook_analyzer_full_coverage.py
-├── test_orderbook_analyzer_missing.py
-├── test_orderbook_config_injection.py
-├── test_orderbook_core_comprehensive.py
-├── test_orderbook_helpers.py
-├── test_orderbook_validate_snapshot.py
-├── test_orderbook_wrapper_fallback.py
-├── test_orderbook_wrapper_fetch_with_retry.py
-├── test_out_of_order_pruning.py
-├── test_passive_aggressive_flow.py
-├── test_patch_2_fallback_controlado.py
-├── test_patch_2_simples.py
-├── test_performance_benchmarks.py
-├── test_rate_limiter.py
-├── test_regime_integration.py
-├── test_risk_manager_comprehensive.py
-├── test_rolling_aggregate.py
-├── test_run_diagnosis.py
-├── test_sr_strength.py
-├── test_support_resistance_consolidated.py
-├── test_support_resistance_modular.py
-├── test_system_health.py
-├── test_trade_flow_analyzer.py
-├── test_update_histories.py
-├── test_window_processor.py
-├── test_window_processor_queue.py
-├── verify_day4_implementations.py
-├── verify_patch_2.py
-├── verify_prune_logic_only.py
-├── fix_broken_tests.py
-├── fix_qwen_import.py
-└── payload/
-    ├── conftest.py
-    ├── pytest.ini
-    ├── test_payload_compressor.py
-    ├── test_payload_guardrail.py
-    ├── test_payload_metrics_aggregator.py
-    ├── test_payload_optimizer.py
-    └── test_payload_tripwires.py
-```
-
----
-
-### 🎯 [`orderbook_core/`](orderbook_core/)
-Núcleo do analisador de orderbook
-
+### `orderbook_core/` - Nucleo do Orderbook
 ```
 orderbook_core/
 ├── __init__.py
-├── circuit_breaker.py    # Circuit breaker
+├── circuit_breaker.py
 ├── constants.py
-├── event_factory.py      # Fábrica de eventos
+├── event_factory.py
 ├── exceptions.py
 ├── metrics.py
 ├── orderbook_config.py
-├── orderbook.py          # Orderbook principal
+├── orderbook.py
 ├── protocols.py
 ├── structured_logging.py
 └── tracing_utils.py
@@ -333,14 +334,12 @@ orderbook_core/
 
 ---
 
-### 📉 [`orderbook_analyzer/`](orderbook_analyzer/)
-Analisador de orderbook
-
+### `orderbook_analyzer/` - Analisador de Orderbook (pacote)
 ```
 orderbook_analyzer/
 ├── __init__.py
 ├── analyzer.py
-├── spread_tracker.py     # Rastreador de spread
+├── spread_tracker.py
 └── config/
     ├── __init__.py
     └── settings.py
@@ -348,9 +347,7 @@ orderbook_analyzer/
 
 ---
 
-### ⚠️ [`risk_management/`](risk_management/)
-Gerenciamento de risco
-
+### `risk_management/` - Gerenciamento de Risco
 ```
 risk_management/
 ├── __init__.py
@@ -360,20 +357,16 @@ risk_management/
 
 ---
 
-### ⚙️ [`config/`](config/)
-Configurações do projeto
-
+### `config/` - Configuracoes
 ```
 config/
 ├── __init__.py
-└── model_config.yaml
+└── model_config.yaml     # Config LLM payload e XGBoost
 ```
 
 ---
 
-### 🔧 [`auto_fixer/`](auto_fixer/)
-Sistema automático de correção de código
-
+### `auto_fixer/` - Sistema de Auto-correcao
 ```
 auto_fixer/
 ├── __init__.py
@@ -402,546 +395,290 @@ auto_fixer/
 │   ├── reports/
 │   └── vectordb/
 ├── phase1_scanner/
-│   ├── __init__.py
-│   └── codebase_scanner.py
 ├── phase2_extractor/
-│   ├── __init__.py
-│   └── ast_extractor.py
 ├── phase3_chunker/
-│   ├── __init__.py
-│   └── chunk_engine.py
 ├── phase4_index/
-│   ├── __init__.py
-│   └── code_index.py
 ├── phase5_rag/
-│   ├── __init__.py
-│   ├── context_retriever.py
-│   ├── embeddings.py
-│   └── vector_store.py
 ├── phase6_analyzers/
-│   ├── __init__.py
-│   ├── api_analyzer.py
-│   ├── async_analyzer.py
-│   ├── base_analyzer.py
-│   ├── import_analyzer.py
-│   └── websocket_analyzer.py
 ├── phase7_patcher/
-│   ├── __init__.py
-│   ├── patch_applier.py
-│   ├── patch_generator.py
-│   └── patch_validator.py
 └── phase8_reporter/
-    ├── __init__.py
-    └── report_generator.py
 ```
 
 ---
 
-## 📂 Diretórios de Suporte
+### `src/` - Codigo Fonte (Regime, Macro, Bridges)
+```
+src/
+├── analysis/
+│   ├── ai_payload_integrator.py
+│   ├── integrate_regime_detector.py
+│   ├── regime_detector.py
+│   └── regime_integration.py
+├── bridges/
+│   ├── __init__.py
+│   └── async_bridge.py
+├── data/
+│   ├── indices_futures.csv
+│   ├── macro_data.json
+│   └── macro_data_provider.py
+├── rules/
+│   └── regime_rules.py
+├── services/
+│   ├── __init__.py
+│   ├── macro_service.py
+│   └── macro_update_service.py
+└── utils/
+    ├── __init__.py
+    ├── ai_payload_optimizer.py
+    ├── async_helpers.py
+    └── types_fredapi.pyi
+```
 
-### 📁 [`scripts/`](scripts/)
-Scripts de utilidade
+---
 
+## Diretorios de Suporte
+
+### `tests/` - Suite de Testes (105 arquivos)
+```
+tests/
+├── conftest.py                    # Fixtures globais + Prometheus cleanup
+├── fixtures.py
+├── fixtures/
+│   └── sample_analysis_trigger.json
+├── mock_ai_responses.py
+├── mock_qwen.py
+├── payload/                       # Testes focados de payload
+│   ├── conftest.py
+│   ├── pytest.ini
+│   ├── test_payload_compressor.py
+│   ├── test_payload_guardrail.py
+│   ├── test_payload_metrics_aggregator.py
+│   ├── test_payload_optimizer.py
+│   └── test_payload_tripwires.py
+├── test_ai_*.py                   # Testes de IA (7 arquivos)
+├── test_orderbook_*.py            # Testes de orderbook (9 arquivos)
+├── test_flow_*.py                 # Testes de fluxo
+├── test_support_resistance_*.py   # Testes de S/R
+├── test_enrich_*.py               # Testes de enriquecimento
+├── test_data_*.py                 # Testes de dados
+├── test_circuit_breaker_*.py      # Testes de circuit breaker
+├── test_event_*.py                # Testes de eventos
+├── test_trade_*.py                # Testes de trading
+├── teste_*.py                     # Testes em portugues (legacy)
+└── ... (105 arquivos total)
+```
+
+---
+
+### `scripts/` - Scripts de Utilidade
 ```
 scripts/
 ├── ab_test_prompt_styles.py
 ├── analyze_ai_usage.py
+├── app.py                          # Aplicacao web
 ├── audit_json_payload_costs.py
+├── audit_new_features.py
+├── audit_script.py
 ├── backup_to_oci.py
+├── dashboard.py                    # Dashboard (43KB)
 ├── disaster_recovery.sh
+├── enhanced_market_bot.py
+├── full_audit.py
+├── integration_validator.py
+├── log_formatter.py
+├── log_sanitizer.py
+├── modelo_dados_ideal.py
+├── process_csv_data.py
+├── prometheus_exporter.py
 ├── remote_health_check.sh
-├── test_fixes.py
-├── test_fixes_simple.py
-├── test_fixes_final.py
-├── test_payload.sh
-└── validate_regime_system.py
+├── validate_regime_system.py
+├── validation_check.py
+├── debug/                          # Scripts de debug
+│   ├── debug_bot.py
+│   ├── debug_env.py
+│   ├── debug_keyerror.py
+│   ├── debug_payload.py
+│   └── debug_validator.py
+├── diagnostics/                    # Scripts de diagnostico
+│   ├── diagnose_crash.py
+│   ├── final_replace.py
+│   ├── reproduce_issue.py
+│   ├── show_problem_lines.py
+│   ├── validar_evento.py
+│   ├── verificar_otimizacao.py
+│   ├── verify_implementations.py
+│   └── verify_patch.py
+├── demos/                          # Demonstracoes
+│   ├── demo_circuit_breaker.py
+│   ├── demo_enhanced_cross_asset.py
+│   └── demo_enhanced_cross_asset_simple.py
+├── fixes/                          # Scripts de correcao
+│   ├── fix_bot_run.py
+│   ├── fix_broken_tests.py
+│   ├── fix_duplicatas.py
+│   ├── fix_playwright.py
+│   ├── fix_separador_final.py
+│   └── fix_timestamp.py
+└── structure/                      # Analise de estrutura
+    ├── compare_structure.py
+    ├── compare_structure_filtered.py
+    ├── create_structure.py
+    ├── find_missing_files.py
+    ├── generate_updated_structure.py
+    └── list_project_files.py
 ```
 
 ---
 
-### 🔧 [`arquivos para diagnostico/`](arquivos para diagnostico/)
-Arquivos para diagnóstico de janelas
-
-```
-arquivos para diagnostico/
-├── __init__.py
-└── diagnostico de janelas geradas/
-    ├── __init__.py
-    ├── diagnostico_avancado.py     # Diagnóstico avançado (NOVO 03/2026)
-    ├── diagnostico_duplicatas.py   # Diagnóstico de duplicatas (NOVO 03/2026)
-    ├── diagnostico_janelas.py       # Diagnóstico de janelas (NOVO 03/2026)
-    └── fix_duplicatas_completo.py  # Correção de duplicatas (NOVO 03/2026)
-```
-
----
-
-### 🔧 [`tools/`](tools/)
-Ferramentas de diagnóstico
-
-```
-tools/
-├── export_db_to_jsonl.py
-├── inspect_db.py
-├── inspect_events_schema.py
-├── test_groq_models_http.py
-├── test_groq_models_v2.py
-├── test_groq_official.py
-└── ws_test.py
-```
-
----
-
-### 🔍 [`diagnostics/`](diagnostics/)
-Ferramentas de diagnóstico
-
-```
-diagnostics/
-├── analyze_ai_results.py
-├── auto_fix.py
-├── evaluate_ai_performance.py
-├── final_validation.py
-├── performance_metrics.py
-├── replay_validator.py
-├── test_decision_system.py
-├── test_integrated.py
-├── test_latency.py
-├── test_ml_model.py
-└── verify_ml_integration.py
-```
-
----
-
-### 🗄️ [`database/`](database/)
-Sistema de banco de dados
-
-```
-database/
-├── __init__.py
-└── event_store.py
-```
-
----
-
-### 🏗️ [`infrastructure/`](infrastructure/)
-Infraestrutura
-
-```
-infrastructure/
-├── __init__.py
-├── market-bot.service
-└── oci/
-    ├── __init__.py
-    ├── monitoring.py
-    ├── security_config.md
-    └── vault_helper.py
-└── terraform/
-    └── main.tf
-```
-
----
-
-### 📄 [`docs/`](docs/)
-Documentação
-
-```
-docs/
-├── architecture.md
-├── RUNBOOK.md
-└── troubleshooting.md
-```
-
----
-
-### 📜 [`legacy/`](legacy/)
-Código legado
-
+### `legacy/` - Codigo Legado
 ```
 legacy/
+├── ai_analyzer_disabled.py
+├── ai_analyzer_qwen_patch2.py
+├── ai_historical_pro.py
 ├── data_pipeline_legacy..py
+├── main.patched.py
+├── market_analyzer.py
 ├── market_analyzer_2_3_0.py
+├── patch_ai_analyzer.py
 └── support_resistance_legacy.py
 ```
 
 ---
 
-### 🗂️ [`Regras/`](Regras/)
-Regras e documentação
-
+### `docs/` - Documentacao
 ```
-Regras/
-├── COMPRIMIR DADOS.API.odt
-├── Correção automática.docx
-├── metodos institucional.docx     # (NOVO 03/2026)
-├── regras para o codigo.odt
-├── Teia de monitoramento Mini Dolar (B3).odt
-└── Rastreando robos/
-    ├── ESTRUTURANDO ARQUIVO JSON.odt
-    └── ROBOS X INTEGIGENCIA IA.odt
-```
-
----
-
-### 🤖 [`ai_runner/`](ai_runner/) (alternative location)
-
-```
-ai_runner/
-├── __init__.py
-├── ai_runner.py
-└── exceptions.py
+docs/
+├── architecture.md
+├── RUNBOOK.md
+├── troubleshooting.md
+├── CORRECAO_ENRICH_EVENT_SUMMARY.md
+├── CORRECAO_FETCH_INTERMARKET_DATA.md
+├── PATCH_SUMMARY.md
+├── RELATORIO_ENRICHMENT_CROSS_ASSET.md
+├── RELATORIO_FINAL_MACRO_PROVIDER.md
+├── RESUMO_EXPORT_SINAIS.md
+├── auditoria_estrutura_json.md
+├── orderbook_severity_analysis.md
+└── relatorio_auditoria_json.md
 ```
 
 ---
 
-### 🧠 [`utils/`](utils/)
-Utilitários adicionais
+### Outros Diretorios
 
-```
-utils/
-├── __init__.py
-├── async_helpers.py
-├── heartbeat_manager.py
-├── trade_filter.py
-└── trade_timestamp_validator.py
-```
-
----
-
-### 🧮 [`memory/`](memory/)
-Sistema de memória
-
-```
-memory/
-├── __init__.py
-└── levels_BTCUSDT.json  # Níveis de preço BTCUSDT (NOVO 03/2026)
-```
+| Diretorio | Descricao |
+|-----------|-----------|
+| `utils/` | Utilitarios (async_helpers, heartbeat, trade_filter) |
+| `database/` | Banco de dados (event_store.py) |
+| `infrastructure/` | Docker, Terraform, OCI |
+| `tools/` | Ferramentas (inspect_db, ws_test, groq tests) |
+| `diagnostics/` | Diagnosticos (performance, replay, ML) |
+| `arquivos para diagnostico/` | Diagnostico de janelas |
+| `Regras/` | Documentacao de regras (.odt, .docx) |
+| `memory/` | Sistema de memoria (levels_BTCUSDT.json) |
+| `MQL5/` | Integracao MetaTrader |
+| `fallback_events/` | Eventos de fallback |
+| `backups/` | Backups de seguranca |
 
 ---
 
-### 📈 [`MQL5/`](MQL5/)
-Integração MQL5 (MetaTrader)
+## Arquivos de Dados
 
-```
-MQL5/
-├── __init__.py
-└── Indicators/
-    └── ChartSignalsFromCSV.mq5
-```
+| Diretorio | Conteudo |
+|-----------|----------|
+| `dados/` | eventos_fluxo.jsonl, trading_bot.db (SQLite) |
+| `logs/` | last_llm_payload.json, payload_metrics.jsonl |
+| `features/` | Dados particionados por data (date=YYYY-MM-DD/) |
 
 ---
 
-### 🔄 [`fallback_events/`](fallback_events/)
-Eventos de fallback
-
-```
-fallback_events/
-└── eventos_20260307.json
-```
-
----
-
-### 💾 [`backups/`](backups/)
-Backups de segurança
-
-```
-backups/
-└── time_manager.py.20260308_144713.bak
-```
-
----
-
-## 📂 Arquivos de Dados
-
-### 📁 [`dados/`](dados/)
-```
-dados/
-├── eventos_fluxo.jsonl     # Eventos de fluxo
-├── eventos-fluxo.json     # Eventos de fluxo (JSON)
-├── eventos_visuais.log    # Eventos visuais
-└── trading_bot.db         # Banco de dados SQLite
-```
-
----
-
-### 📁 [`logs/`](logs/)
-Diretório de logs
-
-```
-logs/
-├── last_llm_payload.json
-├── payload_metrics.jsonl
-├── payload_metrics.jsonl.zip
-└── payload_section_cache.json
-```
-
----
-
-### 📁 [`features/`](features/)
-Dados de features por data (date=YYYY-MM-DD/)
-
-```
-features/
-├── date=2025-12-08/
-├── date=2025-12-09/
-├── date=2025-12-11/
-├── date=2025-12-17/
-├── date=2025-12-18/
-├── date=2025-12-20/
-├── date=2025-12-21/
-├── date=2026-01-01/
-├── date=2026-01-02/
-├── date=2026-01-03/
-├── date=2026-01-04/
-├── date=2026-01-05/
-├── date=2026-01-06/
-├── date=2026-01-13/
-├── date=2026-01-19/
-├── date=2026-01-20/
-├── date=2026-01-21/
-├── date=2026-01-24/
-├── date=2026-01-30/
-├── date=2026-02-09/
-├── date=2026-02-11/
-├── date=2026-02-12/
-├── date=2026-02-21/
-├── date=2026-02-22/
-├── date=2026-02-23/
-├── date=2026-02-24/
-├── date=2026-02-25/
-├── date=2026-03-01/
-├── date=2026-03-05/
-├── date=2026-03-06/
-├── date=2026-03-07/
-├── date=2026-03-08/
-├── date=2026-03-09/
-├── date=2026-03-10/
-├── date=2026-03-11/
-└── date=2026-03-12/
-```
-
----
-
-## 📂 Arquivos Principais (Raiz)
-
-### Análise de IA
-| Arquivo | Descrição |
-|---------|-----------|
-| `ai_analyzer_qwen.py` | Analisador IA principal (150KB) |
-| `ai_analyzer_qwen_patch2.py` | Patch v2 do analisador |
-| `ai_analyzer_disabled.py` | Analisador desabilitado |
-| `ai_historical_pro.py` | Histórico de IA |
-| `ai_payload_compressor.py` | Compressor de payload |
-| `ai_response_validator.py` | Validador de respostas IA |
-| `context_collector.py` | Coletor de contexto |
-| `optimize_ai_payload.py` | Otimizador de payload IA (NOVO 03/2026) |
-| `payload_optimizer_config.py` | Configuração do otimizador (NOVO 03/2026) |
-| `integration_validator.py` | Validador de integração (NOVO 03/2026) |
-
-### Análise de Mercado
-| Arquivo | Descrição |
-|---------|-----------|
-| `orderbook_analyzer.py` | Analisador de orderbook (123KB) |
-| `cross_asset_correlations.py` | Correlações cross-asset |
-| `pattern_recognition.py` | Reconhecimento de padrões |
-| `liquidity_heatmap.py` | Mapa de calor de liquidez |
-| `dynamic_volume_profile.py` | Perfil de volume dinâmico |
-| `orderbook_fallback.py` | Fallback do orderbook |
-| `orderbook_ws_manager.py` | Gerenciador WebSocket |
-| `market_impact.py` | Análise de impacto de mercado (NOVO 03/2026) |
-| `funding_aggregator.py` | Agregador de funding rates (NOVO 03/2026) |
-| `levels_registry.py` | Registro de níveis de preço (NOVO 03/2026) |
-
-### Dados e Validação
-| Arquivo | Descrição |
-|---------|-----------|
-| `data_handler.py` | Manipulador de dados |
-| `data_enricher.py` | Enriquecedor de dados |
-| `data_validator.py` | Validador de dados |
-| `data_quality_validator.py` | Validador de qualidade |
-| `feature_store.py` | Store de features |
-| `process_csv_data.py` | Processador de dados CSV (NOVO 03/2026) |
-| `build_compact_payload.py` | Construtor de payload compactado (NOVO 03/2026) |
-
-### Trading e Execução
-| Arquivo | Descrição |
-|---------|-----------|
-| `trade_buffer.py` | Buffer de trades |
-| `trade_validator.py` | Validador de trades |
-| `alert_engine.py` | Motor de alertas |
-| `alert_manager.py` | Gerenciador de alertas |
-| `metrics_collector.py` | Coletor de métricas |
-| `outcome_tracker.py` | Rastreador de resultados (NOVO 03/2026) |
-
-### Integração Externa
-| Arquivo | Descrição |
-|---------|-----------|
-| `macro_data_fetcher.py` | Coletor de dados macroeconômicos |
-| `macro_fetcher.py` | Fetcher de macro |
-| `fred_fetcher.py` | Coletor do FRED |
-| `websocket_handler.py` | Manipulador WebSocket |
-| `onchain_fetcher.py` | Coletor de dados on-chain (NOVO 03/2026) |
-
-### Sistema
-| Arquivo | Descrição |
-|---------|-----------|
-| `event_bus.py` | Barramento de eventos |
-| `event_saver.py` | Salvador de eventos |
-| `time_manager.py` | Gerenciador de tempo |
-| `clock_sync.py` | Sincronização de relógio |
-| `health_monitor.py` | Monitor de saúde |
-| `event_memory.py` | Memória de eventos |
-| `event_similarity.py` | Similaridade de eventos |
-| `event_stats_model.py` | Modelo de estatísticas |
-
-### Utilitários
-| Arquivo | Descrição |
-|---------|-----------|
-| `format_utils.py` | Utilitários de formatação |
-| `technical_indicators.py` | Indicadores técnicos |
-| `ml_features.py` | Features de ML |
-| `export_signals.py` | Exportador de sinais |
-| `report_generator.py` | Gerador de relatórios |
-| `historical_profiler.py` | Profiler histórico (NOVO 03/2026) |
-| `log_formatter.py` | Formatador de logs (NOVO 03/2026) |
-| `log_sanitizer.py` | Sanitizador de logs (NOVO 03/2026) |
-
-### Institucional
-| Arquivo | Descrição |
-|---------|-----------|
-| `institutional_enricher.py` | Enriquecedor institucional (85KB) |
-| `enrichment_integrator.py` | Integrador de enriquecimento (NOVO 03/2026) |
-
-### Debug e Desenvolvimento
-| Arquivo | Descrição |
-|---------|-----------|
-| `debug_bot.py` | Debug do bot |
-| `debug_env.py` | Debug de ambiente |
-| `debug_keyerror.py` | Debug de KeyError |
-| `debug_payload.py` | Debug de payload |
-| `diagnose_crash.py` | Diagnóstico de crash |
-| `fix_optimization.py` | Correção de otimização (NOVO 03/2026) |
-| `diagnose_optimization.py` | Diagnóstico de otimização (NOVO 03/2026) |
-| `final_replace.py` | Substituição final (NOVO 03/2026) |
-| `verify_implementations.py` | Verificador de implementações (NOVO 03/2026) |
-| `verify_patch.py` | Verificador de patches (NOVO 03/2026) |
-| `verificar_otimizacao.py` | Verificação de otimização (NOVO 03/2026) |
-| `validar_evento.py` | Validador de eventos (NOVO 03/2026) |
-| `debug_validator.py` | Validador de debug (NOVO 03/2026) |
-| `reproduce_issue.py` | Reproduzir problema (NOVO 03/2026) |
-| `show_problem_lines.py` | Mostrar linhas problemáticas (NOVO 03/2026) |
-
-### Dashboard e Visualização
-| Arquivo | Descrição |
-|---------|-----------|
-| `dashboard.py` | Dashboard (43KB) |
-| `app.py` | Aplicação principal (NOVO 03/2026) |
-
-### Scripts de Estrutura
-| Arquivo | Descrição |
-|---------|-----------|
-| `create_structure.py` | Criador de estrutura (NOVO 03/2026) |
-| `generate_updated_structure.py` | Gerador de estrutura atualizada (NOVO 03/2026) |
-| `compare_structure.py` | Comparador de estrutura (NOVO 03/2026) |
-| `compare_structure_filtered.py` | Comparador filtrado (NOVO 03/2026) |
-| `find_missing_files.py` | Localizador de arquivos faltantes (NOVO 03/2026) |
-| `list_project_files.py` | Listador de arquivos (NOVO 03/2026) |
-
-### Demonstrações e Testes
-| Arquivo | Descrição |
-|---------|-----------|
-| `demo_circuit_breaker.py` | Demo de circuit breaker (NOVO 03/2026) |
-| `demo_enhanced_cross_asset.py` | Demo cross-asset avançado (NOVO 03/2026) |
-| `demo_enhanced_cross_asset_simple.py` | Demo cross-asset simples (NOVO 03/2026) |
-
-### Dados de Mercado
-| Arquivo | Descrição |
-|---------|-----------|
-| `dados_mercado.csv` | Dados de mercado (NOVO 03/2026) |
-| `reg_test_report.json` | Relatório de testes de regressão (NOVO 03/2026) |
-| `relatorio.json` | Relatório geral (NOVO 03/2026) |
-| `modelo_dados_ideal.py` | Modelo de dados ideal (NOVO 03/2026) |
-
-### Documentação
-| Arquivo | Descrição |
-|---------|-----------|
-| `README_OPTIMIZATION.md` | Documentação de otimização (NOVO 03/2026) |
-| `PATCH_SUMMARY.md` | Resumo de patches (NOVO 03/2026) |
-| `orderbook_severity_analysis.md` | Análise de severidade (NOVO 03/2026) |
-| `auditoria_estrutura_json.md` | Auditoria de estrutura JSON (NOVO 03/2026) |
-| `RELATORIO_ENRICHMENT_CROSS_ASSET.md` | Relatório de enriquecimento (NOVO 03/2026) |
-| `RELATORIO_FINAL_MACRO_PROVIDER.md` | Relatório macro provider (NOVO 03/2026) |
-| `RESUMO_EXPORT_SINAIS.md` | Resumo de exportação de sinais (NOVO 03/2026) |
-| `CORRECAO_ENRICH_EVENT_SUMMARY.md` | Correção de enriquecimento (NOVO 03/2026) |
-| `CORRECAO_FETCH_INTERMARKET_DATA.md` | Correção de dados intermarket (NOVO 03/2026) |
-
-### Scripts de Auditoria
-| Arquivo | Descrição |
-|---------|-----------|
-| `audit_new_features.py` | Auditoria de novas features (NOVO 03/2026) |
-| `audit_script.py` | Script de auditoria (NOVO 03/2026) |
-| `full_audit.py` | Auditoria completa (NOVO 03/2026) |
-
----
-
-## 📊 Estatísticas do Projeto
-
-- **Total de arquivos Python**: ~250+
-- **Total de módulos**: 25+
-- **Linhas de código principais**: 100,000+
-- **Testes**: 80+ arquivos de teste
-- **Configurações**: YAML, JSON, INI, TOML
-- **Dados de features**: 34 datas
-
----
-
-## 🏗️ Arquitetura de Alto Nível
+## Arquitetura de Alto Nivel
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     MAIN.PY                                  │
-│                  (Ponto de Entrada)                         │
+│                  (Ponto de Entrada)                          │
 └─────────────────────────┬───────────────────────────────────┘
                           │
          ┌────────────────┼────────────────┐
          ▼                ▼                ▼
  ┌─────────────┐  ┌──────────────────┐  ┌─────────────┐
  │   MARKET    │  │    AI RUNNER     │  │   FLOW      │
- │ ORCHESTRATOR│  │   (Análise IA)   │  │  ANALYZER   │
+ │ ORCHESTRATOR│  │   (Analise IA)   │  │  ANALYZER   │
+ └─────────────┘  └──────────────────┘  └─────────────┘
+         │                │                │
+         ▼                ▼                ▼
+ ┌─────────────┐  ┌──────────────────┐  ┌─────────────┐
+ │  EVENTS     │  │   TRADING        │  │  MONITORING │
+ │  (eventos)  │  │  (buffer/alerts) │  │  (health)   │
+ └─────────────┘  └──────────────────┘  └─────────────┘
+         │                │                │
+         ▼                ▼                ▼
+ ┌─────────────┐  ┌──────────────────┐  ┌─────────────┐
+ │  DATA       │  │   MARKET         │  │  FETCHERS   │
+ │ PROCESSING  │  │  ANALYSIS        │  │  (externo)  │
  └─────────────┘  └──────────────────┘  └─────────────┘
          │                │                │
          └────────────────┼────────────────┘
                           ▼
               ┌─────────────────────┐
-              │   ORDERBOOK CORE     │
-              │   (Order Book)       │
+              │   ORDERBOOK CORE    │
+              │   + S/R + ML        │
               └─────────────────────┘
                           │
-         ┌────────────────┼────────────────┐
-         ▼                ▼                ▼
- ┌─────────────┐  ┌──────────────────┐  ┌─────────────┐
- │  SUPPORT   │  │   RISK MGMT      │  │   DATA      │
- │  RESISTANCE│  │  (Gerenciamento) │  │  PIPELINE   │
- └─────────────┘  └──────────────────┘  └─────────────┘
-         │                │                │
-         └────────────────┼────────────────┘
                           ▼
               ┌─────────────────────┐
               │   DATABASE/LOGS     │
-              │   (Persistência)    │
+              │   (Persistencia)    │
               └─────────────────────┘
 ```
 
 ---
 
-## 🔗 Dependencies Principais
+## Dependencias Principais
 
 - **Binance**: `binance-connector`, `python-binance`
-- **IA/ML**: `openai`, `anthropic`, `transformers`, `torch`
+- **IA/ML**: `openai` (Groq), `xgboost`
 - **Dados**: `pandas`, `numpy`, `polars`
 - **Async**: `asyncio`, `aiohttp`, `websockets`
 - **Database**: `sqlalchemy`, `sqlite3`, `orjson`
 - **Monitoring**: `prometheus-client`, `structlog`
 - **Testing**: `pytest`, `pytest-asyncio`, `coverage`
+- **Macro**: `yfinance`, `fredapi`
 
 ---
 
-*Última atualização: 2026-03-12*
+## Estatisticas do Projeto
+
+- **Arquivos .py na raiz**: 35 (16 proxies + 19 modulos)
+- **Pacotes organizados**: 7 novos + 12 pre-existentes
+- **Total de arquivos Python**: ~250+
+- **Testes**: 105 arquivos em tests/
+- **Dados de features**: 34+ datas
+
+---
+
+## Historico de Reorganizacao (2026-03-12)
+
+| Etapa | Arquivos | Destino |
+|-------|----------|---------|
+| Testes da raiz | 37 | `tests/` |
+| Debug/diagnostico | 28 | `scripts/debug\|diagnostics\|structure\|demos\|fixes` |
+| Relatorios .md | 9 | `docs/` |
+| Auditorias | 3 | `scripts/` |
+| Disabled/patches IA | 4 | `legacy/` |
+| Scripts standalone | 12 | `scripts/` e `legacy/` |
+| Eventos | 5 | `events/` (com proxies) |
+| Trading | 5 | `trading/` (com proxy) |
+| Fetchers | 5 | `fetchers/` (com proxy) |
+| Market analysis | 6 | `market_analysis/` (com proxies) |
+| Data processing | 4 | `data_processing/` (com proxies) |
+| Monitoring | 6 | `monitoring/` (com proxies) |
+| Common utils | 3 | `common/` (com proxy) |
+
+**Total movido: ~130 arquivos. Raiz: 129 -> 35 (-73%)**
+
+---
+
+*Ultima atualizacao: 2026-03-12 (pos-reorganizacao)*
