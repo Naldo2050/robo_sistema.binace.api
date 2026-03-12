@@ -160,7 +160,7 @@ class AIRunner:
         if self.api_key:
             try:
                 # Tenta cliente real (se existir no projeto/ambiente)
-                from qwen_client import QwenClient as RealQwenClient  # type: ignore
+                from qwen_client import QwenClient as RealQwenClient  # type: ignore[import-not-found]
 
                 self.client = RealQwenClient(api_key=self.api_key, model=self.model_name)  # type: ignore
                 return

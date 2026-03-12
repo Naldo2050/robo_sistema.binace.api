@@ -91,13 +91,13 @@ class WhaleAccumulationCalculator:
             Dict com score (-100 a +100), classificação e componentes.
         """
         components = {}
-        score = 0
+        score: float = 0.0
 
         # ═══════════════════════════════════════════
         # 1. WHALE / MID FLOW DIRECTION (-30 a +30)
         # ═══════════════════════════════════════════
-        flow_score = 0
-        flow_detail = {}
+        flow_score: float = 0.0
+        flow_detail: dict = {}
 
         if sector_flow and isinstance(sector_flow, dict):
             # Priorizar whale, fallback para mid
@@ -106,15 +106,15 @@ class WhaleAccumulationCalculator:
             retail_data = sector_flow.get("retail", {})
 
             # Delta do whale/mid (quem move o mercado)
-            whale_delta = 0
+            whale_delta: float = 0.0
             if isinstance(whale_data, dict):
                 whale_delta = float(whale_data.get("delta", 0))
-            
-            mid_delta = 0
+
+            mid_delta: float = 0.0
             if isinstance(mid_data, dict):
                 mid_delta = float(mid_data.get("delta", 0))
 
-            retail_delta = 0
+            retail_delta: float = 0.0
             if isinstance(retail_data, dict):
                 retail_delta = float(retail_data.get("delta", 0))
 
@@ -157,7 +157,7 @@ class WhaleAccumulationCalculator:
         # ═══════════════════════════════════════════
         # 2. ORDER BOOK DEPTH ASYMMETRY (-20 a +20)
         # ═══════════════════════════════════════════
-        depth_score = 0
+        depth_score: float = 0.0
         depth_detail = {}
 
         if orderbook_data and isinstance(orderbook_data, dict):
@@ -198,8 +198,8 @@ class WhaleAccumulationCalculator:
         # ═══════════════════════════════════════════
         # 3. ABSORPTION PATTERN BIAS (-25 a +25)
         # ═══════════════════════════════════════════
-        abs_score = 0
-        abs_detail = {}
+        abs_score: float = 0.0
+        abs_detail: dict = {}
 
         if absorption_data and isinstance(absorption_data, dict):
             # Suportar formato nested ou flat
@@ -245,8 +245,8 @@ class WhaleAccumulationCalculator:
         # ═══════════════════════════════════════════
         # 4. DERIVATIVES CONTEXT (-25 a +25)
         # ═══════════════════════════════════════════
-        deriv_score = 0
-        deriv_detail = {}
+        deriv_score: float = 0.0
+        deriv_detail: dict = {}
 
         if derivatives_data and isinstance(derivatives_data, dict):
             # Buscar dados de BTCUSDT

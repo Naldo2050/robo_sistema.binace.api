@@ -14,9 +14,29 @@ Uso no ai_runner.py:
 
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_epoch_ms_compact(event_data: dict) -> int:
+    """Extrai epoch_ms de forma segura, sempre retornando int."""
+    for key in ("epoch_ms", "timestamp_ms", "event_timestamp_ms"):
+        val = event_data.get(key)
+        if isinstance(val, (int, float)) and val > 0:
+            return int(val)
+    # timestamp pode ser string ISO — converte com segurança
+    ts = event_data.get("timestamp")
+    if isinstance(ts, (int, float)) and ts > 0:
+        return int(ts * 1000)
+    if isinstance(ts, str) and ts:
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            pass
+    return int(time.time() * 1000)
 
 
 def _r(val: Any, dec: int = 2) -> Any:
@@ -326,13 +346,7 @@ def build_compact_payload(event_data: dict) -> dict:
     result = {
         "symbol": event_data.get("symbol", "BTCUSDT"),
         "window": event_data.get("janela_numero"),
-        "epoch_ms": (
-            event_data.get("epoch_ms")
-            or event_data.get("timestamp_ms")
-            or event_data.get("event_timestamp_ms")
-            or (int(event_data.get("timestamp", 0) * 1000) if event_data.get("timestamp") else None)
-            or int(time.time() * 1000)
-        ),
+        "epoch_ms": _safe_epoch_ms_compact(event_data),
         "trigger": event_data.get("tipo_evento", "UNKNOWN"),
         "price": price,
     }

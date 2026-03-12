@@ -2,9 +2,7 @@
 # Python
 # ==============================
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
 *.pdb
 *.egg
 *.egg-info/
@@ -14,8 +12,10 @@ build/
 *.manifest
 *.spec
 .coverage
-.pytest_cache/
 .coverage.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # ==============================
 # Virtual Environments
@@ -32,25 +32,26 @@ ENV/
 # Playwright
 # ==============================
 playwright-report/
+playwright_user_data/
 *.log
 *.tmp
-playwright_user_data/
 
 # ==============================
 # Local Data Folders (NÃO DEVEM SER COMMITADOS)
 # ==============================
-dados/                 # DBs, logs locais etc.
+dados/                  # DBs, logs locais etc.
 firefox_data/
 gemini_data/
 features/               # FeatureStore em Parquet (produção)
-test_output/            # Saída de testes do FeatureStore
+test_output/             # Saída de testes do FeatureStore
 ml/models/              # Modelos treinados (XGBoost, metadados, scalers)
 
 # ==============================
 # Arquivos de Dados Específicos
 # (redundantes se a pasta já for ignorada, mas mantidos por segurança)
 # ==============================
-# Banco de dados local
+# Banco de dados local (caso apareça fora de dados/)
+trading_bot.db
 dados/trading_bot.db
 
 # Arquivos Parquet individuais (caso apareçam fora de features/)
@@ -66,23 +67,15 @@ eventos-fluxo.json
 # ==============================
 ml/*.log
 
-# Modelos e metadados (caso ml/models/ deixe de ser ignorado no futuro)
-ml/models/*.json
-ml/models/*.pkl
-ml/models/xgb_model_*.json
-ml/models/xgb_model_latest.json
-ml/models/model_metadata_*.json
-ml/models/model_metadata.json
-ml/models/scaler_*.pkl
-
-# Logs e relatórios de treino
+# Logs e relatórios de treino (caso apareçam fora de ml/models/)
 ml/models/error_log_*.txt
 ml/models/feature_importance_*.csv
 
 # ==============================
 # Arquivos temporários de editores / LibreOffice
 # ==============================
-~lock*.odt#             # locks temporários de arquivos .odt
+~lock*.odt#
+.~lock*
 
 # ==============================
 # Sistema Operacional
@@ -109,6 +102,8 @@ diagnostics/ai_performance_report.csv
 logs/payload_metrics*.jsonl*
 logs/payload_section_cache.json
 logs/*.zip
+*.err.log
+*.out.log
 
 # ==============================
 # Auto-Fixer System - Output Files
@@ -117,16 +112,27 @@ auto_fixer/output/
 !auto_fixer/output/.gitkeep
 
 # ==============================
-# Backups
+# Backups / arquivos gerados (evitar quebrar hooks por sintaxe)
 # ==============================
 backups/
-*.bak
-*.backup_*
 
-# ==============================
-# LibreOffice Locks
-# ==============================
-.~lock*
+# backups com timestamp
+*.backup_*
+*.bak
+*.old
+*.orig
+*.rej
+
+# arquivos patched/gerados pelo auto_fixer (se você não quer versionar)
+*.patched.py
+*.patched_*.py
+*.patched.*.py
+*.patched.backup_*.py
+
+# backups de editor
+*~
+.#*
+#*#
 
 # ==============================
 # Database Files
@@ -147,12 +153,6 @@ htmlcov/
 # ==============================
 *.pem
 *.key
-
-# ==============================
-# Large Log Files
-# ==============================
-*.err.log
-*.out.log
 
 # ==============================
 # Arquivos temporários

@@ -323,12 +323,12 @@ class LiquidityHeatmap:
             v = cluster_data.get(k)
             if k == "trades_count":
                 try:
-                    cluster_data[k] = int(v)
+                    cluster_data[k] = int(v or 0)
                 except Exception:
                     cluster_data[k] = 0
             else:
                 try:
-                    cluster_data[k] = float(v)
+                    cluster_data[k] = float(v or 0)
                 except Exception:
                     cluster_data[k] = 0.0
 

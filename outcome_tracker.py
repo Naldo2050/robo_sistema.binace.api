@@ -180,8 +180,8 @@ class OutcomeTracker:
 
     def get_historical_probability(
         self,
-        event_type: str = None,
-        battle_result: str = None,
+        event_type: str = "",
+        battle_result: str = "",
         window: str = "15m",
         min_samples: int = 10,
     ) -> Dict[str, Any]:

@@ -84,7 +84,7 @@ class AdaptiveThresholds:
         below_ratio = below_threshold / len(trades_array)
 
         # Ajustar se >70% dos batches estão abaixo do threshold
-        return below_ratio > self.confidence_threshold
+        return bool(below_ratio > self.confidence_threshold)
 
     def adjust(self, allow_limited_data: bool = True) -> Tuple[int, str]:
         """

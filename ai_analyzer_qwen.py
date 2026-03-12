@@ -1,4 +1,4 @@
-﻿# ai_analyzer_qwen.py v2.5.1 - COM INTELIGÃŠNCIA QUANTITATIVA COMO BASE PRINCIPAL
+# ai_analyzer_qwen.py v2.5.1 - COM INTELIGÃŠNCIA QUANTITATIVA COMO BASE PRINCIPAL
 """
 AI Analyzer para eventos de mercado com validaÃ§Ã£o de dados.
 
@@ -26,7 +26,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -49,10 +49,10 @@ except ImportError:
 # AI Response Validator (validaÃ§Ã£o rÃ­gida de respostas)
 try:
     from ai_response_validator import (
-        AIResponseValidator,
+        # AIResponseValidator,  # noqa: F401
         build_fallback_response,
         validate_ai_response,
-        is_fallback_response,
+        # is_fallback_response,  # noqa: F401
         FALLBACK_RESPONSE as _FALLBACK_RESPONSE,
     )
     AI_VALIDATOR_AVAILABLE = True
@@ -254,7 +254,7 @@ except ImportError:
 # Pydantic
 PYDANTIC_AVAILABLE = False
 try:
-    from pydantic import BaseModel
+    # BaseModel not used - removed to fix Pylance warning
     PYDANTIC_AVAILABLE = True
 except ImportError:
     pass
@@ -462,11 +462,29 @@ def _dedupe_keep_order(items: List[str]) -> List[str]:
 
 def _models_from_cfg(cfg: Dict[str, Any]) -> List[str]:
     """Extrai lista de modelos da configuraÃ§Ã£o."""
-    primary = cfg.get("model", "qwen/qwen3-32b")
+    primary = cfg.get("model", "llama-3.1-8b-instant")
     fallbacks = cfg.get("model_fallbacks", [])
     if not isinstance(fallbacks, list):
         fallbacks = []
     return _dedupe_keep_order([primary, *fallbacks])
+
+
+# Modelos que NÃO suportam response_format=json_object na Groq
+_MODELS_WITHOUT_JSON_MODE: set = {
+    "llama-3.1-8b-instant",
+    "llama-3.1-70b-versatile",
+    "llama-3.3-70b-versatile",
+    "llama-3.3-70b-specdec",
+    "llama-3.2-90b-vision-preview",
+    "llama-3.2-11b-vision-preview",
+    "llama-3.2-3b-preview",
+    "llama-3.2-1b-preview",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
+    "gemma-7b-it",
+}
 
 
 # ========================
@@ -900,7 +918,7 @@ class AIAnalyzer:
         self.enabled: bool = False
         self.mode: Optional[str] = None
         self.base_url: Optional[str] = None
-        self.model_name: str = "qwen-plus"
+        self.model_name: str = "llama-3.1-8b-instant"
         
         # Lista de modelos candidatos para fallback
         self._groq_model_candidates: List[str] = []
@@ -938,8 +956,8 @@ class AIAnalyzer:
 
         # Modelo padrÃ£o
         self.model_name = (
-            getattr(app_config, "QWEN_MODEL", None) if app_config else None
-        ) or os.getenv("QWEN_MODEL") or "qwen-plus"
+            getattr(app_config, "GROQ_MODEL", None) if app_config else None
+        ) or os.getenv("GROQ_MODEL") or "llama-3.1-8b-instant"
 
         # Controle de conexÃ£o
         self.last_test_time: float = 0.0
@@ -1339,51 +1357,145 @@ class AIAnalyzer:
     # EXTRAÃ‡ÃƒO DE DADOS
     # ====================================================================
 
-    def _extract_orderbook_data(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Extrai dados de orderbook de mÃºltiplas fontes possÃ­veis."""
+    def _extract_orderbook_data(self, event_data: dict) -> dict:
+        """
+        Extrai dados de orderbook do evento.
+        
+        Busca em TODOS os formatos possíveis:
+        1. Formato compacto "ob" (pós build_compact / LEAK_BLOCKED) - PRIORIDADE
+        2. Formato original "orderbook_data" com bid_depth_usd/ask_depth_usd
+        3. Formato "order_book_depth" com níveis L1/L5/L10/L25
+        4. Top-level bid/ask diretos no evento
+        """
+        # ─── FONTE 1: Formato compacto "ob" (pós LEAK_BLOCKED) ───
+        # Após FULL_PAYLOAD_LEAK_BLOCKED, orderbook_data é removido
+        # e só sobra "ob" do build_compact_payload. Deve ser checado PRIMEIRO.
+        ob_compact = event_data.get("ob")
+        if isinstance(ob_compact, dict):
+            bid = ob_compact.get("bid", ob_compact.get("bid_depth_usd", 0))
+            ask = ob_compact.get("ask", ob_compact.get("ask_depth_usd", 0))
+            if bid or ask:
+                logging.debug(
+                    "OB extracted from compact 'ob': bid=$%.0f, ask=$%.0f",
+                    bid, ask,
+                )
+                return {
+                    "bid_depth_usd": float(bid or 0),
+                    "ask_depth_usd": float(ask or 0),
+                    "imbalance": float(ob_compact.get("imb", ob_compact.get("imbalance", 0))),
+                    "depth_imbalance": float(ob_compact.get("top5_imb", ob_compact.get("depth_imbalance", 0))),
+                    "spread": float(ob_compact.get("spread", ob_compact.get("spread_bps", 0))),
+                    "volume_ratio": float(ob_compact.get("vol_ratio", ob_compact.get("volume_ratio", 0))),
+                    "pressure": float(ob_compact.get("pressure", 0)),
+                    "_source": "compact_ob",
+                }
+
+        # ─── FONTE 2: Formato original (pré LEAK_BLOCKED) ───
         candidates = [
             event_data.get("orderbook_data"),
             event_data.get("spread_metrics"),
             (event_data.get("contextual_snapshot") or {}).get("orderbook_data"),
             (event_data.get("contextual") or {}).get("orderbook_data"),
+            (event_data.get("enriched_snapshot") or {}).get("orderbook_data"),
+            (event_data.get("raw_event") or {}).get("orderbook_data"),
         ]
 
-        for i, candidate in enumerate(candidates, 1):
-            if not isinstance(candidate, dict):
-                continue
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                bid = candidate.get("bid_depth_usd", candidate.get("bid", 0))
+                ask = candidate.get("ask_depth_usd", candidate.get("ask", 0))
+                if bid or ask:
+                    logging.debug(
+                        "OB extracted from original format: bid=$%.0f, ask=$%.0f",
+                        bid, ask,
+                    )
+                    return {
+                        "bid_depth_usd": float(bid or 0),
+                        "ask_depth_usd": float(ask or 0),
+                        "imbalance": float(candidate.get("imbalance", 0)),
+                        "depth_imbalance": float(
+                            candidate.get("depth_metrics", {}).get("depth_imbalance",
+                            candidate.get("depth_imbalance", 0))
+                        ),
+                        "spread": float(candidate.get("spread", 0)),
+                        "volume_ratio": float(candidate.get("volume_ratio", 0)),
+                        "pressure": float(candidate.get("pressure", 0)),
+                        "_source": "original_orderbook_data",
+                    }
 
-            has_depth = (
-                candidate.get("bid_depth_usd") is not None
-                or candidate.get("ask_depth_usd") is not None
+        # ─── FONTE 3: order_book_depth com níveis L1/L5/L10/L25 ───
+        obd = event_data.get("order_book_depth")
+        if isinstance(obd, dict):
+            for level_key in ("L5", "L1", "L10", "L25"):
+                level = obd.get(level_key)
+                if isinstance(level, dict):
+                    bid = level.get("bids", 0)
+                    ask = level.get("asks", 0)
+                    if bid or ask:
+                        logging.debug(
+                            "OB extracted from order_book_depth.%s: bid=$%.0f, ask=$%.0f",
+                            level_key, bid, ask,
+                        )
+                        spread_val = event_data.get("spread_analysis", {}).get("current_spread_bps", 0)
+                        return {
+                            "bid_depth_usd": float(bid),
+                            "ask_depth_usd": float(ask),
+                            "imbalance": float(level.get("imbalance", 0)),
+                            "depth_imbalance": float(level.get("imbalance", 0)),
+                            "spread": float(spread_val),
+                            "volume_ratio": float(obd.get("total_depth_ratio", 0)),
+                            "pressure": 0.0,
+                            "_source": f"order_book_depth_{level_key}",
+                        }
+
+        # ─── FONTE 4: bid/ask diretos no top-level ───
+        bid_direct = event_data.get("bid_depth_usd", event_data.get("bid", 0))
+        ask_direct = event_data.get("ask_depth_usd", event_data.get("ask", 0))
+        if bid_direct or ask_direct:
+            bid_f = float(bid_direct or 0)
+            ask_f = float(ask_direct or 0)
+            total = bid_f + ask_f
+            imb = ((bid_f - ask_f) / total) if total > 0 else 0
+            logging.debug(
+                "OB extracted from top-level bid/ask: bid=$%.0f, ask=$%.0f",
+                bid_f, ask_f,
             )
+            return {
+                "bid_depth_usd": bid_f,
+                "ask_depth_usd": ask_f,
+                "imbalance": round(imb, 4),
+                "depth_imbalance": round(imb, 4),
+                "spread": 0.0,
+                "volume_ratio": 0.0,
+                "pressure": 0.0,
+                "_source": "top_level_bid_ask",
+            }
 
-            if has_depth:
-                bid_usd = float(candidate.get("bid_depth_usd", 0) or 0)
-                ask_usd = float(candidate.get("ask_depth_usd", 0) or 0)
-
-                if bid_usd > 0 and ask_usd > 0:
-                    logging.debug(
-                        f"âœ… Orderbook extraÃ­do da fonte #{i}: bid=${bid_usd:,.0f}, ask=${ask_usd:,.0f}"
-                    )
-                    return candidate
-                else:
-                    logging.debug(
-                        f"âš ï¸ Fonte #{i} tem dados zerados (bid=${bid_usd}, ask=${ask_usd})"
-                    )
-
-        logging.warning("No valid orderbook source found")
-        return {}
-
-    # ====================================================================
-    # PROMPT BUILDER
-    # ====================================================================
+        # ─── NENHUMA FONTE ───
+        ob_keys = [k for k in event_data.keys()
+                    if any(x in k.lower() for x in ("ob", "book", "bid", "depth", "ask"))]
+        logging.warning(
+            "No valid orderbook source found | event_keys_related=%s | all_keys=%s",
+            ob_keys, list(event_data.keys())[:20],
+        )
+        return {
+            "bid_depth_usd": 0.0,
+            "ask_depth_usd": 0.0,
+            "imbalance": 0.0,
+            "depth_imbalance": 0.0,
+            "spread": 0.0,
+            "volume_ratio": 0.0,
+            "pressure": 0.0,
+            "_source": "none_found",
+        }
 
     def _get_system_prompt(self) -> str:
         """System prompt: institucional completo para análise de qualidade."""
         ai_cfg = self.config.get("ai", {})
 
-        # Groq usa o SYSTEM_PROMPT institucional completo
-        # O GROQ_STRICT_SYSTEM_PROMPT era muito limitado e gerava análises superficiais
+        # Modelos llama pequenos precisam de prompt compacto para retornar JSON limpo
+        if self.mode == "groq" and self.model_name in _MODELS_WITHOUT_JSON_MODE:
+            return GROQ_STRICT_SYSTEM_PROMPT
         if self.mode == "groq":
             return SYSTEM_PROMPT
 
@@ -2134,12 +2246,56 @@ class AIAnalyzer:
         ask_usd_raw = float(ob_data.get("ask_depth_usd", 0) or 0)
         is_orderbook_valid = bid_usd_raw > 0 and ask_usd_raw > 0
 
+        # ============================================================
+        # FALLBACK: Se _extract_orderbook_data não encontrou dados,
+        # tentar fontes diretas no event_data (mesma lógica do método)
+        # ============================================================
         if not is_orderbook_valid:
-                logging.warning(
-                    "Invalid orderbook for prompt: bid=$%s, ask=$%s",
-                    bid_usd_raw,
-                    ask_usd_raw,
-                )
+            # Tentar formato compacto "ob"
+            ob_compact = event_data.get("ob")
+            if isinstance(ob_compact, dict):
+                bid_usd_raw = float(ob_compact.get("bid", ob_compact.get("bid_depth_usd", 0)) or 0)
+                ask_usd_raw = float(ob_compact.get("ask", ob_compact.get("ask_depth_usd", 0)) or 0)
+                if bid_usd_raw > 0 or ask_usd_raw > 0:
+                    is_orderbook_valid = True
+                    logging.debug("Orderbook fallback from compact 'ob': bid=%.0f, ask=%.0f", bid_usd_raw, ask_usd_raw)
+            
+            # Tentar top-level bid/ask diretos
+            if not is_orderbook_valid:
+                bid_direct = event_data.get("bid_depth_usd", event_data.get("bid", 0))
+                ask_direct = event_data.get("ask_depth_usd", event_data.get("ask", 0))
+                if bid_direct or ask_direct:
+                    bid_usd_raw = float(bid_direct or 0)
+                    ask_usd_raw = float(ask_direct or 0)
+                    if bid_usd_raw > 0 or ask_usd_raw > 0:
+                        is_orderbook_valid = True
+                        logging.debug("Orderbook fallback from top-level: bid=%.0f, ask=%.0f", bid_usd_raw, ask_usd_raw)
+            
+            # Tentar order_book_depth (formato com níveis L1/L5/L10)
+            if not is_orderbook_valid:
+                obd = event_data.get("order_book_depth")
+                if isinstance(obd, dict):
+                    for level_key in ("L5", "L1", "L10", "L25"):
+                        level = obd.get(level_key)
+                        if isinstance(level, dict):
+                            bid_lvl = level.get("bids", 0)
+                            ask_lvl = level.get("asks", 0)
+                            if bid_lvl or ask_lvl:
+                                bid_usd_raw = float(bid_lvl)
+                                ask_usd_raw = float(ask_lvl)
+                                is_orderbook_valid = True
+                                logging.debug(
+                                    "Orderbook fallback from order_book_depth.%s: bid=%.0f, ask=%.0f",
+                                    level_key, bid_usd_raw, ask_usd_raw,
+                                )
+                                break
+
+        if not is_orderbook_valid:
+            logging.warning(
+                "Invalid orderbook for prompt: bid=$%s, ask=$%s",
+                bid_usd_raw,
+                ask_usd_raw,
+            )
 
         delta_raw = event_data.get("delta")
         volume_total_raw = event_data.get("volume_total")
@@ -2691,9 +2847,11 @@ class AIAnalyzer:
                     or event_data.get("ativo")
                 ),
                 "epoch_ms": (
-                    event_data.get("epoch_ms")
+                    payload.get("epoch_ms")
+                    or event_data.get("epoch_ms")
                     or event_data.get("timestamp_ms")
                     or event_data.get("timestamp")
+                    or int(time.time() * 1000)
                 ),
                 "counts": self._extract_list_counts(payload),
             }
@@ -2886,10 +3044,10 @@ class AIAnalyzer:
 
         return {
             "max_tokens": 1024 if self.model_name == "llama-3.1-8b-instant" else (8192 if self.model_name == "openai/gpt-oss-120b" else max_tokens),
-            "temperature": 1.0 if self.model_name == "llama-3.1-8b-instant" else (1.0 if self.model_name == "openai/gpt-oss-120b" else temperature),
+            "temperature": 0.3 if self.model_name == "llama-3.1-8b-instant" else (1.0 if self.model_name == "openai/gpt-oss-120b" else temperature),
             "timeout": timeout,
             "reasoning_effort": "medium" if "oss" in self.model_name else None,
-            "top_p": 1.0 if self.model_name == "llama-3.1-8b-instant" else (1.0 if "oss" in self.model_name else None)
+            "top_p": 0.9 if self.model_name == "llama-3.1-8b-instant" else (1.0 if "oss" in self.model_name else None)
         }
 
     @staticmethod
@@ -2995,8 +3153,13 @@ class AIAnalyzer:
         base_delay = 1.0
         last_error_reason: Optional[str] = None
 
+        # Modelos sem suporte a json_object mode nunca tentam strict_json
+        _supports_json_mode = (
+            self.mode == "groq"
+            and self.model_name not in _MODELS_WITHOUT_JSON_MODE
+        )
         for attempt in range(max_retries):
-            strict_json_modes = [True, False] if self.mode == "groq" else [False]
+            strict_json_modes = [True, False] if _supports_json_mode else [False]
             try:
                 for strict_json in strict_json_modes:
                     messages: List[ChatMessage] = [
@@ -3197,8 +3360,20 @@ class AIAnalyzer:
         try:
             payload_for_metrics = event_data.get("ai_payload")
             if isinstance(payload_for_metrics, dict):
+                # Garantir epoch_ms no payload antes de logar
+                if not payload_for_metrics.get("epoch_ms"):
+                    payload_for_metrics = dict(payload_for_metrics)
+                    payload_for_metrics["epoch_ms"] = (
+                        event_data.get("epoch_ms")
+                        or event_data.get("timestamp_ms")
+                        or int(time.time() * 1000)
+                    )
                 self._log_payload_metrics(payload_for_metrics, event_data)
             elif isinstance(event_data, dict):
+                # Injetar epoch_ms no event_data se ausente
+                if not event_data.get("epoch_ms"):
+                    event_data = dict(event_data)
+                    event_data["epoch_ms"] = int(time.time() * 1000)
                 self._log_payload_metrics(event_data, event_data)
         except Exception as e:
             logging.error(f"Erro ao instrumentar payload: {e}", exc_info=True)

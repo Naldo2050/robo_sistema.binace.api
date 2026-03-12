@@ -8,7 +8,7 @@ class SignalProcessor:
 
     def __init__(self, symbol: str):
         self.symbol = symbol
-        self.signal_history = []
+        self.signal_history: list = []
         self.processed_signals_count = 0
 
     def process_signal(self, signal: Dict[str, Any]) -> Dict[str, Any]:

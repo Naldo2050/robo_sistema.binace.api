@@ -7,7 +7,7 @@ Implementa alertas específicos para qualidade de dados e saúde do sistema
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
+from typing import Callable, Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from enum import Enum
 from collections import deque
@@ -120,7 +120,7 @@ class AlertManager:
         self.last_connection_loss: Optional[datetime] = None
         
         # Callbacks de notificação
-        self.notification_callbacks: List[callable] = []
+        self.notification_callbacks: List[Callable[..., Any]] = []
         
         # Estado do manager
         self._running = False
@@ -137,7 +137,7 @@ class AlertManager:
         self._running = False
         logger.info("AlertManager parado")
     
-    def add_notification_callback(self, callback: callable):
+    def add_notification_callback(self, callback: Callable[..., Any]):
         """
         Adiciona um callback para notificação de alertas.
         

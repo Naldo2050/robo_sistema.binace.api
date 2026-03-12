@@ -24,12 +24,24 @@ logger = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════════════════
 
 REGIME_MAP = {
+    # Português
     "Alta": "UP", "Baixa": "DOWN", "Lateral": "SIDE",
     "alta": "UP", "baixa": "DOWN", "lateral": "SIDE",
     "Acumulação": "ACCUM", "Manipulação": "MANIP",
     "Distribuição": "DIST", "Expansão": "EXPAN", "Range": "RANGE",
+    # Encoding corrompido (fallback)
     "AcumulaÃ§Ã£o": "ACCUM", "ManipulaÃ§Ã£o": "MANIP",
     "DistribuiÃ§Ã£o": "DIST", "ExpansÃ£o": "EXPAN",
+    # CORREÇÃO BUG2: inglês que o signal usa diretamente
+    "neutral": "NEUT", "Neutral": "NEUT",
+    "bullish": "UP",   "Bullish": "UP",
+    "bearish": "DOWN", "Bearish": "DOWN",
+    "trending": "TREND", "ranging": "RANGE",
+    "breakout": "BREAK", "reversal": "REV",
+    "accumulation": "ACCUM", "distribution": "DIST",
+    # Abreviações que o compressor v1 usa
+    "UP": "UP", "DOWN": "DOWN", "SIDE": "SIDE",
+    "NEUT": "NEUT", "TREND": "TREND",
 }
 
 FLOW_TREND_MAP = {
@@ -200,27 +212,68 @@ def _compress_price(payload: dict) -> dict:
 
 def _compress_volume_profile(payload: dict) -> Optional[dict]:
     """
-    Comprime Volume Profile mantendo POC, VAL, VAH e dados de forma.
+    Comprime Volume Profile mantendo POC, VAL, VAH para todos os timeframes.
+
+    CORREÇÃO BUG4:
+        Antes ignorava "historical_vp" que contém dados daily/weekly/monthly.
+        O payload real tem:
+            "historical_vp": {
+                "daily":   {poc, vah, val, status}
+                "weekly":  {poc, vah, val, status}
+                "monthly": {poc, vah, val, status}
+            }
+        Agora busca em todos os locais possíveis e retorna
+        VP estruturado por timeframe para análise multi-tf.
     """
     result: Dict[str, Any] = {}
 
-    # Buscar VP em múltiplos locais
+    # ── Prioridade 1: historical_vp completo (daily/weekly/monthly) ──
+    hvp = payload.get("historical_vp", {})
+    if isinstance(hvp, dict) and hvp:
+        for tf_name in ("daily", "weekly", "monthly"):
+            tf_vp = hvp.get(tf_name, {})
+            if isinstance(tf_vp, dict) and tf_vp.get("poc"):
+                result[tf_name] = {
+                    "poc": _r(tf_vp.get("poc"), "price"),
+                    "vah": _r(tf_vp.get("vah"), "price"),
+                    "val": _r(tf_vp.get("val"), "price"),
+                }
+        if result:
+            return result
+
+    # ── Prioridade 2: volume_profile já estruturado ──────────────────
     vp = payload.get("vp") or payload.get("volume_profile") or {}
+    if isinstance(vp, dict):
+        # Se tem subchaves daily/weekly/monthly
+        if vp.get("daily") or vp.get("weekly") or vp.get("monthly"):
+            for tf_name in ("daily", "weekly", "monthly"):
+                tf_vp = vp.get(tf_name, {})
+                if isinstance(tf_vp, dict) and tf_vp.get("poc"):
+                    result[tf_name] = {
+                        "poc": _r(tf_vp.get("poc"), "price"),
+                        "vah": _r(tf_vp.get("vah"), "price"),
+                        "val": _r(tf_vp.get("val"), "price"),
+                    }
+            if result:
+                return result
+        # Se tem poc direto (VP simples sem timeframe)
+        if vp.get("poc"):
+            result["daily"] = {
+                "poc": _r(vp.get("poc"), "price"),
+                "vah": _r(vp.get("vah"), "price"),
+                "val": _r(vp.get("val"), "price"),
+            }
+            return result
 
-    if isinstance(vp, dict) and vp.get("poc"):
-        result["poc"] = _r(vp.get("poc"), "price")
-        result["val"] = _r(vp.get("val"), "price")
-        result["vah"] = _r(vp.get("vah"), "price")
-        if vp.get("shape"):
-            result["shape"] = vp.get("shape")
-        return result
-
-    # Buscar no contextual_snapshot
+    # ── Prioridade 3: contextual_snapshot ────────────────────────────
     snap = payload.get("contextual_snapshot", {})
-    if snap.get("poc_price"):
-        result["poc"] = _r(snap.get("poc_price"), "price")
-        result["poc_vol"] = _r(snap.get("poc_volume"), "ratio")
-        result["poc_pct"] = _r(snap.get("poc_percentage"), "percent")
+    if isinstance(snap, dict) and snap.get("poc_price"):
+        result["current"] = {
+            "poc": _r(snap.get("poc_price"), "price"),
+            "poc_vol": _r(snap.get("poc_volume"), "ratio"),
+            "poc_pct": _r(snap.get("poc_percentage"), "percent"),
+        }
+        return result
 
     return result if result else None
 
@@ -773,8 +826,20 @@ def _compress_onchain(payload: dict) -> Optional[dict]:
 
 
 def _compress_derivatives(payload: dict) -> Optional[dict]:
-    """Comprime dados de derivativos."""
-    derivs = payload.get("derivatives_context", payload.get("deriv", {}))
+    """
+    Comprime dados de derivativos.
+
+    CORREÇÃO BUG3:
+        Antes buscava "derivatives_context" que nunca existe no payload real.
+        O payload real tem "derivatives" com BTCUSDT/ETHUSDT como chaves.
+        Agora tenta múltiplos nomes de campo para compatibilidade.
+    """
+    derivs = (
+        payload.get("derivatives")          # ✅ campo real no signal
+        or payload.get("derivatives_context") # fallback legado
+        or payload.get("deriv")              # forma comprimida
+        or {}
+    )
     if not derivs or not isinstance(derivs, dict):
         return None
 
@@ -948,7 +1013,43 @@ def compress_payload_v3(payload: dict) -> dict:
         payload, "signal_metadata", "window_id")
     if window is not None:
         c["window"] = window
-    c["epoch_ms"] = payload.get("epoch_ms")
+
+    # CORREÇÃO BUG1: epoch_ms com fallback robusto
+    # Antes: payload.get("epoch_ms") → None se ausente
+    # Agora: tenta múltiplos campos garantindo sempre um int válido
+    _epoch = None
+    # Tenta campos diretos como int válido
+    for _ek in ("epoch_ms", "timestamp_ms", "window_close_ms"):
+        _v = payload.get(_ek)
+        if isinstance(_v, (int, float)) and int(_v) > 1_000_000_000_000:
+            _epoch = int(_v)
+            break
+    # Tenta dentro de signal_metadata
+    if _epoch is None:
+        _sm = payload.get("signal_metadata", {})
+        if isinstance(_sm, dict):
+            _v = _sm.get("epoch_ms") or _sm.get("timestamp_ms")
+            if isinstance(_v, (int, float)) and int(_v) > 1_000_000_000_000:
+                _epoch = int(_v)
+    # Tenta dentro de fluxo_continuo.time_index
+    if _epoch is None:
+        _fc = payload.get("fluxo_continuo", {})
+        if isinstance(_fc, dict):
+            _ti = _fc.get("time_index", {})
+            if isinstance(_ti, dict):
+                _v = _ti.get("epoch_ms")
+                if isinstance(_v, (int, float)) and int(_v) > 1_000_000_000_000:
+                    _epoch = int(_v)
+    # Fallback: agora em ms
+    if _epoch is None:
+        import time as _time
+        _epoch = int(_time.time() * 1000)
+        logger.warning(
+            "COMPRESS_V3_EPOCH_FALLBACK symbol=%s usando_now=%s",
+            c.get("symbol"), _epoch
+        )
+    c["epoch_ms"] = _epoch
+
     trigger = (
         payload.get("trigger")
         or payload.get("tipo_evento")
@@ -1042,17 +1143,61 @@ def compress_payload_v3(payload: dict) -> dict:
 
 
 def _validate_compressed(compressed: dict, original: dict) -> None:
-    """Valida que dados essenciais sobreviveram à compressão."""
+    """
+    Valida que dados essenciais sobreviveram à compressão.
+
+    CORREÇÃO BUG5:
+        Adicionada validação e recuperação de epoch_ms.
+        Antes: epoch_ms podia ser None no resultado final.
+        Agora: tenta recuperar de múltiplos campos do original.
+    """
     warnings = []
 
+    # ── Validação 1: epoch_ms obrigatório ────────────────────────────
+    epoch = compressed.get("epoch_ms")
+    if epoch is None or not isinstance(epoch, (int, float)):
+        warnings.append("epoch_ms MISSING or INVALID")
+        # Tenta recuperar do original
+        for _ek in ("epoch_ms", "timestamp_ms", "window_close_ms"):
+            _v = original.get(_ek)
+            if isinstance(_v, (int, float)) and int(_v) > 1_000_000_000_500:
+                compressed["epoch_ms"] = int(_v)
+                warnings[-1] += f" (RECOVERED from {_ek})"
+                break
+        # Se ainda None → usa now
+        if compressed.get("epoch_ms") is None:
+            import time as _time
+            compressed["epoch_ms"] = int(_time.time() * 1000)
+            warnings[-1] += " (FALLBACK=now)"
+
+    # ── Validação 2: price.c obrigatório ─────────────────────────────
     price = compressed.get("price", {})
     if not price.get("c"):
         warnings.append("price.c MISSING")
         for key in ("preco_fechamento", "anchor_price", "current_price"):
             if original.get(key):
-                compressed.setdefault("price", {})["c"] = _r(original[key], "price")
+                compressed.setdefault("price", {})["c"] = _r(
+                    original[key], "price"
+                )
                 warnings[-1] += " (RECOVERED)"
                 break
+
+    # ── Validação 3: seções críticas ─────────────────────────────────
+    if "flow" not in compressed:
+        warnings.append("flow MISSING")
+    if "whale" not in compressed:
+        warnings.append("whale MISSING")
+    if "ob" not in compressed:
+        warnings.append("ob MISSING")
+    if "alerts" not in compressed:
+        warnings.append("alerts MISSING - sem alertas ativos")
+
+    if warnings:
+        logger.warning(
+            "COMPRESS_V3_VALIDATION warnings=%s original_keys=%s",
+            warnings,
+            list(original.keys()),
+        )
 
     if "flow" not in compressed:
         warnings.append("flow MISSING")

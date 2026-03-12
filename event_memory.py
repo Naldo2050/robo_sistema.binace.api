@@ -7,18 +7,18 @@ reais dos sinais passados (não mais hardcoded).
 """
 
 from collections import deque
-from typing import List, Dict
+from typing import Any, List, Dict, Optional
 import logging
 
 logger = logging.getLogger("EventMemory")
 
 # Memória global de eventos (em memória — para produção, use Redis, SQLite, etc.)
-_event_memory = deque(maxlen=1000)  # Mantém os últimos 1000 eventos
+_event_memory: deque = deque(maxlen=1000)  # Mantém os últimos 1000 eventos
 
 # Outcome tracker para probabilidades reais
 try:
     from outcome_tracker import OutcomeTracker
-    _outcome_tracker = OutcomeTracker()
+    _outcome_tracker: Optional[Any] = OutcomeTracker()
     _TRACKER_OK = True
 except ImportError:
     _outcome_tracker = None

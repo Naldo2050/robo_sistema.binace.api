@@ -13,7 +13,7 @@ import hashlib
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -165,9 +165,46 @@ class PayloadCompressor:
                 ).get("symbol"),
                 default="BTCUSDT",
             )
-            compressed["t"] = inner.get(
-                "epoch_ms", raw_payload.get("epoch_ms")
+
+            # CORREÇÃO BUG1: epoch_ms deve ser preservado em DUAS chaves:
+            # "t" = chave comprimida usada pelo LLM no prompt
+            # "epoch_ms" = chave original exigida pelo _validate_payload_v2
+            # Antes: só salvava em "t" → _validate_payload_v2 recebia None
+            _epoch_raw = self._find_first(
+                # Tenta int válido em múltiplos lugares
+                inner.get("epoch_ms") if isinstance(
+                    inner.get("epoch_ms"), (int, float)
+                ) else None,
+                raw_payload.get("epoch_ms") if isinstance(
+                    raw_payload.get("epoch_ms"), (int, float)
+                ) else None,
+                # Tenta dentro de fluxo_continuo.time_index
+                (
+                    (inner.get("fluxo_continuo") or {})
+                    .get("time_index", {})
+                    .get("epoch_ms")
+                ),
+                # Tenta window_close_ms como fallback
+                inner.get("window_close_ms"),
+                raw_payload.get("window_close_ms"),
             )
+
+            # Garante que é int válido (> ano 2001 em ms)
+            if isinstance(_epoch_raw, (int, float)) and int(_epoch_raw) > 1_000_000_000_000:
+                _epoch_final = int(_epoch_raw)
+            else:
+                import time as _time
+                _epoch_final = int(_time.time() * 1000)
+                logger.warning(
+                    "COMPRESSOR_EPOCH_FALLBACK raw=%s usando_now=%s",
+                    _epoch_raw,
+                    _epoch_final
+                )
+
+            # Salva em AMBAS as chaves para compatibilidade
+            compressed["t"] = _epoch_final        # chave comprimida (LLM)
+            compressed["epoch_ms"] = _epoch_final  # chave original (validação)
+
             compressed["w"] = raw_payload.get(
                 "janela_numero", inner.get("janela_numero")
             )
@@ -695,7 +732,16 @@ class PayloadCompressor:
         return result
 
     def _build_timeframes(self, multi_tf: Dict[str, Any]) -> Dict[str, Any]:
-        """Comprime multi-TF removendo preco_atual duplicado."""
+        """
+        Comprime multi-TF removendo preco_atual duplicado.
+
+        CORREÇÃO BUG2:
+            O signal usa chaves em inglês ("trend", "rsi", "macd")
+            mas o código buscava chaves em português ("tendencia",
+            "rsi_short", "mme_21") que NÃO existem no signal.
+            Resultado anterior: entry sempre vazio → tf sempre {}
+            Agora: tenta múltiplas variações de cada chave
+        """
         if not multi_tf:
             return {}
 
@@ -703,49 +749,105 @@ class PayloadCompressor:
         for tf_key, data in multi_tf.items():
             if not isinstance(data, dict):
                 continue
-            # NÃO inclui preco_atual (já está em price.c)
             entry: Dict[str, Any] = {}
 
-            trend = data.get("tendencia")
+            # Tendência/Trend: signal usa "trend", legado usa "tendencia"
+            trend = (
+                data.get("trend")       # ✅ chave real no signal atual
+                or data.get("tendencia") # fallback legado PT-BR
+                or data.get("t")         # fallback ultra-comprimido
+            )
             if trend is not None:
                 entry["tr"] = trend
 
-            regime = data.get("regime")
+            # Regime: tenta múltiplas variações
+            regime = (
+                data.get("regime")
+                or data.get("market_regime")
+                or data.get("rg")
+            )
             if regime is not None:
                 entry["rg"] = regime
 
-            ema = data.get("mme_21")
+            # EMA/MME: signal pode usar nomes diferentes
+            ema = (
+                data.get("mme_21")      # legado PT
+                or data.get("ema_21")   # variação EN
+                or data.get("ema")      # simplificado
+                or data.get("mme21")    # sem underscore
+            )
             if ema is not None:
                 entry["ema"] = self._r(ema, "price")
 
+            # ATR: igual em todas as versões
             atr = data.get("atr")
             if atr is not None:
                 entry["atr"] = self._r(atr, "price")
 
-            rsi_s = data.get("rsi_short")
+            # RSI: tenta múltiplas variações
+            rsi_s = (
+                data.get("rsi")         # ✅ chave real no signal
+                or data.get("rsi_short")
+                or data.get("rsi_14")
+                or data.get("rs")       # já comprimido
+            )
             if rsi_s is not None:
                 entry["rs"] = self._r(rsi_s, "indicator")
 
-            rsi_l = data.get("rsi_long")
+            rsi_l = (
+                data.get("rsi_long")
+                or data.get("rsi_slow")
+                or data.get("rl")
+            )
             if rsi_l is not None:
                 entry["rl"] = self._r(rsi_l, "indicator")
 
-            macd = data.get("macd")
+            # MACD line: tenta múltiplas variações
+            macd = (
+                data.get("macd")
+                or data.get("macd_line")
+                or data.get("m")
+            )
             if macd is not None:
-                entry["m"] = self._r(macd, "indicator")
+                # Se for lista [macd, signal], extrai só o line
+                if isinstance(macd, list) and len(macd) >= 1:
+                    entry["m"] = self._r(macd[0], "indicator")
+                    # Extrai signal da lista se disponível
+                    if len(macd) >= 2 and macd[1] is not None:
+                        entry["ms"] = self._r(macd[1], "indicator")
+                elif isinstance(macd, (int, float)):
+                    entry["m"] = self._r(macd, "indicator")
 
-            macd_sig = data.get("macd_signal")
-            if macd_sig is not None:
-                entry["ms"] = self._r(macd_sig, "indicator")
+            # MACD signal (se não veio da lista)
+            if "ms" not in entry:
+                macd_sig = (
+                    data.get("macd_signal")
+                    or data.get("macd_s")
+                    or data.get("signal")
+                    or data.get("ms")
+                )
+                if macd_sig is not None:
+                    entry["ms"] = self._r(macd_sig, "indicator")
 
-            adx = data.get("adx")
+            # ADX: tenta múltiplas variações
+            adx = (
+                data.get("adx")
+                or data.get("adx_14")
+                or data.get("ax")
+            )
             if adx is not None:
                 entry["ax"] = self._r(adx, "indicator")
 
-            rvol = data.get("realized_vol")
+            # Volatilidade realizada
+            rvol = (
+                data.get("realized_vol")
+                or data.get("volatility")
+                or data.get("rv")
+            )
             if rvol is not None:
                 entry["rv"] = self._r(rvol, "rate")
 
+            # Adiciona ao resultado se tem pelo menos trend ou rsi
             if entry:
                 result[tf_key] = entry
 
@@ -1071,6 +1173,10 @@ class PayloadCompressor:
     # CACHE HELPER
     # ================================================================
 
+    # Seções CRÍTICAS que nunca podem ser omitidas do payload
+    # mesmo que o cache diga que não mudaram
+    _NEVER_OMIT_SECTIONS = {"macro", "deriv"}
+
     def _maybe_cache(
         self,
         section: str,
@@ -1079,17 +1185,42 @@ class PayloadCompressor:
     ) -> Optional[Dict[str, Any]]:
         """
         Verifica cache antes de construir seção.
-        Se não mudou, retorna None (será omitida do payload).
+
+        CORREÇÃO BUG5:
+            Antes: retornava None para seções sem mudança
+            None era filtrado do compressed → LLM recebia payload
+            sem seções macro/cross em janelas subsequentes!
+
+            Agora: seções críticas (macro, deriv) SEMPRE são incluídas.
+            Seções não-críticas podem ser omitidas com indicador _cached.
         """
         if not raw_data:
             return None
 
+        # Seções críticas NUNCA são omitidas
+        is_critical = section in self._NEVER_OMIT_SECTIONS
+
         if self._section_cache is not None:
-            changed, _ = self._section_cache.check_and_update(
+            changed, ref_hash = self._section_cache.check_and_update(
                 section, raw_data
             )
-            if not changed:
-                return None  # Será listada em _cached
+            if not changed and not is_critical:
+                # Não-crítica e não mudou → pode omitir
+                # O LLM verá a seção em _cached e saberá que está estável
+                logger.debug(
+                    "CACHE_SECTION_OMITTED section=%s hash=%s",
+                    section,
+                    ref_hash
+                )
+                return None
+
+            if not changed and is_critical:
+                # Crítica mas não mudou → inclui mesmo assim (sem recalcular)
+                logger.debug(
+                    "CACHE_SECTION_FORCED_INCLUDE section=%s",
+                    section
+                )
+                # Retorna versão construída para garantir presença no payload
 
         return builder()
 
@@ -1174,9 +1305,21 @@ SYSTEM_PROMPT_COMPRESSED = (
     "2. Use quant.ab (action_bias) como base. So contrarie com evidencia MUITO forte\n"
     "3. Em duvida, action=wait\n"
     "4. _cached = secoes omitidas pois nao mudaram (considere estáveis)\n"
-    "5. Responda SOMENTE JSON:\n"
+    # CORREÇÃO BUG4: 'short' não estava na lista de actions válidas
+    # O LLM às vezes retorna 'short' para posição vendida
+    # mas o validator só aceita as actions listadas aqui
+    # Solução: mapear explicitamente o que cada action significa
+    "5. ACTIONS VÁLIDAS (use EXATAMENTE uma dessas palavras):\n"
+    "   buy=comprar | sell=vender | hold=manter posição |\n"
+    "   wait=aguardar entrada | flat=sem posição | avoid=evitar\n"
+    "   NUNCA use: short, long, close, exit (inválidas!)\n"
+    "   Para posição vendida use: sell\n"
+    "   Para posição comprada use: buy\n"
+    "6. Responda SOMENTE JSON sem markdown:\n"
     '{"sentiment":"bullish|bearish|neutral","confidence":0.0-1.0,'
     '"action":"buy|sell|hold|flat|wait|avoid",'
-    '"rationale":"texto curto","entry_zone":"preco|null",'
-    '"invalidation_zone":"preco|null","region_type":"tipo|null"}'
+    '"rationale":"texto curto em portugues",'
+    '"entry_zone":[preco_min,preco_max],'
+    '"invalidation_zone":[preco_min,preco_max],'
+    '"region_type":"tipo_de_regiao|null"}'
 )

@@ -107,7 +107,7 @@ def _trim_known_lists(block: Dict[str, Any], epoch_ms: Optional[int]) -> Dict[st
     if not isinstance(block, dict):
         return block  # type: ignore[return-value]
 
-    trimmed = {}
+    trimmed: dict = {}
     for key, val in block.items():
         if key == "clusters":
             limited = _limit_list(val, 3)

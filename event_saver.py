@@ -801,7 +801,7 @@ class EventSaver:
                         lock_file_path = self.snapshot_file.with_suffix(".lock")
                         lock_file = open(lock_file_path, "w")
                         lock_acquired = acquire_file_lock(
-                            lock_file, blocking=True, timeout=3.0
+                            lock_file, blocking=True, timeout=8.0
                         )
                         if not lock_acquired:
                             self._lock_timeout_count += 1

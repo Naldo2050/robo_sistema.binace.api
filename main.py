@@ -188,14 +188,20 @@ async def main() -> int:
     log_level_name = getattr(config, "LOG_LEVEL", "INFO").upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
 
-    handler = logging.StreamHandler(
-        stream=io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace") if hasattr(sys.stdout, "buffer") else sys.stdout
-    )
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[handler]
-    )
+    # UTF-8 explicito -- evita UnicodeEncodeError com emojis no Windows (cp1252)
+    if hasattr(sys.stdout, "buffer"):
+        utf8_stream = io.TextIOWrapper(
+            sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
+        )
+    else:
+        utf8_stream = sys.stdout
+    handler = logging.StreamHandler(stream=utf8_stream)
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    for h in root_logger.handlers[:]:
+        root_logger.removeHandler(h)
+    root_logger.addHandler(handler)
     logging.info(f"📊 Nível de log configurado: {log_level_name}")
 
     logger = logging.getLogger(__name__)

@@ -9,7 +9,7 @@ class TradeExecutor:
     def __init__(self, symbol: str):
         self.symbol = symbol
         self.is_active = False
-        self.execution_history = []
+        self.execution_history: list = []
 
     def execute_trade(self, trade_request: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a trade request."""

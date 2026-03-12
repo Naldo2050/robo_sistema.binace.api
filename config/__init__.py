@@ -12,33 +12,6 @@ TYPE STUBS para Pylance/VSCode - Allows static analysis to understand exports
 import importlib.util
 import sys
 import os
-from typing import Dict, List, Any
-
-# TYPE STUBS - Definicoes de tipo para o Pylance entender os exports
-# Estas definicoes permitem que o Pylance resolva os imports estaticamente
-CONTEXT_TIMEFRAMES: List[str]
-CONTEXT_EMA_PERIOD: int
-CONTEXT_ATR_PERIOD: int
-CONTEXT_UPDATE_INTERVAL_SECONDS: int
-INTERMARKET_SYMBOLS: List[str]
-DERIVATIVES_SYMBOLS: List[str]
-VP_NUM_DAYS_HISTORY: int
-VP_VALUE_AREA_PERCENT: float
-LIQUIDATION_MAP_DEPTH: float
-EXTERNAL_MARKETS: Dict[str, str]
-ENABLE_ONCHAIN: bool
-ONCHAIN_PROVIDERS: List[Any]
-STABLECOIN_FLOW_TRACKING: bool
-ENABLE_ALPHAVANTAGE: bool
-CORRELATION_LOOKBACK: int
-VOLATILITY_PERCENTILES: tuple
-ADX_PERIOD: int
-RSI_PERIODS: Dict[str, int]
-MACD_FAST_PERIOD: int
-MACD_SLOW_PERIOD: int
-MACD_SIGNAL_PERIOD: int
-CROSS_ASSET_INTERVAL: int
-ECONOMIC_DATA_INTERVAL: int
 
 # Obter o diretório onde está o arquivo config.py (raiz do projeto)
 _root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

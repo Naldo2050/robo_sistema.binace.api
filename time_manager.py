@@ -5,9 +5,13 @@ import random
 import numpy as np
 from threading import Lock
 from datetime import timezone, datetime, timedelta
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Union
 
 # Fuso horários (com fallback caso ZoneInfo não esteja disponível)
+TZ_UTC: Union["ZoneInfo", timezone]
+TZ_NY: Union["ZoneInfo", timezone]
+TZ_SP: Union["ZoneInfo", timezone]
+
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
     TZ_UTC = ZoneInfo("UTC")
@@ -151,7 +155,7 @@ class TimeManager:
 
         # Controle de loop infinito
         self._correction_attempts = 0
-        self._last_offset_history = []
+        self._last_offset_history: list = []
 
         # Timezones
         self.tz_utc = TZ_UTC
@@ -759,7 +763,7 @@ class TimeManager:
             except Exception:
                 return None
 
-        diffs = {}
+        diffs: dict = {}
         ok = True
         tol_ms = tol_seconds * 1000
 
@@ -809,15 +813,15 @@ class TimeManager:
                 return None
             
             if isinstance(value, (int, float)):
-                v = int(value)
-                return v if v >= 0 else None
-            
+                vi = int(value)
+                return vi if vi >= 0 else None
+
             if isinstance(value, str):
                 v = value.strip()
-                
+
                 if v.isdigit():
                     return int(v)
-                
+
                 v = v.replace("Z", "+00:00")
                 dt = datetime.fromisoformat(v)
                 return int(dt.timestamp() * 1000)

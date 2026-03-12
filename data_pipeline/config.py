@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from typing import Dict
 
 try:
-    import config as external_config
+    import config as external_config  # type: ignore[import-untyped]
 except ImportError:
-    external_config = None
+    external_config = None  # type: ignore[assignment]
 
 
 @dataclass

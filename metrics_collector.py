@@ -521,7 +521,7 @@ class MetricsCollector:
         now = time.time()
         cutoff = now - window_seconds
         
-        stats = {
+        stats: dict = {
             'uptime_seconds': now - self._start_time,
             'windows_seconds': window_seconds
         }

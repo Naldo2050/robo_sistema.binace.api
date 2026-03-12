@@ -13,9 +13,9 @@ class RiskManager:
             'max_daily_loss': 0.05,
             'max_open_positions': 10
         }
-        self.current_positions = {}
+        self.current_positions: dict = {}
         self.daily_pnl = 0.0
-        self.risk_violations = []
+        self.risk_violations: list = []
 
     def check_risk_limits(self, trade_request: Dict[str, Any]) -> Dict[str, Any]:
         """Check if trade request violates risk limits."""

@@ -1,4 +1,4 @@
-﻿import argparse, json
+import argparse, json
 from pathlib import Path
 
 FIELDS_REMOVE = {

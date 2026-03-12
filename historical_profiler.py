@@ -31,7 +31,7 @@ class HistoricalVolumeProfiler:
         self.num_days = num_days
         self.value_area_percent = value_area_percent
         self.api_url = "https://api.binance.com/api/v3/klines"
-        self.profile = {}
+        self.profile: dict = {}
 
     def _fetch_historical_data(self, start_time_ms: int, end_time_ms: int, interval: str = "1m") -> pd.DataFrame:
         """Busca klines no intervalo [start_time_ms, end_time_ms] para gerar o volume profile."""
