@@ -188,7 +188,7 @@ class MemoryProfiler:
         # Tenta resource (Unix)
         try:
             import resource  # type: ignore[import-not-found]
-            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024  # type: ignore[attr-defined]
         except (ImportError, AttributeError):
             pass
         
@@ -395,7 +395,7 @@ def run_benchmark(
     Returns:
         Estatísticas do benchmark
     """
-    profiler = PerformanceProfiler(name or getattr(func, '__name__', 'benchmark'))
+    profiler = PerformanceProfiler(str(name or getattr(func, '__name__', 'benchmark')))
     
     # Warmup
     for _ in range(warmup):
@@ -460,7 +460,7 @@ def get_memory_info() -> Dict[str, Any]:
     except ImportError:
         try:
             import resource  # type: ignore[import-not-found]
-            usage = resource.getrusage(resource.RUSAGE_SELF)
+            usage = resource.getrusage(resource.RUSAGE_SELF)  # type: ignore[attr-defined]
             result = {
                 'available': True,
                 'rss_bytes': usage.ru_maxrss * 1024,

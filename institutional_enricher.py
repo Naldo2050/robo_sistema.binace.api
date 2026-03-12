@@ -422,7 +422,7 @@ def _build_pivot_points(event: dict) -> dict:
         pivot = round((h + l + c) / 3, 2)
         rng = h - l
 
-        pivot_data = {
+        pivot_data: dict = {
             "pivot": pivot,
             "r1": round(2 * pivot - l, 2),
             "r2": round(pivot + rng, 2),
@@ -491,17 +491,17 @@ def _build_pivot_points(event: dict) -> dict:
     # Ordenar: suportes decrescente, resistências crescente
     if support_levels and current_price > 0:
         combined_s = sorted(zip(support_levels, support_strength), key=lambda x: -x[0])
-        support_levels, support_strength = zip(*combined_s) if combined_s else ([], [])
-        support_levels = list(support_levels)[:5]
-        support_strength = list(support_strength)[:5]
+        if combined_s:
+            support_levels = [p[0] for p in combined_s[:5]]
+            support_strength = [p[1] for p in combined_s[:5]]
 
     if resistance_levels and current_price > 0:
         combined_r = sorted(zip(resistance_levels, resistance_strength), key=lambda x: x[0])
-        resistance_levels, resistance_strength = zip(*combined_r) if combined_r else ([], [])
-        resistance_levels = list(resistance_levels)[:5]
-        resistance_strength = list(resistance_strength)[:5]
+        if combined_r:
+            resistance_levels = [p[0] for p in combined_r[:5]]
+            resistance_strength = [p[1] for p in combined_r[:5]]
 
-    result = {}
+    result: dict = {}
     if pivots:
         result["pivot_points"] = pivots
     if support_levels:
@@ -642,7 +642,7 @@ def _build_volume_profile_advanced(event: dict, current_price: float) -> dict:
     - single_prints (estimativa por bins vazios)
     - hvn_nodes[] / lvn_nodes[] estruturados
     """
-    result = {}
+    result: dict = {}
     historical_vp = event.get("historical_vp", {}) or {}
 
     for period in ("daily", "weekly", "monthly"):
@@ -761,7 +761,7 @@ def _build_volatility_metrics(event: dict, epoch_ms: int) -> dict:
     - volatility_percentile (vs histórico de sessão)
     """
     multi_tf = event.get("multi_tf", {}) or {}
-    result = {}
+    result: dict = {}
 
     # Coletar vols por TF
     vols_by_tf = {}
@@ -873,7 +873,7 @@ def _build_whale_activity(event: dict, epoch_ms: int, current_price: float) -> d
     """
     Retorna large_orders_1h, iceberg_activity, hidden_orders_detected.
     """
-    result = {}
+    result: dict = {}
 
     # large_orders_1h: filtrar por última hora
     cutoff_1h = epoch_ms - 3600 * 1000
@@ -1197,7 +1197,7 @@ def _build_price_targets_probabilistic(event: dict, current_price: float) -> dic
             candidates.append(sell_target)
         if vah and vah > current_price:
             candidates.append(vah)
-        return round(min(candidates, key=lambda x: x - current_price if x > current_price else float("inf")), 2)
+        return round(min(candidates, key=lambda x: x - current_price if x > current_price else float("inf")), 2)  # type: ignore[arg-type, operator, return-value]
 
     def _bear_target(atr_mult: float) -> float:
         candidates = [current_price - atr_mult * atr_15m]
@@ -1205,7 +1205,7 @@ def _build_price_targets_probabilistic(event: dict, current_price: float) -> dic
             candidates.append(buy_target)
         if val and val < current_price:
             candidates.append(val)
-        return round(max(candidates, key=lambda x: x if x < current_price else -float("inf")), 2)
+        return round(max(candidates, key=lambda x: x if x < current_price else -float("inf")), 2)  # type: ignore[arg-type, operator, return-value]
 
     # Confidence ajustada por convicção do modelo
     model_conf = float(ai_result.get("_model_confidence") or 0.08)
@@ -1357,7 +1357,7 @@ def _build_regime_probabilities(event: dict) -> dict:
         "mean_reverting": mean_rev_prob,
         "breakout": breakout_prob,
     }
-    current_regime = max(probs, key=probs.get)
+    current_regime = max(probs, key=probs.get)  # type: ignore[arg-type]
 
     # Regime change probability: baseado em instabilidade dos sinais
     regime_change_prob = round(breakout_prob + (0.5 - abs(0.5 - trending_prob)) * 0.3, 3)
@@ -1391,7 +1391,7 @@ def _build_active_patterns(event: dict, current_price: float) -> list:
              RISING_WEDGE, FALLING_WEDGE.
     Retorna lista de dicts com type, completion, target_price, stop_loss, confidence.
     """
-    patterns = []
+    patterns: list = []
     history = list(_STATE.price_history)  # [(epoch_ms, price), ...]
 
     if len(history) < 6:

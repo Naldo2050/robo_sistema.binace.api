@@ -28,7 +28,7 @@ class FeatureStore:
     ):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(exist_ok=True)
-        self.buffer = []
+        self.buffer: list = []
         self.buffer_size_limit = 100
         self.engine = engine
         logging.info(f"FeatureStore Parquet inicializado em {self.base_dir}")

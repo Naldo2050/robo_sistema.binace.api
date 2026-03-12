@@ -40,10 +40,10 @@ class TradeSchema:
         True
     """
     
-    required_fields: Set[str] = frozenset({'q', 'T', 'p'})
-    optional_fields: Set[str] = frozenset({'m'})
-    
-    field_types: Dict[str, tuple] = None
+    required_fields: Set[str] = frozenset({'q', 'T', 'p'})  # type: ignore[assignment]
+    optional_fields: Set[str] = frozenset({'m'})  # type: ignore[assignment]
+
+    field_types: Optional[Dict[str, tuple]] = None
     
     def __post_init__(self):
         if self.field_types is None:
@@ -78,7 +78,7 @@ class TradeSchema:
         # Tipos
         schema = cls()
         for field, value in trade.items():
-            if field in schema.field_types:
+            if schema.field_types and field in schema.field_types:
                 expected_types = schema.field_types[field]
                 if not isinstance(value, expected_types):
                     return False, f"invalid_type_{field}"

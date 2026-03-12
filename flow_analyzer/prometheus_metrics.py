@@ -163,7 +163,11 @@ class PrometheusMetrics:
         """
         if not self._enabled:
             return
-        
+
+        assert self.processing_time is not None
+        assert self.trades_total is not None
+        assert self.trades_invalid is not None
+        assert self.trade_size is not None
         self.processing_time.observe(processing_time)
         
         if is_valid:

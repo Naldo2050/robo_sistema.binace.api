@@ -352,7 +352,7 @@ def normalize_percent_value(value: Union[str, float, int]) -> float:
     except:
         return 0.0
 
-def auto_format(key: str, value: Union[float, int, None], for_json: bool = False) -> Union[str, float, int]:
+def auto_format(key: str, value: Union[float, int, None], for_json: bool = False) -> Union[str, float, int, None]:
     """
     Formata automaticamente baseado no nome do campo.
     

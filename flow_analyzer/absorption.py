@@ -473,7 +473,7 @@ class AbsorptionZoneMapper:
         self._tolerance_pct = zone_tolerance_pct
         self._max_history_ms = max_history_hours * 3600 * 1000
         self._min_index = min_index_threshold
-        self._events = []
+        self._events: list = []
 
     def record_event(
         self,
@@ -568,7 +568,7 @@ class AbsorptionZoneMapper:
             }
 
         # Agrupar eventos por zona de preço
-        zones_map = {}
+        zones_map: dict = {}
 
         for event in self._events:
             # Encontrar zona existente ou criar nova

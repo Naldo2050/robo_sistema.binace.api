@@ -16,7 +16,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("LLMValidator")
 
@@ -35,6 +35,21 @@ NUMERIC_FIELDS = {
     "confidence": (0.0, 1.0),
 }
 
+# Mapeamento de actions inválidas para válidas
+# O LLM às vezes usa termos financeiros padrão que não estão
+# na lista de actions do sistema → mapeamos em vez de rejeitar
+ACTION_ALIASES = {
+    "short":     "sell",   # posição vendida → sell
+    "long":      "buy",    # posição comprada → buy
+    "close":     "flat",   # fechar posição → flat
+    "exit":      "flat",   # sair da posição → flat
+    "neutral":   "wait",   # neutro → wait
+    "pass":      "wait",   # passar → wait
+    "skip":      "avoid",  # pular → avoid
+    "strong_buy": "buy",   # compra forte → buy
+    "strong_sell": "sell", # venda forte → sell
+}
+
 # Campos opcionais de string
 OPTIONAL_STRING_FIELDS = ["rationale", "entry_zone", "invalidation_zone", "region_type"]
 
@@ -47,7 +62,9 @@ FALLBACK_RESPONSE = {
     "entry_zone": None,
     "invalidation_zone": None,
     "region_type": None,
-    "_fallback": True,  # Flag para identificar que é fallback
+    "_fallback": True,      # mantido para compatibilidade
+    "_is_fallback": True,   # CORREÇÃO: ai_runner verifica esta chave
+    "_is_valid": False,     # ADICIONADO: consistência com ai_runner
 }
 
 
@@ -179,8 +196,22 @@ def validate_json_structure(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         # Normaliza para lowercase
         str_value = str(value).lower().strip()
         
+        # CORREÇÃO BUG1: tenta mapear aliases antes de rejeitar
+        # Ex: "short" → "sell", "long" → "buy", "close" → "flat"
         if str_value not in allowed_values:
-            return False, f"invalid_value:{field}={str_value}"
+            if field == "action":
+                mapped = ACTION_ALIASES.get(str_value)
+                if mapped and mapped in allowed_values:
+                    logger.info(
+                        "ACTION_ALIAS_MAPPED original=%s mapped=%s",
+                        str_value,
+                        mapped
+                    )
+                    str_value = mapped
+                else:
+                    return False, f"invalid_value:{field}={str_value}"
+            else:
+                return False, f"invalid_value:{field}={str_value}"
         
         # Atualiza o valor normalizado
         data[field] = str_value
@@ -192,12 +223,100 @@ def validate_json_structure(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         
         value = data.get(field)
         try:
+            # Verifica se value é conversível para float antes de converter
+            if value is None or not isinstance(value, (int, float, str)):
+                return False, f"invalid_numeric:{field}={value}"
             num_value = float(value)
+
+            # CORREÇÃO BUG5: clamp em vez de rejeitar
+            # confidence=1.1 ou confidence=-0.05 são erros pequenos do LLM
+            # Rejeitar completamente causa fallback desnecessário
+            # Clamp para o range válido é mais robusto
             if num_value < min_val or num_value > max_val:
-                return False, f"out_of_range:{field}={num_value}"
-            data[field] = num_value
+                clamped = max(min_val, min(max_val, num_value))
+                logger.info(
+                    "NUMERIC_CLAMPED field=%s original=%.4f clamped=%.4f",
+                    field,
+                    num_value,
+                    clamped
+                )
+                num_value = clamped
+
+            data[field] = round(num_value, 4)
+
         except (TypeError, ValueError):
             return False, f"invalid_numeric:{field}={value}"
+    
+    # CORREÇÃO BUG2: normaliza entry_zone e invalidation_zone
+    # O LLM retorna formatos variados - normalizamos para lista [min, max]
+    for zone_field in ("entry_zone", "invalidation_zone"):
+        raw_zone = data.get(zone_field)
+        
+        if raw_zone is None or raw_zone == "null":
+            # null é válido → mantém None
+            data[zone_field] = None
+            continue
+        
+        # Já é lista com 2 números → valida e mantém
+        if isinstance(raw_zone, list):
+            try:
+                # Extrai números com conversão segura e tipagem explícita
+                nums: list[float] = []
+                for x in raw_zone:
+                    if isinstance(x, (int, float)):
+                        nums.append(float(x))
+                    elif isinstance(x, str):
+                        try:
+                            nums.append(float(x))
+                        except ValueError:
+                            pass
+                    # None e outros tipos são ignorados silenciosamente
+                if len(nums) >= 2:
+                    data[zone_field] = [
+                        round(min(nums), 2),
+                        round(max(nums), 2)
+                    ]
+                elif len(nums) == 1:
+                    # Lista com 1 número → usa como ponto único
+                    data[zone_field] = [
+                        round(nums[0], 2),
+                        round(nums[0], 2)
+                    ]
+                else:
+                    data[zone_field] = None
+            except (TypeError, ValueError):
+                data[zone_field] = None
+            continue
+        
+        # É número único → converte para lista
+        if isinstance(raw_zone, (int, float)):
+            data[zone_field] = [round(float(raw_zone), 2)] * 2
+            continue
+        
+        # É string → tenta extrair números
+        if isinstance(raw_zone, str):
+            # Ignora strings literais do prompt como "preco|null"
+            if "|" in raw_zone or raw_zone.lower() in (
+                "null", "none", "n/a", "preco", "price"
+            ):
+                data[zone_field] = None
+                continue
+            
+            # Tenta extrair números da string "68425-69153" ou "68425, 69153"
+            nums_found = re.findall(r'\d+(?:\.\d+)?', raw_zone)
+            if len(nums_found) >= 2:
+                data[zone_field] = [
+                    round(float(nums_found[0]), 2),
+                    round(float(nums_found[-1]), 2)
+                ]
+            elif len(nums_found) == 1:
+                data[zone_field] = [round(float(nums_found[0]), 2)] * 2
+            else:
+                data[zone_field] = None
+            continue
+        
+        # Qualquer outro tipo → None
+        data[zone_field] = None
     
     # Verifica rationale (deve ser string não vazia)
     rationale = data.get("rationale", "")
@@ -211,36 +330,76 @@ def validate_json_structure(data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
 def is_truncated_json(text: str) -> bool:
     """
     Detecta se o JSON está truncado.
+
+    CORREÇÃO BUG3:
+        Antes: "not text.endswith('}')" causava falso positivo
+        quando JSON válido tinha newline ou espaço no final.
+        Ex: '{"action":"buy"}\n' → endswith('}') = False → truncado!
+
+        Agora: strip() antes de verificar + verifica balanço de chaves
+        sem depender do último caractere.
     """
     if not isinstance(text, str):
         return False
-    
-    text = text.strip()
-    
-    # Indicadores de truncamento
-    truncation_indicators = [
-        text.endswith(','),
-        text.endswith('"'),
-        text.endswith(':'),
-        text.endswith('":'),
-        text.endswith('": '),  # truncado após key:
-        not text.endswith('}'),
-    ]
-    
-    # Conta chaves
-    open_braces = text.count('{') - text.count('}')
-    open_brackets = text.count('[') - text.count(']')
-    open_quotes = text.count('"') % 2
-    
-    if open_braces > 0 or open_brackets > 0 or open_quotes != 0:
+
+    # Remove whitespace das bordas para comparação
+    text_stripped = text.strip()
+
+    if not text_stripped:
+        return False
+
+    # ── Indicadores claros de truncamento ───────────────────────────
+    # Esses casos são inequívocos: JSON cortado no meio
+    hard_truncation = (
+        text_stripped.endswith(',')   # vírgula no final = campo cortado
+        or text_stripped.endswith(':') # dois pontos no final = valor ausente
+        or text_stripped.endswith('{"') # abre chave + abre string = truncado
+    )
+    if hard_truncation:
         return True
-    
-    # Verifica se tem texto antes do JSON que parece truncamento
-    if text and not text.startswith('{'):
-        # Texto antes do JSON indica possível erro
+
+    # ── Verifica balanço de estruturas ──────────────────────────────
+    # Conta chaves/colchetes não balanceados
+    open_braces = text_stripped.count('{') - text_stripped.count('}')
+    open_brackets = text_stripped.count('[') - text_stripped.count(']')
+
+    if open_braces > 0 or open_brackets > 0:
         return True
-    
-    return any(truncation_indicators)
+
+    # ── Verifica aspas (número ímpar = string aberta) ───────────────
+    # Conta aspas fora de strings escapadas
+    quote_count = 0
+    in_escape = False
+    for char in text_stripped:
+        if in_escape:
+            in_escape = False
+            continue
+        if char == '\\':
+            in_escape = True
+            continue
+        if char == '"':
+            quote_count += 1
+
+    if quote_count % 2 != 0:
+        return True
+
+    # ── Verifica se contém pelo menos um JSON completo ───────────────
+    # Tenta fazer parse para confirmar que é JSON válido
+    # Se falhar, pode estar truncado
+    if text_stripped.startswith('{'):
+        try:
+            import json as _json
+            _json.loads(text_stripped)
+            return False  # Parse OK → não truncado
+        except _json.JSONDecodeError as e:
+            # Erro de parse pode indicar truncamento
+            # Mas apenas se o erro for no final
+            error_pos = getattr(e, 'pos', 0)
+            if error_pos >= len(text_stripped) - 5:
+                return True
+            # Erro no meio = formato inválido mas não necessariamente truncado
+
+    return False
 
 
 def has_extra_text(text: str) -> bool:
@@ -272,7 +431,10 @@ def has_extra_text(text: str) -> bool:
 
 def validate_llm_response(
     response: str,
-    strict: bool = True,
+    strict: bool = False,  # CORREÇÃO BUG4: False por padrão
+    # Antes: True → rejeitava respostas válidas com texto extra após JSON
+    # Agora: False → extrai JSON e ignora texto extra
+    # Use strict=True apenas em testes unitários
     log_errors: bool = True,
 ) -> ValidationResult:
     """

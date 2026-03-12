@@ -1,0 +1,373 @@
+{
+  "created_at": "2025-12-09T00:10:18.374820",
+  "model_type": "XGBoost",
+  "feature_names": [
+    "enriched.ohlc.open",
+    "enriched.ohlc.high",
+    "enriched.ohlc.low",
+    "enriched.ohlc.close",
+    "enriched.ohlc.vwap",
+    "enriched.volume_total",
+    "enriched.delta_minimo",
+    "enriched.delta_fechamento",
+    "enriched.reversao_desde_minimo",
+    "enriched.poc_percentage",
+    "contextual.flow_metrics.whale_buy_volume",
+    "contextual.flow_metrics.metadata.burst_window_ms",
+    "contextual.flow_metrics.metadata.burst_cooldown_ms",
+    "contextual.flow_metrics.metadata.last_reset_ms",
+    "contextual.flow_metrics.metadata.reset_interval_hours",
+    "contextual.flow_metrics.order_flow.ui_sum_tolerance",
+    "contextual.flow_metrics.order_flow.whale_buy_volume_window",
+    "contextual.flow_metrics.order_flow.computation_window_min",
+    "contextual.flow_metrics.liquidity_heatmap.clusters_count",
+    "contextual.flow_metrics.absorption_analysis.current_absorption.window_min",
+    "contextual.flow_metrics.data_quality.invalid_trades",
+    "contextual.flow_metrics.data_quality.valid_rate_pct",
+    "contextual.flow_metrics.data_quality.lock_contentions",
+    "contextual.flow_metrics.data_quality.whale_delta_corrections",
+    "contextual.flow_metrics.data_quality.is_buyer_maker_conversions",
+    "contextual.flow_metrics.data_quality.volume_discrepancies",
+    "contextual.flow_metrics.data_quality.negative_age_count",
+    "contextual.historical_vp.daily.poc",
+    "contextual.historical_vp.daily.vah",
+    "contextual.historical_vp.daily.val",
+    "contextual.historical_vp.weekly.poc",
+    "contextual.historical_vp.weekly.vah",
+    "contextual.historical_vp.monthly.poc",
+    "contextual.historical_vp.monthly.val",
+    "contextual.orderbook_data.spread",
+    "contextual.orderbook_data.spread_percent",
+    "contextual.multi_tf.15m.realized_vol",
+    "contextual.multi_tf.1h.adx",
+    "contextual.multi_tf.1h.realized_vol",
+    "contextual.multi_tf.4h.atr",
+    "contextual.multi_tf.4h.adx",
+    "contextual.multi_tf.4h.realized_vol",
+    "contextual.derivatives.BTCUSDT.funding_rate_percent",
+    "contextual.derivatives.BTCUSDT.long_short_ratio",
+    "contextual.derivatives.BTCUSDT.longs_usd",
+    "contextual.derivatives.BTCUSDT.shorts_usd",
+    "contextual.market_context.day_of_week",
+    "ml_features.price_features.volatility_1",
+    "ml_features.price_features.returns_5",
+    "ml_features.price_features.volatility_15",
+    "ml_features.microstructure.order_book_slope"
+  ],
+  "feature_count": 51,
+  "threshold_used": 0.002,
+  "config": {
+    "model": {
+      "lookahead_windows": 15,
+      "min_return_threshold": 0.002,
+      "test_size": 0.2,
+      "validation_size": 0.1,
+      "random_state": 42,
+      "early_stopping_rounds": 50,
+      "cv_folds": 5
+    },
+    "xgboost": {
+      "n_estimators": 500,
+      "learning_rate": 0.05,
+      "max_depth": 6,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8,
+      "min_child_weight": 1,
+      "gamma": 0.1,
+      "reg_alpha": 0.1,
+      "reg_lambda": 1.0,
+      "eval_metric": "logloss",
+      "n_jobs": -1,
+      "random_state": 42,
+      "use_label_encoder": false,
+      "verbosity": 0
+    },
+    "features": {
+      "required_columns": [
+        "price_close",
+        "volume"
+      ],
+      "drop_columns": [
+        "window_id",
+        "saved_at",
+        "symbol",
+        "timestamp",
+        "timestamp_utc",
+        "epoch_ms"
+      ],
+      "max_null_percentage": 0.3,
+      "correlation_threshold": 0.95
+    },
+    "sampling": {
+      "use_smote": false,
+      "smote_ratio": 0.5
+    },
+    "validation": {
+      "min_class_balance": 0.1,
+      "max_overfitting_threshold": 0.1
+    },
+    "data": {
+      "chunk_size": 100000,
+      "max_file_size_mb": 100
+    }
+  },
+  "metrics": {
+    "Train_Precision": 0.25,
+    "Train_Recall": 1.0,
+    "Train_F1": 0.4,
+    "Train_AUC_ROC": 0.5,
+    "Val_Precision": 0.0,
+    "Val_Recall": 0.0,
+    "Val_F1": 0.0,
+    "Val_AUC_ROC": NaN,
+    "Test_Precision": 0.0,
+    "Test_Recall": 0.0,
+    "Test_F1": 0.0,
+    "Test_AUC_ROC": NaN,
+    "Train_Confusion_Matrix": [
+      [
+        0,
+        3
+      ],
+      [
+        0,
+        1
+      ]
+    ],
+    "Val_Confusion_Matrix": [
+      [
+        0,
+        1
+      ],
+      [
+        0,
+        0
+      ]
+    ],
+    "Test_Confusion_Matrix": [
+      [
+        0,
+        2
+      ],
+      [
+        0,
+        0
+      ]
+    ]
+  },
+  "feature_importance": [
+    {
+      "feature": "enriched.ohlc.open",
+      "importance": 0.0
+    },
+    {
+      "feature": "enriched.ohlc.high",
+      "importance": 0.0
+    },
+    {
+      "feature": "enriched.ohlc.low",
+      "importance": 0.0
+    },
+    {
+      "feature": "enriched.ohlc.close",
+      "importance": 0.0
+    },
+    {
+      "feature": "enriched.ohlc.vwap",
+      "importance": 0.0
+    },
+    {
+      "feature": "enriched.volume_total",
+      "importance": 0.0
+    },
+    {
+      "feature": "enriched.delta_minimo",
+      "importance": 0.0
+    },
+    {
+      "feature": "enriched.delta_fechamento",
+      "importance": 0.0
+    },
+    {
+      "feature": "enriched.reversao_desde_minimo",
+      "importance": 0.0
+    },
+    {
+      "feature": "enriched.poc_percentage",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.whale_buy_volume",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.metadata.burst_window_ms",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.metadata.burst_cooldown_ms",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.metadata.last_reset_ms",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.metadata.reset_interval_hours",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.order_flow.ui_sum_tolerance",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.order_flow.whale_buy_volume_window",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.order_flow.computation_window_min",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.liquidity_heatmap.clusters_count",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.absorption_analysis.current_absorption.window_min",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.data_quality.invalid_trades",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.data_quality.valid_rate_pct",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.data_quality.lock_contentions",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.data_quality.whale_delta_corrections",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.data_quality.is_buyer_maker_conversions",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.data_quality.volume_discrepancies",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.flow_metrics.data_quality.negative_age_count",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.historical_vp.daily.poc",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.historical_vp.daily.vah",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.historical_vp.daily.val",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.historical_vp.weekly.poc",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.historical_vp.weekly.vah",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.historical_vp.monthly.poc",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.historical_vp.monthly.val",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.orderbook_data.spread",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.orderbook_data.spread_percent",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.multi_tf.15m.realized_vol",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.multi_tf.1h.adx",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.multi_tf.1h.realized_vol",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.multi_tf.4h.atr",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.multi_tf.4h.adx",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.multi_tf.4h.realized_vol",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.derivatives.BTCUSDT.funding_rate_percent",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.derivatives.BTCUSDT.long_short_ratio",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.derivatives.BTCUSDT.longs_usd",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.derivatives.BTCUSDT.shorts_usd",
+      "importance": 0.0
+    },
+    {
+      "feature": "contextual.market_context.day_of_week",
+      "importance": 0.0
+    },
+    {
+      "feature": "ml_features.price_features.volatility_1",
+      "importance": 0.0
+    },
+    {
+      "feature": "ml_features.price_features.returns_5",
+      "importance": 0.0
+    },
+    {
+      "feature": "ml_features.price_features.volatility_15",
+      "importance": 0.0
+    },
+    {
+      "feature": "ml_features.microstructure.order_book_slope",
+      "importance": 0.0
+    }
+  ],
+  "training_info": {
+    "n_features": 51,
+    "training_log": "2025-12-09 00:10:17,420 - MLTrainer - INFO - ============================================================\n2025-12-09 00:10:17,420 - MLTrainer - INFO - INICIANDO PIPELINE DE TREINAMENTO\n2025-12-09 00:10:17,420 - MLTrainer - INFO - ============================================================\n2025-12-09 00:10:17,420 - MLTrainer - INFO - \n[1/4] Carregando e validando dados...\n2025-12-09 00:10:17,421 - MLTrainer - INFO - Carregando dados de: features\n2025-12-09 00:10:17,422 - MLTrainer - INFO - Encontrados 5 arquivos.\n2025-12-09 00:10:17,507 - MLTrainer - INFO -   Carregado: part_1765155509192.parquet\n2025-12-09 00:10:17,511 - MLTrainer - INFO -   Carregado: part_1765155871584.parquet\n2025-12-09 00:10:17,514 - MLTrainer - INFO -   Carregado: part_1765155871631.parquet\n2025-12-09 00:10:17,562 - MLTrainer - INFO -   Carregado: part_1765162163970.parquet\n2025-12-09 00:10:17,599 - MLTrainer - INFO -   Carregado: part_1765163088034.parquet\n2025-12-09 00:10:17,616 - MLTrainer - INFO - Dados brutos: 227 linhas, 268 colunas\n2025-12-09 00:10:17,617 - MLTrainer - INFO - Usando coluna de preço: enriched.ohlc.close\n2025-12-09 00:10:17,623 - MLTrainer - WARNING - Colunas com >30% nulos: ['schema_version', 'symbol', 'epoch_ms', 'enriched.symbol', 'enriched.ohlc.open']\n2025-12-09 00:10:17,631 - MLTrainer - INFO - Dados ordenados por: saved_at (nulos: 0)\n2025-12-09 00:10:17,658 - MLTrainer - INFO - Dados limpos: 227 linhas\n2025-12-09 00:10:17,659 - MLTrainer - INFO - \n[2/4] Preparando features e targets...\n2025-12-09 00:10:17,659 - MLTrainer - INFO - Preparando features e targets...\n2025-12-09 00:10:17,659 - MLTrainer - INFO - Usando coluna de preço: enriched.ohlc.close\n2025-12-09 00:10:17,661 - MLTrainer - WARNING - Removidas 205 linhas com preço nulo\n2025-12-09 00:10:17,664 - MLTrainer - INFO - Dados após cálculo de futuro: 7 linhas\n2025-12-09 00:10:17,665 - MLTrainer - INFO - Balanceamento: 1/7 positivos (14.3%)\n2025-12-09 00:10:17,665 - MLTrainer - INFO - Criando features técnicas...\n2025-12-09 00:10:17,665 - MLTrainer - WARNING - Dados insuficientes para feature engineering: 7 < 50\n2025-12-09 00:10:17,693 - MLTrainer - INFO - Removendo 134 features altamente correlacionadas: ['enriched.ohlc.open_time', 'enriched.ohlc.close_time', 'enriched.volume_total_usdt', 'enriched.num_trades', 'enriched.delta_maximo', 'enriched.reversao_desde_maximo', 'enriched.poc_price', 'enriched.poc_volume', 'enriched.dwell_price', 'enriched.dwell_seconds', 'enriched.trades_per_second', 'enriched.avg_trade_size', 'contextual.ohlc.open', 'contextual.ohlc.high', 'contextual.ohlc.low', 'contextual.ohlc.close', 'contextual.ohlc.open_time', 'contextual.ohlc.close_time', 'contextual.ohlc.vwap', 'contextual.volume_total', 'contextual.volume_total_usdt', 'contextual.num_trades', 'contextual.delta_minimo', 'contextual.delta_maximo', 'contextual.delta_fechamento', 'contextual.reversao_desde_minimo', 'contextual.reversao_desde_maximo', 'contextual.poc_price', 'contextual.poc_volume', 'contextual.poc_percentage', 'contextual.dwell_price', 'contextual.dwell_seconds', 'contextual.trades_per_second', 'contextual.avg_trade_size', 'contextual.flow_metrics.cvd', 'contextual.flow_metrics.whale_sell_volume', 'contextual.flow_metrics.whale_delta', 'contextual.flow_metrics.bursts.count', 'contextual.flow_metrics.bursts.max_burst_volume', 'contextual.flow_metrics.sector_flow.retail.buy', 'contextual.flow_metrics.sector_flow.retail.sell', 'contextual.flow_metrics.sector_flow.retail.delta', 'contextual.flow_metrics.sector_flow.mid.buy', 'contextual.flow_metrics.sector_flow.mid.sell', 'contextual.flow_metrics.sector_flow.mid.delta', 'contextual.flow_metrics.sector_flow.whale.buy', 'contextual.flow_metrics.sector_flow.whale.sell', 'contextual.flow_metrics.sector_flow.whale.delta', 'contextual.flow_metrics.time_index.epoch_ms', 'contextual.flow_metrics.order_flow.net_flow_1m', 'contextual.flow_metrics.order_flow.buy_volume_usd_exact', 'contextual.flow_metrics.order_flow.sell_volume_usd_exact', 'contextual.flow_metrics.order_flow.total_volume_usd_exact', 'contextual.flow_metrics.order_flow.buy_volume', 'contextual.flow_metrics.order_flow.sell_volume', 'contextual.flow_metrics.order_flow.total_volume', 'contextual.flow_metrics.order_flow.buy_volume_btc', 'contextual.flow_metrics.order_flow.sell_volume_btc', 'contextual.flow_metrics.order_flow.total_volume_btc', 'contextual.flow_metrics.order_flow.whale_sell_volume_window', 'contextual.flow_metrics.order_flow.whale_delta_window', 'contextual.flow_metrics.order_flow.sector_flow_window.retail.buy', 'contextual.flow_metrics.order_flow.sector_flow_window.retail.sell', 'contextual.flow_metrics.order_flow.sector_flow_window.retail.delta', 'contextual.flow_metrics.order_flow.sector_flow_window.mid.buy', 'contextual.flow_metrics.order_flow.sector_flow_window.mid.sell', 'contextual.flow_metrics.order_flow.sector_flow_window.mid.delta', 'contextual.flow_metrics.order_flow.sector_flow_window.whale.buy', 'contextual.flow_metrics.order_flow"
+  },
+  "paths": {
+    "model_path": "ml\\models\\xgb_model_20251209_001017.json",
+    "metadata_path": "ml\\models\\model_metadata_20251209_001017.json",
+    "scaler_path": "ml\\models\\scaler_20251209_001017.pkl"
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "created_at": "2025-12-07T23:19:37.231577",
+  "model_type": "XGBoost",
+  "feature_names": [
+    "price_close",
+    "volume",
+    "return_1",
+    "return_5",
+    "sma_5",
+    "sma_10",
+    "volatility_5",
+    "volume_sma",
+    "volume_ratio"
+  ],
+  "config": {
+    "model": {
+      "lookahead_windows": 15,
+      "min_return_threshold": 0.002,
+      "test_size": 0.2,
+      "validation_size": 0.1,
+      "random_state": 42
+    },
+    "xgboost": {
+      "n_estimators": 200,
+      "learning_rate": 0.05,
+      "max_depth": 4,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8,
+      "eval_metric": "logloss",
+      "n_jobs": -1,
+      "random_state": 42,
+      "early_stopping_rounds": 20
+    },
+    "features": {
+      "required_columns": [
+        "price_close",
+        "volume"
+      ],
+      "drop_columns": [
+        "window_id",
+        "saved_at",
+        "symbol",
+        "timestamp",
+        "timestamp_utc",
+        "epoch_ms"
+      ],
+      "max_null_percentage": 0.5
+    }
+  },
+  "metrics": {
+    "Precision": 0.2857142857142857,
+    "Recall": 0.3,
+    "AUC-ROC": 0.2055555555555556,
+    "Confusion Matrix": [
+      [
+        3,
+        15
+      ],
+      [
+        14,
+        6
+      ]
+    ]
+  },
+  "feature_importance": [
+    {
+      "feature": "volume",
+      "importance": 0.1897638440132141
+    },
+    {
+      "feature": "price_close",
+      "importance": 0.15356695652008057
+    },
+    {
+      "feature": "volume_sma",
+      "importance": 0.1409308910369873
+    },
+    {
+      "feature": "sma_10",
+      "importance": 0.127354234457016
+    },
+    {
+      "feature": "volatility_5",
+      "importance": 0.10754021257162094
+    },
+    {
+      "feature": "return_5",
+      "importance": 0.09463893622159958
+    },
+    {
+      "feature": "volume_ratio",
+      "importance": 0.08006312698125839
+    },
+    {
+      "feature": "return_1",
+      "importance": 0.053517717868089676
+    },
+    {
+      "feature": "sma_5",
+      "importance": 0.05262410268187523
+    }
+  ],
+  "training_info": {
+    "n_samples": 9,
+    "positive_class_ratio": "N/A"
+  }
+}

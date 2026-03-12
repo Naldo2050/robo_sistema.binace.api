@@ -31,8 +31,18 @@ class OCIMonitor:
         self.resource_group = "BotMetrics"
         
         self.enabled = False
-        
-        self._authenticate()
+
+        # Autenticar com timeout para não travar em ambiente local (sem metadata OCI)
+        import threading
+        done = threading.Event()
+        def _run():
+            self._authenticate()
+            done.set()
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        if not done.wait(timeout=5):
+            logger.warning("⚠️ OCI Monitoring DESATIVADO: timeout na autenticação (5s) — ambiente sem Instance Principal")
+            self.enabled = False
 
     def _authenticate(self):
         """Tenta autenticar usando Instance Principal (prod) ou Config File (dev)."""

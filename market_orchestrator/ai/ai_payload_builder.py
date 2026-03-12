@@ -9,8 +9,6 @@ do sistema em um formato estruturado e semântico para consumo pelos modelos de 
 
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
-import asyncio
-import sys
 from pathlib import Path
 import logging
 import json
@@ -54,6 +52,75 @@ def _strip_empty(d: dict) -> dict:
             continue
         cleaned[k] = v
     return cleaned
+
+
+def _safe_epoch_ms(signal: dict) -> int:
+    """
+    Extrai epoch_ms do signal garantindo que retorna SEMPRE um INT válido.
+    
+    Problema resolvido:
+        - signal["timestamp"] pode ser STRING "2026-03-09 21:32:00-04:00"
+        - Python avalia strings não-vazias como TRUTHY
+        - O 'or' encadeado retornava a STRING em vez do fallback correto
+        - O compressor não conseguia usar STRING como int → epoch_ms virava None
+    
+    Estratégia de busca (ordem de prioridade):
+        1. Campos diretos que são int/float (epoch_ms, timestamp_ms, etc.)
+        2. Dentro de fluxo_continuo.time_index.epoch_ms
+        3. Converter timestamp string ISO para int
+        4. Fallback: timestamp atual em ms
+    
+    Args:
+        signal (dict): O dicionário do sinal/evento bruto
+        
+    Returns:
+        int: Timestamp em milissegundos, NUNCA None
+    """
+    # ── 1. Campos diretos com valor numérico válido ──────────────────
+    # Considera válido: número > 1_000_000_000_000 (= ano 2001 em ms)
+    # Isso filtra zeros, negativos e timestamps em segundos por engano
+    for key in ("epoch_ms", "timestamp_ms", "window_close_ms", "window_id"):
+        val = signal.get(key)
+        if isinstance(val, (int, float)) and val > 1_000_000_000_000:
+            return int(val)
+
+    # ── 2. Dentro de fluxo_continuo.time_index ──────────────────────
+    # O fluxo_continuo sempre tem time_index.epoch_ms correto
+    fc = signal.get("fluxo_continuo", {})
+    if isinstance(fc, dict):
+        ti = fc.get("time_index", {})
+        if isinstance(ti, dict):
+            val = ti.get("epoch_ms")
+            if isinstance(val, (int, float)) and val > 1_000_000_000_000:
+                return int(val)
+
+    # ── 3. Converter timestamp string ISO para int ───────────────────
+    # Tenta converter strings como "2026-03-10T01:32:00.000Z"
+    for key in ("timestamp_utc", "timestamp"):
+        val = signal.get(key)
+        if isinstance(val, str) and val:
+            try:
+                # Normaliza formato Z → +00:00 para fromisoformat()
+                dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                result = int(dt.timestamp() * 1000)
+                if result > 1_000_000_000_000:
+                    logging.debug(
+                        "EPOCH_MS_FROM_STRING key=%s val=%s result=%s",
+                        key, val, result
+                    )
+                    return result
+            except Exception:
+                pass  # Tenta próximo campo
+
+    # ── 4. Fallback: timestamp atual ─────────────────────────────────
+    # Só chega aqui se NENHUM campo de timestamp estiver disponível
+    fallback = int(datetime.now(timezone.utc).timestamp() * 1000)
+    logging.warning(
+        "EPOCH_MS_FALLBACK_NOW signal_keys=%s fallback_ms=%s",
+        list(signal.keys()) if isinstance(signal, dict) else "N/A",
+        fallback
+    )
+    return fallback
 
 
 def _inject_institutional_analytics(
@@ -776,15 +843,15 @@ def build_ai_input(
             vp_all_tf.setdefault("daily", {})["lvns_nearby"] = lvns[:3]
 
     # 8. Estrutura Final
+    # CORREÇÃO: usa _safe_epoch_ms() para garantir int válido
+    # Problema anterior: signal["timestamp"] é STRING e retornava
+    # como truthy no 'or' encadeado, quebrando o epoch_ms no LLM
+    _epoch_ms_safe = _safe_epoch_ms(signal)
+    
     ai_payload = {
         "symbol": symbol,
         "timestamp": signal.get("timestamp"),
-        "epoch_ms": (
-            signal.get("epoch_ms")
-            or signal.get("timestamp_ms")
-            or signal.get("timestamp")
-            or int(datetime.now(timezone.utc).timestamp() * 1000)
-        ),
+        "epoch_ms": _epoch_ms_safe,
         "signal_metadata": signal_metadata,
         "price_context": price_context,
         "volume_profile": vp_all_tf,
@@ -910,15 +977,67 @@ def build_ai_input(
         return hashlib.sha256(encoded).hexdigest()
 
     def _validate_payload_v2(payload: Dict[str, Any]) -> None:
+        """
+        Valida estrutura e tipos do payload v2 antes de enviar ao LLM.
+        
+        CORREÇÃO aplicada:
+            - Antes: aceitava epoch_ms como STRING (bug silencioso)
+            - Agora: verifica tipo int/float E valor mínimo plausível
+            - Antes: não logava detalhes do erro
+            - Agora: loga tipo e valor recebido para debug
+        """
+        # ── Verificação 1: É um dicionário? ─────────────────────────
         if not isinstance(payload, dict):
-            raise ValueError("payload_v2 inválido: não é dict")
+            raise ValueError(
+                f"payload_v2 inválido: esperado dict, "
+                f"recebi {type(payload).__name__}"
+            )
+        
+        # ── Verificação 2: Symbol presente? ─────────────────────────
         if not payload.get("symbol"):
-            raise ValueError("payload_v2 inválido: campo 'symbol' obrigatório")
-        if payload.get("epoch_ms") is None:
-            raise ValueError("payload_v2 inválido: campo 'epoch_ms' obrigatório")
+            raise ValueError(
+                "payload_v2 inválido: campo 'symbol' é obrigatório "
+                "e não pode ser vazio"
+            )
+        
+        # ── Verificação 3: epoch_ms é int válido? ───────────────────
+        # CRÍTICO: antes aceitava STRING como truthy - bug silencioso!
+        epoch = payload.get("epoch_ms")
+        
+        if epoch is None:
+            raise ValueError(
+                "payload_v2 inválido: 'epoch_ms' é None - "
+                "timestamp obrigatório para rastreabilidade"
+            )
+        
+        if not isinstance(epoch, (int, float)):
+            raise ValueError(
+                f"payload_v2 inválido: 'epoch_ms' deve ser int ou float, "
+                f"recebi type={type(epoch).__name__} value='{epoch}' - "
+                f"STRING de timestamp não é aceita aqui"
+            )
+        
+        if int(epoch) < 1_000_000_000_000:
+            raise ValueError(
+                f"payload_v2 inválido: 'epoch_ms' valor suspeito={epoch} - "
+                f"esperado timestamp em milissegundos (> 1_000_000_000_000)"
+            )
+        
+        # ── Verificação 4: Preço atual presente? ────────────────────
         price_ctx = payload.get("price_context") or {}
         if price_ctx.get("current_price") is None:
-            raise ValueError("payload_v2 inválido: price_context.current_price obrigatório")
+            raise ValueError(
+                "payload_v2 inválido: price_context.current_price é obrigatório - "
+                "o LLM não pode analisar sem preço atual"
+            )
+        
+        # ── Log de sucesso para rastreabilidade ─────────────────────
+        logging.debug(
+            "PAYLOAD_V2_VALID symbol=%s epoch_ms=%s price=%s",
+            payload.get("symbol"),
+            epoch,
+            price_ctx.get("current_price")
+        )
 
     # === INSTITUTIONAL ANALYTICS (23 módulos) ===
     ai_payload = _inject_institutional_analytics(ai_payload, signal)
@@ -961,24 +1080,76 @@ def build_ai_input(
         tf_compact = {}
         for tf_key, tf_data in _multi_tf_raw.items():
             if isinstance(tf_data, dict):
+                # CORREÇÃO: tenta múltiplas chaves pois o signal usa
+                # "trend" (inglês) mas o legado usava "tendencia" (PT)
+                # Ambas as formas são suportadas com fallback
                 tf_entry = {
-                    "trend": tf_data.get("tendencia"),
-                    "price": tf_data.get("preco_atual"),
+                    # Tendência: signal usa "trend", legado usa "tendencia"
+                    "trend": (
+                        tf_data.get("trend")        # ✅ chave real no signal
+                        or tf_data.get("tendencia") # fallback legado PT
+                    ),
+                    # Preço atual do timeframe
+                    "price": (
+                        tf_data.get("price")
+                        or tf_data.get("preco_atual")
+                    ),
+                    # MME21
                     "mme21": tf_data.get("mme_21"),
-                    "rsi": tf_data.get("rsi_short"),
-                    "macd": tf_data.get("macd"),
-                    "macd_s": tf_data.get("macd_signal"),
-                    "adx": tf_data.get("adx"),
+                    # RSI: tenta múltiplas variações de nome
+                    "rsi": (
+                        tf_data.get("rsi")
+                        or tf_data.get("rsi_short")
+                        or tf_data.get("rsi_14")
+                    ),
+                    # MACD line
+                    "macd": (
+                        tf_data.get("macd")
+                        or tf_data.get("macd_line")
+                    ),
+                    # MACD signal
+                    "macd_s": (
+                        tf_data.get("macd_signal")
+                        or tf_data.get("macd_s")
+                        or tf_data.get("signal")
+                    ),
+                    # ADX
+                    "adx": (
+                        tf_data.get("adx")
+                        or tf_data.get("adx_14")
+                    ),
+                    # ATR
                     "atr": tf_data.get("atr"),
-                    "regime": tf_data.get("regime"),
+                    # Regime do timeframe
+                    "regime": (
+                        tf_data.get("regime")
+                        or tf_data.get("market_regime")
+                    ),
                 }
-                # Remover None
-                tf_entry = {k: v for k, v in tf_entry.items() if v is not None}
-                if tf_entry:
+                # Remove campos None para não poluir payload
+                tf_entry = {
+                    k: v for k, v in tf_entry.items() 
+                    if v is not None
+                }
+                # Só adiciona se tem pelo menos trend
+                # (evita entradas vazias no payload)
+                if tf_entry.get("trend"):
+                    tf_compact[tf_key] = tf_entry
+                elif tf_entry:
+                    # Tem dados mas sem trend - adiciona mesmo assim
                     tf_compact[tf_key] = tf_entry
         
         if tf_compact:
             ai_payload["multi_tf"] = tf_compact
+            logging.debug(
+                "MULTI_TF_COMPACT timeframes=%s",
+                list(tf_compact.keys())
+            )
+        else:
+            logging.debug(
+                "MULTI_TF_EMPTY raw_keys=%s",
+                list(_multi_tf_raw.keys())
+            )
 
     # === COMPRESSÃO / V2 ===
     v1_bytes = len(json.dumps(ai_payload, ensure_ascii=False).encode("utf-8"))
@@ -997,6 +1168,29 @@ def build_ai_input(
     if v2_enabled:
         try:
             payload_v2 = compress_payload(ai_payload, max_bytes=max_bytes)
+            
+            # ── CORREÇÃO: Restaurar epoch_ms se compressor descartou ──
+            # O compressor pode eliminar epoch_ms durante otimização de bytes
+            # Aqui garantimos que o valor original sempre seja preservado
+            if payload_v2.get("epoch_ms") is None:
+                payload_v2["epoch_ms"] = _epoch_ms_safe
+                logging.warning(
+                    "EPOCH_MS_RESTORED_AFTER_COMPRESSION "
+                    "restored_value=%s symbol=%s",
+                    _epoch_ms_safe,
+                    symbol
+                )
+            # Verifica se epoch_ms é int válido após compressão
+            elif not isinstance(payload_v2.get("epoch_ms"), (int, float)):
+                logging.warning(
+                    "EPOCH_MS_WRONG_TYPE_AFTER_COMPRESSION "
+                    "type=%s value=%s restoring=%s",
+                    type(payload_v2.get("epoch_ms")).__name__,
+                    payload_v2.get("epoch_ms"),
+                    _epoch_ms_safe
+                )
+                payload_v2["epoch_ms"] = _epoch_ms_safe
+            
             _validate_payload_v2(payload_v2)
             # Confirma limite de bytes
             size_bytes = len(json.dumps(payload_v2, ensure_ascii=False).encode("utf-8"))

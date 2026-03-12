@@ -132,7 +132,7 @@ class MetricsSerializer:
                 with gzip.GzipFile(fileobj=buf, mode='rb') as f:
                     data = f.read().decode('utf-8')
             except gzip.BadGzipFile:
-                data = data.decode('utf-8')
+                data = data.decode('utf-8')  # type: ignore[union-attr]
         
         return json.loads(data)
     

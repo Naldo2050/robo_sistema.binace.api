@@ -12,8 +12,8 @@ class LiveFeatureCalculator:
         self.bb_std = bb_std
         self.rsi_period = rsi_period
 
-        self.price_history = deque(maxlen=max(bb_period, rsi_period) + 10)
-        self.volume_history = deque(maxlen=20)
+        self.price_history: deque = deque(maxlen=max(bb_period, rsi_period) + 10)
+        self.volume_history: deque = deque(maxlen=20)
 
     def update(self, price: float, volume: float = 0.0):
         """Adiciona novo preço/volume ao histórico."""

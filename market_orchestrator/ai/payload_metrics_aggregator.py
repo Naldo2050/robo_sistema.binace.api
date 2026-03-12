@@ -60,7 +60,7 @@ def summarize_metrics(path: str, last_n: int = 2000) -> Dict[str, object]:
     if not metrics_path.exists():
         return {}
 
-    lines = deque(maxlen=last_n)
+    lines: deque = deque(maxlen=last_n)
     try:
         with metrics_path.open("r", encoding="utf-8") as fp:
             for line in fp:
