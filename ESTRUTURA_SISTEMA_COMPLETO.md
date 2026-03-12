@@ -32,27 +32,17 @@ Sistema de trading automatizado para Binance com analise de fluxo de ordens, sup
 
 ### Modulos de Producao (Raiz)
 
-Modulos que permanecem na raiz por terem muitos importadores no codigo de producao:
+Modulos que permanecem na raiz por terem muitos importadores, risco de import circular ou carregamento dinamico:
 
-| Arquivo | Descricao | Importadores |
-|---------|-----------|--------------|
-| `ai_analyzer_qwen.py` | Analisador IA principal (150KB) | 8 |
-| `orderbook_analyzer.py` | Analisador de orderbook (123KB) | 14 |
-| `institutional_enricher.py` | Enriquecedor institucional (85KB) | 1 (dinamico) |
-| `build_compact_payload.py` | Construtor de payload compactado | 4 |
-| `context_collector.py` | Coletor de contexto (VIX, Fear&Greed, macro) | 1 |
-| `enrichment_integrator.py` | Integrador de enriquecimento | 4 |
-| `export_signals.py` | Exportador de sinais para CSV/MQL5 | 2 |
-| `feature_store.py` | Store de features (Parquet particionado) | 2 |
-| `historical_profiler.py` | Profiler historico de volume | 1 |
-| `orderbook_fallback.py` | Fallback do orderbook | 3 |
-| `report_generator.py` | Gerador de relatorios | 2 |
-| `ai_payload_compressor.py` | Compressor de payload IA | 1 |
-| `ai_response_validator.py` | Validador de respostas IA | 1 |
-| `optimize_ai_payload.py` | Otimizador de payload IA | 1 |
-| `payload_optimizer_config.py` | Configuracao do otimizador | 1 |
-| `fix_optimization.py` | Correcao de otimizacao (usado em producao) | 3 |
-| `diagnose_optimization.py` | Diagnostico de otimizacao | 1 |
+| Arquivo | Descricao | Razao |
+|---------|-----------|-------|
+| `ai_analyzer_qwen.py` | Analisador IA principal (150KB) | 8 importadores + circular com market_orchestrator/ai/ |
+| `orderbook_analyzer.py` | Analisador de orderbook (123KB) | Carregado via importlib por orderbook_analyzer/ |
+| `institutional_enricher.py` | Enriquecedor institucional (85KB) | Import dinamico em market_orchestrator |
+| `build_compact_payload.py` | Construtor de payload compactado | 4 importadores + circular com market_orchestrator/ai/ |
+| `orderbook_fallback.py` | Fallback do orderbook | 3 importadores, acoplado ao orderbook_analyzer |
+| `fix_optimization.py` | Correcao de otimizacao (usado em producao) | 3 importadores em testes de producao |
+| `diagnose_optimization.py` | Diagnostico de otimizacao | 1 importador em testes |
 
 ### Proxies de Compatibilidade (Raiz)
 
@@ -76,6 +66,16 @@ Arquivos pequenos (3-4 linhas) que redirecionam imports para os novos pacotes:
 | `health_monitor.py` | `monitoring/health_monitor.py` |
 | `metrics_collector.py` | `monitoring/metrics_collector.py` |
 | `format_utils.py` | `common/format_utils.py` |
+| `context_collector.py` | `fetchers/context_collector.py` |
+| `enrichment_integrator.py` | `data_processing/enrichment_integrator.py` |
+| `feature_store.py` | `data_processing/feature_store.py` |
+| `export_signals.py` | `trading/export_signals.py` |
+| `historical_profiler.py` | `market_analysis/historical_profiler.py` |
+| `report_generator.py` | `common/report_generator.py` |
+| `optimize_ai_payload.py` | `common/optimize_ai_payload.py` |
+| `payload_optimizer_config.py` | `common/payload_optimizer_config.py` |
+| `ai_payload_compressor.py` | `common/ai_payload_compressor.py` |
+| `ai_response_validator.py` | `common/ai_response_validator.py` |
 
 ---
 
@@ -100,6 +100,7 @@ trading/
 ├── __init__.py
 ├── trade_buffer.py       # AsyncTradeBuffer com backpressure
 ├── trade_validator.py    # Validacao de trades
+├── export_signals.py     # Exportador de sinais para CSV/MQL5
 ├── alert_engine.py       # Motor de alertas
 ├── alert_manager.py      # Gerenciador de alertas
 └── outcome_tracker.py    # Rastreador de resultados
@@ -111,11 +112,12 @@ trading/
 ```
 fetchers/
 ├── __init__.py
-├── fred_fetcher.py       # Coletor do FRED API
-├── macro_data_fetcher.py # Coletor de dados macroeconomicos
-├── macro_fetcher.py      # Fetcher de macro alternativo
-├── onchain_fetcher.py    # Coletor de dados on-chain
-└── funding_aggregator.py # Agregador de funding rates
+├── fred_fetcher.py          # Coletor do FRED API
+├── context_collector.py     # Coletor de contexto (VIX, Fear&Greed, macro)
+├── macro_data_fetcher.py    # Coletor de dados macroeconomicos
+├── macro_fetcher.py         # Fetcher de macro alternativo
+├── onchain_fetcher.py       # Coletor de dados on-chain
+└── funding_aggregator.py    # Agregador de funding rates
 ```
 
 ---
@@ -127,6 +129,7 @@ market_analysis/
 ├── cross_asset_correlations.py  # Correlacoes BTC/ETH/DXY/NDX
 ├── dynamic_volume_profile.py    # Perfil de volume dinamico
 ├── levels_registry.py           # Registro de niveis de preco
+├── historical_profiler.py       # Profiler historico de volume
 ├── liquidity_heatmap.py         # Mapa de calor de liquidez
 ├── market_impact.py             # Analise de impacto de mercado
 └── pattern_recognition.py       # Reconhecimento de padroes
@@ -138,10 +141,12 @@ market_analysis/
 ```
 data_processing/
 ├── __init__.py
-├── data_handler.py           # Manipulador de dados (eventos, absorcao)
-├── data_enricher.py          # Enriquecedor de dados
-├── data_validator.py         # Validador de dados
-└── data_quality_validator.py # Validador de qualidade
+├── data_handler.py              # Manipulador de dados (eventos, absorcao)
+├── data_enricher.py             # Enriquecedor de dados
+├── data_validator.py            # Validador de dados
+├── data_quality_validator.py    # Validador de qualidade
+├── enrichment_integrator.py     # Integrador de enriquecimento
+└── feature_store.py             # Store de features (Parquet particionado)
 ```
 
 ---
@@ -164,9 +169,14 @@ monitoring/
 ```
 common/
 ├── __init__.py
-├── format_utils.py         # Formatacao de precos, quantidades, percentuais
-├── technical_indicators.py # Indicadores tecnicos (EMA, RSI, etc.)
-└── ml_features.py          # Features de ML (cross-asset)
+├── format_utils.py            # Formatacao de precos, quantidades, percentuais
+├── report_generator.py        # Gerador de relatorios
+├── optimize_ai_payload.py     # Otimizador de payload IA
+├── payload_optimizer_config.py # Configuracao do otimizador
+├── ai_payload_compressor.py   # Compressor de payload IA
+├── ai_response_validator.py   # Validador de respostas IA
+├── technical_indicators.py    # Indicadores tecnicos (EMA, RSI, etc.)
+└── ml_features.py             # Features de ML (cross-asset)
 ```
 
 ---
@@ -651,7 +661,7 @@ docs/
 
 ## Estatisticas do Projeto
 
-- **Arquivos .py na raiz**: 35 (16 proxies + 19 modulos)
+- **Arquivos .py na raiz**: ~25 (26 proxies + 7 modulos de producao + config/main)
 - **Pacotes organizados**: 7 novos + 12 pre-existentes
 - **Total de arquivos Python**: ~250+
 - **Testes**: 105 arquivos em tests/
@@ -676,8 +686,9 @@ docs/
 | Data processing | 4 | `data_processing/` (com proxies) |
 | Monitoring | 6 | `monitoring/` (com proxies) |
 | Common utils | 3 | `common/` (com proxy) |
+| Producao (batch 2) | 10 | `fetchers/`, `data_processing/`, `trading/`, `market_analysis/`, `common/` (com proxies) |
 
-**Total movido: ~130 arquivos. Raiz: 129 -> 35 (-73%)**
+**Total movido: ~140 arquivos. Raiz: 129 -> ~25 (-81%)**
 
 ---
 
