@@ -154,10 +154,25 @@ htmlcov/
 *.pem
 *.key
 
+# Config files with API keys/secrets
+config.json
+credentials.json
+secrets.json
+*.secret
+
 # ==============================
 # Arquivos temporários
 # ==============================
 erro.txt
+*.py.tmp
+
+# ==============================
+# Logs em runtime (raiz) - devem ir para logs/
+# ==============================
+/bot.log
+/run.log
+/diagnostics_replay.log
+/test_feature_store.log
 
 # ==============================
 # Documentação local (não código)

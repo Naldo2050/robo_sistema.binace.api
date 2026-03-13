@@ -22,6 +22,7 @@ Sistema de trading automatizado para Binance com analise de fluxo de ordens, sup
 | `Dockerfile` | Imagem Docker do projeto |
 | `requirements.txt` | Dependencias Python |
 | `requirements-dev.txt` | Dependencias de desenvolvimento |
+| `.env.example` | Template de variaveis de ambiente |
 
 ### Arquivos Principais (Raiz)
 | Arquivo | Descricao |
@@ -40,9 +41,6 @@ Modulos que permanecem na raiz por terem muitos importadores, risco de import ci
 | `orderbook_analyzer.py` | Analisador de orderbook (123KB) | Carregado via importlib por orderbook_analyzer/ |
 | `institutional_enricher.py` | Enriquecedor institucional (85KB) | Import dinamico em market_orchestrator |
 | `build_compact_payload.py` | Construtor de payload compactado | 4 importadores + circular com market_orchestrator/ai/ |
-| `orderbook_fallback.py` | Fallback do orderbook | 3 importadores, acoplado ao orderbook_analyzer |
-| `fix_optimization.py` | Correcao de otimizacao (usado em producao) | 3 importadores em testes de producao |
-| `diagnose_optimization.py` | Diagnostico de otimizacao | 1 importador em testes |
 
 ### Proxies de Compatibilidade (Raiz)
 
@@ -76,6 +74,9 @@ Arquivos pequenos (3-4 linhas) que redirecionam imports para os novos pacotes:
 | `payload_optimizer_config.py` | `common/payload_optimizer_config.py` |
 | `ai_payload_compressor.py` | `common/ai_payload_compressor.py` |
 | `ai_response_validator.py` | `common/ai_response_validator.py` |
+| `fix_optimization.py` | `data_processing/fix_optimization.py` |
+| `diagnose_optimization.py` | `scripts/diagnostics/diagnose_optimization.py` |
+| `orderbook_fallback.py` | `orderbook_core/orderbook_fallback.py` |
 
 ---
 
@@ -146,7 +147,8 @@ data_processing/
 ├── data_validator.py            # Validador de dados
 ├── data_quality_validator.py    # Validador de qualidade
 ├── enrichment_integrator.py     # Integrador de enriquecimento
-└── feature_store.py             # Store de features (Parquet particionado)
+├── feature_store.py             # Store de features (Parquet particionado)
+└── fix_optimization.py          # Limpeza de eventos (clean_event, simplify_historical_vp)
 ```
 
 ---
@@ -176,7 +178,9 @@ common/
 ├── ai_payload_compressor.py   # Compressor de payload IA
 ├── ai_response_validator.py   # Validador de respostas IA
 ├── technical_indicators.py    # Indicadores tecnicos (EMA, RSI, etc.)
-└── ml_features.py             # Features de ML (cross-asset)
+├── ml_features.py             # Features de ML (cross-asset)
+├── exceptions.py              # Hierarquia unificada de excecoes (BotBaseError)
+└── logging_config.py          # Logging centralizado (JSON/texto, rotativo)
 ```
 
 ---
@@ -339,7 +343,8 @@ orderbook_core/
 ├── orderbook.py
 ├── protocols.py
 ├── structured_logging.py
-└── tracing_utils.py
+├── tracing_utils.py
+└── orderbook_fallback.py  # Fallback REST API com retry e circuit breaker
 ```
 
 ---
@@ -448,34 +453,40 @@ src/
 
 ## Diretorios de Suporte
 
-### `tests/` - Suite de Testes (105 arquivos)
+### `tests/` - Suite de Testes (~107 arquivos, organizado)
 ```
 tests/
 ├── conftest.py                    # Fixtures globais + Prometheus cleanup
-├── fixtures.py
 ├── fixtures/
 │   └── sample_analysis_trigger.json
-├── mock_ai_responses.py
-├── mock_qwen.py
-├── payload/                       # Testes focados de payload
-│   ├── conftest.py
-│   ├── pytest.ini
-│   ├── test_payload_compressor.py
-│   ├── test_payload_guardrail.py
-│   ├── test_payload_metrics_aggregator.py
-│   ├── test_payload_optimizer.py
-│   └── test_payload_tripwires.py
-├── test_ai_*.py                   # Testes de IA (7 arquivos)
-├── test_orderbook_*.py            # Testes de orderbook (9 arquivos)
-├── test_flow_*.py                 # Testes de fluxo
-├── test_support_resistance_*.py   # Testes de S/R
-├── test_enrich_*.py               # Testes de enriquecimento
-├── test_data_*.py                 # Testes de dados
-├── test_circuit_breaker_*.py      # Testes de circuit breaker
-├── test_event_*.py                # Testes de eventos
-├── test_trade_*.py                # Testes de trading
-├── teste_*.py                     # Testes em portugues (legacy)
-└── ... (105 arquivos total)
+├── unit/                          # 28 testes unitarios (modulo isolado)
+│   ├── test_event_bus.py
+│   ├── test_flow_analyzer.py
+│   ├── test_data_validator.py
+│   └── ... (28 arquivos)
+├── integration/                   # 50 testes de integracao (multiplos modulos)
+│   ├── test_ai_runner.py
+│   ├── test_pipeline_integration.py
+│   ├── test_orderbook_core_comprehensive.py
+│   └── ... (50 arquivos)
+├── e2e/                           # 12 testes end-to-end (sistema completo)
+│   ├── test_system_health.py
+│   ├── test_performance_benchmarks.py
+│   ├── test_websocket.py
+│   └── ... (12 arquivos)
+├── helpers/                       # Utilitarios de teste
+│   ├── fixtures.py
+│   ├── mock_ai_responses.py
+│   └── mock_qwen.py
+├── legacy/                        # Testes antigos (pt-BR, verificacoes)
+│   ├── teste_rapido.py
+│   ├── teste_separador.py
+│   └── verify_*.py (7 arquivos)
+└── payload/                       # Testes focados de payload
+    ├── conftest.py
+    ├── test_payload_compressor.py
+    ├── test_payload_guardrail.py
+    └── test_payload_tripwires.py
 ```
 
 ---
@@ -517,7 +528,8 @@ scripts/
 │   ├── validar_evento.py
 │   ├── verificar_otimizacao.py
 │   ├── verify_implementations.py
-│   └── verify_patch.py
+│   ├── verify_patch.py
+│   └── diagnose_optimization.py    # Diagnostico de otimizacao de eventos
 ├── demos/                          # Demonstracoes
 │   ├── demo_circuit_breaker.py
 │   ├── demo_enhanced_cross_asset.py
@@ -579,12 +591,13 @@ docs/
 
 | Diretorio | Descricao |
 |-----------|-----------|
-| `utils/` | Utilitarios (async_helpers, heartbeat, trade_filter) |
+| `utils/` | Proxy — modulos movidos para common/, monitoring/, trading/ |
 | `database/` | Banco de dados (event_store.py) |
 | `infrastructure/` | Docker, Terraform, OCI |
 | `tools/` | Ferramentas (inspect_db, ws_test, groq tests) |
-| `diagnostics/` | Diagnosticos (performance, replay, ML) |
-| `arquivos para diagnostico/` | Diagnostico de janelas |
+| `diagnostics/` | Proxy — modulos movidos para scripts/diagnostics/ |
+| `diagnostic_files/` | Diagnostico de janelas |
+| `.github/workflows/` | CI/CD (lint + unit tests + integration tests) |
 | `Regras/` | Documentacao de regras (.odt, .docx) |
 | `memory/` | Sistema de memoria (levels_BTCUSDT.json) |
 | `MQL5/` | Integracao MetaTrader |
@@ -661,10 +674,10 @@ docs/
 
 ## Estatisticas do Projeto
 
-- **Arquivos .py na raiz**: ~25 (26 proxies + 7 modulos de producao + config/main)
+- **Arquivos .py na raiz**: ~25 (29 proxies + 4 modulos de producao + config/main)
 - **Pacotes organizados**: 7 novos + 12 pre-existentes
 - **Total de arquivos Python**: ~250+
-- **Testes**: 105 arquivos em tests/
+- **Testes**: ~107 arquivos em tests/ (unit/28, integration/50, e2e/12, helpers/7, legacy/7, payload/5)
 - **Dados de features**: 34+ datas
 
 ---
@@ -692,4 +705,4 @@ docs/
 
 ---
 
-*Ultima atualizacao: 2026-03-12 (pos-reorganizacao)*
+*Ultima atualizacao: 2026-03-13 (reorganizacao completa: 3 modulos movidos, 2 duplicacoes resolvidas, utils/ e diagnostics/ consolidados, tests/ organizado em unit/integration/e2e, CI/CD criado, infra criada: .env.example, common/exceptions.py, common/logging_config.py)*
