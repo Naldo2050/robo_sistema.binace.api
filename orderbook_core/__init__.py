@@ -8,3 +8,4 @@ from .constants import THRESHOLDS
 from .protocols import TimeManagerProtocol, OrderBookAnalyzerProtocol, BotProtocol
 from .event_factory import build_invalid_orderbook_event, build_emergency_orderbook_event
 from .exceptions import OrderBookError, InvalidUpdateError
+from .orderbook_fallback import OrderBookFallback, FallbackConfig, get_fallback_instance, fetch_with_fallback

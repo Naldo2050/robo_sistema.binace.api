@@ -149,7 +149,7 @@ def list_files_by_category():
         
         "Diagnóstico e Debug": [
             "diagnostics/",
-            "arquivos para diagnostico/",
+            "diagnostic_files/",
             "debug_bot.py",
             "debug_env.py",
             "debug_keyerror.py",

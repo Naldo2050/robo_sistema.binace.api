@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, refactor/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install ruff mypy
+      - name: Ruff lint
+        run: ruff check . --select E,F,W --ignore E501
+      - name: Ruff format check
+        run: ruff format --check . || true
+
+  test-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run unit tests
+        run: python -m pytest tests/unit/ -v --tb=short -x --timeout=30
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+
+  test-integration:
+    runs-on: ubuntu-latest
+    needs: test-unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run integration tests
+        run: python -m pytest tests/integration/ -v --tb=short --timeout=60 -k "not comprehensive"
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}

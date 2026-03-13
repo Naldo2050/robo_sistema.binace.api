@@ -1,17 +1,8 @@
-# src/utils/__init__.py
-"""Utils package for robo_sistema.binace.api"""
-
-import os
-import sys
-
-# Adiciona o diretório raiz ao path para importar do utils raiz
-_root_utils = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'utils')
-if _root_utils not in sys.path:
-    sys.path.insert(0, _root_utils)
-
-from utils.heartbeat_manager import HeartbeatManager
-from utils.trade_filter import TradeFilter
-from utils.trade_timestamp_validator import TradeLatencyMonitor, record_trade_latency, get_latency_stats
+# src/utils/__init__.py — proxy de compatibilidade
+# Modulos reais agora vivem em monitoring/, trading/, common/
+from monitoring.heartbeat_manager import HeartbeatManager  # noqa: F401
+from trading.trade_filter import TradeFilter  # noqa: F401
+from trading.trade_timestamp_validator import TradeLatencyMonitor, record_trade_latency, get_latency_stats  # noqa: F401
 
 __all__ = [
     "HeartbeatManager",

@@ -476,11 +476,11 @@ def generate_markdown_structure():
                 "replay_validator.py",
                 "verify_ml_integration.py"
             ],
-            "arquivos para diagnostico/": [
+            "diagnostic_files/": [
                 "__init__.py",
-                "diagnostico de janelas geradas/"
+                "window_diagnostics/"
             ],
-            "arquivos para diagnostico/diagnostico de janelas geradas/": [
+            "diagnostic_files/window_diagnostics/": [
                 "__init__.py",
                 "diagnostico_avancado.py",
                 "diagnostico_duplicatas.py",
