@@ -969,6 +969,24 @@ class ContextCollector:
             except Exception as e:
                 logger.warning(f"⚠️ Erro FRED para {symbol}: {e}")
 
+        # 1b. Fallback yfinance para DXY se FRED falhou
+        if "DXY" not in ext_data:
+            try:
+                hist = await self._yfinance_history("DXY", period="5d", interval="1d")
+                if not hist.empty:
+                    last = float(hist["close"].iloc[-1])
+                    prev = float(hist["close"].iloc[-2]) if len(hist) > 1 else last
+                    ext_data["DXY"] = {
+                        "preco_atual": round(last, 4),
+                        "movimento": "Alta" if last > prev else "Baixa" if last < prev else "Neutro",
+                        "source": "yfinance",
+                        "ticker": "DX-Y.NYB",
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    logger.info(f"DXY: {last:.4f} (yfinance fallback)")
+            except Exception as e:
+                logger.warning(f"DXY yfinance fallback falhou: {e}")
+
         # 2. Buscar via yfinance (índices, commodities e VIX)
         for name, ticker in yfinance_symbols.items():
             try:
