@@ -46,10 +46,18 @@ class InstitutionalAnalyticsEngine:
         self._initialized = False
         self._init_errors: List[str] = []
 
+        # #19 — Data Quality Validator (stateless, init once)
+        try:
+            from data_quality_validator import DataQualityValidator
+            self._data_quality_validator = DataQualityValidator()
+        except Exception as e:
+            self._data_quality_validator = None
+            self._init_errors.append(f"DataQualityValidator: {e}")
+
         # ═══════════════════════════════════════
         # Módulos STATEFUL (mantêm histórico)
         # ═══════════════════════════════════════
-        
+
         # #20 — Spread Percentile Tracker
         try:
             from orderbook_analyzer.spread_tracker import SpreadTracker
@@ -593,9 +601,10 @@ class InstitutionalAnalyticsEngine:
 
         # #19 — Anomaly Detection
         try:
-            from data_quality_validator import DataQualityValidator
-            dqv = DataQualityValidator()
-            
+            dqv = self._data_quality_validator
+            if dqv is None:
+                raise RuntimeError("DataQualityValidator not initialized")
+
             anomaly_data = {}
             if flow_metrics and isinstance(flow_metrics, dict):
                 of = flow_metrics.get("order_flow", {})

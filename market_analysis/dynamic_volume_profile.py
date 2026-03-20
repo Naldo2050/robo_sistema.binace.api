@@ -15,7 +15,7 @@ class DynamicVolumeProfile:
         """
         self.symbol = symbol
         self.base_bins = base_bins
-        logging.info(f"✅ Volume Profile Dinâmico inicializado para {symbol} (bins base: {base_bins})")
+        logging.debug(f"Volume Profile Dinamico inicializado para {symbol} (bins base: {base_bins})")
 
     def calculate_dynamic_params(self, df: pd.DataFrame, atr: float = 0.0, whale_ratio: float = 0.0, cvd_ratio: float = 0.0) -> Dict[str, Any]:
         """
