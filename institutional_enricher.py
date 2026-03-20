@@ -1230,8 +1230,18 @@ def _build_price_targets_probabilistic(event: dict, current_price: float) -> dic
             "confidence": round(base_conf * 0.6, 2),
         },
         "1h": {
-            "bull": round(min(vah, current_price + atr_1h * 1.2), 2),
-            "bear": round(max(val, current_price - atr_1h * 1.2), 2),
+            "bull": round(
+                min(vah, current_price + atr_1h * 1.2)
+                if vah > current_price
+                else current_price + atr_1h * 1.2,
+                2,
+            ),
+            "bear": round(
+                max(val, current_price - atr_1h * 1.2)
+                if val < current_price
+                else current_price - atr_1h * 1.2,
+                2,
+            ),
             "confidence": round(base_conf * 0.5, 2),
         },
     }
