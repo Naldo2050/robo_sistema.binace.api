@@ -1104,10 +1104,10 @@ class ContextCollector:
         derivatives_data = {}
         for sym in self.derivatives_symbols:
             try:
-                async with session.get(self.funding_api_url, params={'symbol': sym}, timeout=aiohttp.ClientTimeout(total=5)) as fr:
+                async with session.get(self.funding_api_url, params={'symbol': sym, 'limit': 1}, timeout=aiohttp.ClientTimeout(total=5)) as fr:
                     fr.raise_for_status()
                     fr_data = await fr.json()
-                    funding_rate = float(fr_data[0]["fundingRate"]) * 100 if fr_data else 0.0
+                    funding_rate = float(fr_data[-1]["fundingRate"]) * 100 if fr_data else 0.0
                 async with session.get(self.open_interest_api_url, params={'symbol': sym}, timeout=aiohttp.ClientTimeout(total=5)) as oi:
                     oi.raise_for_status()
                     oi_data = await oi.json()
