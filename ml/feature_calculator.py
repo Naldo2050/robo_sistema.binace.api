@@ -166,32 +166,28 @@ class LiveFeatureCalculator:
             _mark('bb_lower', False)
             _mark('bb_width', False)
 
-        # RSI
-        if n >= self.rsi_period + 1:
+        # RSI — SEMPRE preferir multi_tf (klines reais da exchange)
+        # Local RSI (de window closes) é fallback apenas quando multi_tf ausente
+        rsi_mtf = self._rsi_from_multi_tf(multi_tf) if multi_tf else None
+        if rsi_mtf is not None:
+            rsi = rsi_mtf
+            _mark('rsi', True)
+        elif n >= self.rsi_period + 1:
+            # Fallback: calcular localmente a partir dos closes de janela
             deltas = np.diff(prices[-(self.rsi_period + 1):])
             gains = np.where(deltas > 0, deltas, 0)
             losses = np.where(deltas < 0, -deltas, 0)
             avg_gain = np.mean(gains)
             avg_loss = np.mean(losses)
             if avg_loss == 0:
-                # Sem quedas no período local — preferir RSI real do multi_tf
-                rsi_mtf = self._rsi_from_multi_tf(multi_tf) if multi_tf else None
-                if rsi_mtf is not None:
-                    rsi = rsi_mtf
-                else:
-                    rsi = 95.0  # fallback: sem dados multi_tf disponíveis
+                rsi = 80.0 if avg_gain > 1e-10 else 50.0
             else:
                 rs = avg_gain / avg_loss
                 rsi = 100.0 - (100.0 / (1.0 + rs))
             _mark('rsi', True)
         else:
-            rsi_mtf = self._rsi_from_multi_tf(multi_tf) if multi_tf else None
-            if rsi_mtf is not None:
-                rsi = rsi_mtf
-                _mark('rsi', True)  # multi_tf é dado real
-            else:
-                rsi = 50.0
-                _mark('rsi', False)
+            rsi = 50.0
+            _mark('rsi', False)
 
         # Volume ratio
         if len(self.volume_history) >= 2:
