@@ -471,8 +471,9 @@ def recognize_patterns(df: pd.DataFrame) -> Dict[str, Any]:
             swing_high = float(df[high_col].max())
             swing_low = float(df[low_col].min())
             price_range = swing_high - swing_low
-            # Mínimo 0.3% de range para Fibonacci ser significativo
-            if swing_low > 0 and price_range / swing_low >= 0.003:
+            # Mínimo 0.5% de range para Fibonacci ser significativo
+            # (BTC a $70k: 0.3% = $210, ainda micro; 0.5% = $350, minimamente útil)
+            if swing_low > 0 and price_range / swing_low >= 0.005:
                 result["fibonacci_levels"] = fibonacci_levels(swing_high, swing_low)
     except Exception:
         pass
