@@ -25,7 +25,7 @@ class DataQualityValidator:
             "min_tick_rule_variance": 0.01,        # tick_rule não pode ser sempre 0
         }
         self.thresholds = thresholds or default_thresholds
-        logging.info("✅ DataQualityValidator inicializado (versão expandida).")
+        logging.debug("DataQualityValidator inicializado (versao expandida).")
 
     def validate_window(self, df_window: pd.DataFrame, window_duration_seconds: int) -> Dict[str, Any]:
         """Validação original de trades (mantém código existente)"""
