@@ -536,10 +536,6 @@ def process_window_snapshot(
                     else:
                         enriched_features = model_features_only
 
-                    # Bug 4 fix (preventivo): alias bb__width → bb_width para cobrir FEATURE_MAP com duplo _.
-                    if 'bb_width' in enriched_features and 'bb__width' not in enriched_features:
-                        enriched_features['bb__width'] = enriched_features['bb_width']
-
                     # Injetar multi_tf para RSI fallback via FEATURE_MAP
                     mtf = macro_context.get("mtf_trends")
                     if mtf and isinstance(enriched_features, dict):
