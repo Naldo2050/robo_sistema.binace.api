@@ -282,7 +282,32 @@ class DataEnricher:
 
         # Consolidar
         consolidated = self._consolidate_price_targets(targets)
-        result = [pt.to_dict() for pt in consolidated]
+
+        # Validação: filtrar targets dentro de 0.1% do preço atual (micro-range)
+        # e garantir que existam targets acima E abaixo do preço
+        min_distance_pct = 0.001  # 0.1% mínimo de distância
+        filtered = [
+            pt for pt in consolidated
+            if abs(pt.level - current_price) / current_price > min_distance_pct
+        ]
+        has_above = any(pt.level > current_price for pt in filtered)
+        has_below = any(pt.level < current_price for pt in filtered)
+
+        # Se faltam targets em uma direção, usar ATR ou volatilidade para gerar
+        if filtered and (not has_above or not has_below):
+            vol_offset = max(0.005, volatility or 0.01) * current_price
+            if not has_above:
+                filtered.append(PriceTarget(
+                    level=round(current_price + vol_offset, 2),
+                    confidence=0.3, source="validated_r1", weight=0.1,
+                ))
+            if not has_below:
+                filtered.append(PriceTarget(
+                    level=round(current_price - vol_offset, 2),
+                    confidence=0.3, source="validated_s1", weight=0.1,
+                ))
+
+        result = [pt.to_dict() for pt in (filtered or consolidated)]
 
         # 6. Fallback se ainda vazio
         if not result:
