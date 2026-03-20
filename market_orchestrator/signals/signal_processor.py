@@ -66,6 +66,8 @@ def process_signals(
         raw_event_data = {
             "delta": enriched.get("delta_fechamento", 0.0),
             "volume_total": enriched.get("volume_total", 0.0),
+            "volume_compra": enriched.get("volume_compra", 0.0) or total_buy_volume,
+            "volume_venda": enriched.get("volume_venda", 0.0) or total_sell_volume,
             "preco_fechamento": enriched.get("ohlc", {}).get("close", 0.0),
         }
         trigger_signal = build_analysis_trigger_event(bot.symbol, raw_event_data)
