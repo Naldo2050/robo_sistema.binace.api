@@ -26,13 +26,6 @@ try:
 except ImportError:
     generate_ml_features = None
 
-try:
-    from datetime import datetime, timezone
-    from cross_asset_correlations import get_cross_asset_features
-except ImportError:
-    get_cross_asset_features = None
-
-
 class DataPipeline:
     """
     Pipeline de dados completo v3.2.1.
@@ -722,41 +715,8 @@ class DataPipeline:
                 symbol=self.symbol,  # 🆕 Para cross-asset features
             )
 
-            # 🆕 NOVO: Adicionar cross-asset features para BTCUSDT
-            if self.symbol == "BTCUSDT" and get_cross_asset_features is not None:
-                try:
-                    now_utc = datetime.now(timezone.utc)
-                    cross_asset_features = get_cross_asset_features(now_utc)
-                    
-                    if cross_asset_features.get("status") == "ok":
-                        # Adicionar ao ml_features
-                        if "cross_asset" not in ml_features:
-                            ml_features["cross_asset"] = {}
-                        
-                        # Mapear as features conforme especificação
-                        ml_features["cross_asset"].update({
-                            "btc_eth_corr_7d": cross_asset_features.get("btc_eth_corr_7d"),
-                            "btc_eth_corr_30d": cross_asset_features.get("btc_eth_corr_30d"),
-                            "btc_dxy_corr_30d": cross_asset_features.get("btc_dxy_corr_30d"),
-                            "btc_dxy_corr_90d": cross_asset_features.get("btc_dxy_corr_90d"),
-                            "btc_ndx_corr_30d": cross_asset_features.get("btc_ndx_corr_30d"),
-                            "dxy_return_5d": cross_asset_features.get("dxy_return_5d"),
-                            "dxy_return_20d": cross_asset_features.get("dxy_return_20d"),
-                        })
-                        
-                        self.logger.ml_info(
-                            "✅ Cross-asset features adicionadas ao ANALYSIS_TRIGGER",
-                            cross_asset_count=len(ml_features["cross_asset"])
-                        )
-                    else:
-                        self.logger.ml_warning(
-                            f"⚠️ Cross-asset features falharam: {cross_asset_features.get('error')}"
-                        )
-                        
-                except Exception as e:
-                    self.logger.ml_warning(
-                        f"⚠️ Erro ao calcular cross-asset features: {e}"
-                    )
+            # Cross-asset features são calculadas dentro de generate_ml_features()
+            # (em common/ml_features.py). Não duplicar aqui.
 
             self.logger.ml_info(
                 "✅ ML features geradas",

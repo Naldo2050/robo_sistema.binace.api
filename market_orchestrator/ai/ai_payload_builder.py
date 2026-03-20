@@ -420,11 +420,8 @@ def _append_payload_metric(metric: Dict[str, Any]) -> None:
     append_metric_line(metric, str(_METRICS_PATH))
 
 
-# Import para correlações cross-asset
-try:
-    from cross_asset_correlations import get_cross_asset_features
-except ImportError as e:
-    get_cross_asset_features = None
+# Cross-asset features são calculadas UMA VEZ em generate_ml_features()
+# e lidas do payload — não importar/recalcular aqui.
 
 # Import para análise de regime
 try:
@@ -662,35 +659,29 @@ def build_ai_input(
         "pivots": pivots or {}
     }
 
-    # 4. Contexto Cross-Asset (🆕)
-    # Extrai correlações das ml_features se disponíveis
+    # 4. Contexto Cross-Asset
+    # Usa cross_asset já calculado em generate_ml_features() — não recalcular
     cross_asset_data = ml_features.get("cross_asset", {})
-    
-    # Calcula correlações em tempo real para o payload da IA
+
     cross_asset_context = {}
-    if symbol == "BTCUSDT" and get_cross_asset_features is not None:
-        try:
-            correlations = get_cross_asset_features(datetime.now(timezone.utc))
-            if correlations.get("status") == "ok":
-                cross_asset_context = {
-                    "btc_eth_correlations": {
-                        "short_term_7d": correlations.get("btc_eth_corr_7d"),
-                        "long_term_30d": correlations.get("btc_eth_corr_30d"),
-                    },
-                    "btc_dxy_correlations": {
-                        "medium_term_30d": correlations.get("btc_dxy_corr_30d"),
-                        "long_term_90d": correlations.get("btc_dxy_corr_90d"),
-                    },
-                    "btc_ndx_correlations": {
-                        "medium_term_30d": correlations.get("btc_ndx_corr_30d"),
-                    },
-                    "dxy_momentum": {
-                        "return_5d": correlations.get("dxy_return_5d"),
-                        "return_20d": correlations.get("dxy_return_20d"),
-                    },
-                }
-        except Exception as e:
-            cross_asset_context = {"error": str(e)[:80]}
+    if cross_asset_data:
+        cross_asset_context = {
+            "btc_eth_correlations": {
+                "short_term_7d": cross_asset_data.get("btc_eth_corr_7d"),
+                "long_term_30d": cross_asset_data.get("btc_eth_corr_30d"),
+            },
+            "btc_dxy_correlations": {
+                "medium_term_30d": cross_asset_data.get("btc_dxy_corr_30d"),
+                "long_term_90d": cross_asset_data.get("btc_dxy_corr_90d"),
+            },
+            "btc_ndx_correlations": {
+                "medium_term_30d": cross_asset_data.get("btc_ndx_corr_30d"),
+            },
+            "dxy_momentum": {
+                "return_5d": cross_asset_data.get("dxy_return_5d"),
+                "return_20d": cross_asset_data.get("dxy_return_20d"),
+            },
+        }
     else:
         cross_asset_context = {
             "btc_eth_correlations": {
@@ -1312,54 +1303,45 @@ def build_payload_with_cross_asset(
     if "timestamp" not in final_payload:
         final_payload["timestamp"] = timestamp
 
-    # Calcula contexto cross-asset
-    cross_asset_context = {}
-    if symbol == "BTCUSDT" and get_cross_asset_features is not None:
-        try:
-            # Calcula correlações em tempo real
-            correlations = get_cross_asset_features(datetime.now(timezone.utc))
+    # Usa cross_asset já presente no payload (calculado uma vez em generate_ml_features)
+    existing_cross = (
+        base_payload.get("ml_features", {}).get("cross_asset", {})
+        or base_payload.get("cross_asset", {})
+    )
 
-            if correlations.get("status") == "ok":
-                cross_asset_context = {
-                    "features": {
-                        "btc_eth_corr_7d": correlations.get("btc_eth_corr_7d"),
-                        "btc_eth_corr_30d": correlations.get("btc_eth_corr_30d"),
-                        "btc_dxy_corr_7d": correlations.get("btc_dxy_corr_7d"),
-                        "btc_dxy_corr_30d": correlations.get("btc_dxy_corr_30d"),
-                        "btc_ndx_corr_7d": correlations.get("btc_ndx_corr_7d"),
-                        "btc_ndx_corr_30d": correlations.get("btc_ndx_corr_30d")
-                    },
-                    "correlations": {
-                        "btc_eth": {
-                            "short_term_7d": correlations.get("btc_eth_corr_7d"),
-                            "long_term_30d": correlations.get("btc_eth_corr_30d"),
-                            "relationship": "cripto_major_pair"
-                        },
-                        "btc_dxy": {
-                            "medium_term_30d": correlations.get("btc_dxy_corr_30d"),
-                            "long_term_90d": correlations.get("btc_dxy_corr_90d"),
-                            "relationship": "inverse_usd_strength"
-                        },
-                        "btc_ndx": {
-                            "medium_term_30d": correlations.get("btc_ndx_corr_30d"),
-                            "relationship": "tech_risk_correlation"
-                        }
-                    },
-                    "market_context": {
-                        "dxy_momentum": {
-                            "return_5d": correlations.get("dxy_return_5d"),
-                            "return_20d": correlations.get("dxy_return_20d"),
-                            "momentum": correlations.get("dxy_momentum")
-                        }
-                    }
+    cross_asset_context = {}
+    if existing_cross:
+        cross_asset_context = {
+            "features": {
+                "btc_eth_corr_7d": existing_cross.get("btc_eth_corr_7d"),
+                "btc_eth_corr_30d": existing_cross.get("btc_eth_corr_30d"),
+                "btc_dxy_corr_30d": existing_cross.get("btc_dxy_corr_30d"),
+                "btc_ndx_corr_30d": existing_cross.get("btc_ndx_corr_30d"),
+            },
+            "correlations": {
+                "btc_eth": {
+                    "short_term_7d": existing_cross.get("btc_eth_corr_7d"),
+                    "long_term_30d": existing_cross.get("btc_eth_corr_30d"),
+                    "relationship": "cripto_major_pair"
+                },
+                "btc_dxy": {
+                    "medium_term_30d": existing_cross.get("btc_dxy_corr_30d"),
+                    "long_term_90d": existing_cross.get("btc_dxy_corr_90d"),
+                    "relationship": "inverse_usd_strength"
+                },
+                "btc_ndx": {
+                    "medium_term_30d": existing_cross.get("btc_ndx_corr_30d"),
+                    "relationship": "tech_risk_correlation"
                 }
-        except Exception as e:
-            cross_asset_context = {
-                "error": f"Falha ao calcular correlações: {str(e)}",
-                "features": {}
+            },
+            "market_context": {
+                "dxy_momentum": {
+                    "return_5d": existing_cross.get("dxy_return_5d"),
+                    "return_20d": existing_cross.get("dxy_return_20d"),
+                }
             }
+        }
     else:
-        # Fallback vazio
         cross_asset_context = {
             "features": {},
             "correlations": {},
