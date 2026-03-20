@@ -3,10 +3,22 @@ Corrige os 3 bugs encontrados na primeira execução.
 Execute: python auto_fixer/fix_bugs.py
 """
 
+import sys
 import os
 import shutil
 from pathlib import Path
 from datetime import datetime
+
+# Configurar UTF-8 para suportar emojis no Windows
+if sys.platform == "win32":
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    for _stream in (sys.stdout, sys.stderr):
+        _reconf = getattr(_stream, "reconfigure", None)
+        if _reconf and not _stream.closed:
+            try:
+                _reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
 
 
 def backup_file(filepath: Path):

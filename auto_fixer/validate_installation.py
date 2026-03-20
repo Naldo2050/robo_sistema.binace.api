@@ -11,10 +11,14 @@ from pathlib import Path
 
 # Configurar UTF-8 para suportar emojis no Windows
 if sys.platform == "win32":
-    os.environ["PYTHONIOENCODING"] = "utf-8"
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    for _stream in (sys.stdout, sys.stderr):
+        _reconf = getattr(_stream, "reconfigure", None)
+        if _reconf and not _stream.closed:
+            try:
+                _reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
 
 OUTPUT = Path("auto_fixer/output")
 
