@@ -337,17 +337,9 @@ class DataPipeline:
                     error=str(e)[:50]
                 )
 
-            # NOVO: advanced_analysis completo (com price_targets, etc.)
-            try:
-                if getattr(global_config, "ENABLE_DATA_ENRICHMENT", True):
-                    # Usa o snapshot enriquecido completo como raw_event para o DataEnricher
-                    advanced = self._data_enricher.enrich_from_raw_event(enriched)
-                    enriched["advanced_analysis"] = advanced
-            except Exception as e:
-                self.logger.runtime_warning(
-                    "⚠️ Fallback: advanced_analysis enrichment",
-                    error=str(e)[:80]
-                )
+            # advanced_analysis é criado na camada Contextual (add_context),
+            # onde multi_tf já está disponível para volatilidade real.
+            # Criar aqui sem multi_tf resultava em current_volatility=0.01 (fallback).
 
             # Armazenar no cache
             self._cache.set(cache_key, enriched, force_fresh=True)
