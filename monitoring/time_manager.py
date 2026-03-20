@@ -200,7 +200,10 @@ class TimeManager:
                     break
                 elif self.time_sync_status == "degraded":
                     success = True
-                    logging.warning(f"⚠️ Sincronização com sucesso parcial (alta latência) na tentativa {attempt + 1}")
+                    logging.warning(
+                        f"⚠️ Sincronização com sucesso parcial na tentativa {attempt + 1} "
+                        f"(offset {abs(self.server_time_offset_ms)}ms > limite {self.max_acceptable_offset_ms}ms)"
+                    )
                     break
                 else:
                     logging.warning(f"⚠️ Tentativa {attempt + 1} falhou - Status: {self.time_sync_status}")
@@ -337,10 +340,18 @@ class TimeManager:
             logging.debug(f"      RTTs:    {rtts} (média: {np.mean(rtts):.1f}ms, std: {np.std(rtts):.1f}ms)")
             logging.debug(f"      Offsets: {offsets} (média: {np.mean(offsets):.1f}ms, std: {np.std(offsets):.1f}ms)")
         
-        logging.info(
-            f"✅ Melhor amostra selecionada: "
-            f"RTT={best['rtt_ms']}ms, Offset={best['offset_ms']}ms"
-        )
+        abs_offset = abs(int(best["offset_ms"]))
+        if abs_offset > self.max_acceptable_offset_ms:
+            logging.warning(
+                f"⚠️ Melhor amostra selecionada mas offset alto: "
+                f"RTT={best['rtt_ms']}ms, Offset={best['offset_ms']}ms "
+                f"(limite: {self.max_acceptable_offset_ms}ms)"
+            )
+        else:
+            logging.info(
+                f"✅ Melhor amostra selecionada: "
+                f"RTT={best['rtt_ms']}ms, Offset={best['offset_ms']}ms"
+            )
         
         with self._lock:
             old_offset = self.server_time_offset_ms
