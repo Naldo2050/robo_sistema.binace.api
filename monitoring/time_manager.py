@@ -443,23 +443,23 @@ class TimeManager:
             
             if offset_abs <= 10000 and is_stable:
                 if self._correction_attempts == 0:
-                    logging.info(
-                        f"Offset {offset_abs}ms > {self.max_acceptable_offset_ms}ms "
-                        f"mas ESTÁVEL e < 10s — aceitando como latência/drift normal."
+                    logging.warning(
+                        f"⚠️ Offset {offset_abs}ms > {self.max_acceptable_offset_ms}ms "
+                        f"ESTÁVEL e < 10s — aceitando como drift normal (modo degradado)."
                     )
                 self._correction_attempts = 0
-                self.time_sync_status = "ok"
+                self.time_sync_status = "degraded"
                 return
 
             if self._correction_attempts >= self.MAX_CORRECTION_ATTEMPTS:
                 if offset_abs <= 10000:
-                    logging.info(
-                        f"Offset {offset_abs}ms estável após "
-                        f"{self.MAX_CORRECTION_ATTEMPTS} tentativas — "
-                        f"aceitando como drift/latência normal."
+                    logging.warning(
+                        f"⚠️ Offset {offset_abs}ms > {self.max_acceptable_offset_ms}ms "
+                        f"estável após {self.MAX_CORRECTION_ATTEMPTS} tentativas — "
+                        f"aceitando como drift (modo degradado)."
                     )
                     self._correction_attempts = 0
-                    self.time_sync_status = "ok"
+                    self.time_sync_status = "degraded"
                     return
                 else:
                     logging.error(
@@ -1012,31 +1012,31 @@ class TimeManager:
         if latency_ms < 0:
             latency_ms = abs(latency_ms)
         
-        if latency_ms < 50:
+        if latency_ms < 100:
             category = "EXCELLENT"
             freshness = "REAL_TIME"
-        elif latency_ms < 200:
+        elif latency_ms < 500:
             category = "GOOD"
             freshness = "REAL_TIME"
-        elif latency_ms < 500:
+        elif latency_ms < 2000:
             category = "ACCEPTABLE"
             freshness = "NEAR_REAL_TIME"
-        elif latency_ms < 2000:
+        elif latency_ms < 5000:
             category = "DEGRADED"
             freshness = "NEAR_REAL_TIME"
-        elif latency_ms < 10000:
+        elif latency_ms < 15000:
             category = "POOR"
             freshness = "DELAYED"
         else:
             category = "CRITICAL"
             freshness = "STALE"
-        
+
         return {
             "latency_ms": round(latency_ms),
             "latency_category": category,
             "data_freshness": freshness,
-            "is_acceptable": latency_ms < 2000,
-            "is_stale": latency_ms > 10000,
+            "is_acceptable": latency_ms < 5000,
+            "is_stale": latency_ms > 15000,
         }
 
     def __repr__(self) -> str:

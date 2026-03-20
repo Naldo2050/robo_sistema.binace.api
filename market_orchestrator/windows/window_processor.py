@@ -264,9 +264,12 @@ def _populate_window_state(
     ws.flow.flow_imbalance = float(fm.get("flow_imbalance", 0))
     ws.flow.buy_sell_ratio = float(fm.get("buy_sell_ratio", 1.0))
     ws.flow.pressure_label = fm.get("pressure_label", "NEUTRAL")
+    # sector_flow vem de flow_analyzer.core.compute_metrics() como:
+    #   {"sector_flow": {"retail": {...}, "mid": {...}, "whale": {...}}}
+    _sf = fm.get("sector_flow", {}) or {}
     for sector_key in ("retail", "mid", "whale"):
-        sector = fm.get(f"{sector_key}_sector", {})
-        if isinstance(sector, dict):
+        sector = _sf.get(sector_key, {})
+        if isinstance(sector, dict) and sector:
             setattr(ws.flow, f"{sector_key}_buy", float(sector.get("buy", 0)))
             setattr(ws.flow, f"{sector_key}_sell", float(sector.get("sell", 0)))
             setattr(ws.flow, f"{sector_key}_delta", float(sector.get("delta", 0)))
