@@ -176,6 +176,35 @@ def process_signals(
                 f"Falha ao calcular suporte/resistência: {e}"
             )
 
+    # ─── Sincronizar dados ricos do sinal real → ANALYSIS_TRIGGER ─────
+    # Fase 1 (pré-enrichment): multi_tf e historical_vp
+    _real_sig = next(
+        (s for s in signals
+         if s.get("tipo_evento") not in ("ANALYSIS_TRIGGER", "OrderBook")),
+        None,
+    )
+    for _s in signals:
+        if _s.get("tipo_evento") != "ANALYSIS_TRIGGER":
+            continue
+        # multi_tf: preferir sinal real → macro_context, nunca deixar vazio se há dados
+        _has_rich = lambda tf: isinstance(tf, dict) and any(
+            isinstance(v, dict) and (v.get("rsi_short") or v.get("tendencia"))
+            for v in tf.values()
+        )
+        if not _has_rich(_s.get("multi_tf", {})):
+            if _real_sig and _has_rich(_real_sig.get("multi_tf", {})):
+                _s["multi_tf"] = _real_sig["multi_tf"]
+            else:
+                _mtf = macro_context.get("mtf_trends", {})
+                if _mtf:
+                    _s["multi_tf"] = _mtf
+        # historical_vp: garantir VP completo (com HVN/LVN nodes)
+        if not _s.get("historical_vp") and _real_sig and _real_sig.get("historical_vp"):
+            _s["historical_vp"] = _real_sig["historical_vp"]
+        elif not _s.get("historical_vp") and historical_profile:
+            _s["historical_vp"] = historical_profile
+    # ──────────────────────────────────────────────────────────────────
+
     # --------------------------------------------------------
     # LOG DE SINAIS DA JANELA
     # --------------------------------------------------------
@@ -218,6 +247,31 @@ def process_signals(
                 support_resistance,
                 defense_zones_data,
             )
+
+    # ─── Fase 2 (pós-enrichment): propagar dados que o institutional enricher
+    # adiciona ao sinal real, mas pode falhar no ANALYSIS_TRIGGER por falta
+    # de multi_tf rico no momento do cálculo.
+    if _real_sig is not None:
+        for _s in signals:
+            if _s.get("tipo_evento") != "ANALYSIS_TRIGGER":
+                continue
+            # technical_indicators_extended (CCI, Stoch, Williams, GARCH)
+            if not _s.get("technical_indicators_extended") and \
+               _real_sig.get("technical_indicators_extended"):
+                _s["technical_indicators_extended"] = _real_sig["technical_indicators_extended"]
+            # alerts — substituir apenas se ANALYSIS_TRIGGER está sem alertas reais
+            _at_sev = _s.get("alerts", {}).get("max_severity", "NONE")
+            _re_sev = _real_sig.get("alerts", {}).get("max_severity", "NONE")
+            if _at_sev in ("NONE", None) and _re_sev not in ("NONE", None):
+                _s["alerts"] = _real_sig["alerts"]
+            # institutional_analytics: sr_analysis e defense_zones
+            _re_inst = _real_sig.get("institutional_analytics", {})
+            if _re_inst:
+                _at_inst = _s.setdefault("institutional_analytics", {})
+                for _k in ("sr_analysis", "defense_zones", "sr_strength"):
+                    if _k not in _at_inst and _k in _re_inst:
+                        _at_inst[_k] = _re_inst[_k]
+    # ──────────────────────────────────────────────────────────────────
 
     # --------------------------------------------------------
     # PÓS-PROCESSAMENTO (históricos, alerts, logs)

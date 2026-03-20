@@ -104,9 +104,9 @@ except ImportError:
 # Mapeamento de tickers para yFinance
 TICKER_MAPPING = {
     'BTC': 'BTC-USD',
-    'DXY': 'UUP',           # UUP (USD Bull ETF) como proxy - DX-Y.NYB quebrado no yfinance 1.0
-    'NASDAQ': 'QQQ',        # QQQ ETF mais confiavel que ^IXIC no yfinance 1.0
-    'SP500': 'SPY',         # SPY ETF mais confiavel que ^GSPC no yfinance 1.0
+    'DXY': 'DX-Y.NYB',      # US Dollar Index real (não ETF proxy)
+    'NASDAQ': '^IXIC',      # NASDAQ Composite Index real (não QQQ ETF)
+    'SP500': '^GSPC',       # S&P 500 Index real (não SPY ETF)
     'TNX': '^TNX',
     'GOLD': 'GC=F',
     'XAUUSD': 'GC=F',
@@ -308,7 +308,7 @@ class ContextCollector:
                             result_df = df[['close']].dropna()
 
                             if len(result_df) >= 1:
-                                logger.info(f"✅ Dados yFinance obtidos para {symbol}: {len(result_df)} pontos")
+                                logger.debug(f"✅ Dados yFinance obtidos para {symbol}: {len(result_df)} pontos")
                                 return result_df
                             else:
                                 logger.warning(f"⚠️ Dados insuficientes yFinance para {symbol}: {len(result_df)} pontos")

@@ -37,7 +37,7 @@ class FREDFetcher:
         
         # Mapeamento de símbolos para IDs do FRED
         self.symbol_map = {
-            "DXY": "DTWEXBGS",        # Trade Weighted U.S. Dollar Index: Broad
+            "DXY": "DTWEXM",          # Trade Weighted Dollar Index: Major Currencies (~80-110, próximo do ICE DXY)
             "TNX": "DGS10",           # 10-Year Treasury Constant Maturity Rate
             "TNY": "DGS2",            # 2-Year Treasury Constant Maturity Rate
             "FED_RATE": "DFF",        # Federal Funds Effective Rate

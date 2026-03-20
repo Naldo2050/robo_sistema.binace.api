@@ -798,34 +798,41 @@ class MacroDataProvider:
                 return None
     
     async def _fetch_btc_dominance_impl(self) -> Optional[float]:
-        """Implementação real de cálculo do BTC Dominance"""
+        """Implementação real de cálculo do BTC Dominance via CoinGecko (market cap)."""
         try:
-            await self._wait_for_rate_limit("binance")
             session = await self._get_session()
-            
+
+            # CoinGecko /global retorna market cap dominance real
+            url = "https://api.coingecko.com/api/v3/global"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    dominance = data.get("data", {}).get("market_cap_percentage", {}).get("btc")
+                    if dominance is not None:
+                        logger.info(f"✅ BTC Dominance (CoinGecko market cap): {dominance:.2f}%")
+                        return float(dominance)
+
+            # Fallback: Binance volume share (menos preciso, rotular diferente)
+            await self._wait_for_rate_limit("binance")
             async with session.get("https://api.binance.com/api/v3/ticker/24hr") as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    
                     btc_volume = 0
                     total_volume = 0
-                    
                     for ticker in data:
                         symbol = ticker.get("symbol", "")
                         quote_volume = float(ticker.get("quoteVolume", 0))
-                        
                         if symbol.endswith("USDT"):
                             total_volume += quote_volume
                             if symbol.startswith("BTC"):
                                 btc_volume += quote_volume
-                    
                     if total_volume > 0:
                         dominance = (btc_volume / total_volume) * 100
-                        logger.info(f"✅ BTC Dominance (Binance): {dominance:.2f}%")
+                        logger.info(f"⚠️ BTC Dominance fallback (Binance volume share): {dominance:.2f}%")
                         return dominance
         except Exception as e:
             logger.warning(f"⚠️ Erro ao calcular BTC Dominance: {e}")
-        
+
         return None
     
     async def calculate_eth_dominance(self) -> Optional[float]:

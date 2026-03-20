@@ -175,14 +175,6 @@ class DataEnricher:
             multi_tf = outer_raw.get("multi_tf", {})
             timestamp_utc = outer_raw.get("timestamp_utc")
 
-            # Volatilidade do multi_tf
-            current_volatility = 0.01
-            if multi_tf:
-                for tf in ["1d", "4h", "1h", "15m"]:
-                    if tf in multi_tf and "realized_vol" in multi_tf[tf]:
-                        current_volatility = multi_tf[tf]["realized_vol"]
-                        break
-
             # Resolver historical_vp de múltiplas fontes
             historical_vp_src = (
                 outer_raw.get("historical_vp")
@@ -201,24 +193,22 @@ class DataEnricher:
                 if "historical_vp" not in outer_raw:
                     outer_raw["historical_vp"] = historical_vp_src
 
+            # Construir adaptive_thresholds PRIMEIRO para obter volatilidade real
+            adaptive_thresholds = self._build_adaptive_thresholds(outer_raw)
+            # Usar volatilidade real do adaptive_thresholds (não hardcoded 0.01)
+            current_volatility = adaptive_thresholds.get("current_volatility", 0.01)
+
             # ── NOVO: Construir price_targets com método melhorado ──
             price_targets = self._build_price_targets_enhanced(
                 outer_raw, price, current_volatility, historical_vp_src
             )
-
-            # Construir advanced_analysis
             advanced_analysis = {
                 "symbol": outer_raw.get("symbol", inner_raw.get("symbol", "BTCUSDT")),
                 "price": price,
                 "volume": volume,
                 "timestamp": timestamp_utc,
                 "price_targets": price_targets,
-                "adaptive_thresholds": {
-                    "current_volatility": current_volatility,
-                    "volatility_factor": min(2.0, max(0.5, current_volatility * 100)),
-                    "absorption_threshold": 0.3,
-                    "flow_threshold": 0.2
-                },
+                "adaptive_thresholds": adaptive_thresholds,
                 "options_metrics": inner_raw.get("advanced_analysis", {}).get(
                     "options_metrics", self._build_options_metrics()
                 ),

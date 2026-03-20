@@ -125,15 +125,17 @@ class DefenseZoneDetector:
         if not strong_zones and zones:
             strong_zones = zones[:5]
 
-        # 4. Separar em buy e sell defense
+        # 4. Separar em buy e sell defense usando side da zona (não apenas posição do preço)
         buy_defense = sorted(
-            [z for z in strong_zones if z["center"] < current_price],
+            [z for z in strong_zones if z.get("side") == "buy" or
+             ("side" not in z and z["center"] < current_price)],
             key=lambda z: z["strength"],
             reverse=True,
         )[:self._max_zones]
 
         sell_defense = sorted(
-            [z for z in strong_zones if z["center"] >= current_price],
+            [z for z in strong_zones if z.get("side") == "sell" or
+             ("side" not in z and z["center"] >= current_price)],
             key=lambda z: z["strength"],
             reverse=True,
         )[:self._max_zones]

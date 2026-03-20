@@ -12,6 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 import logging
 import json
+
+_ML_EXTREME_THRESHOLD_HIGH = 0.95
+_ML_EXTREME_THRESHOLD_LOW = 0.05
 import hashlib
 import os
 from functools import lru_cache
@@ -886,7 +889,7 @@ def build_ai_input(
 
     # === SEÇÃO DE INTELIGÊNCIA QUANTITATIVA ===
     # Se houver previsão ML, adiciona ao contexto
-    quant_context = {}
+    quant_context: Dict[str, Any] = {}
 
     # Usa a previsão passada como parâmetro, com fallback para o próprio sinal (compatibilidade)
     ml_prediction = ml_prediction or signal.get("ml_prediction") or {}
@@ -895,12 +898,25 @@ def build_ai_input(
         prob = ml_prediction.get("prob_up", 0.5)
         confidence = ml_prediction.get("confidence", 0.0)
 
+        # FIX 6: flag extreme predictions (HybridDecision descarta mas LLM recebia sem aviso)
+        is_extreme = (
+            ml_prediction.get("extreme_filtered", False)
+            or float(prob) > _ML_EXTREME_THRESHOLD_HIGH
+            or float(prob) < _ML_EXTREME_THRESHOLD_LOW
+        )
+
         quant_context = {
             "model_probability_up": float(prob),
-            # model_probability_down omitido (= 1 - prob_up)
-            # model_sentiment e action_bias derivaveis de prob_up pela LLM
             "confidence_score": float(confidence),
         }
+
+        if is_extreme:
+            quant_context["unreliable"] = True
+            quant_context["unreliable_reason"] = "extreme_probability"
+            logging.info(
+                "QUANT_EXTREME_FLAGGED prob_up=%.4f confidence=%.4f → marked unreliable",
+                prob, confidence,
+            )
 
     # Adiciona ao payload principal
     ai_payload["quant_model"] = quant_context

@@ -67,6 +67,10 @@ if os.getenv("DEBUG_CREATE_TASK") == "1":
 # Carrega variáveis de ambiente do .env
 load_dotenv()
 
+# Silenciar logs de nível HTTP (httpx/httpcore aparecem a cada chamada Groq)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # ---------------------------------------------------------------------------
 # FIX: platform._wmi_query() pode travar indefinidamente no Windows.
 # Vários módulos (prometheus_client, oci) chamam platform.system(),

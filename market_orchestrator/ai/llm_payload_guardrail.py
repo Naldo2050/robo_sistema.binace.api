@@ -116,7 +116,7 @@ def _log_guardrail(
         metrics["error"] = error
 
     line = json.dumps(metrics, ensure_ascii=False)
-    logging.info(line)
+    logging.debug(line)
     append_metric_line(metrics)
 
 
@@ -234,7 +234,7 @@ def ensure_safe_llm_payload(
 
     # ── CASO 1: Payload limpo e pequeno → passa direto ───────────────
     if not leak_keys and bytes_before <= _MAX_BYTES_LLM:
-        logging.info(
+        logging.debug(
             "GUARDRAIL_PASS_THROUGH bytes=%s keys_count=%s",
             bytes_before,
             len(payload)
@@ -320,7 +320,7 @@ def ensure_safe_llm_payload(
     )
 
     # ── Log do bloqueio ──────────────────────────────────────────────
-    logging.info(
+    logging.debug(
         "FULL_PAYLOAD_LEAK_BLOCKED root=event "
         "bytes_before=%s bytes_after=%s "
         "forbidden_keys=%s",

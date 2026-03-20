@@ -449,9 +449,10 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
             s_buy = sector_data.get("buy", 0)
             s_sell = sector_data.get("sell", 0)
             if s_sell > 0:
-                sector_ratios[sector_name] = round(s_buy / s_sell, 4)
+                # Cap ratio em 10.0 para evitar valores extremos
+                sector_ratios[sector_name] = round(min(s_buy / s_sell, 10.0), 4)
             elif s_buy > 0:
-                sector_ratios[sector_name] = 99.0
+                sector_ratios[sector_name] = 10.0  # buy-only: cap máximo
             else:
                 sector_ratios[sector_name] = 1.0
 
@@ -493,7 +494,7 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
     else:
         trend = "insufficient_data"
 
-    # Classificação do pressure
+    # Classificação do pressure (baseada em ratio + flow_trend para consistência)
     if main_ratio > 2.0:
         pressure = "STRONG_BUY"
     elif main_ratio > 1.3:
@@ -501,7 +502,13 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
     elif main_ratio > 1.05:
         pressure = "SLIGHT_BUY"
     elif main_ratio > 0.95:
-        pressure = "NEUTRAL"
+        # Zona neutra: usar flow_trend para desambiguar
+        if trend in ("accelerating_buying", "increasing_buying"):
+            pressure = "SLIGHT_BUY"
+        elif trend in ("accelerating_selling", "increasing_selling"):
+            pressure = "SLIGHT_SELL"
+        else:
+            pressure = "NEUTRAL"
     elif main_ratio > 0.7:
         pressure = "SLIGHT_SELL"
     elif main_ratio > 0.5:

@@ -41,6 +41,9 @@ def build_analysis_trigger_event(symbol: str, raw_event: Dict[str, Any]) -> Dict
         "symbol": symbol,
         "raw_event": raw_event,
         "resultado_da_batalha": "N/A",
+        # Propagar delta e volume para o nível top-level do sinal
+        "delta": raw_event.get("delta", 0.0),
+        "volume_total": raw_event.get("volume_total", 0.0),
     }
     
     # Adicionar preco_fechamento se disponível

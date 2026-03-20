@@ -1232,21 +1232,20 @@ class EnhancedMarketBot:
 
         signal.setdefault("features_window_id", str(close_ms))
         signal["ml_features"] = ml_payload
-        # Deduplica enriched_snapshot: remove chaves já presentes no signal root
-        # ou em contextual_snapshot para reduzir tamanho do evento
+        # Deduplica snapshots: remove chaves já presentes no signal root
+        # (flow_metrics já está em fluxo_continuo, historical_vp/multi_tf/derivatives/
+        #  market_context/market_environment/orderbook_data já estão no signal root)
         _enrich_dedup_keys = {
             "flow_metrics", "historical_vp", "orderbook_data",
             "multi_tf", "derivatives", "market_context", "market_environment",
         }
-        signal["enriched_snapshot"] = {
-            k: v for k, v in enriched_snapshot.items() if k not in _enrich_dedup_keys
-        }
-        # Contextual snapshot: remover chaves que já existem no signal root para não duplicar
-        # (flow_metrics já está em fluxo_continuo, historical_vp/multi_tf/derivatives/
-        #  market_context/market_environment/orderbook_data já estão no signal root)
-        signal["contextual_snapshot"] = {
+        _ctx_filtered = {
             k: v for k, v in contextual_snapshot.items() if k not in _enrich_dedup_keys
         }
+        signal["contextual_snapshot"] = _ctx_filtered
+        # enriched_snapshot é idêntico ao contextual_snapshot após dedup —
+        # usar mesma referência para economizar ~5KB por evento
+        signal["enriched_snapshot"] = _ctx_filtered
 
         if support_resistance:
             signal["support_resistance"] = support_resistance

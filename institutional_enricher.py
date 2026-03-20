@@ -875,11 +875,18 @@ def _build_whale_activity(event: dict, epoch_ms: int, current_price: float) -> d
     """
     result: dict = {}
 
-    # large_orders_1h: filtrar por última hora
+    # large_orders_1h: filtrar por última hora + deduplicar
     cutoff_1h = epoch_ms - 3600 * 1000
-    large_1h = [t for t in _STATE.large_trades if t.get("timestamp_ms", 0) >= cutoff_1h]
-    if large_1h:
-        result["large_orders_1h"] = large_1h[-20:]  # Últimas 20 ordens grandes
+    large_1h_raw = [t for t in _STATE.large_trades if t.get("timestamp_ms", 0) >= cutoff_1h]
+    if large_1h_raw:
+        seen = set()
+        large_1h = []
+        for t in large_1h_raw:
+            key = (t.get("size"), t.get("price"), t.get("timestamp_ms"))
+            if key not in seen:
+                seen.add(key)
+                large_1h.append(t)
+        result["large_orders_1h"] = large_1h[-20:]  # Últimas 20 ordens grandes (dedup)
 
     # Iceberg detection: mesmos preços com muitas execuções fragmentadas
     # Heurística: cluster com trades_count alto + avg_trade_size muito baixo

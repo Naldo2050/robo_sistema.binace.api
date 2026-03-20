@@ -24,7 +24,7 @@ def append_metric_line(obj: Dict[str, object], metrics_path: str = "logs/payload
         p = Path(metrics_path).resolve()
         p.parent.mkdir(parents=True, exist_ok=True)
         if not _METRICS_PATH_LOGGED:
-            logging.info("PAYLOAD_METRICS_FILE path=%s cwd=%s", str(p), str(Path.cwd()))
+            logging.debug("PAYLOAD_METRICS_FILE path=%s cwd=%s", str(p), str(Path.cwd()))
             _METRICS_PATH_LOGGED = True
         with p.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(obj, ensure_ascii=False) + "\n")

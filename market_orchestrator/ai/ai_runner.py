@@ -31,6 +31,13 @@ from orderbook_core.tracing_utils import TracerWrapper
 # [BUILD_COMPACT] Payload compacto direto do event_data
 from build_compact_payload import build_compact_payload
 
+# [THROTTLE] Controle de frequencia de chamadas IA
+try:
+    from common.ai_throttler import SmartAIThrottler
+    _ai_throttler = SmartAIThrottler(min_interval=180, significant_imb_change=0.25)
+except ImportError:
+    _ai_throttler = None
+
 # [DEDUP] Deduplicador de eventos
 from .raw_event_deduplicator import deduplicate_event
 
@@ -200,8 +207,8 @@ def initialize_ai_async(bot) -> None:
                     ai_payload = build_compact_payload(test_event)
 
                     _payload_bytes = len(json.dumps(ai_payload, ensure_ascii=False).encode("utf-8"))
-                    logging.info("PAYLOAD_READY_FOR_LLM bytes=%d keys=%s v=%s",
-                                 _payload_bytes, list(ai_payload.keys())[:8], ai_payload.get("_v", 2))
+                    logging.debug("PAYLOAD_READY_FOR_LLM bytes=%d keys=%s v=%s",
+                                  _payload_bytes, list(ai_payload.keys())[:8], ai_payload.get("_v", 2))
 
                 except Exception as e:
                     logging.warning("Falha ao construir ai_payload para teste de conexÃ£o: %s", e, exc_info=True)
@@ -555,7 +562,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                     # lÃª direto do event_data original â€” dedup Ã© sÃ³ para o LLM.
                     try:
                         _deduped = deduplicate_event(event_data, deep_copy=True)
-                        logging.info(
+                        logging.debug(
                             "RAW_EVENT_DEDUP: deduplicacao aplicada, keys=%d",
                             len(_deduped),
                         )
@@ -570,8 +577,8 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                         # Preencher quant model com ML prediction real
                         if ml_prediction.get("status") == "ok":
                             ai_payload["quant"] = {
-                                "prob_up": round(float(ml_prediction.get("prob_up", 0.5)), 2),
-                                "conf": round(float(ml_prediction.get("confidence", 0.0)), 2),
+                                "pu": round(float(ml_prediction.get("prob_up", 0.5)), 2),
+                                "c": round(float(ml_prediction.get("confidence", 0.0)), 2),
                             }
 
                         event_data["ai_payload"] = ai_payload
@@ -583,7 +590,14 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                             exc_info=True,
                         )
 
-                    analysis_result = bot.ai_analyzer.analyze(event_data)
+                    # [THROTTLE] Verificar se vale a pena chamar a IA
+                    _throttled = False
+                    if _ai_throttler is not None:
+                        _ai_p = event_data.get("ai_payload", {})
+                        if not _ai_throttler.should_call_ai(_ai_p):
+                            _throttled = True
+
+                    analysis_result = None if _throttled else bot.ai_analyzer.analyze(event_data)
 
                     if analysis_result and not bot.should_stop:
                         try:
