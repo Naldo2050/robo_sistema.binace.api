@@ -223,23 +223,28 @@ def calculate_volume_features(
     vols = vol_df["q"].astype(float)
     current_vol = float(vols.sum())
 
-    # 🆕 SMA de volume com validação
-    if len(vols) >= volume_ma_window:
-        sma_vol = float(
-            vols.rolling(
-                window=volume_ma_window, 
-                min_periods=volume_ma_window
-            ).sum().iloc[-1]
-        )
+    # Volume ratio: comparar volume recente vs média do período
+    # Divide a janela em 2 metades: primeira metade como "SMA base", segunda como "current"
+    n = len(vols)
+    if n >= volume_ma_window * 2:
+        # Suficiente dados: média da primeira parte vs última parte
+        sma_vol = float(vols.iloc[:n - volume_ma_window].mean()) * volume_ma_window
+        recent_vol = float(vols.iloc[-volume_ma_window:].sum())
+    elif n >= 4:
+        # Poucos dados: split em metades
+        half = n // 2
+        avg_first = float(vols.iloc[:half].mean())
+        avg_second = float(vols.iloc[half:].mean())
+        sma_vol = avg_first if avg_first > 0 else 1e-9
+        recent_vol = avg_second
     else:
-        # 🆕 Se janela pequena, usa média simples
-        sma_vol = float(vols.mean() * volume_ma_window)
-    
+        sma_vol = 1e-9
+        recent_vol = float(vols.mean()) if n > 0 else 0.0
+
     sma_vol = sma_vol if sma_vol > 0 else 1e-9
-    
-    # 🆕 CAP em 500% (5x)
-    ratio = current_vol / sma_vol
-    ratio = min(ratio, 5.0)  # Cap
+
+    ratio = recent_vol / sma_vol
+    ratio = min(ratio, 5.0)  # Cap em 500%
     features["volume_sma_ratio"] = float(ratio)
 
     # Volume momentum
