@@ -453,9 +453,13 @@ class ContextCollector:
         logger.error(f"Falha persistente klines {symbol} {timeframe}. Retornando vazio.")
         return pd.DataFrame()
 
+    # TTL por timeframe: TFs curtos expiram mais rápido para RSI não congelar
+    _KLINE_TTL = {"5m": 60, "15m": 120, "1h": 120, "4h": 300, "1d": 600, "1w": 900, "1M": 1800}
+
     async def _fetch_klines(self, session: aiohttp.ClientSession, symbol, timeframe, limit=200):
         cache_key = f"klines_{symbol}_{timeframe}_{limit}"
-        return await self._async_fetch_with_cache(cache_key, lambda: self._fetch_klines_uncached(session, symbol, timeframe, limit))
+        ttl = self._KLINE_TTL.get(timeframe, self._cache_ttl)
+        return await self._async_fetch_with_cache(cache_key, lambda: self._fetch_klines_uncached(session, symbol, timeframe, limit), ttl_seconds=ttl)
 
     async def _fetch_symbol_price(self, session: aiohttp.ClientSession, symbol: str) -> float:
         cache_key = f"mark_price_{symbol}"
@@ -1227,19 +1231,37 @@ class ContextCollector:
                     logger.error(f"❌ Erro crítico loop: {e}", exc_info=True)
                 await asyncio.sleep(self.update_interval)
 
+    async def _async_mtf_fast_loop(self):
+        """Atualiza apenas mtf_trends a cada 120s (RSI, ATR, etc.)."""
+        MTF_REFRESH_INTERVAL = 120  # 2 minutos
+        await asyncio.sleep(MTF_REFRESH_INTERVAL)  # skip first (full context já fez)
+        async with await self._build_retrying_session() as session:
+            while True:
+                try:
+                    fresh_mtf = await self._analyze_mtf_trends(session)
+                    if fresh_mtf and self._context_data:
+                        self._context_data["mtf"] = fresh_mtf
+                        self._context_data["mtf_trends"] = fresh_mtf
+                        logger.debug("🔄 MTF trends atualizados (fast loop)")
+                except Exception as e:
+                    logger.debug(f"MTF fast loop erro: {e}")
+                await asyncio.sleep(MTF_REFRESH_INTERVAL)
+
     async def _async_start(self):
         loop = asyncio.get_running_loop()
         if self._yfinance_lock is None:
             self._yfinance_lock = asyncio.Lock()
         self._update_task = loop.create_task(self._async_update_loop())
+        self._mtf_fast_task = loop.create_task(self._async_mtf_fast_loop())
 
     async def _async_stop(self):
-        if self._update_task:
-            self._update_task.cancel()
-            try:
-                await self._update_task
-            except asyncio.CancelledError:
-                pass
+        for task in (self._update_task, getattr(self, '_mtf_fast_task', None)):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         
         # Fechar sessão aiohttp se existir
         if hasattr(self, '_session') and self._session and not self._session.closed:
