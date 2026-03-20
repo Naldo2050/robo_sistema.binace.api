@@ -74,6 +74,13 @@ except ImportError:
         "_fallback_reason": "unknown",
     }
 
+# AI Field Legend (legenda de campos abreviados para o system prompt)
+_FIELD_LEGEND: Optional[str] = None
+try:
+    from common.ai_field_legend import FIELD_LEGEND as _FIELD_LEGEND
+except ImportError:
+    logging.info("ai_field_legend not available — AI will not have field reference")
+
 # ========================
 # CARREGAR .env
 # ========================
@@ -278,6 +285,9 @@ class FallbackStructuredLogger:
     def __init__(self, name: str, prefix: str = "") -> None:
         self._logger = logging.getLogger(name)
         self._prefix = prefix
+
+    def debug(self, event: str, **kwargs: Any) -> None:
+        self._logger.debug(f"[{self._prefix}] {event}: {kwargs}")
 
     def info(self, event: str, **kwargs: Any) -> None:
         self._logger.info(f"[{self._prefix}] {event}: {kwargs}")
@@ -484,6 +494,15 @@ _MODELS_WITHOUT_JSON_MODE: set = {
     "mixtral-8x7b-32768",
     "gemma2-9b-it",
     "gemma-7b-it",
+}
+
+# Modelos Groq 70B+ que suportam prompt mais rico (vs compacto de 120 chars do 8B)
+_LARGE_GROQ_MODELS: set = {
+    "llama-3.1-70b-versatile",
+    "llama-3.3-70b-versatile",
+    "llama-3.3-70b-specdec",
+    "llama3-70b-8192",
+    "llama-3.2-90b-vision-preview",
 }
 
 
@@ -786,23 +805,74 @@ LEMBRE-SE:
 - Menos é mais: um veredito claro vale mais que uma análise longa confusa
 """
 
-GROQ_STRICT_SYSTEM_PROMPT = """Responda SOMENTE com JSON valido.
+GROQ_STRICT_SYSTEM_PROMPT = """Voce e um analista de mercado crypto. Responda SOMENTE com JSON valido.
 
-Use apenas os dados enviados.
-Se nao houver setup claro, responda com action="wait", sentiment="neutral" e confidence baixa.
-Nao escreva markdown, comentarios ou texto fora do JSON.
-Rationale em portugues do Brasil com no maximo 120 caracteres.
-entry_zone, invalidation_zone e region_type podem ser null.
-REGRAS CRITICAS:
-1. Retorne apenas um objeto JSON valido.
-2. Nao explique o raciocinio.
-3. Nao escreva texto antes ou depois do JSON.
-4. A resposta deve comecar com { e terminar com }.
-5. Se estiver incerto, retorne:
-{"sentiment":"neutral","confidence":0.3,"action":"wait","rationale":"dados_insuficientes","entry_zone":null,"invalidation_zone":null,"region_type":null}
+COMO ANALISAR:
+1. Analise f.d1 (delta USD 1min): +280K = compra forte, -34K = venda leve. Sinal + = compra, - = venda.
+2. Verifique f.imb: <-0.3 = pressao venda, >+0.3 = pressao compra. f.bsr: >1 = compradores dominam.
+3. Verifique ob.imb: <-0.3 = ask pesado (SELL pressure), >+0.3 = bid pesado (BUY pressure). ob.bias="SELL" confirma. ext.cci="OB" = sobrecomprado, "OS" = sobrevendido.
+4. Confirme com RSI e trend dos timeframes (tf).
+5. Use ctx (mercados externos, VIX, Fear&Greed) para contexto macro.
+6. SEMPRE de uma opiniao baseada nos dados. Nao diga "dados insuficientes" se ha precos e fluxo.
 
-Formato obrigatorio:
-{"sentiment":"bullish|bearish|neutral","confidence":0.0-1.0,"action":"buy|sell|hold|flat|wait|avoid","rationale":"texto curto PT-BR","entry_zone":null,"invalidation_zone":null,"region_type":null}
+REGRAS:
+- Retorne APENAS um objeto JSON (comeca com { e termina com })
+- Rationale em portugues, maximo 120 caracteres, citando numeros dos dados
+- Nao escreva texto fora do JSON
+- confidence: 0.1-0.4 (incerto), 0.5-0.7 (moderado), 0.8-1.0 (forte confluencia)
+- Valores em K/M sao SEMPRE USD (nao BTC), exceto cvd que e BTC
+
+Formato:
+{"sentiment":"bullish|bearish|neutral","confidence":0.0-1.0,"action":"buy|sell|hold|flat|wait|avoid","rationale":"texto curto citando dados","entry_zone":null,"invalidation_zone":null,"region_type":null}
+"""
+
+GROQ_70B_SYSTEM_PROMPT = """Voce e um analista senior de mercado crypto. Sua missao e INTERPRETAR dados tecnicos e explicar em linguagem clara o que esta acontecendo.
+
+══ REGRA PRINCIPAL ══
+NAO REPITA NUMEROS DO PAYLOAD. INTERPRETE-OS.
+Errado: "d1=-46K, ob.imb=-0.83"
+Correto: "Vendedores dominam com forca: 46K USD saindo em 1min e orderbook 83% carregado no ask — mercado pressionado para baixo"
+
+══ COMO ANALISAR ══
+
+1. DIRECAO: O mercado esta subindo, caindo ou lateralizado? (use tf para confirmar)
+2. FORCA: O movimento e forte ou fraco? (volume, delta, ADX)
+3. QUEM CONTROLA: Compradores ou vendedores? (flow.imb, ob.imb, bsr)
+4. INSTITUCIONAIS: Whales estao comprando ou vendendo? (w.s: >30=acumulando, <-30=distribuindo)
+5. NIVEIS CHAVE: Onde estao suporte e resistencia? (sr.s1, sr.r1, ctx.poc/val/vah)
+6. RISCO: O que pode dar errado? (divergencias entre timeframes, sobrecompra/sobrevenda)
+
+══ TIMEFRAMES ══
+- tf.15m e tf.1h = DIRECAO IMEDIATA (scalp 5-15min)
+- tf.4h e tf.1d = TENDENCIA MAIOR
+- Se curtos BEARISH e longos BULLISH = "retração dentro de tendência de alta"
+- Se curtos BULLISH e longos BEARISH = "repique dentro de tendência de queda"
+
+══ CONTEXTO MACRO ══
+- ctx.fg (Fear&Greed): <25=medo extremo (possivel fundo), >75=ganancia (possivel topo)
+- ctx.vix: >25=volatilidade alta (cautela), <15=calmo
+- Preco vs POC: acima=forca, abaixo=fraqueza
+- Preco vs VAL/VAH: fora da value area=movimento direcional
+
+══ LINGUAGEM DA RESPOSTA ══
+Escreva como se estivesse explicando para um amigo trader que perguntou "o que esta acontecendo no BTC agora?":
+
+EXEMPLO BOM:
+"O BTC esta sendo pressionado para baixo. Vendedores estao no controle com fluxo negativo forte nos ultimos 5 minutos, e o orderbook esta pesado do lado da venda. Os timeframes curtos (15min e 1h) confirmam a tendencia de queda. POREM, os timeframes maiores (4h e diario) ainda mostram alta — isso sugere que estamos numa RETRACAO dentro de uma tendencia maior, nao numa reversao completa. O preco esta proximo do suporte em 74000 (Value Area Low). Se segurar, pode ser oportunidade de compra. Se perder, proximo suporte em 73500."
+
+EXEMPLO RUIM:
+"d1=-46K, d5=-273K, ob.imb=-0.83, RSI 15m=38"
+
+══ FORMATO JSON ══
+{"sentiment":"bullish|bearish|neutral","confidence":0.0-1.0,"action":"buy|sell|wait","rationale":"Sua interpretacao aqui — linguagem clara, 2-4 frases, explicando DIRECAO + FORCA + QUEM CONTROLA + NIVEIS","entry_zone":[preco_min,preco_max] ou null,"invalidation_zone":[stop_min,stop_max] ou null,"region_type":"tipo_regiao ou null"}
+
+══ REGRAS FINAIS ══
+- Responda SOMENTE com JSON (comeca { termina })
+- Rationale: 2-4 frases em portugues, maximo 500 caracteres
+- Cite SIGNIFICADO dos dados, nao os numeros brutos
+- Se entry_zone existir, SEMPRE defina invalidation_zone
+- confidence: 0.3-0.5 (incerto), 0.6-0.7 (moderado), 0.8+ (forte confluencia)
+- Se mercado confuso: action="wait", explique o que falta para decidir
 """
 
 # ========================
@@ -880,6 +950,89 @@ Foque em:
 # ========================
 
 ChatMessage = Dict[str, str]
+
+
+# ========================
+# MARKET SUMMARY HELPER
+# ========================
+
+
+def _build_market_summary(payload: Dict[str, Any]) -> str:
+    """Gera resumo interpretativo do mercado para ajudar modelos menores.
+
+    Analisa os campos do compact payload e produz uma string curta
+    descrevendo pressao, tendencia e contexto, e.g.:
+    "STRONG_SELL|delta=-53.5|vol=86.5|OB_bear|RSI=38|trend=DOWN"
+    """
+    parts = []
+
+    # 1. Pressao baseada no flow
+    flow = payload.get("flow") or {}
+    net = flow.get("net_1m") or 0
+    if net < -20:
+        parts.append("STRONG_SELL")
+    elif net < -5:
+        parts.append("SELL")
+    elif net > 20:
+        parts.append("STRONG_BUY")
+    elif net > 5:
+        parts.append("BUY")
+    else:
+        parts.append("NEUTRAL")
+
+    # 2. Delta e volume
+    if net != 0:
+        parts.append(f"delta={net}")
+    bsr = flow.get("bsr")
+    if bsr is not None:
+        parts.append(f"bsr={bsr}")
+    pressure = flow.get("pressure")
+    if pressure:
+        parts.append(f"p={pressure}")
+
+    # 3. Orderbook bias
+    ob = payload.get("ob") or {}
+    ob_imb = ob.get("imb")
+    if ob_imb is not None:
+        if ob_imb < -0.3:
+            parts.append("OB_bear")
+        elif ob_imb > 0.3:
+            parts.append("OB_bull")
+
+    # 4. Price range
+    price = payload.get("price") or {}
+    c = price.get("c")
+    h = price.get("h")
+    l = price.get("l")
+    if c and h and l and h != l:
+        pos_in_range = (c - l) / (h - l)
+        if pos_in_range < 0.25:
+            parts.append("near_LOW")
+        elif pos_in_range > 0.75:
+            parts.append("near_HIGH")
+
+    # 5. RSI do primeiro TF
+    tf = payload.get("tf") or {}
+    for tf_data in tf.values():
+        if isinstance(tf_data, dict) and tf_data.get("rsi"):
+            rsi = tf_data["rsi"]
+            parts.append(f"RSI={rsi}")
+            if rsi < 30:
+                parts.append("OVERSOLD")
+            elif rsi > 70:
+                parts.append("OVERBOUGHT")
+            break
+
+    # 6. Regime/trend
+    regime = payload.get("regime") or {}
+    trend = regime.get("trend")
+    if trend:
+        parts.append(f"trend={trend}")
+    vol = regime.get("vol")
+    if vol:
+        parts.append(f"vol={vol}")
+
+    return "|".join(parts)
 
 
 # ========================
@@ -1269,7 +1422,7 @@ class AIAnalyzer:
         if self.mode == "groq" and self.client is not None:
             self.last_test_time = time.time()
             try:
-                self.slog.info("ai_ping_ok", mode="groq", cached=True)
+                self.slog.debug("ai_ping_ok", mode="groq", cached=True)
             except Exception:
                 pass
             return True
@@ -1341,7 +1494,7 @@ class AIAnalyzer:
         # Log estruturado
         try:
             if ok:
-                self.slog.info("ai_ping_ok", mode=self.mode or "mock")
+                self.slog.debug("ai_ping_ok", mode=self.mode or "mock")
             else:
                 self.slog.warning(
                     "ai_ping_failed",
@@ -1490,14 +1643,22 @@ class AIAnalyzer:
         }
 
     def _get_system_prompt(self) -> str:
-        """System prompt: institucional completo para análise de qualidade."""
+        """System prompt: roteado por tamanho do modelo Groq."""
         ai_cfg = self.config.get("ai", {})
 
-        # Modelos llama pequenos precisam de prompt compacto para retornar JSON limpo
-        if self.mode == "groq" and self.model_name in _MODELS_WITHOUT_JSON_MODE:
-            return GROQ_STRICT_SYSTEM_PROMPT
         if self.mode == "groq":
-            return SYSTEM_PROMPT
+            # 70B+: prompt rico com estratégias e rationale de 200-400 chars
+            if self.model_name in _LARGE_GROQ_MODELS:
+                prompt = GROQ_70B_SYSTEM_PROMPT
+            # 8B e modelos sem json_object: prompt compacto de 120 chars
+            elif self.model_name in _MODELS_WITHOUT_JSON_MODE:
+                prompt = GROQ_STRICT_SYSTEM_PROMPT
+            # Outros modelos Groq com json_object: prompt institucional completo
+            else:
+                prompt = SYSTEM_PROMPT
+            if _FIELD_LEGEND:
+                prompt = prompt.rstrip() + "\n\n" + _FIELD_LEGEND
+            return prompt
 
         # Se compressÃ£o profunda ativa, usar prompt compacto com dicionÃ¡rio de chaves
         if (
@@ -1513,56 +1674,96 @@ class AIAnalyzer:
 
     @staticmethod
     def _build_groq_payload_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Reduz o payload compacto para uma forma mÃ­nima e estÃ¡vel para Groq."""
-        summary: Dict[str, Any] = {
-            "symbol": payload.get("symbol"),
-            "trigger": payload.get("trigger"),
-            "price": {},
-            "flow": {},
-            "ob": {},
-            "quant": {},
-        }
+        """Constroi payload otimizado para envio ao LLM (~200 tokens).
 
+        v2 (2026-03-13): Otimizado de ~380 para ~200 tokens.
+        Removidos: summary (redundante), metadata (symbol/window/epoch_ms),
+        classificacoes redundantes (whale class/bias, fng_class),
+        dados estaticos enviados via ctx com cache.
+        """
+        out: Dict[str, Any] = {}
+
+        # TRIGGER (abreviado pelo build_compact)
+        trigger = payload.get("trigger")
+        if trigger:
+            out["t"] = trigger
+
+        # PRICE: OHLC + shape/auction (criticos)
         price = payload.get("price") or {}
-        for key in ("c", "vwap", "shape", "auction"):
-            if key in price:
-                summary["price"][key] = price.get(key)
+        if price:
+            p = {}
+            for key in ("c", "o", "h", "l", "vw", "sh", "auc", "ph", "pl",
+                         # Compat com v1 keys
+                         "vwap", "shape", "auction", "poor_high", "poor_low"):
+                if key in price:
+                    p[key] = price[key]
+            if p:
+                out["p"] = p
 
+        # REGIME: dinamicos + regime change probability
         regime = payload.get("regime") or {}
-        regime_min = {
-            key: regime.get(key)
-            for key in ("trend", "structure", "session", "sentiment")
-            if key in regime
-        }
-        if regime_min:
-            summary["regime"] = regime_min
+        if regime:
+            r = {}
+            for key in ("v", "tr", "st", "rgm", "chg",
+                         # Compat com v1 keys
+                         "vol", "trend", "sentiment"):
+                if key in regime:
+                    r[key] = regime[key]
+            if r:
+                out["r"] = r
 
-        vp = payload.get("vp") or {}
-        vp_daily = vp.get("daily") or {}
-        if vp_daily:
-            summary["vp"] = {
-                "daily": {
-                    key: vp_daily.get(key)
-                    for key in ("poc", "vah", "val")
-                    if key in vp_daily
-                }
-            }
-
+        # FLOW: d1/d5/d15/cvd/imb/ab/bsr/pa/conv
         flow = payload.get("flow") or {}
-        for key in ("net_1m", "imb", "agg_buy", "absorption", "trend"):
-            if key in flow:
-                summary["flow"][key] = flow.get(key)
+        if flow:
+            f = {}
+            for key in ("d1", "d5", "d15", "cvd", "imb", "ab", "bsr", "pa", "conv",
+                         # Compat com v1/v2 keys
+                         "n1", "n5", "n15", "net_1m", "net_5m", "net_15m", "agg_buy"):
+                if key in flow:
+                    f[key] = flow[key]
+            if f:
+                out["f"] = f
 
+        # OB: b/a/imb/t5/bias (ja compactado)
         ob = payload.get("ob") or {}
-        for key in ("bid", "ask", "imb", "top5_imb"):
-            if key in ob:
-                summary["ob"][key] = ob.get(key)
+        if ob:
+            ob_out = {}
+            for key in ("b", "a", "imb", "t5", "bias",
+                         # Compat com v1 keys
+                         "bid", "ask", "top5_imb"):
+                if key in ob:
+                    ob_out[key] = ob[key]
+            if ob_out:
+                out["ob"] = ob_out
 
+        # WHALE: score + classificação + divergência (chave "w" ou "whale")
+        whale = payload.get("w") or payload.get("whale")
+        if whale is not None:
+            if isinstance(whale, (int, float)):
+                out["w"] = int(whale)
+            elif isinstance(whale, dict):
+                w_out: Dict[str, Any] = {}
+                if "s" in whale:
+                    w_out["s"] = int(whale["s"])
+                elif "score" in whale:
+                    w_out["s"] = int(whale["score"])
+                for wk in ("c", "div"):
+                    if wk in whale:
+                        w_out[wk] = whale[wk]
+                if w_out:
+                    out["w"] = w_out
+
+        # QUANT: prob_up + confidence
         quant = payload.get("quant") or {}
-        for key in ("prob_up", "conf"):
-            if key in quant:
-                summary["quant"][key] = quant.get(key)
+        if quant:
+            q = {}
+            for key in ("pu", "c", "prob_up", "conf"):
+                if key in quant:
+                    q[key] = quant[key]
+            if q:
+                out["q"] = q
 
+        # TF: ate 3 timeframes (ja filtrado pelo build_compact — sem nulos)
         tf = payload.get("tf") or {}
         if isinstance(tf, dict) and tf:
             tf_min: Dict[str, Any] = {}
@@ -1570,18 +1771,43 @@ class AIAnalyzer:
                 tf_data = tf.get(tf_key)
                 if not isinstance(tf_data, dict):
                     continue
-                tf_min[tf_key] = {
-                    key: tf_data.get(key)
-                    for key in ("t", "ema", "rsi", "reg")
+                tf_entry = {
+                    key: tf_data[key]
+                    for key in ("t", "rsi", "macd", "adx", "atr", "r",
+                                # Compat v1
+                                "ema", "reg")
                     if key in tf_data
                 }
+                if tf_entry:
+                    tf_min[tf_key] = tf_entry
             if tf_min:
-                summary["tf"] = tf_min
+                out["tf"] = tf_min
+
+        # ALERTS: alertas ativos HIGH/CRITICAL (pass-through)
+        alerts = payload.get("alerts")
+        if isinstance(alerts, list) and alerts:
+            out["alerts"] = alerts
+
+        # EXT: indicadores estendidos overbought/oversold (pass-through)
+        ext = payload.get("ext")
+        if isinstance(ext, dict) and ext:
+            out["ext"] = ext
+
+        # SR: suporte/resistência com confluência (pass-through)
+        sr = payload.get("sr")
+        if isinstance(sr, dict) and sr:
+            out["sr"] = sr
+
+        # CTX: contexto estatico (enviado apenas quando muda — ~cada 5min)
+        ctx = payload.get("ctx")
+        if isinstance(ctx, dict) and ctx:
+            out["ctx"] = ctx
+        # Se ctx nao presente, IA usa ultimo contexto recebido
 
         return {
             key: value
-            for key, value in summary.items()
-            if value not in (None, {}, [])
+            for key, value in out.items()
+            if value not in (None, {}, [], "")
         }
 
     def _render_template(self, template_name: str, context: Dict[str, Any]) -> str:
@@ -2557,6 +2783,11 @@ class AIAnalyzer:
                 "STRUCTURED_PROMPT_V3 compressed_json len=%d chars (~%d tokens)",
                 len(prompt), int(len(prompt) / 3.5),
             )
+            # Log do payload real enviado ao LLM para debug
+            logging.debug(
+                "COMPACT_PAYLOAD_DEBUG: %s",
+                prompt[:2000],
+            )
             return prompt
 
         meta = payload.get("signal_metadata") or {}
@@ -2870,7 +3101,7 @@ class AIAnalyzer:
                 if _PAYLOAD_METRICS_CALLS >= 200 or (now - _PAYLOAD_METRICS_LAST_TS) >= 600:
                     summary = _summarize_metrics(metrics_path, 2000)
                     if summary:
-                        logging.info(
+                        logging.debug(
                             "PAYLOAD_METRICS_SUMMARY %s",
                             json.dumps(summary, ensure_ascii=False),
                         )
@@ -3016,7 +3247,7 @@ class AIAnalyzer:
             return None
 
     def _get_model_params(self) -> Dict[str, Any]:
-        """Retorna parÃ¢metros do modelo da configuraÃ§Ã£o."""
+        """Retorna parâmetros do modelo, roteados por tamanho."""
         ai_cfg = self.config.get("ai", {})
         if not isinstance(ai_cfg, dict):
             ai_cfg = {}
@@ -3042,12 +3273,26 @@ class AIAnalyzer:
         except (ValueError, TypeError):
             timeout = 30
 
+        _is_large_groq = self.model_name in _LARGE_GROQ_MODELS
+        _is_8b = self.model_name == "llama-3.1-8b-instant"
+        _is_oss = "oss" in self.model_name
+
+        # 70B+: mais tokens para rationale interpretativo, temp 0.4, timeout 45s
+        if _is_large_groq:
+            return {
+                "max_tokens": 2000,
+                "temperature": 0.4,
+                "timeout": 45,
+                "reasoning_effort": None,
+                "top_p": 0.9,
+            }
+
         return {
-            "max_tokens": 1024 if self.model_name == "llama-3.1-8b-instant" else (8192 if self.model_name == "openai/gpt-oss-120b" else max_tokens),
-            "temperature": 0.3 if self.model_name == "llama-3.1-8b-instant" else (1.0 if self.model_name == "openai/gpt-oss-120b" else temperature),
+            "max_tokens": 1024 if _is_8b else (8192 if _is_oss else max_tokens),
+            "temperature": 0.3 if _is_8b else (1.0 if _is_oss else temperature),
             "timeout": timeout,
-            "reasoning_effort": "medium" if "oss" in self.model_name else None,
-            "top_p": 0.9 if self.model_name == "llama-3.1-8b-instant" else (1.0 if "oss" in self.model_name else None)
+            "reasoning_effort": "medium" if _is_oss else None,
+            "top_p": 0.9 if _is_8b else (1.0 if _is_oss else None),
         }
 
     @staticmethod
@@ -3344,7 +3589,35 @@ class AIAnalyzer:
             logging.error("AnÃ¡lise abortada por leak de payload completo (guardrail).")
             return self._build_fallback_payload("unsafe_payload")
         event_data = event_data_safe
-        
+
+        # ── COMPATIBILIDADE: guardrail pode retornar payload flat ─────
+        # O guardrail (BUG3 fix) retorna o compact payload como raiz,
+        # mas _create_prompt espera event_data["ai_payload"].
+        # Se detectar payload flat (tem "price" mas não "ai_payload"),
+        # re-empacotar para que _create_prompt encontre o ai_payload.
+        if (
+            isinstance(event_data, dict)
+            and "ai_payload" not in event_data
+            and "price" in event_data
+            and any(k in event_data for k in ("ob", "flow", "quant"))
+        ):
+            _flat_payload = dict(event_data)
+            event_data = {
+                "ai_payload": _flat_payload,
+                "tipo_evento": _flat_payload.get("tipo_evento"),
+                "descricao": _flat_payload.get("descricao"),
+                "symbol": _flat_payload.get("symbol"),
+                "ativo": _flat_payload.get("symbol"),
+                "epoch_ms": _flat_payload.get("epoch_ms"),
+                "janela_numero": _flat_payload.get("window"),
+            }
+            event_data = {k: v for k, v in event_data.items() if v is not None}
+            logging.info(
+                "GUARDRAIL_REWRAP flat payload re-wrapped as event_data[ai_payload] "
+                "keys=%s",
+                list(_flat_payload.keys())[:10],
+            )
+
         # Preservar info de v2 que foi removida pelo guardrail
         if _ai_payload_has_v2:
             ai_p = event_data.get("ai_payload")
@@ -3417,7 +3690,7 @@ class AIAnalyzer:
                 else []
             )
 
-            logging.info(
+            logging.debug(
                 "LLM_PAYLOAD_INFO root=%s bytes=%s keys_sample=%s",
                 payload_root_name,
                 payload_bytes,
@@ -3581,9 +3854,9 @@ class AIAnalyzer:
             # EMITE EVENTO DE SUCESSO APENAS APÃ“S VALIDAÃ‡ÃƒO
             # ============================================================
             if is_valid and not is_fallback:
-                logging.info("AI_ANALYSIS_VALIDATED: %s", analysis_text)
+                logging.debug("AI_ANALYSIS_VALIDATED: %s", analysis_text)
                 try:
-                    self.slog.info(
+                    self.slog.debug(
                         "ai_analyze_ok",
                         mode=self.mode or "mock",
                         model=self.model_name,

@@ -497,26 +497,54 @@ def process_window_snapshot(
                     exc_info=True,
                 )
 
+            _warmup_meta: dict = {}
+
             if final_features is not None and predict_up_probability is not None:
                 try:
                     if not hasattr(bot, 'feature_calc'):
                         from ml.feature_calculator import LiveFeatureCalculator
                         bot.feature_calc = LiveFeatureCalculator()
-                        
+
                     if valid_window_data:
-                        # Alimenta TODOS os trades da janela para manter alta fidelidade nos indicadores
-                        for trade in valid_window_data:
+                        # Bug 1 fix: amostrar ~60 trades uniformemente em vez de todos os ~2030.
+                        # Alimentar todos os ticks faz RSI calcular em tick-level → valores extremos
+                        # (ex: RSI=98 com variação de price <0.01%). Amostragem simula candles de ~1s.
+                        trade_count = len(valid_window_data)
+                        if trade_count > 60:
+                            step = max(1, trade_count // 60)
+                            sampled_trades = valid_window_data[::step]
+                        else:
+                            sampled_trades = valid_window_data
+
+                        for trade in sampled_trades:
                             bot.feature_calc.update(
                                 price=float(trade.get("p", 0.0)),
                                 volume=float(trade.get("q", 0.0))
                             )
-                        
-                    computed_features = bot.feature_calc.compute()
+
+                    computed_features = bot.feature_calc.compute(
+                        multi_tf=macro_context.get("mtf_trends")
+                    )
+
+                    # Bug 2 fix: separar metadados '_' antes de passar ao XGBoost.
+                    # Antes: {**final_features, **computed_features} passava _warmup_ready etc. ao modelo.
+                    _warmup_meta = {k: v for k, v in computed_features.items() if k.startswith('_')}
+                    model_features_only = {k: v for k, v in computed_features.items() if not k.startswith('_')}
+
                     if isinstance(final_features, dict):
-                        enriched_features = {**final_features, **computed_features}
+                        enriched_features = {**final_features, **model_features_only}
                     else:
-                        enriched_features = final_features
-                        
+                        enriched_features = model_features_only
+
+                    # Bug 4 fix (preventivo): alias bb__width → bb_width para cobrir FEATURE_MAP com duplo _.
+                    if 'bb_width' in enriched_features and 'bb__width' not in enriched_features:
+                        enriched_features['bb__width'] = enriched_features['bb_width']
+
+                    # Injetar multi_tf para RSI fallback via FEATURE_MAP
+                    mtf = macro_context.get("mtf_trends")
+                    if mtf and isinstance(enriched_features, dict):
+                        enriched_features.setdefault("multi_tf", mtf)
+
                     ml_prob_up = predict_up_probability(enriched_features)
                 except Exception as e:
                     logging.error(
@@ -528,6 +556,15 @@ def process_window_snapshot(
                 try:
                     quant_ctx = macro_context.setdefault("quant_model", {})
                     quant_ctx["prob_up"] = float(ml_prob_up)
+
+                    # Bug 3 fix: propagar metadados de warmup ao quant_ctx para que
+                    # hybrid_decision saiba se a predição é confiável (warmup_insufficient).
+                    if _warmup_meta:
+                        quant_ctx["_warmup_ready"] = _warmup_meta.get("_warmup_ready", True)
+                        quant_ctx["_ml_usable"] = _warmup_meta.get("_ml_usable", True)
+                        quant_ctx["_features_real_count"] = _warmup_meta.get("_features_real_count", 9)
+                        quant_ctx["_features_default_list"] = _warmup_meta.get("_features_default_list", [])
+
                     logging.info(
                         f"[QUANT] prob_up={ml_prob_up:.3f} para janela {bot.window_count}"
                     )
@@ -537,15 +574,14 @@ def process_window_snapshot(
                         exc_info=True,
                     )
 
-            # Garantir que Timeframe esteja nos sinais
+            # Garantir que Timeframe esteja nos sinais — nunca injetar dados neutros falsos
             if signals:
+                _mtf_real = macro_context.get("mtf_trends", {})
                 for s in signals:
-                    if "multi_tf" not in s and "tf" not in s:
-                        s["multi_tf"] = {
-                            "1m": {"trend": "neutral", "realized_vol": 0.0},
-                            "5m": {"trend": "neutral", "realized_vol": 0.0},
-                            "15m": {"trend": "neutral", "realized_vol": 0.0},
-                        }
+                    if not s.get("multi_tf") and not s.get("tf"):
+                        if _mtf_real:
+                            s["multi_tf"] = _mtf_real
+                        # Se mtf_trends vazio, deixar sem multi_tf — melhor que dados falsos
 
             # Encaminha para o processador de sinais original
             bot._process_signals(

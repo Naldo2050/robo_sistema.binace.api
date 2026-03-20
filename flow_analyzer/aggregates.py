@@ -407,9 +407,10 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
             s_buy = sector_data.get("buy", 0)
             s_sell = sector_data.get("sell", 0)
             if s_sell > 0:
-                sector_ratios[sector_name] = round(s_buy / s_sell, 4)
+                # Cap ratio em 10.0 para evitar valores extremos
+                sector_ratios[sector_name] = round(min(s_buy / s_sell, 10.0), 4)
             elif s_buy > 0:
-                sector_ratios[sector_name] = 99.0
+                sector_ratios[sector_name] = 10.0  # buy-only: cap máximo
             else:
                 sector_ratios[sector_name] = 1.0
 

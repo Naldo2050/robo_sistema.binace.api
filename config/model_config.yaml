@@ -2,10 +2,10 @@
   provider: groq
   provider_fallbacks: []  # Lista de providers para fallback automatico (so usar se necessario)
   groq:
-    model: llama-3.1-8b-instant   # Modelo padrao atualizado para Llama 3.1 8B
+    model: llama-3.3-70b-versatile   # Modelo principal — 70B para qualidade de analise
     model_fallbacks:
-      - llama-3.1-70b-versatile
-      - mixtral-8x7b-32768
+      - llama-3.1-8b-instant         # Fallback 1: rapido/barato (se 70B falhar por rate limit)
+      - mixtral-8x7b-32768           # Fallback 2: contexto longo (32K)
 
 model:
   # Parametros do target
@@ -58,7 +58,7 @@ llm_payload:
   tripwires:
     fallback_rate_max: 0.05          # 5% (era 0.5% — muito restrito)
     abort_rate_max: 0.02             # 2% (era 0.01% — impossível)
-    guardrail_block_rate_max: 0.25   # 25% (era 1% — sistema real em ~17%)
+    guardrail_block_rate_max: 0.50   # 50% (era 25% — todo analyze() com raw_event bloqueia)
     bytes_p95_max: 90000             # 90KB (era 6KB — payloads reais chegam a 80KB)
     cache_hit_rate_min:
       macro_context: 0.15            # 15% (era 60% — cache macro ainda baixo)

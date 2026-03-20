@@ -249,13 +249,29 @@ class HybridDecisionMaker:
             except (TypeError, ValueError):
                 model_confidence = 0.0
         
-        # Verificar se modelo está congelado
+        # Verificar se modelo está congelado ou predição extrema
         if model_ok and model_prob_up is not None:
             if self._check_frozen_model(model_prob_up):
                 model_ok = False
+                if isinstance(ml_prediction, dict):
+                    ml_prediction["frozen_filtered"] = True
             elif model_confidence is not None and not self._check_model_validity(model_prob_up, model_confidence):
                 model_ok = False
-        
+                if isinstance(ml_prediction, dict):
+                    ml_prediction["extreme_filtered"] = True
+
+        # Checar warmup insuficiente (features em fallback)
+        if model_ok and isinstance(ml_prediction, dict):
+            if ml_prediction.get("_warmup_ready") is False:
+                ml_usable = ml_prediction.get("_ml_usable", True)
+                if not ml_usable:
+                    logger.warning(
+                        "[ML_WARMUP_BLOCK] features_real=%d — insuficiente para ML. Ignorando.",
+                        ml_prediction.get("_features_real_count", 0),
+                    )
+                    model_ok = False
+                    ml_prediction["warmup_insufficient"] = True
+
         # ── 2. Extrai dados da IA ──
         llm_ok = ai_result is not None and isinstance(ai_result, dict)
         llm_action: str = "wait"
@@ -663,4 +679,5 @@ def decision_to_ai_result(decision: DecisionResult) -> Dict[str, Any]:
         "_ensemble_score": decision.ensemble_score,
         "_conflict_detected": decision.conflict_detected,
         "_llm_is_fallback": decision.llm_is_fallback,
+        "_ml_contributed": decision.model_prob_up is not None,
     }

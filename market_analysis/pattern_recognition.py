@@ -462,16 +462,17 @@ def recognize_patterns(df: pd.DataFrame) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 2. Fibonacci levels
+    # 2. Fibonacci levels (requer range mínimo significativo)
     try:
-        # Determinar nomes das colunas
         high_col = "high" if "high" in df.columns else "h" if "h" in df.columns else None
         low_col = "low" if "low" in df.columns else "l" if "l" in df.columns else None
 
-        if high_col and low_col:
+        if high_col and low_col and len(df) >= 10:
             swing_high = float(df[high_col].max())
             swing_low = float(df[low_col].min())
-            if swing_high > swing_low:
+            price_range = swing_high - swing_low
+            # Mínimo 0.3% de range para Fibonacci ser significativo
+            if swing_low > 0 and price_range / swing_low >= 0.003:
                 result["fibonacci_levels"] = fibonacci_levels(swing_high, swing_low)
     except Exception:
         pass

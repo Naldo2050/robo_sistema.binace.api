@@ -1,11 +1,20 @@
 # ml/inference_engine.py
+# -*- coding: utf-8 -*-
+"""
+Módulo de Inferência em Tempo Real para Modelo Quantitativo.
+
+v3 — Correções (2026-03-17):
+  - FEATURE_MAP: aliases diretos para bb_upper/bb_lower/bb_width
+  - FEATURE_MAP: REMOVIDO fallback VAH/VAL (semanticamente errado)
+  - RSI anomalo: fallback multi_tf antes de clampar
+  - Metadados de warmup no retorno de predict()
+"""
+
 import logging
-import json
-import pandas as pd
 import xgboost as xgb
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Deque
+from typing import Dict, Any, Optional, Deque
 from collections import deque
 
 logger = logging.getLogger("MLInference")
@@ -14,12 +23,10 @@ logger = logging.getLogger("MLInference")
 class MLInferenceEngine:
     """
     Carrega o modelo XGBoost treinado e realiza previsões em tempo real.
-    
-    CORREÇÃO v2: Acumula histórico de preços/volumes internamente para
-    computar features rolling (returns, BB, RSI) que antes estavam faltando.
-    O FEATURE_MAP continua funcionando como fallback - se o payload já
-    tiver a feature computada externamente, ela é usada. Senão, o engine
-    computa internamente a partir do histórico acumulado.
+
+    CORREÇÃO v3: FEATURE_MAP com aliases diretos para que valores do
+    LiveFeatureCalculator (raiz do dict) sejam encontrados imediatamente.
+    Removidos fallbacks VAH/VAL que corrompiam bb_upper/bb_lower.
     """
     
     # Features que o modelo foi TREINADO para esperar
@@ -29,51 +36,66 @@ class MLInferenceEngine:
     ]
     
     # Mapeamento: feature_do_modelo → lista de possíveis chaves no payload
+    # REGRA: o nome direto da feature SEMPRE é o primeiro alias,
+    # para que valores do LiveFeatureCalculator (na raiz do dict) sejam
+    # encontrados antes de qualquer caminho aninhado ou fallback.
     FEATURE_MAP = {
         'price_close': [
+            'price_close',                          # direto do LiveFeatureCalculator
             'enriched.ohlc.close',
             'preco_fechamento',
             'price',
-            'current_price'
+            'current_price',
         ],
         'return_1': [
+            'return_1',                             # direto do LiveFeatureCalculator
             'ml_features.price_features.returns_1',
             'ml_features.price_features.returns_1m',
-            'return_1'
         ],
         'return_5': [
+            'return_5',                             # direto do LiveFeatureCalculator
             'ml_features.price_features.returns_5',
             'ml_features.price_features.returns_5m',
-            'return_5'
         ],
         'return_10': [
+            'return_10',                            # direto do LiveFeatureCalculator
             'ml_features.price_features.returns_10',
             'ml_features.price_features.returns_10m',
-            'return_10'
         ],
         'bb_upper': [
+            'bb_upper',                             # direto do LiveFeatureCalculator
             'ml_features.price_features.bb_upper',
             'technical.bb_upper',
-            'contextual.historical_vp.daily.vah'
+            # REMOVIDO: 'contextual.historical_vp.daily.vah'
+            # VAH é Volume Profile, semanticamente errado como BB Upper
         ],
         'bb_lower': [
+            'bb_lower',                             # direto do LiveFeatureCalculator
             'ml_features.price_features.bb_lower',
             'technical.bb_lower',
-            'contextual.historical_vp.daily.val'
+            # REMOVIDO: 'contextual.historical_vp.daily.val'
+            # VAL é Volume Profile, semanticamente errado como BB Lower
         ],
         'bb_width': [
+            'bb_width',                             # direto do LiveFeatureCalculator
+            'bb__width',                            # alias de compatibilidade
             'ml_features.price_features.bb_width',
-            'technical.bb_width'
+            'technical.bb_width',
         ],
         'rsi': [
+            'rsi',                                  # direto do LiveFeatureCalculator
             'ml_features.price_features.rsi',
             'technical.rsi',
-            'contextual.multi_tf.15m.rsi'
+            'contextual.multi_tf.15m.rsi',
+            'multi_tf.15m.rsi_short',
+            'multi_tf.1h.rsi_short',
+            'multi_tf.4h.rsi_short',
+            'multi_tf.1d.rsi_short',
         ],
         'volume_ratio': [
+            'volume_ratio',                         # direto do LiveFeatureCalculator
             'ml_features.microstructure.volume_ratio',
-            'volume_ratio',
-            'volume_sma_ratio'
+            'volume_sma_ratio',
         ],
     }
     
@@ -102,7 +124,7 @@ class MLInferenceEngine:
         self.model_path = self.model_dir / "xgb_model_latest.json"
         self.model = None
         
-        # ── NOVO: Histórico interno para computar features rolling ──
+        # ── Histórico interno para computar features rolling ──
         self._price_history: Deque[float] = deque(maxlen=self.HISTORY_MAXLEN)
         self._volume_history: Deque[float] = deque(maxlen=self.HISTORY_MAXLEN)
         self._window_count: int = 0
@@ -125,7 +147,7 @@ class MLInferenceEngine:
             self.model = None
 
     @staticmethod
-    def _deep_get(d: dict, dotted_key: str):
+    def _deep_get(d: dict, dotted_key: str) -> Any:
         """Busca chave aninhada 'a.b.c' em {'a': {'b': {'c': 1}}}."""
         keys = dotted_key.split('.')
         current = d
@@ -174,7 +196,7 @@ class MLInferenceEngine:
                         continue
         return 0.0
 
-    # ── NOVO: Cálculo interno de features rolling ──
+    # ── Cálculo interno de features rolling ──
 
     def _compute_returns(self) -> Dict[str, float]:
         """Computa retornos de 1, 5 e 10 períodos a partir do histórico."""
@@ -234,7 +256,9 @@ class MLInferenceEngine:
         avg_loss = np.mean(losses)
         
         if avg_loss < 1e-10:
-            result['rsi'] = 100.0
+            # Sem quedas: se também sem ganhos significativos → neutro;
+            # caso contrário, cap em 80 (não 95, que distorce XGBoost)
+            result['rsi'] = 80.0 if avg_gain > 1e-10 else 50.0
         else:
             rs = avg_gain / avg_loss
             result['rsi'] = 100.0 - (100.0 / (1.0 + rs))
@@ -386,8 +410,7 @@ class MLInferenceEngine:
     def _compute_derived_features(self, features: dict) -> dict:
         """
         Computa features derivadas se estiverem zeradas mas o preço for conhecido.
-        NOTA: Com o novo sistema de cálculo interno, este método raramente será
-        necessário, mas mantido como safety net.
+        Safety net — raramente necessário com o FEATURE_MAP v3.
         """
         price = features.get('price_close', 0.0)
         
@@ -419,12 +442,37 @@ class MLInferenceEngine:
             }
         
         try:
-            # 1. Mapeamento (agora com histórico interno)
+            # 1. Mapeamento (com histórico interno)
             mapped_features = self._map_features(raw_features)
             
             # 2. Features derivadas (safety net)
             mapped_features = self._compute_derived_features(mapped_features)
-            
+
+            # 2b. Validar RSI — nunca pode ser exatamente 0 ou 100
+            rsi_val = mapped_features.get('rsi', 50.0)
+            if rsi_val >= 100.0 or rsi_val <= 0.0:
+                # Tentar multi_tf antes de usar 50.0
+                rsi_fallback = 50.0
+                multi_tf = raw_features.get("multi_tf", {})
+                if isinstance(multi_tf, dict):
+                    for tf in ("15m", "1h", "4h", "1d"):
+                        tf_data = multi_tf.get(tf, {})
+                        if isinstance(tf_data, dict):
+                            for rsi_key in ("rsi_short", "rsi", "rsi_14"):
+                                rsi_mtf = tf_data.get(rsi_key)
+                                if rsi_mtf is not None:
+                                    try:
+                                        v = float(rsi_mtf)
+                                        if 5.0 < v < 95.0:
+                                            rsi_fallback = v
+                                            break
+                                    except (ValueError, TypeError):
+                                        continue
+                            if rsi_fallback != 50.0:
+                                break
+                logger.warning(f"RSI anomalo: {rsi_val:.1f}, corrigindo para {rsi_fallback:.1f}")
+                mapped_features['rsi'] = rsi_fallback
+
             # 3. Ordenação conforme treino
             feature_values = [mapped_features[f] for f in self.EXPECTED_FEATURES]
             
@@ -455,6 +503,11 @@ class MLInferenceEngine:
                 f"history={len(self._price_history)}"
             )
             
+            history_n = len(self._price_history)
+            _min_history = max(self.BB_PERIOD, self.RSI_PERIOD + 1, 10)
+            _warmup_ready = history_n >= _min_history
+            _ml_usable = history_n >= (self.RSI_PERIOD + 1)  # >=15: returns + RSI disponíveis
+
             return {
                 'prob_up': prob,
                 'prob_down': 1.0 - prob,
@@ -462,10 +515,15 @@ class MLInferenceEngine:
                 'status': 'ok',
                 'confidence': abs(prob - 0.5) * 2,
                 'features_used': len(mapped_features),
-                'features_from_history': len(self._price_history),
+                'features_from_history': history_n,
                 'features_detail': {
                     k: round(v, 6) for k, v in mapped_features.items()
-                }
+                },
+                # Metadados de warmup — lidos por hybrid_decision.fuse_decisions()
+                '_warmup_ready': _warmup_ready,
+                '_ml_usable': _ml_usable,
+                '_features_real_count': history_n,  # proxy: mais história = mais features reais
+                '_history_count': history_n,
             }
             
         except Exception as e:
@@ -476,7 +534,7 @@ class MLInferenceEngine:
                 'msg': str(e)
             }
 
-    def get_feature_importance(self) -> Dict[str, float]:
+    def get_feature_importance(self) -> Dict[str, Any]:
         """Retorna importância das features se disponível."""
         if self.model is None:
             return {}

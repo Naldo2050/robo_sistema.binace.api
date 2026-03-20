@@ -125,7 +125,8 @@ class OnchainFetcher:
                     data["market_price_usd"] = stats.get("market_price_usd", 0)
                     data["trade_volume_btc_24h"] = stats.get("trade_volume_btc", 0)
                     data["miners_revenue_btc_24h"] = stats.get("miners_revenue_btc", 0) / 1e8
-                    data["total_fees_btc_24h"] = stats.get("total_fees_btc", 0) / 1e8
+                    raw_fees = stats.get("total_fees_btc", 0) / 1e8
+                    data["total_fees_btc_24h"] = raw_fees if raw_fees >= 0 else 0.0
         except Exception as e:
             logger.debug(f"blockchain.info stats falhou: {e}")
 
