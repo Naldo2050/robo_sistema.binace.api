@@ -77,7 +77,7 @@ class AlertManager:
         'fred_fallback_rate': 0.3,     # 30% de fallback FRED
         'parse_error_rate': 0.02,      # 2% de erros de parsing
         'enrich_error_rate': 0.05,     # 5% de erros de enrichment
-        'max_latency_ms': 1000,        # 1 segundo de latência máxima
+        'max_latency_ms': 5000,        # 5 segundos (antes: 1s, muito agressivo no warmup)
         'max_connection_loss_count': 3 # 3 perdas de conexão consecutivas
     }
     

@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-LÃ³gica de inicializaÃ§Ã£o e execuÃ§Ã£o da IA do EnhancedMarketBot.
+Lógica de inicialização e execução da IA do EnhancedMarketBot.
 
-ExtraÃ­do dos mÃ©todos _initialize_ai_async e _run_ai_analysis_threaded
-do arquivo market_orchestrator.py original, adaptados para funÃ§Ãµes
+Extraído dos métodos _initialize_ai_async e _run_ai_analysis_threaded
+do arquivo market_orchestrator.py original, adaptados para funções
 que recebem `bot` como argumento.
 """
 
@@ -41,7 +41,7 @@ except ImportError:
 # [DEDUP] Deduplicador de eventos
 from .raw_event_deduplicator import deduplicate_event
 
-# [HYBRID_DECISION] Importa mÃ³dulo de decisÃ£o hÃ­brida
+# [HYBRID_DECISION] Importa módulo de decisão híbrida
 try:
     from ml.hybrid_decision import (
         fuse_decisions,
@@ -56,14 +56,14 @@ except ImportError:
 
 def initialize_ai_async(bot) -> None:
     """
-    Inicializa a IA em uma thread separada, exatamente como no mÃ©todo
+    Inicializa a IA em uma thread separada, exatamente como no método
     EnhancedMarketBot._initialize_ai_async original.
 
     v2.3.x: agora passa o HealthMonitor do bot para o AIAnalyzer,
-    permitindo heartbeat periÃ³dico do mÃ³dulo 'ai'.
+    permitindo heartbeat periódico do módulo 'ai'.
     """
 
-    # Usa logger/tracer do bot se existirem, senÃ£o cria locais
+    # Usa logger/tracer do bot se existirem, senão cria locais
     slog = getattr(
         bot,
         "slog",
@@ -98,7 +98,7 @@ def initialize_ai_async(bot) -> None:
                 except Exception:
                     pass
 
-                # IntegraÃ§Ã£o com HealthMonitor:
+                # Integração com HealthMonitor:
                 try:
                     hm = getattr(bot, "health_monitor", None)
                 except Exception:
@@ -110,14 +110,14 @@ def initialize_ai_async(bot) -> None:
                 )
 
                 # ============================================
-                # Inicializa Motor de InferÃªncia Quantitativa
+                # Inicializa Motor de Inferência Quantitativa
                 # ============================================
                 try:
                     from ml.inference_engine import MLInferenceEngine
                     bot.ml_engine = MLInferenceEngine()
                     logging.info("ML engine: XGBoost inicializado")
 
-                    # Teste rÃ¡pido do ML Engine
+                    # Teste rápido do ML Engine
                     test_result = bot.ml_engine.predict({
                         "delta": 0.5,
                         "volume_total": 10000,
@@ -127,7 +127,7 @@ def initialize_ai_async(bot) -> None:
                     if test_result.get("status") == "ok":
                         logging.info(f"ML engine testado: {test_result.get('prob_up', 0):.1%}")
                     else:
-                        logging.warning(f"âš ï¸ ML Engine teste falhou: {test_result.get('status')}")
+                        logging.warning(f"⚠️ ML Engine teste falhou: {test_result.get('status')}")
 
                     try:
                         slog.info(
@@ -138,7 +138,7 @@ def initialize_ai_async(bot) -> None:
                         pass
 
                 except Exception as e:
-                    logging.error(f"âŒ Falha ao inicializar ML Engine: {e}", exc_info=True)
+                    logging.error(f"❌ Falha ao inicializar ML Engine: {e}", exc_info=True)
                     bot.ml_engine = None
                     try:
                         slog.error(
@@ -155,10 +155,10 @@ def initialize_ai_async(bot) -> None:
                 current_price = get_current_price(bot.symbol)
 
                 test_event = {
-                    "tipo_evento": "Teste de ConexÃ£o",
+                    "tipo_evento": "Teste de Conexão",
                     "ativo": bot.symbol,
                     "descricao": (
-                        "Teste inicial do sistema de anÃ¡lise "
+                        "Teste inicial do sistema de análise "
                         "para garantir operacionalidade."
                     ),
                     "delta": 150.5,
@@ -211,7 +211,7 @@ def initialize_ai_async(bot) -> None:
                                   _payload_bytes, list(ai_payload.keys())[:8], ai_payload.get("_v", 2))
 
                 except Exception as e:
-                    logging.warning("Falha ao construir ai_payload para teste de conexÃ£o: %s", e, exc_info=True)
+                    logging.warning("Falha ao construir ai_payload para teste de conexão: %s", e, exc_info=True)
 
                 analysis_input = dict(test_event)
                 if isinstance(ai_payload, dict) and ai_payload:
@@ -257,11 +257,11 @@ def initialize_ai_async(bot) -> None:
                 else:
                     bot.ai_test_passed = True
                     logging.warning(
-                        "âš ï¸ Teste da IA retornou resultado inesperado. "
+                        "⚠️ Teste da IA retornou resultado inesperado. "
                         "Prosseguindo em modo fallback."
                     )
                     logging.warning(f"Resultado recebido: {analysis}")
-                    logging.info("â•" * 75)
+                    logging.info("═" * 75)
 
                     try:
                         slog.warning(
@@ -279,10 +279,10 @@ def initialize_ai_async(bot) -> None:
 
                 logging.error("=" * 30 + " ERRO NA IA " + "=" * 30)
                 logging.error(
-                    f"âŒ Falha crÃ­tica ao inicializar a IA: {e}",
+                    f"❌ Falha crítica ao inicializar a IA: {e}",
                     exc_info=True,
                 )
-                logging.error("â•" * 75)
+                logging.error("═" * 75)
 
                 try:
                     slog.error(
@@ -297,32 +297,32 @@ def initialize_ai_async(bot) -> None:
 
 def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
     """
-    Executa a anÃ¡lise da IA em uma thread separada, com:
+    Executa a análise da IA em uma thread separada, com:
     - rate limiter
     - semaphore
     - pool de threads limitado
     - logs detalhados
-    - otimizaÃ§Ã£o para pular anÃ¡lise em condiÃ§Ãµes de baixo volume/volatilidade lateral
+    - otimização para pular análise em condições de baixo volume/volatilidade lateral
 
-    Equivalente ao mÃ©todo EnhancedMarketBot._run_ai_analysis_threaded original.
+    Equivalente ao método EnhancedMarketBot._run_ai_analysis_threaded original.
     """
 
     if not bot.ai_analyzer or not bot.ai_test_passed or bot.should_stop:
         if bot.ai_analyzer and not bot.ai_test_passed:
             logging.warning(
-                "âš ï¸ AnÃ¡lise da IA ignorada: sistema nÃ£o passou no teste inicial."
+                "⚠️ Análise da IA ignorada: sistema não passou no teste inicial."
             )
         return
 
     # ============================================
-    # [AI_OPTIMIZATION] OtimizaÃ§Ã£o para economizar tokens de IA
+    # [AI_OPTIMIZATION] Otimização para economizar tokens de IA
     # ============================================
-    # Pula anÃ¡lise da IA se volatility_regime for 'SIDEWAYS' e volume estiver baixo
+    # Pula análise da IA se volatility_regime for 'SIDEWAYS' e volume estiver baixo
     try:
         regime_analysis = event_data.get("regime_analysis", {})
         volatility_regime = regime_analysis.get("volatility_regime", "").upper()
 
-        # Verifica se estÃ¡ em regime lateral
+        # Verifica se está em regime lateral
         if volatility_regime == "SIDEWAYS":
             # Verifica volume baixo
             volume_total = event_data.get("volume_total", 0)
@@ -330,11 +330,11 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
 
             if volume_total < volume_threshold:
                 logging.info(
-                    f"ðŸ¤– IA pulada: regime SIDEWAYS + volume baixo "
+                    f"🤖 IA pulada: regime SIDEWAYS + volume baixo "
                     f"({format_large_number(volume_total)} < {format_large_number(volume_threshold)})"
                 )
 
-                # Usa logger estruturado se disponÃ­vel
+                # Usa logger estruturado se disponível
                 slog = getattr(
                     bot,
                     "slog",
@@ -355,15 +355,15 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                 return
 
     except Exception as e:
-        logging.debug(f"Erro na verificaÃ§Ã£o de otimizaÃ§Ã£o da IA: {e}")
-        # Continua normalmente se houver erro na verificaÃ§Ã£o
+        logging.debug(f"Erro na verificação de otimização da IA: {e}")
+        # Continua normalmente se houver erro na verificação
 
     logging.debug(
-        "ðŸ” Evento recebido para anÃ¡lise da IA: %s",
+        "🔍 Evento recebido para análise da IA: %s",
         event_data.get("tipo_evento", "N/A"),
     )
 
-    # Usa logger/tracer do bot se existirem, senÃ£o cria locais
+    # Usa logger/tracer do bot se existirem, senão cria locais
     slog = getattr(
         bot,
         "slog",
@@ -389,16 +389,16 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
         pass
 
     # ============================================
-    # [EXPORT_SIGNALS] ExportaÃ§Ã£o de Sinais para CSV
+    # [EXPORT_SIGNALS] Exportação de Sinais para CSV
     # ============================================
     try:
-        # Extrai dados necessÃ¡rios para criar o sinal
+        # Extrai dados necessários para criar o sinal
         enriched_snapshot = event_data.get("enriched_snapshot", {})
         historical_profile = event_data.get("historical_vp", {})
         market_environment = event_data.get("market_environment", {})
         orderbook_data = event_data.get("orderbook_data", {})
         
-        # Cria o sinal para exportaÃ§Ã£o
+        # Cria o sinal para exportação
         signal = create_chart_signal_from_event(
             event_data=event_data,
             symbol=bot.symbol,
@@ -441,15 +441,15 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
         if not report_text:
             return
 
-        header = "ANÃLISE PROFISSIONAL DA IA"
+        header = "ANÁLISE PROFISSIONAL DA IA"
         start = (report_text or "")[:200].upper()
-        sep = "â•" * 75
+        sep = "═" * 75
 
         if header in start:
             logging.info("\n" + report_text.rstrip())
         else:
             logging.info(
-                "\n" + "â•" * 25 + " " + header + " " + "â•" * 25
+                "\n" + "═" * 25 + " " + header + " " + "═" * 25
             )
             logging.info(report_text)
 
@@ -491,8 +491,28 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                     )
 
                     # ============================================
-                    # [INTELIGÃŠNCIA HÃBRIDA] InferÃªncia Quantitativa
+                    # [INTELIGÊNCIA HÍBRIDA] Inferência Quantitativa
                     # ============================================
+                    # Injetar features do WindowState (fonte única de verdade)
+                    # para que o ML engine encontre bb_width, rsi, etc.
+                    # diretamente na raiz do event_data
+                    try:
+                        from core.state_manager import StateManager
+                        _ws = StateManager.instance().current
+                        if _ws is not None:
+                            _ws_feats = _ws.get_ml_features()
+                            for _k, _v in _ws_feats.items():
+                                if _k not in event_data or event_data.get(_k) in (None, 0, 0.0):
+                                    event_data[_k] = _v
+                            logging.debug(
+                                "WindowState ML features injected: price=%.2f bb_w=%.6f rsi=%.1f",
+                                _ws_feats.get('price_close', 0),
+                                _ws_feats.get('bb_width', 0),
+                                _ws_feats.get('rsi', 0),
+                            )
+                    except Exception as _ws_err:
+                        logging.debug("WindowState inject falhou (nao-critico): %s", _ws_err)
+
                     ml_prediction = {}
                     if hasattr(bot, 'ml_engine') and bot.ml_engine:
                         try:
@@ -503,11 +523,11 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                 confidence = ml_prediction.get("confidence", 0.0)
 
                                 if prob > 0.6:
-                                    bias = "ðŸ“ˆ ALTISTA"
+                                    bias = "📈 ALTISTA"
                                 elif prob < 0.4:
-                                    bias = "ðŸ“‰ BAIXISTA"
+                                    bias = "📉 BAIXISTA"
                                 else:
-                                    bias = "âš–ï¸  NEUTRO"
+                                    bias = "⚖️  NEUTRO"
 
                                 logging.info(
                                     f"ML prediction: {bias} "
@@ -526,12 +546,12 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                     pass
 
                             else:
-                                logging.warning(f"âš ï¸ ML Engine retornou status: {ml_prediction.get('status')}")
+                                logging.warning(f"⚠️ ML Engine retornou status: {ml_prediction.get('status')}")
                         except Exception as e:
-                            logging.error(f"âŒ Erro na inferÃªncia ML: {e}", exc_info=True)
+                            logging.error(f"❌ Erro na inferência ML: {e}", exc_info=True)
                             ml_prediction = {"status": "error", "msg": str(e)}
                     else:
-                        logging.debug("ðŸ¤– ML Engine nÃ£o disponÃ­vel - usando apenas IA Generativa")
+                        logging.debug("🤖 ML Engine não disponível - usando apenas IA Generativa")
 
                     # Heartbeat extra
                     try:
@@ -541,7 +561,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
 
                     try:
                         logging.debug(
-                            "ðŸ“Š Dados do evento para IA: %s",
+                            "📊 Dados do evento para IA: %s",
                             {
                                 "tipo": event_data.get("tipo_evento"),
                                 "delta": format_delta(event_data.get("delta")),
@@ -557,9 +577,9 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                         pass
 
                     # [RAW_EVENT_DEDUP] Deduplicar evento ANTES de construir payload
-                    # NOTA: deep_copy=True para nÃ£o corromper o evento original.
-                    # NÃ£o fazemos clear()+update() pois build_compact_payload
-                    # lÃª direto do event_data original â€” dedup Ã© sÃ³ para o LLM.
+                    # NOTA: deep_copy=True para não corromper o evento original.
+                    # Não fazemos clear()+update() pois build_compact_payload
+                    # lê direto do event_data original — dedup é só para o LLM.
                     try:
                         _deduped = deduplicate_event(event_data, deep_copy=True)
                         logging.debug(
@@ -567,7 +587,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                             len(_deduped),
                         )
                     except Exception as _dedup_err:
-                        logging.warning("Dedup falhou (nÃ£o-crÃ­tico): %s", _dedup_err)
+                        logging.warning("Dedup falhou (não-crítico): %s", _dedup_err)
                         _deduped = event_data
 
                     # [BUILD_COMPACT] Payload compacto direto do event_data
@@ -627,7 +647,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                             except Exception:
                                 pass
 
-                            # [AI_EVENT_SAVE] Salva evento de anÃ¡lise da IA
+                            # [AI_EVENT_SAVE] Salva evento de análise da IA
                             try:
                                 ai_payload = event_data.get("ai_payload", {})
                                 symbol = event_data.get("ativo") or event_data.get("symbol") or bot.symbol
@@ -668,10 +688,10 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
 
                                     except Exception as e:
                                         logging.warning(
-                                            f"âš ï¸ Erro na fusÃ£o hÃ­brida, usando IA pura: {e}"
+                                            f"⚠️ Erro na fusão híbrida, usando IA pura: {e}"
                                         )
 
-                                # Filtro de confianÃ§a
+                                # Filtro de confiança
                                 if isinstance(ai_result_json, dict):
                                     action = ai_result_json.get("action", "wait")
                                     confidence = ai_result_json.get("confidence", 0.0)
@@ -679,7 +699,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                         ai_result_json["action"] = "wait"
 
                                 # Usar o payload otimizado (formato compacto) ao salvar o evento
-                                # O ai_payload jÃ¡ foi otimizado pelo AIPayloadOptimizer.optimize() acima
+                                # O ai_payload já foi otimizado pelo AIPayloadOptimizer.optimize() acima
                                 ai_event = {
                                     "tipo_evento": "AI_ANALYSIS",
                                     "symbol": symbol,
@@ -687,7 +707,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                     "anchor_price": anchor_price,
                                     "anchor_window_id": anchor_window_id,
                                     "ai_result": ai_result_json,
-                                    "ai_payload": ai_payload,  # Usa o payload jÃ¡ otimizado
+                                    "ai_payload": ai_payload,  # Usa o payload já otimizado
                                 }
 
                                 if hasattr(bot, "event_saver") and bot.event_saver:
@@ -695,19 +715,19 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
 
                             except Exception as e:
                                 logging.debug(
-                                    f"Falha ao salvar evento de anÃ¡lise da IA: {e}",
+                                    f"Falha ao salvar evento de análise da IA: {e}",
                                     exc_info=True,
                                 )
 
                         except Exception as e:
                             logging.error(
-                                f"âŒ Erro ao processar resposta da IA: {e}",
+                                f"❌ Erro ao processar resposta da IA: {e}",
                                 exc_info=True,
                             )
 
             except Exception as e:
                 logging.error(
-                    f"âŒ Erro na thread de anÃ¡lise da IA: {e}",
+                    f"❌ Erro na thread de análise da IA: {e}",
                     exc_info=True,
                 )
                 try:
@@ -730,14 +750,14 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                     except Exception as e:
                         logging.debug(f"Erro ao limpar thread pool: {e}")
 
-    logging.debug("ðŸ”§ Criando thread para anÃ¡lise da IA...")
+    logging.debug("🔧 Criando thread para análise da IA...")
     t = threading.Thread(target=ai_worker, daemon=True)
 
     with bot._ai_pool_lock:
         bot.ai_thread_pool = [th for th in bot.ai_thread_pool if th.is_alive()]
 
         if len(bot.ai_thread_pool) >= bot.max_ai_threads:
-            logging.warning("âš ï¸ Thread pool da IA cheio, aguardando...")
+            logging.warning("⚠️ Thread pool da IA cheio, aguardando...")
             bot.ai_thread_pool[0].join(timeout=5.0)
             bot.ai_thread_pool = [
                 th for th in bot.ai_thread_pool if th.is_alive()

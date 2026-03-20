@@ -403,7 +403,14 @@ class MLInferenceEngine:
                 f"= {len(self.EXPECTED_FEATURES)}/{len(self.EXPECTED_FEATURES)} "
                 f"[history={len(self._price_history)}]"
             )
-        
+
+        # Retorna features + metadados de fonte (para _ml_usable)
+        mapped['_source_counts'] = {
+            'external': len(from_external),
+            'internal': len(from_internal),
+            'default': len(from_default),
+            'real': len(from_external) + len(from_internal),
+        }
         return mapped
 
     def _compute_derived_features(self, features: dict) -> dict:
@@ -416,10 +423,13 @@ class MLInferenceEngine:
         if price > 0:
             # BB Check - só usar fallback se realmente não foi calculado
             if features.get('bb_upper', 0.0) == 0.0 and features.get('bb_lower', 0.0) == 0.0:
-                features['bb_upper'] = price * 1.02
-                features['bb_lower'] = price * 0.98
+                # CORREÇÃO: bb_width fallback realista para BTC (~0.002)
+                # Antes: 1.02/0.98 produzia bb_width=0.04 (163x maior que real)
+                # Agora: 0.1% band → bb_width=0.002 (faixa típica BTC)
+                features['bb_upper'] = price * 1.001
+                features['bb_lower'] = price * 0.999
                 features['bb_width'] = (features['bb_upper'] - features['bb_lower']) / price
-                logger.debug("[DERIVED] BB fallback aplicado (sem dados históricos)")
+                logger.debug("[DERIVED] BB fallback aplicado (sem dados históricos) bb_w=%.6f", features['bb_width'])
         
         return features
 
@@ -472,18 +482,22 @@ class MLInferenceEngine:
                 logger.warning(f"RSI anomalo: {rsi_val:.1f}, corrigindo para {rsi_fallback:.1f}")
                 mapped_features['rsi'] = rsi_fallback
 
+            # Extrair metadados de fonte antes de montar DMatrix
+            _src = mapped_features.pop('_source_counts', {})
+            _real_count = _src.get('real', 0)
+
             # 3. Ordenação conforme treino
             feature_values = [mapped_features[f] for f in self.EXPECTED_FEATURES]
-            
+
             # 4. Criação da DMatrix
             dmatrix = xgb.DMatrix(
                 data=np.array([feature_values]),
                 feature_names=self.EXPECTED_FEATURES
             )
-            
+
             # 5. Predição
             prob = float(self.model.predict(dmatrix)[0])
-            
+
             # Signal classification
             if prob > 0.6:
                 signal = 'bullish'
@@ -491,21 +505,30 @@ class MLInferenceEngine:
                 signal = 'bearish'
             else:
                 signal = 'neutral'
-            
+
             # Log da predição com contexto
+            history_n = len(self._price_history)
             logger.info(
                 f"ML prediction: prob_up={prob:.4f} | signal={signal} | "
                 f"features=[ret1={mapped_features.get('return_1', 0):.6f}, "
                 f"rsi={mapped_features.get('rsi', 0):.1f}, "
                 f"bb_w={mapped_features.get('bb_width', 0):.6f}, "
                 f"vol_r={mapped_features.get('volume_ratio', 0):.2f}] | "
-                f"history={len(self._price_history)}"
+                f"history={history_n} real={_real_count}/9"
             )
-            
-            history_n = len(self._price_history)
+
             _min_history = max(self.BB_PERIOD, self.RSI_PERIOD + 1, 10)
             _warmup_ready = history_n >= _min_history
-            _ml_usable = history_n >= (self.RSI_PERIOD + 1)  # >=15: returns + RSI disponíveis
+
+            # _ml_usable: ML participa da decisão híbrida se:
+            #   - >=7 features são reais (ext/int, não default), OU
+            #   - histórico interno >= RSI_PERIOD+1 (warmup completo)
+            # Antes: exigia history_n>=15, bloqueando ML por 15 janelas
+            # mesmo quando WindowState já fornecia features reais.
+            _ml_usable = (
+                _real_count >= 7
+                or history_n >= (self.RSI_PERIOD + 1)
+            )
 
             return {
                 'prob_up': prob,
@@ -521,7 +544,7 @@ class MLInferenceEngine:
                 # Metadados de warmup — lidos por hybrid_decision.fuse_decisions()
                 '_warmup_ready': _warmup_ready,
                 '_ml_usable': _ml_usable,
-                '_features_real_count': history_n,  # proxy: mais história = mais features reais
+                '_features_real_count': _real_count,
                 '_history_count': history_n,
             }
             

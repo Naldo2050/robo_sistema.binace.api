@@ -78,7 +78,7 @@ UI_TOLERANCE_USD = Decimal('0.02')
 # ==============================================================================
 PERF_MONITOR_WINDOW_SIZE = 1000
 LAZY_LOG_INTERVAL_MS = 1000
-HIGH_LATENCY_P99_MS = 100.0
+HIGH_LATENCY_P99_MS = 500.0  # antes: 100ms, muito agressivo com warmup/macro fetch
 MEMORY_USAGE_WARNING_RATIO = 0.9
 
 # ==============================================================================

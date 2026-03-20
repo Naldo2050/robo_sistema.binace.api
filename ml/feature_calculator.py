@@ -38,8 +38,9 @@ class LiveFeatureCalculator:
         'volume_ratio': 2,
     }
     TOTAL_FEATURES = 9
-    # 7/9 já inclui returns + RSI + volume (features de maior importância)
-    MIN_REAL_FEATURES_FOR_ML = 7
+    # 5/9: price_close + RSI + bb_width + volume_ratio + 1 return é suficiente
+    # para que ML participe da decisão híbrida (antes: 7, bloqueava por muito tempo)
+    MIN_REAL_FEATURES_FOR_ML = 5
 
     def __init__(self, bb_period: int = 20, bb_std: float = 2.0, rsi_period: int = 14):
         self.bb_period = bb_period

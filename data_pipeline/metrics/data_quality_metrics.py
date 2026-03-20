@@ -59,7 +59,7 @@ class DataQualityMetrics:
     CORRECTION_RATE_WARNING = 5.0   # %
     CORRECTION_RATE_ERROR = 10.0    # %
     DISCARD_RATE_WARNING = 2.0      # %
-    LATENCY_P95_WARNING_MS = 10.0   # ms
+    LATENCY_P95_WARNING_MS = 50.0   # ms (antes: 10ms, muito agressivo)
     
     # Intervalo de log periódico
     LOG_INTERVAL_EVENTS = 100
