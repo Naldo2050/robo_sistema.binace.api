@@ -78,7 +78,6 @@ class MLInferenceEngine:
         ],
         'bb_width': [
             'bb_width',                             # direto do LiveFeatureCalculator
-            'bb__width',                            # alias de compatibilidade
             'ml_features.price_features.bb_width',
             'technical.bb_width',
         ],
