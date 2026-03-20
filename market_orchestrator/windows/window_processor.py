@@ -51,6 +51,7 @@ from data_pipeline import DataPipeline
 from data_handler import create_absorption_event, create_exhaustion_event
 from orderbook_core.structured_logging import StructuredLogger
 from orderbook_core.tracing_utils import TracerWrapper
+from core.state_manager import StateManager
 
 
 class WindowProcessor:
@@ -220,6 +221,119 @@ class WindowProcessor:
                 self._queue.task_done()
 
 
+def _populate_window_state(
+    ws, enriched: Dict[str, Any],
+    flow_metrics: Dict[str, Any],
+    ob_event: Dict[str, Any],
+    macro_context: Dict[str, Any],
+    total_buy_volume: float,
+    total_sell_volume: float,
+) -> None:
+    """Popula WindowState com dados do pipeline enrich + context."""
+    from core.window_state import WindowState  # noqa: F811 - tipo apenas
+
+    # --- Price ---
+    ohlc = enriched.get("ohlc", {})
+    ws.price.open = float(ohlc.get("open", 0))
+    ws.price.high = float(ohlc.get("high", 0))
+    ws.price.low = float(ohlc.get("low", 0))
+    ws.price.close = float(ohlc.get("close", 0))
+    ws.price.vwap = float(ohlc.get("vwap", 0))
+
+    # --- Volume ---
+    ws.volume.total = float(enriched.get("volume_total", 0))
+    ws.volume.buy = total_buy_volume
+    ws.volume.sell = total_sell_volume
+    ws.volume.delta = total_buy_volume - total_sell_volume
+    ws.volume.num_trades = int(enriched.get("num_trades", 0))
+    ws.mark_written("pipeline")
+
+    # --- OrderBook ---
+    ob = ob_event if isinstance(ob_event, dict) else {}
+    ws.orderbook.bid_depth_usd = float(ob.get("bid_depth_usd", 0))
+    ws.orderbook.ask_depth_usd = float(ob.get("ask_depth_usd", 0))
+    ws.orderbook.imbalance = float(ob.get("imbalance", 0))
+    ws.orderbook.spread_bps = float(ob.get("spread_bps", 0))
+    ws.orderbook.is_valid = bool(ob.get("is_valid", True))
+    ws.orderbook.data_source = ob.get("data_quality", {}).get("data_source", "unknown")
+    ws.mark_written("orderbook")
+
+    # --- Flow ---
+    fm = flow_metrics or {}
+    ws.flow.cvd = float(fm.get("cvd", 0))
+    ws.flow.flow_imbalance = float(fm.get("flow_imbalance", 0))
+    ws.flow.buy_sell_ratio = float(fm.get("buy_sell_ratio", 1.0))
+    ws.flow.pressure_label = fm.get("pressure_label", "NEUTRAL")
+    for sector_key in ("retail", "mid", "whale"):
+        sector = fm.get(f"{sector_key}_sector", {})
+        if isinstance(sector, dict):
+            setattr(ws.flow, f"{sector_key}_buy", float(sector.get("buy", 0)))
+            setattr(ws.flow, f"{sector_key}_sell", float(sector.get("sell", 0)))
+            setattr(ws.flow, f"{sector_key}_delta", float(sector.get("delta", 0)))
+    ws.mark_written("flow")
+
+    # --- Macro ---
+    ext = macro_context.get("external", {}) or {}
+    ws.macro.dxy = ext.get("dxy")
+    ws.macro.dxy_source = ext.get("dxy_source", "")
+    ws.macro.sp500 = ext.get("sp500")
+    ws.macro.nasdaq = ext.get("nasdaq")
+    ws.macro.gold = ext.get("gold")
+    ws.macro.wti = ext.get("wti")
+    ws.macro.vix = ext.get("vix")
+    ws.macro.tnx = ext.get("tnx")
+    ws.macro.fear_greed = ext.get("fear_greed")
+    ws.macro.fear_greed_label = ext.get("fear_greed_label", "")
+    ws.mark_written("macro")
+
+    # --- Derivatives ---
+    deriv = macro_context.get("derivatives", {}) or {}
+    ws.derivatives.btc_funding_rate = deriv.get("btc_funding_rate")
+    ws.derivatives.btc_open_interest = float(deriv.get("btc_open_interest", 0))
+    ws.derivatives.btc_long_short_ratio = float(deriv.get("btc_long_short_ratio", 1.0))
+    ws.mark_written("derivatives")
+
+
+def _populate_window_state_indicators(
+    ws, computed_features: Dict[str, Any],
+    mtf_trends: Optional[Dict[str, Any]],
+) -> None:
+    """Popula WindowState.indicators com dados do feature_calc e multi_tf."""
+    cf = computed_features or {}
+
+    ws.indicators.rsi = float(cf.get("rsi", 50.0))
+    ws.indicators.bb_upper = float(cf.get("bb_upper", 0))
+    ws.indicators.bb_lower = float(cf.get("bb_lower", 0))
+    ws.indicators.bb_width = float(cf.get("bb_width", 0))
+    ws.indicators.atr = float(cf.get("atr", 0))
+
+    # realized_vol: prefer multi_tf daily, fallback to computed
+    rv = 0.0
+    if mtf_trends and isinstance(mtf_trends, dict):
+        daily = mtf_trends.get("1d", {})
+        if isinstance(daily, dict):
+            rv = float(daily.get("realized_vol", 0))
+            if rv > 0:
+                ws.indicators.realized_vol_source = "1d"
+    if rv <= 0:
+        rv = float(cf.get("realized_vol", 0))
+    if rv > 0:
+        ws.indicators.realized_vol = rv
+    else:
+        # Fallback mínimo para evitar validação falhar
+        ws.indicators.realized_vol = 0.001
+        ws.indicators.realized_vol_source = "fallback"
+
+    # RSI source
+    rsi_src = cf.get("_rsi_source", "")
+    if "multi_tf" in str(rsi_src).lower():
+        ws.indicators.rsi_source_tf = "15m"
+    elif rsi_src:
+        ws.indicators.rsi_source_tf = str(rsi_src)
+
+    ws.mark_written("indicators")
+
+
 def process_window(bot) -> None:
     """
     Corpo original de EnhancedMarketBot._process_window,
@@ -296,6 +410,15 @@ def process_window_snapshot(
         return
 
     bot.window_count += 1
+
+    # ----------------------------
+    # WindowState — Fonte Única de Verdade
+    # ----------------------------
+    state_mgr = StateManager.instance()
+    window_state = state_mgr.new_window(
+        window_number=bot.window_count,
+        symbol=getattr(bot, "symbol", "BTCUSDT"),
+    )
 
     # ----------------------------
     # Cálculo de volumes buy/sell
@@ -450,6 +573,14 @@ def process_window_snapshot(
                 market_environment=macro_context.get("market_environment", {}),
             )
 
+            # ----------------------------
+            # WindowState: popular com dados do pipeline
+            # ----------------------------
+            _populate_window_state(
+                window_state, enriched, flow_metrics, ob_event,
+                macro_context, total_buy_volume, total_sell_volume,
+            )
+
             try:
                 from ml.model_inference import predict_up_probability
             except ImportError:
@@ -578,6 +709,21 @@ def process_window_snapshot(
                         if _mtf_real:
                             s["multi_tf"] = _mtf_real
                         # Se mtf_trends vazio, deixar sem multi_tf — melhor que dados falsos
+
+            # ----------------------------
+            # WindowState: indicadores + validação
+            # ----------------------------
+            _populate_window_state_indicators(
+                window_state,
+                locals().get("computed_features", {}),
+                macro_context.get("mtf_trends"),
+            )
+            ws_errors = state_mgr.finalize_window()
+            if ws_errors:
+                logging.warning(
+                    f"[WindowState] Janela #{bot.window_count}: "
+                    f"{len(ws_errors)} problemas de validacao"
+                )
 
             # Encaminha para o processador de sinais original
             bot._process_signals(
