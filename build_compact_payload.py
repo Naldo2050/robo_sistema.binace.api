@@ -761,16 +761,17 @@ def _build_static_context(event_data: dict) -> dict:
     if fg is not None:
         ctx["fg"] = fg
 
-    # --- Volume Profile Diário ---
-    poc = vp.get("poc")
-    if poc:
-        ctx["poc"] = int(poc)
-    val_ = vp.get("val")
-    if val_:
-        ctx["val"] = int(val_)
-    vah = vp.get("vah")
-    if vah:
-        ctx["vah"] = int(vah)
+    # --- Volume Profile Diário (só se dados válidos) ---
+    if vp.get("status") == "success":
+        poc = vp.get("poc")
+        if poc:
+            ctx["poc"] = int(poc)
+        val_ = vp.get("val")
+        if val_:
+            ctx["val"] = int(val_)
+        vah = vp.get("vah")
+        if vah:
+            ctx["vah"] = int(vah)
 
     # --- Derivativos ---
     btc_deriv = deriv.get("BTCUSDT", {})
