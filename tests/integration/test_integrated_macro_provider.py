@@ -62,7 +62,7 @@ async def test_macro_provider_integration():
         # 3. Teste de integração com ml_features
         print("\n3. Testando integração com ml_features...")
         
-        from ml_features import calculate_cross_asset_features
+        from common.ml_features import calculate_cross_asset_features
         
         features = calculate_cross_asset_features("BTCUSDT")
         

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from monitoring.time_manager import TimeManager
 
 try:
-    from ml_features import generate_ml_features
+    from common.ml_features import generate_ml_features
 except ImportError:
     generate_ml_features = None
 
