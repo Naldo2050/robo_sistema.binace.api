@@ -32,7 +32,7 @@ try:
         calculate_macro_regime,
         calculate_correlation_regime
     )
-    from ml_features import calculate_cross_asset_features, generate_ml_features
+    from common.ml_features import calculate_cross_asset_features, generate_ml_features
 except ImportError as e:
     pytest.skip(f"Import error: {e}", allow_module_level=True)
 

@@ -70,7 +70,7 @@ import pandas as pd
 import config
 from orderbook_analyzer import OrderBookAnalyzer
 from flow_analyzer import FlowAnalyzer
-from ml_features import generate_ml_features
+from common.ml_features import generate_ml_features
 from monitoring.time_manager import TimeManager
 
 # 🆕 Importa validador com tratamento de erro

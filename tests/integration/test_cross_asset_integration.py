@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Imports dos módulos modificados
 try:
-    from ml_features import generate_ml_features
+    from common.ml_features import generate_ml_features
     from market_orchestrator.ai.ai_payload_builder import build_ai_input
     logger.info("✅ Imports dos módulos bem-sucedidos")
 except ImportError as e:

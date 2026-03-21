@@ -11,7 +11,7 @@ import json
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from market_analysis.cross_asset_correlations import get_btc_eth_correlations, get_btc_macro_correlations
-from ml_features import calculate_cross_asset_features
+from common.ml_features import calculate_cross_asset_features
 from market_orchestrator.ai.ai_payload_builder import build_payload_with_cross_asset
 
 def teste_completo():
@@ -109,7 +109,7 @@ def test_integration_with_ml_features():
     
     # Verificar se a nova função foi adicionada corretamente
     try:
-        from ml_features import calculate_cross_asset_features
+        from common.ml_features import calculate_cross_asset_features
         print("[OK] calculate_cross_asset_features importada com sucesso!")
         
         # Verificar se a função está registrada no ANALYSIS_TRIGGER

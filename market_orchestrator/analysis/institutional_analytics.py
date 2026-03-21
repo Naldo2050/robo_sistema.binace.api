@@ -632,7 +632,7 @@ class InstitutionalAnalyticsEngine:
             return {"patterns_detected": 0, "patterns": []}
 
         try:
-            from pattern_recognition import detect_candlestick_patterns
+            from market_analysis.pattern_recognition import detect_candlestick_patterns
             return detect_candlestick_patterns(candles_df)
         except Exception as e:
             return {"patterns_detected": 0, "patterns": [], "error": str(e)}

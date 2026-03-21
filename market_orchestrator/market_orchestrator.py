@@ -110,7 +110,7 @@ except Exception:
     defense_zones = None
 
 try:
-    from pattern_recognition import recognize_patterns
+    from market_analysis.pattern_recognition import recognize_patterns
 except Exception:
     recognize_patterns = None
 
