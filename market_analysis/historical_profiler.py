@@ -186,6 +186,39 @@ class HistoricalVolumeProfiler:
             err["status"] = "calculation_error"
             return err
 
+    @staticmethod
+    def _validate_volume_profile(vp: dict) -> dict:
+        """Validar VP — se POC==VAH==VAL ou range < 0.05%, marcar insufficient_data."""
+        if vp.get("status") != "success":
+            return vp
+
+        poc = vp.get("poc", 0.0)
+        vah = vp.get("vah", 0.0)
+        val = vp.get("val", 0.0)
+
+        if poc == 0:
+            vp["status"] = "no_data"
+            return vp
+
+        # Todos iguais → dados insuficientes (trades no mesmo bin)
+        if vah == val == poc:
+            vp["status"] = "insufficient_data"
+            vp["quality"] = "low"
+            return vp
+
+        # VAH < VAL (invertido) → corrigir
+        if vah < val:
+            vp["vah"], vp["val"] = vp["val"], vp["vah"]
+            vah, val = vp["vah"], vp["val"]
+
+        # Range muito pequeno (< 0.05% do preço) → insuficiente
+        if poc > 0 and abs(vah - val) / poc * 100 < 0.05:
+            vp["status"] = "insufficient_data"
+            vp["quality"] = "low"
+            return vp
+
+        return vp
+
     def update_profiles(self) -> dict:
         """Atualiza perfis daily / weekly / monthly e retorna o dicionário completo."""
         try:
@@ -199,7 +232,9 @@ class HistoricalVolumeProfiler:
                 int(now.timestamp() * 1000),
                 interval="1m",
             )
-            profiles["daily"] = self._calculate_profile(df_daily, "daily")
+            profiles["daily"] = self._validate_volume_profile(
+                self._calculate_profile(df_daily, "daily")
+            )
 
             if VP_ADVANCED:
                 # WEEKLY
@@ -209,7 +244,9 @@ class HistoricalVolumeProfiler:
                     int(now.timestamp() * 1000),
                     interval="5m",
                 )
-                profiles["weekly"] = self._calculate_profile(df_week, "weekly")
+                profiles["weekly"] = self._validate_volume_profile(
+                    self._calculate_profile(df_week, "weekly")
+                )
 
                 # MONTHLY
                 start_month = now - timedelta(days=30)
@@ -218,7 +255,9 @@ class HistoricalVolumeProfiler:
                     int(now.timestamp() * 1000),
                     interval="15m",
                 )
-                profiles["monthly"] = self._calculate_profile(df_month, "monthly")
+                profiles["monthly"] = self._validate_volume_profile(
+                    self._calculate_profile(df_month, "monthly")
+                )
 
             self.profile = profiles
             logging.info("✅ Volume Profile Histórico atualizado para %s.", self.symbol)
