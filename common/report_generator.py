@@ -16,7 +16,7 @@ from typing import Dict, Any, Optional
 from decimal import Decimal, ROUND_HALF_UP
 
 # 🔹 Importa utilitários de formatação
-from format_utils import (
+from common.format_utils import (
     format_price,
     format_quantity,
     format_percent,

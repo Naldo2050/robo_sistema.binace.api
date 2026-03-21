@@ -7,7 +7,7 @@ Este módulo expõe as métricas coletadas via HTTP para que o Prometheus possa 
 
 import logging
 from prometheus_client import start_http_server, REGISTRY, CollectorRegistry
-from metrics_collector import PROMETHEUS_AVAILABLE
+from monitoring.metrics_collector import PROMETHEUS_AVAILABLE
 
 logger = logging.getLogger(__name__)
 

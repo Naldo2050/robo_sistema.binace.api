@@ -21,7 +21,7 @@ from enum import Enum
 
 # Importar métricas do sistema
 try:
-    from metrics_collector import (
+    from monitoring.metrics_collector import (
         record_trade_late,
         update_active_trades_buffer as set_trades_in_buffer,
         track_operation as track_latency,  # type: ignore[assignment]

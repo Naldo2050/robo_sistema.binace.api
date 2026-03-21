@@ -398,7 +398,7 @@ def generate_markdown_structure():
                 "pattern_recognition.py",
                 "technical_indicators.py",
                 "validation_check.py",
-                "validar_evento.py",
+                "validate_event.py",
                 "log_formatter.py",
                 "funding_aggregator.py",
                 "historical_profiler.py"
@@ -482,10 +482,10 @@ def generate_markdown_structure():
             ],
             "diagnostic_files/window_diagnostics/": [
                 "__init__.py",
-                "diagnostico_avancado.py",
-                "diagnostico_duplicatas.py",
-                "diagnostico_janelas.py",
-                "fix_duplicatas_completo.py"
+                "advanced_diagnostics.py",
+                "duplicate_diagnostics.py",
+                "window_diagnostics.py",
+                "fix_duplicates_complete.py"
             ],
             "root": [
                 "debug_bot.py",
@@ -497,10 +497,10 @@ def generate_markdown_structure():
                 "diagnose_optimization.py",
                 "fix_bot_run.py",
                 "fix_broken_tests.py",
-                "fix_duplicatas.py",
+                "fix_duplicates.py",
                 "fix_optimization.py",
                 "fix_playwright.py",
-                "fix_separador_final.py",
+                "fix_separator_final.py",
                 "fix_timestamp.py"
             ]
         },
@@ -600,7 +600,7 @@ def generate_markdown_structure():
                 "outcome_tracker.py",
                 "reproduce_issue.py",
                 "show_problem_lines.py",
-                "verificar_otimizacao.py",
+                "verify_optimization.py",
                 "verify_implementations.py",
                 "verify_patch.py",
                 "audit_new_features.py",

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 # Configura logging para o teste
 logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
 
-from export_signals import (
+from trading.export_signals import (
     ChartSignal, 
     export_signal_to_csv, 
     create_chart_signal_from_event,

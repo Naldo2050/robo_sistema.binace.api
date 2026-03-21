@@ -29,14 +29,14 @@ from typing import Any, Dict, Optional, List
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import config
-from trade_buffer import AsyncTradeBuffer, BufferStatus
+from trading.trade_buffer import AsyncTradeBuffer, BufferStatus
 
 # ====== Clock Sync (opcional) ======
 # REMOVIDO: ClockSync duplicado - TimeManager já faz sincronização robusta com Binance
 # Isso evita conflitos entre dois sistemas de sincronização de tempo
 
 # ====== Utilitários de formatação ======
-from format_utils import (
+from common.format_utils import (
     format_price,
     format_quantity,
     format_percent,
@@ -47,12 +47,12 @@ from format_utils import (
 )
 
 # ====== Módulos internos originais ======
-from data_handler import (
+from data_processing.data_handler import (
     create_absorption_event,
     create_exhaustion_event,
     NY_TZ,
 )
-from event_memory import (
+from events.event_memory import (
     obter_memoria_eventos,
     adicionar_memoria_evento,
     calcular_probabilidade_historica,
@@ -77,19 +77,19 @@ except ImportError:
     _outcome_tracker = None
     _OUTCOME_OK = False
 from orderbook_analyzer import OrderBookAnalyzer
-from event_saver import EventSaver
-from context_collector import ContextCollector
+from events.event_saver import EventSaver
+from fetchers.context_collector import ContextCollector
 from flow_analyzer import FlowAnalyzer
 from ai_analyzer_qwen import AIAnalyzer
-from report_generator import generate_ai_analysis_report  # pode ser usado futuramente
-from levels_registry import LevelRegistry
-from data_validator import validator
+from common.report_generator import generate_ai_analysis_report  # pode ser usado futuramente
+from market_analysis.levels_registry import LevelRegistry
+from data_processing.data_validator import validator
 
-from time_manager import TimeManager
-from health_monitor import HealthMonitor
-from event_bus import EventBus
+from monitoring.time_manager import TimeManager
+from monitoring.health_monitor import HealthMonitor
+from events.event_bus import EventBus
 from data_pipeline import DataPipeline
-from feature_store import FeatureStore
+from data_processing.feature_store import FeatureStore
 
 # ====== Structured Logging & Tracing ======
 from orderbook_core.structured_logging import StructuredLogger
@@ -1258,22 +1258,26 @@ class EnhancedMarketBot:
         ):
             if "orderbook_data" in ob_event:
                 signal["orderbook_data"] = ob_event["orderbook_data"]
-            # spread_metrics removido — dados já estão em orderbook_data (mid, spread, bid/ask_depth)
             if "order_book_depth" in ob_event:
                 signal["order_book_depth"] = ob_event["order_book_depth"]
-            if "spread_analysis" in ob_event:
-                signal["spread_analysis"] = ob_event["spread_analysis"]
-            
-            # 🆕 Garante que depth_metrics esteja DENTRO de orderbook_data para o AI Payload Builder
-            if "depth_metrics" in ob_event and "orderbook_data" in signal:
-                # Cria cópia para não poluir referência externa
-                if isinstance(signal["orderbook_data"], dict):
-                    signal["orderbook_data"] = signal["orderbook_data"].copy()
-                    signal["orderbook_data"]["depth_metrics"] = ob_event["depth_metrics"]
+
+            # FIX 3.4: Consolidar spread_analysis e orderbook_data_quality
+            # dentro de orderbook_data (evita seções separadas duplicadas)
+            if isinstance(signal.get("orderbook_data"), dict):
+                signal["orderbook_data"] = signal["orderbook_data"].copy()
+                # Mover spread_bps de spread_analysis para orderbook_data
+                sa = ob_event.get("spread_analysis") or {}
+                if sa.get("current_spread_bps"):
+                    signal["orderbook_data"]["spread_bps"] = sa["current_spread_bps"]
+                # FIX 7B: depth_metrics NOT copied here — order_book_depth (L1-L25)
+                # is the canonical source. Keeping both duplicates the data.
 
             dq = ob_event.get("data_quality") or {}
             if dq:
-                signal["orderbook_data_quality"] = dq
+                # FIX 3.4: Consolidar quality dentro de orderbook_data
+                if isinstance(signal.get("orderbook_data"), dict):
+                    signal["orderbook_data"]["is_valid"] = dq.get("is_valid", True)
+                    signal["orderbook_data"]["data_source"] = dq.get("data_source", "live")
                 src = dq.get("data_source")
                 if src == "emergency":
                     signal["orderbook_quality"] = "emergency"

@@ -48,7 +48,7 @@ class InstitutionalAnalyticsEngine:
 
         # #19 — Data Quality Validator (stateless, init once)
         try:
-            from data_quality_validator import DataQualityValidator
+            from data_processing.data_quality_validator import DataQualityValidator
             self._data_quality_validator = DataQualityValidator()
         except Exception as e:
             self._data_quality_validator = None
@@ -206,7 +206,10 @@ class InstitutionalAnalyticsEngine:
         # SEÇÃO 6: CANDLESTICK PATTERNS
         # (#23 — já integrado via recognize_patterns)
         # ═══════════════════════════════════════
-        result["candlestick_patterns"] = self._compute_candlestick(candles_df)
+        # FIX 7A: Only include candlestick_patterns if patterns were detected
+        _cp = self._compute_candlestick(candles_df)
+        if _cp.get("patterns_detected", 0) > 0:
+            result["candlestick_patterns"] = _cp
 
         return result
 
@@ -311,7 +314,7 @@ class InstitutionalAnalyticsEngine:
         # #7 — Poor High/Low e #11 — Profile Shape
         if trades_df is not None and len(trades_df) > 20:
             try:
-                from dynamic_volume_profile import DynamicVolumeProfile
+                from market_analysis.dynamic_volume_profile import DynamicVolumeProfile
                 dvp = DynamicVolumeProfile(self.symbol)
 
                 # #7
@@ -351,18 +354,17 @@ class InstitutionalAnalyticsEngine:
 
                 # #6 — No-Man's Land
                 try:
-                    # Criar instância com dados mínimos se possível
-                    # VolumeProfileAnalyzer precisa de price_data e volume_data
-                    # Mas podemos usar o método com profile direto
-                    # Instanciar com dados dummy e usar profile pré-calculado
                     dummy_prices = pd.Series([current_price])
                     dummy_vols = pd.Series([1.0])
                     vpa = VolumeProfileAnalyzer(dummy_prices, dummy_vols)
-                    profile["no_mans_land"] = vpa.detect_no_mans_land(
+                    _nml = vpa.detect_no_mans_land(
                         vp_profile, current_price
                     )
+                    # FIX 7A: Only include if it has useful data
+                    if _nml.get("status") not in ("insufficient_hvns", "insufficient_data", "error"):
+                        profile["no_mans_land"] = _nml
                 except Exception as e:
-                    profile["no_mans_land"] = {"status": "error", "error": str(e)}
+                    logger.debug("no_mans_land error (non-critical): %s", e)
 
                 # #12 — Value Area Volume %
                 try:
@@ -370,9 +372,12 @@ class InstitutionalAnalyticsEngine:
                         dummy_prices = pd.Series([current_price])
                         dummy_vols = pd.Series([1.0])
                         vpa = VolumeProfileAnalyzer(dummy_prices, dummy_vols)
-                    profile["va_volume_pct"] = vpa.calculate_value_area_volume_pct(vp_profile)
+                    _va = vpa.calculate_value_area_volume_pct(vp_profile)
+                    # FIX 7A: Only include if it has actual data
+                    if _va.get("value_area_volume_pct", 0) > 0:
+                        profile["va_volume_pct"] = _va
                 except Exception as e:
-                    profile["va_volume_pct"] = {"status": "error", "error": str(e)}
+                    logger.debug("va_volume_pct error (non-critical): %s", e)
 
                 # #13 — HVN/LVN Strength
                 try:
@@ -388,11 +393,14 @@ class InstitutionalAnalyticsEngine:
                             "hvn": monthly_vp.get("hvns", []),
                             "lvn": monthly_vp.get("lvns", []),
                         }
-                    profile["volume_node_strength"] = vpa.score_volume_nodes(
+                    _vns = vpa.score_volume_nodes(
                         vp_profile, current_price, weekly_nodes, monthly_nodes
                     )
+                    # FIX 7A: Only include if there are actual nodes
+                    if _vns.get("total_hvns", 0) > 0 or _vns.get("total_lvns", 0) > 0:
+                        profile["volume_node_strength"] = _vns
                 except Exception as e:
-                    profile["volume_node_strength"] = {"status": "error", "error": str(e)}
+                    logger.debug("volume_node_strength error (non-critical): %s", e)
 
             except Exception as e:
                 profile["_vpa_error"] = str(e)
@@ -431,20 +439,9 @@ class InstitutionalAnalyticsEngine:
             flow["passive_aggressive"] = {"status": "error", "error": str(e)}
 
         # #15 — Buy/Sell Ratio
-        try:
-            from flow_analyzer.aggregates import calculate_buy_sell_ratios
-            ratio_input = {
-                "buy_volume_btc": order_flow.get("buy_volume_btc", 0),
-                "sell_volume_btc": order_flow.get("sell_volume_btc", 0),
-                "net_flow_1m": order_flow.get("net_flow_1m", 0),
-                "net_flow_5m": order_flow.get("net_flow_5m", 0),
-                "net_flow_15m": order_flow.get("net_flow_15m", 0),
-                "total_volume": order_flow.get("total_volume", 0),
-                "sector_flow": sector_flow,
-            }
-            flow["buy_sell_ratio"] = calculate_buy_sell_ratios(ratio_input)
-        except Exception as e:
-            flow["buy_sell_ratio"] = {"status": "error", "error": str(e)}
+        # FIX 3.2: REMOVIDO — buy_sell_ratio já existe em
+        # fluxo_continuo.order_flow.buy_sell_ratio (fonte canônica, calculado em flow_analyzer/core.py)
+        # Duplicar aqui inflava o payload e podia divergir.
 
         # #16 — Whale Accumulation Score
         if self.whale_calculator:
@@ -509,17 +506,22 @@ class InstitutionalAnalyticsEngine:
         # #2 — Reference Prices
         if self.reference_prices:
             try:
-                sr["reference_prices"] = self.reference_prices.get_context(
+                _ref = self.reference_prices.get_context(
                     self.symbol, current_price
                 )
+                # FIX 7A: Only include if it has actual data
+                if _ref.get("status") not in ("no_data", "error"):
+                    sr["reference_prices"] = _ref
             except Exception as e:
-                sr["reference_prices"] = {"status": "error", "error": str(e)}
+                logger.debug("reference_prices error (non-critical): %s", e)
 
-        # #4 — S/R Strength
+        # #4 — S/R Strength (computado para alimentar defense_zones, mas NÃO incluído no output)
+        # FIX 3.5: sr_strength removido do payload — defense_zones é a fonte canônica
+        _sr_levels_for_defense = []
         sr_scorer = self._modules.get("sr_strength")
         if sr_scorer and current_price > 0:
             try:
-                sr["sr_strength"] = sr_scorer.score_levels(
+                _sr_result = sr_scorer.score_levels(
                     current_price=current_price,
                     vp_data=vp_data,
                     pivot_data=pivot_data,
@@ -528,14 +530,14 @@ class InstitutionalAnalyticsEngine:
                     weekly_vp=weekly_vp,
                     monthly_vp=monthly_vp,
                 )
+                _sr_levels_for_defense = _sr_result.get("levels", [])
             except Exception as e:
-                sr["sr_strength"] = {"status": "error", "error": str(e)}
+                logger.debug("sr_strength scoring error (non-critical): %s", e)
 
-        # #5 — Defense Zones
+        # #5 — Defense Zones (fonte canônica de S/R)
         defense_detector = self._modules.get("defense_zones")
         if defense_detector and current_price > 0:
             try:
-                # Preparar absorption events para defense zones
                 abs_events = []
                 if self.absorption_mapper:
                     zones = self.absorption_mapper.get_zones(current_price)
@@ -547,16 +549,11 @@ class InstitutionalAnalyticsEngine:
                                 "strength": z["avg_strength"],
                             })
 
-                # Usar sr_levels do scoring se disponível
-                sr_levels = []
-                if "sr_strength" in sr and sr["sr_strength"].get("levels"):
-                    sr_levels = sr["sr_strength"]["levels"]
-
                 sr["defense_zones"] = defense_detector.detect(
                     current_price=current_price,
                     orderbook_data=orderbook_data,
                     vp_data=vp_data,
-                    sr_levels=sr_levels,
+                    sr_levels=_sr_levels_for_defense,
                     absorption_events=abs_events,
                     pivot_data=pivot_data,
                     ema_values=ema_values,

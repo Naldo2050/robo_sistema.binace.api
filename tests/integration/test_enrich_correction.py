@@ -12,9 +12,9 @@ from unittest.mock import MagicMock, patch
 # Adiciona o diretório raiz ao path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from data_enricher import DataEnricher
+from data_processing.data_enricher import DataEnricher
 from data_pipeline.pipeline import DataPipeline
-from enrichment_integrator import enrich_analysis_trigger_event, build_analysis_trigger_event
+from data_processing.enrichment_integrator import enrich_analysis_trigger_event, build_analysis_trigger_event
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

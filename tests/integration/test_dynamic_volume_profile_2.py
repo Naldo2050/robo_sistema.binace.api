@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from dynamic_volume_profile import DynamicVolumeProfile
+from market_analysis.dynamic_volume_profile import DynamicVolumeProfile
 
 def test_poc_calculation():
     print("Testando cálculo de POC...")

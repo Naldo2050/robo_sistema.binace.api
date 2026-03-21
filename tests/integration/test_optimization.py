@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from optimize_ai_payload import build_optimized_ai_payload, optimize_event_for_ai
+from common.optimize_ai_payload import build_optimized_ai_payload, optimize_event_for_ai
 
 
 FIXTURE_PATH = Path("tests") / "fixtures" / "sample_analysis_trigger.json"

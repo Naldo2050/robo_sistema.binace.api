@@ -17,8 +17,8 @@ try:
     from flow_analyzer import FlowAnalyzer
     from data_pipeline import DataPipeline
     from orderbook_analyzer import OrderBookAnalyzer
-    from time_manager import TimeManager
-    from format_utils import format_price, format_quantity
+    from monitoring.time_manager import TimeManager
+    from common.format_utils import format_price, format_quantity
 except ImportError as e:
     print(f"❌ Erro ao importar módulos do sistema: {e}")
     print("Execute este script a partir da raiz do projeto ou verifique o PYTHONPATH.")

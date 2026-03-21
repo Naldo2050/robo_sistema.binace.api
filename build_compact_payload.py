@@ -276,38 +276,106 @@ def _build_price(event_data: dict) -> dict:
     return price
 
 
-def _build_regime(event_data: dict) -> dict:
-    """Constrói seção de regime (sem redundâncias)."""
+def _calculate_regime_consensus(event_data: dict) -> dict:
+    """
+    Calcula consenso de regime ponderado por timeframe + macro.
+
+    ANTES: 12+ campos conflitantes (regime_analysis, market_environment,
+           multi_tf regimes, cross_asset, fear_greed) → LLM flip-flop.
+    AGORA: 1 campo 'consensus' com confidence e conflitos explícitos.
+
+    Pesos: 1d=4, 4h=3, 1h=2, 15m=1 (TFs maiores dominam).
+    Fear&Greed extremo (<20 ou >80) adiciona 2 votos.
+    """
+    votes_bull = 0
+    votes_bear = 0
+    total_weight = 0
+
+    # --- Votos dos timeframes (tendência) ---
+    weights = {"1d": 4, "4h": 3, "1h": 2, "15m": 1}
+    multi_tf = event_data.get("multi_tf", {})
+    dominant_tf = ""
+    max_adx = 0
+
+    for tf_name, weight in weights.items():
+        tf_data = multi_tf.get(tf_name, {})
+        if not tf_data:
+            continue
+        tendencia = tf_data.get("tendencia", "")
+        if tendencia in ("Alta",):
+            votes_bull += weight
+            total_weight += weight
+        elif tendencia in ("Baixa",):
+            votes_bear += weight
+            total_weight += weight
+
+        adx = tf_data.get("adx", 0) or 0
+        if adx > max_adx:
+            max_adx = adx
+            dominant_tf = tf_name
+
+    # --- Fear & Greed extremo ---
+    ext = event_data.get("external_markets", {})
+    fg_entry = ext.get("FEAR_GREED", {})
+    fg_val = fg_entry.get("preco_atual", 50) if isinstance(fg_entry, dict) else 50
+    try:
+        fg_val = int(fg_val)
+    except (TypeError, ValueError):
+        fg_val = 50
+
+    if fg_val < 20:
+        votes_bear += 2
+        total_weight += 2
+    elif fg_val > 80:
+        votes_bull += 2
+        total_weight += 2
+
+    # --- Volatility regime (informativo, não vota) ---
     env = event_data.get("market_environment", {})
+    vol_regime = env.get("volatility_regime", "")
+    vol_short = vol_regime[0] if vol_regime in ("LOW", "MEDIUM", "HIGH") else vol_regime[:3]
 
-    vol = env.get("volatility_regime", "")
-    trend = env.get("trend_direction", "")
-    sentiment = env.get("risk_sentiment", "")
+    # --- Consensus calculation ---
+    total_weight = max(total_weight, 1)
+    bull_pct = round(votes_bull / total_weight * 100)
+    bear_pct = round(votes_bear / total_weight * 100)
 
-    regime: dict[str, Any] = {}
+    if votes_bull > votes_bear * 1.5:
+        consensus = "BULL"
+    elif votes_bear > votes_bull * 1.5:
+        consensus = "BEAR"
+    else:
+        consensus = "MIX"
 
-    if vol:
-        regime["v"] = vol[0] if vol in ("LOW", "MEDIUM", "HIGH") else vol[:3]
+    conf = round(abs(votes_bull - votes_bear) / total_weight, 2)
 
-    if trend:
-        trend_map = {"SIDEWAYS": "SW", "UP": "UP", "DOWN": "DN", "TRENDING": "TRD"}
-        regime["tr"] = trend_map.get(trend, trend[:3])
+    result: dict[str, Any] = {
+        "cs": consensus,
+        "cf": conf,
+    }
 
-    if sentiment:
-        regime["st"] = sentiment[:4]
+    if vol_short:
+        result["v"] = vol_short
 
-    # --- Regime change probability (P7) ---
-    ra = event_data.get("regime_analysis", {})
-    rgm = ra.get("current_regime")
-    if rgm:
-        regime["rgm"] = str(rgm)[:5]
-    chg = ra.get("regime_change_probability")
-    if chg is not None:
-        chg_f = round(float(chg), 2)
-        if chg_f > 0:
-            regime["chg"] = chg_f
+    if dominant_tf:
+        result["dom"] = dominant_tf
 
-    return regime
+    # Flag conflict explicitly when strong disagreement exists
+    if votes_bull > 0 and votes_bear > 0:
+        result["bull%"] = bull_pct
+        result["bear%"] = bear_pct
+
+    return result
+
+
+def _build_regime(event_data: dict) -> dict:
+    """
+    Constrói seção de regime usando CONSENSO ponderado.
+
+    ANTES: 5+ campos crus (v, tr, st, rgm, chg) que se contradiziam.
+    AGORA: consensus (cs) + confidence (cf) + volatility (v) + dominant TF.
+    """
+    return _calculate_regime_consensus(event_data)
 
 
 def _build_flow(event_data: dict) -> dict:
@@ -596,8 +664,8 @@ def _build_alerts(event_data: dict) -> list:
 
 def _build_sr(event_data: dict) -> dict:
     """
-    Retorna 1 suporte e 1 resistência mais fortes com confluência — P6.
-    Fonte: event_data["institutional_analytics"]["sr_analysis"]
+    Retorna top 2 suportes e resistências com confluência — P6.
+    FIX 3.5: Fonte canônica agora é defense_zones (mais completo que sr_strength).
     """
     sr_analysis = (
         event_data.get("institutional_analytics", {}).get("sr_analysis", {})
@@ -605,41 +673,33 @@ def _build_sr(event_data: dict) -> dict:
     if not sr_analysis:
         return {}
 
-    levels = sr_analysis.get("sr_strength", {}).get("levels", [])
-    if not levels:
+    dz = sr_analysis.get("defense_zones", {})
+    if not dz or dz.get("status") == "error":
         return {}
-
-    resistances = sorted(
-        [l for l in levels if l.get("type") == "resistance"],
-        key=lambda x: x.get("strength", 0), reverse=True
-    )
-    supports = sorted(
-        [l for l in levels if l.get("type") == "support"],
-        key=lambda x: x.get("strength", 0), reverse=True
-    )
 
     sr: dict[str, Any] = {}
 
-    # FIX 4d: top 2 de cada lado
-    for i, r in enumerate(resistances[:2]):
-        price_r = r.get("price")
+    # sell_defense = zonas de resistência (acima do preço)
+    for i, zone in enumerate(dz.get("sell_defense", [])[:2]):
+        price_r = zone.get("center")
         if price_r is not None:
             key = f"r{i+1}"
-            sr[key] = [round(float(price_r)), r.get("strength", 0)]
-            conf = r.get("confluence_count", 0)
-            if conf >= 3:
-                sr[f"{key}_conf"] = conf
+            sr[key] = [round(float(price_r)), round(zone.get("strength", 0), 1)]
+            sources = zone.get("source_count", zone.get("sources", 0))
+            if sources and sources >= 3:
+                sr[f"{key}_conf"] = sources
 
-    for i, s in enumerate(supports[:2]):
-        price_s = s.get("price")
+    # buy_defense = zonas de suporte (abaixo do preço)
+    for i, zone in enumerate(dz.get("buy_defense", [])[:2]):
+        price_s = zone.get("center")
         if price_s is not None:
             key = f"s{i+1}"
-            sr[key] = [round(float(price_s)), s.get("strength", 0)]
-            conf = s.get("confluence_count", 0)
-            if conf >= 3:
-                sr[f"{key}_conf"] = conf
+            sr[key] = [round(float(price_s)), round(zone.get("strength", 0), 1)]
+            sources = zone.get("source_count", zone.get("sources", 0))
+            if sources and sources >= 3:
+                sr[f"{key}_conf"] = sources
 
-    defense = sr_analysis.get("defense_zones", {}).get("defense_asymmetry", {})
+    defense = dz.get("defense_asymmetry", {})
     bias = defense.get("bias")
     if bias:
         sr["def_bias"] = str(bias)[:10]

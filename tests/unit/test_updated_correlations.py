@@ -9,7 +9,7 @@ from datetime import datetime
 
 # Teste direto do módulo
 try:
-    from cross_asset_correlations import get_cross_asset_features
+    from market_analysis.cross_asset_correlations import get_cross_asset_features
     
     print("🧪 Testando função get_cross_asset_features...")
     

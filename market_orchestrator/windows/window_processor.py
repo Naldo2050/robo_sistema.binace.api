@@ -48,7 +48,7 @@ import config
 
 from ..orderbook.orderbook_wrapper import fetch_orderbook_with_retry
 from data_pipeline import DataPipeline
-from data_handler import create_absorption_event, create_exhaustion_event
+from data_processing.data_handler import create_absorption_event, create_exhaustion_event
 from orderbook_core.structured_logging import StructuredLogger
 from orderbook_core.tracing_utils import TracerWrapper
 from core.state_manager import StateManager
@@ -640,21 +640,18 @@ def process_window_snapshot(
                         bot.feature_calc = LiveFeatureCalculator()
 
                     if valid_window_data:
-                        # Bug 1 fix: amostrar ~60 trades uniformemente em vez de todos os ~2030.
-                        # Alimentar todos os ticks faz RSI calcular em tick-level → valores extremos
-                        # (ex: RSI=98 com variação de price <0.01%). Amostragem simula candles de ~1s.
-                        trade_count = len(valid_window_data)
-                        if trade_count > 60:
-                            step = max(1, trade_count // 60)
-                            sampled_trades = valid_window_data[::step]
-                        else:
-                            sampled_trades = valid_window_data
-
-                        for trade in sampled_trades:
-                            bot.feature_calc.update(
-                                price=float(trade.get("p", 0.0)),
-                                volume=float(trade.get("q", 0.0))
-                            )
+                        # FIX: Feed ONE price per window (the close price), not ~60 ticks.
+                        # The model was trained on pct_change(1) between 1-min candle closes.
+                        # Feeding individual ticks produced returns ~1e-7 (5000x too small),
+                        # causing XGBoost to always predict prob_up ~96.7%.
+                        # With one close per window: return_1 ~ 0.0004, matching training scale.
+                        close_price = float(valid_window_data[-1].get("p", 0.0))
+                        total_vol = sum(
+                            float(t.get("q", 0.0)) for t in valid_window_data
+                        )
+                        bot.feature_calc.update(
+                            price=close_price, volume=total_vol
+                        )
 
                     computed_features = bot.feature_calc.compute(
                         multi_tf=macro_context.get("mtf_trends")

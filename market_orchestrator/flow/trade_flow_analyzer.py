@@ -9,7 +9,7 @@ Lógica idêntica à original, apenas movida para este módulo.
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from data_handler import (
+from data_processing.data_handler import (
     create_absorption_event,
     create_exhaustion_event,
 )

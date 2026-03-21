@@ -5,7 +5,7 @@ Teste básico para o método detect_anomalies da classe DataQualityValidator
 """
 
 import pytest
-from data_quality_validator import DataQualityValidator
+from data_processing.data_quality_validator import DataQualityValidator
 
 
 def test_detect_anomalies_basic():

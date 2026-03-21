@@ -8,7 +8,7 @@ from datetime import datetime
 import math
 
 # 🔹 IMPORTA TIME MANAGER
-from time_manager import TimeManager
+from monitoring.time_manager import TimeManager
 
 DEFAULT_ZONE_WIDTHS = {
     "POC": 0.00035,      # 0.035%

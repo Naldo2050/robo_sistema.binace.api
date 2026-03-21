@@ -11,7 +11,7 @@ import re
 from decimal import Decimal
 
 # 🔹 IMPORTA UTILITÁRIOS DE FORMATAÇÃO
-from format_utils import (
+from common.format_utils import (
     format_price,
     format_quantity,
     format_percent,

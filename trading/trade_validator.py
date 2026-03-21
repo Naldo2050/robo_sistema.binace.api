@@ -235,7 +235,7 @@ class TradeLatencyMonitor:
         
         # Calcular latência usando TimeManager (compensa offset do relógio)
         try:
-            from time_manager import TimeManager
+            from monitoring.time_manager import TimeManager
             now_ms = TimeManager().now()
         except Exception:
             now_ms = int(time.time() * 1000)

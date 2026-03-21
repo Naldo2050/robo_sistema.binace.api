@@ -8,7 +8,7 @@ import sys
 # Garante que a raiz do projeto esteja no sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from event_bus import EventBus
+from events.event_bus import EventBus
 
 # ==========================================
 # FIXTURES

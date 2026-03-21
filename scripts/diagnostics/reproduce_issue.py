@@ -1,5 +1,5 @@
 
-from data_validator import DataValidator
+from data_processing.data_validator import DataValidator
 import time
 
 def reproduce():

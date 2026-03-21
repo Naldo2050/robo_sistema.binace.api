@@ -59,14 +59,14 @@ from orderbook_core.structured_logging import StructuredLogger
 from orderbook_core.tracing_utils import TracerWrapper
 
 # Import fallback robusto
-from orderbook_fallback import get_fallback_instance, fetch_with_fallback
+from orderbook_core.orderbook_fallback import get_fallback_instance, fetch_with_fallback
 
 try:
     from zoneinfo import ZoneInfo
 except Exception:
     ZoneInfo = None  # type: ignore
 
-from time_manager import TimeManager
+from monitoring.time_manager import TimeManager
 from orderbook_core.protocols import TimeManagerProtocol
 from orderbook_core.metrics import OrderBookMetrics, MetricsTracker
 from orderbook_core.orderbook_config import OrderBookConfig

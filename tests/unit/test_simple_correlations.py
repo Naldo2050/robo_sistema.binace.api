@@ -10,7 +10,7 @@ from datetime import datetime
 
 # Teste direto do módulo
 try:
-    from cross_asset_correlations import get_all_cross_asset_correlations
+    from market_analysis.cross_asset_correlations import get_all_cross_asset_correlations
     
     async def test_simple():
         print("🧪 Teste simples das correlações...")

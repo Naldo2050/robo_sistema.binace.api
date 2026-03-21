@@ -8,7 +8,7 @@ import logging
 import time
 
 from orderbook_core.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
-from orderbook_fallback import OrderBookFallback, FallbackConfig
+from orderbook_core.orderbook_fallback import OrderBookFallback, FallbackConfig
 
 # Configuração simples de logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')

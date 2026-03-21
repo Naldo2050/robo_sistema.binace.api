@@ -1,7 +1,7 @@
 # test_enrich_event.py
 import json
 import config
-from enrichment_integrator import enrich_analysis_trigger_event
+from data_processing.enrichment_integrator import enrich_analysis_trigger_event
 
 # Monte um ANALYSIS_TRIGGER mínimo baseado em um dos seus eventos reais
 event = {

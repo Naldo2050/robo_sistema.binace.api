@@ -101,6 +101,8 @@ trading/
 ├── __init__.py
 ├── trade_buffer.py       # AsyncTradeBuffer com backpressure
 ├── trade_validator.py    # Validacao de trades
+├── trade_filter.py       # Filtro de trades
+├── trade_timestamp_validator.py # Validador de timestamps
 ├── export_signals.py     # Exportador de sinais para CSV/MQL5
 ├── alert_engine.py       # Motor de alertas
 ├── alert_manager.py      # Gerenciador de alertas
@@ -160,6 +162,7 @@ monitoring/
 ├── time_manager.py        # Gerenciador de tempo (sincronizacao Binance)
 ├── health_monitor.py      # Monitor de saude do sistema
 ├── metrics_collector.py   # Coletor de metricas (Prometheus)
+├── heartbeat_manager.py   # Gerenciador de heartbeats
 ├── clock_sync.py          # Sincronizacao de relogio
 ├── websocket_handler.py   # Manipulador WebSocket
 └── orderbook_ws_manager.py # Gerenciador WebSocket do orderbook
@@ -177,10 +180,13 @@ common/
 ├── payload_optimizer_config.py # Configuracao do otimizador
 ├── ai_payload_compressor.py   # Compressor de payload IA
 ├── ai_response_validator.py   # Validador de respostas IA
-├── technical_indicators.py    # Indicadores tecnicos (EMA, RSI, etc.)
+├── ai_throttler.py            # Controlador de taxa de chamadas IA
+├── ai_field_legend.py        # Legenda de campos do payload IA
+├── technical_indicators.py   # Indicadores tecnicos (EMA, RSI, etc.)
 ├── ml_features.py             # Features de ML (cross-asset)
+├── async_helpers.py           # Utilitarios async
 ├── exceptions.py              # Hierarquia unificada de excecoes (BotBaseError)
-└── logging_config.py          # Logging centralizado (JSON/texto, rotativo)
+└── logging_config.py         # Logging centralizado (JSON/texto, rotativo)
 ```
 
 ---
@@ -201,19 +207,19 @@ ai_runner/
 ```
 flow_analyzer/
 ├── __init__.py
-├── absorption.py        # Deteccao de absorcao
-├── aggregates.py        # Agregacao de dados (RollingAggregate)
-├── constants.py         # Constantes do modulo
-├── core.py              # Motor principal (FlowAnalyzer)
-├── errors.py            # Tratamento de erros
-├── logging_config.py    # Configuracao de logging
-├── metrics.py           # Metricas e CircuitBreaker
-├── profiling.py         # Memory e lock profiling
+├── absorption.py         # Deteccao de absorcao
+├── aggregates.py         # Agregacao de dados (RollingAggregate)
+├── constants.py          # Constantes do modulo
+├── core.py               # Motor principal (FlowAnalyzer)
+├── errors.py             # Tratamento de erros
+├── logging_config.py     # Configuracao de logging
+├── metrics.py            # Metricas e CircuitBreaker
+├── profiling.py          # Memory e lock profiling
 ├── prometheus_metrics.py # Integracao Prometheus
-├── protocols.py         # Definicoes de protocolos
-├── serialization.py     # Serializacao (Decimal-safe JSON)
-├── utils.py             # Utilitarios
-├── validation.py        # Validacao de dados
+├── protocols.py          # Definicoes de protocolos
+├── serialization.py      # Serializacao (Decimal-safe JSON)
+├── utils.py              # Utilitarios
+├── validation.py         # Validacao de dados
 └── whale_score.py       # Score de whales
 ```
 
@@ -457,36 +463,128 @@ src/
 ```
 tests/
 ├── conftest.py                    # Fixtures globais + Prometheus cleanup
+├── test_regression.py            # Testes de regressao
+├── test_window_state.py          # Testes de estado de janela
 ├── fixtures/
 │   └── sample_analysis_trigger.json
-├── unit/                          # 28 testes unitarios (modulo isolado)
+├── unit/                          # 30 testes unitarios (modulo isolado)
 │   ├── test_event_bus.py
 │   ├── test_flow_analyzer.py
 │   ├── test_data_validator.py
-│   └── ... (28 arquivos)
-├── integration/                   # 50 testes de integracao (multiplos modulos)
+│   ├── test_data_quality_validator.py
+│   ├── test_cross_asset.py
+│   ├── test_defense_zones.py
+│   ├── test_circuit_breaker.py
+│   ├── test_feature_store.py
+│   ├── test_absorption_zone_mapper.py
+│   ├── test_ai_response_validator.py
+│   ├── test_config_imports.py
+│   ├── test_orderbook_analyzer.py
+│   ├── test_orderbook_helpers.py
+│   ├── test_orderbook_validate_snapshot.py
+│   ├── test_passive_aggressive_flow.py
+│   ├── test_rolling_aggregate.py
+│   ├── test_sr_strength.py
+│   ├── test_support_resistance_consolidated.py
+│   ├── test_support_resistance_modular.py
+│   ├── test_patch_compressor.py
+│   ├── test_patch_epoch_ms.py
+│   ├── test_patch_guardrail.py
+│   ├── test_patch_validator.py
+│   ├── test_rate_limiter.py
+│   ├── test_simple_correlations.py
+│   ├── test_updated_correlations.py
+│   ├── test_ml_frozen_detector.py
+│   └── test_ai_analyzer_language_and_think_strip.py
+├── integration/                   # 50+ testes de integracao (multiplos modulos)
 │   ├── test_ai_runner.py
+│   ├── test_ai_runner_comprehensive.py
+│   ├── test_ai_analyzer_mock.py
+│   ├── test_ai_llm_fallback_flow.py
 │   ├── test_pipeline_integration.py
 │   ├── test_orderbook_core_comprehensive.py
-│   └── ... (50 arquivos)
+│   ├── test_orderbook_analyzer_comprehensive.py
+│   ├── test_orderbook_analyzer_full_coverage.py
+│   ├── test_orderbook_analyzer_coverage.py
+│   ├── test_orderbook_analyzer_missing.py
+│   ├── test_orderbook_wrapper_fallback.py
+│   ├── test_orderbook_wrapper_fetch_with_retry.py
+│   ├── test_orderbook_analyze_core.py
+│   ├── test_orderbook_config_injection.py
+│   ├── test_circuit_breaker_improvements.py
+│   ├── test_circuit_breaker_integration.py
+│   ├── test_cross_asset_integration.py
+│   ├── test_enhanced_cross_asset.py
+│   ├── test_dynamic_volume_profile_2.py
+│   ├── test_data_pipeline.py
+│   ├── test_trade_buffer_optimization.py
+│   ├── test_trade_flow_analyzer.py
+│   ├── test_risk_manager_comprehensive.py
+│   ├── test_regime_integration.py
+│   ├── test_regime_integration_legacy.py
+│   ├── test_window_processor.py
+│   ├── test_window_processor_queue.py
+│   ├── test_update_histories.py
+│   ├── test_out_of_order_pruning.py
+│   ├── test_integration_full_flow.py
+│   ├── test_enrich_signal.py
+│   ├── test_enrich_simple.py
+│   ├── test_enrich_correction.py
+│   ├── test_enrich_event.py
+│   ├── test_macro_data_provider.py
+│   ├── test_integrated_macro_provider.py
+│   ├── test_macro_singleton_fix.py
+│   ├── test_institutional_alerts.py
+│   ├── test_fixes_simple.py
+│   ├── test_fixes_simple_fixed.py
+│   ├── test_patch_2_fallback_controlado.py
+│   ├── test_patch_2_simples.py
+│   ├── test_patch_compressor_v3.py
+│   ├── test_latency_fix_simple.py
+│   ├── test_corrections.py
+│   ├── test_optimization.py
+│   ├── test_fix_optimization_storage.py
+│   ├── test_event_saver_jsonl_guardian.py
+│   ├── test_new_payload.py
+│   └── test_invariant_fix.py
 ├── e2e/                           # 12 testes end-to-end (sistema completo)
 │   ├── test_system_health.py
 │   ├── test_performance_benchmarks.py
 │   ├── test_websocket.py
-│   └── ... (12 arquivos)
+│   ├── test_connection.py
+│   ├── test_export_signals.py
+│   ├── test_orchestrator_initialization.py
+│   ├── test_market_orchestrator_comprehensive.py
+│   ├── test_run_diagnosis.py
+│   ├── test_diagnostic.py
+│   ├── test_functions.py
+│   ├── backtester.py
+│   └── regime_scenario_tester.py
 ├── helpers/                       # Utilitarios de teste
 │   ├── fixtures.py
 │   ├── mock_ai_responses.py
-│   └── mock_qwen.py
+│   ├── mock_qwen.py
+│   ├── config_test.py
+│   ├── fix_broken_tests.py
+│   └── fix_qwen_import.py
 ├── legacy/                        # Testes antigos (pt-BR, verificacoes)
 │   ├── teste_rapido.py
+│   ├── teste_rapido_corrigido.py
 │   ├── teste_separador.py
-│   └── verify_*.py (7 arquivos)
+│   ├── teste_cross_asset_final.py
+│   ├── verify_patch_2.py
+│   ├── verify_prune_logic_only.py
+│   └── verify_day4_implementations.py
 └── payload/                       # Testes focados de payload
     ├── conftest.py
+    ├── pytest.ini
     ├── test_payload_compressor.py
     ├── test_payload_guardrail.py
-    └── test_payload_tripwires.py
+    ├── test_payload_tripwires.py
+    ├── test_payload_optimizer.py
+    ├── test_payload_metrics_aggregator.py
+    ├── test_build_compact_v3.py
+    └── test_ai_throttler_v2.py
 ```
 
 ---
@@ -502,6 +600,7 @@ scripts/
 ├── audit_script.py
 ├── backup_to_oci.py
 ├── dashboard.py                    # Dashboard (43KB)
+├── deploy_oracle.sh
 ├── disaster_recovery.sh
 ├── enhanced_market_bot.py
 ├── full_audit.py
@@ -512,8 +611,16 @@ scripts/
 ├── process_csv_data.py
 ├── prometheus_exporter.py
 ├── remote_health_check.sh
+├── run_tests_windows.bat
+├── run_tests_with_coverage.sh
+├── setup_test_environment.sh
+├── test_fixes.py
+├── test_fixes_simple.py
+├── test_fixes_final.py
 ├── validate_regime_system.py
 ├── validation_check.py
+├── test_payload.ps1
+├── test_payload.sh
 ├── debug/                          # Scripts de debug
 │   ├── debug_bot.py
 │   ├── debug_env.py
@@ -521,15 +628,26 @@ scripts/
 │   ├── debug_payload.py
 │   └── debug_validator.py
 ├── diagnostics/                    # Scripts de diagnostico
+│   ├── analyze_ai_results.py
+│   ├── auto_fix.py
 │   ├── diagnose_crash.py
+│   ├── diagnose_optimization.py
+│   ├── evaluate_ai_performance.py
 │   ├── final_replace.py
+│   ├── final_validation.py
+│   ├── performance_metrics.py
+│   ├── replay_validator.py
 │   ├── reproduce_issue.py
 │   ├── show_problem_lines.py
-│   ├── validar_evento.py
-│   ├── verificar_otimizacao.py
+│   ├── test_decision_system.py
+│   ├── test_integrated.py
+│   ├── test_latency.py
+│   ├── test_ml_model.py
+│   ├── validate_event.py
+│   ├── verify_optimization.py
 │   ├── verify_implementations.py
-│   ├── verify_patch.py
-│   └── diagnose_optimization.py    # Diagnostico de otimizacao de eventos
+│   ├── verify_ml_integration.py
+│   └── verify_patch.py
 ├── demos/                          # Demonstracoes
 │   ├── demo_circuit_breaker.py
 │   ├── demo_enhanced_cross_asset.py
@@ -537,9 +655,9 @@ scripts/
 ├── fixes/                          # Scripts de correcao
 │   ├── fix_bot_run.py
 │   ├── fix_broken_tests.py
-│   ├── fix_duplicatas.py
+│   ├── fix_duplicates.py
 │   ├── fix_playwright.py
-│   ├── fix_separador_final.py
+│   ├── fix_separator_final.py
 │   └── fix_timestamp.py
 └── structure/                      # Analise de estrutura
     ├── compare_structure.py
@@ -574,6 +692,8 @@ docs/
 ├── architecture.md
 ├── RUNBOOK.md
 ├── troubleshooting.md
+├── ESTRUTURA_VISUAL_SISTEMA.md
+├── README_OPTIMIZATION.md
 ├── CORRECAO_ENRICH_EVENT_SUMMARY.md
 ├── CORRECAO_FETCH_INTERMARKET_DATA.md
 ├── PATCH_SUMMARY.md
@@ -705,4 +825,24 @@ docs/
 
 ---
 
-*Ultima atualizacao: 2026-03-13 (reorganizacao completa: 3 modulos movidos, 2 duplicacoes resolvidas, utils/ e diagnostics/ consolidados, tests/ organizado em unit/integration/e2e, CI/CD criado, infra criada: .env.example, common/exceptions.py, common/logging_config.py)*
+## Atualizacoes Posteriores (2026-03-20)
+
+| Categoria | Arquivos Adicionados |
+|-----------|---------------------|
+ | common/ | ai_throttler.py, ai_field_legend.py, async_helpers.py |
+ | monitoring/ | heartbeat_manager.py |
+ | trading/ | trade_filter.py, trade_timestamp_validator.py |
+ | flow_analyzer/ | whale_score.py |
+ | tests/ | ~65+ novos arquivos de teste |
+ | scripts/ | +15 novos scripts |
+ | docs/ | ESTRUTURA_VISUAL_SISTEMA.md, README_OPTIMIZATION.md |
+ | tools/ | export_db_to_jsonl.py, test_groq_*.py |
+ | infrastructure/ | market-bot.
+ 
+ 
+ service, terraform/, oci/ |
+ | core/ | state_manager.py, window_state.py |
+
+---
+
+*Ultima atualizacao: 2026-03-20 (atualizacao completa: novos arquivos em common/, monitoring/, trading/, tests/ expandidos para ~120 arquivos, scripts/ atualizados, docs/ adicionados, .github/workflows criado, infrastructure/, core/, diagnostic_files/, tools/ documentados)*

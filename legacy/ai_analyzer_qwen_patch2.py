@@ -57,7 +57,7 @@ from typing import Any, Dict, Optional, Literal, TYPE_CHECKING
 
 from dotenv import load_dotenv
 
-from format_utils import (
+from common.format_utils import (
     format_price,
     format_quantity,
     format_percent,
@@ -75,7 +75,7 @@ except Exception:
 # Import opcional do HealthMonitor (para type hint e uso de heartbeat)
 if TYPE_CHECKING:
     # Import usado apenas para type checking (Pylance, mypy etc.)
-    from health_monitor import HealthMonitor
+    from monitoring.health_monitor import HealthMonitor
 
 # OpenAI / Groq (cliente síncrono + assíncrono)
 try:
@@ -122,7 +122,7 @@ else:
         class BaseModel:  # type: ignore[no-redef]
             pass
 
-from time_manager import TimeManager
+from monitoring.time_manager import TimeManager
 from orderbook_core.structured_logging import StructuredLogger
 
 # Regime Detector integration

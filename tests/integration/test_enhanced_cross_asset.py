@@ -18,7 +18,7 @@ from unittest.mock import Mock, patch, MagicMock
 
 # Importa os módulos a serem testados
 try:
-    from cross_asset_correlations import (
+    from market_analysis.cross_asset_correlations import (
         get_enhanced_cross_asset_correlations,
         _calculate_correlation_regime,
         _corr_last_window,

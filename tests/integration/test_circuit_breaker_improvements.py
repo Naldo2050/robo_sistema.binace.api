@@ -16,7 +16,7 @@ from typing import Dict, Any
 
 from orderbook_analyzer import OrderBookAnalyzer
 from orderbook_core.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
-from orderbook_fallback import OrderBookFallback, FallbackConfig
+from orderbook_core.orderbook_fallback import OrderBookFallback, FallbackConfig
 
 # Configuração de logging
 logging.basicConfig(

@@ -20,7 +20,7 @@ def test_buffer_size_control():
     print("Testando controle de tamanho do buffer...")
     
     # Importa buffer
-    from trade_buffer import AsyncTradeBuffer
+    from trading.trade_buffer import AsyncTradeBuffer
     
     # Buffer pequeno para teste
     buffer = AsyncTradeBuffer(
@@ -141,7 +141,7 @@ def test_buffer_metrics():
     """Testa métricas do buffer."""
     print("Testando métricas do buffer...")
     
-    from trade_buffer import AsyncTradeBuffer
+    from trading.trade_buffer import AsyncTradeBuffer
     
     buffer = AsyncTradeBuffer(max_size=10)
     

@@ -13,7 +13,7 @@ import asyncio
 import time
 import logging
 from unittest.mock import Mock
-from trade_buffer import AsyncTradeBuffer, BufferStatus
+from trading.trade_buffer import AsyncTradeBuffer, BufferStatus
 
 # Configuração de logging
 logging.basicConfig(

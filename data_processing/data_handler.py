@@ -49,10 +49,10 @@ import math
 import config
 
 # 🔹 TIME MANAGER (injeção recomendada)
-from time_manager import TimeManager
+from monitoring.time_manager import TimeManager
 
 # 🔹 VOLUME PROFILE DINÂMICO
-from dynamic_volume_profile import DynamicVolumeProfile
+from market_analysis.dynamic_volume_profile import DynamicVolumeProfile
 
 NY_TZ = ZoneInfo("America/New_York")
 

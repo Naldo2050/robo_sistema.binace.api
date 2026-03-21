@@ -539,6 +539,12 @@ def _build_fibonacci(event: dict, current_price: float) -> dict:
         return {}
 
     rng = high - low
+
+    # FIX 6B: Fibonacci is useless on tiny ranges (e.g. $28 on $70k BTC = 0.04%)
+    # Minimum 0.3% range required (~$210 at $70k)
+    if low > 0 and (rng / low) < 0.003:
+        return {}
+
     fib = {
         "high": round(high, 2),
         "low": round(low, 2),
@@ -1894,7 +1900,12 @@ def enrich_signal(
                 "close": float(_ohlc.get("close", current_price)),
             })
 
-        spread_bps = _get_nested(event, "spread_analysis", "current_spread_bps", default=0) or 0
+        # FIX 3.7: spread consolidado em orderbook_data (antes era spread_analysis separado)
+        spread_bps = (
+            _get_nested(event, "orderbook_data", "spread_bps", default=0)
+            or _get_nested(event, "spread_analysis", "current_spread_bps", default=0)
+            or 0
+        )
         if spread_bps > 0:
             _update_spread_history(spread_bps)
 
@@ -1952,11 +1963,12 @@ def enrich_signal(
 
         # ------------------------------------------------------------------
         # ONDA 1: Spread volatility
+        # FIX 3.4: Consolidado em orderbook_data (antes era spread_analysis separado)
         # ------------------------------------------------------------------
         spread_vol = _build_spread_volatility()
-        sa = event.setdefault("spread_analysis", {})
         if spread_vol is not None:
-            sa.setdefault("spread_volatility", spread_vol)
+            ob = event.setdefault("orderbook_data", {})
+            ob.setdefault("spread_volatility", spread_vol)
 
         # ------------------------------------------------------------------
         # ONDA 1: Slippage 1k/10k
@@ -1978,10 +1990,10 @@ def enrich_signal(
 
         # ------------------------------------------------------------------
         # ONDA 2: Volume Profile avançado
+        # FIX 3.3: REMOVIDO — dados já existem em historical_vp (fonte canônica).
+        # volume_profile_advanced duplicava POC/VAH/VAL e não era consumido
+        # por build_compact_payload nem ai_analyzer_qwen.
         # ------------------------------------------------------------------
-        vp_adv = _build_volume_profile_advanced(event, current_price)
-        if vp_adv:
-            event.setdefault("volume_profile_advanced", vp_adv)
 
         # ------------------------------------------------------------------
         # ONDA 2: Volatilidade consolidada
@@ -2000,11 +2012,19 @@ def enrich_signal(
 
         # ------------------------------------------------------------------
         # ONDA 2: Whale Activity (large orders + iceberg)
+        # FIX 4.2: Se whale volume total é 0, forçar iceberg/hidden = 0
         # ------------------------------------------------------------------
         whale_act = _build_whale_activity(event, epoch_ms, current_price)
         if whale_act:
             existing_whale = event.get("whale_activity", {}) or {}
             merged_whale = {**whale_act, **existing_whale}
+            # FIX 4.2: Consistência — sem volume de whale, sem detecção
+            fc = event.get("fluxo_continuo", {})
+            whale_buy = fc.get("whale_buy_volume", 0) or 0
+            whale_sell = fc.get("whale_sell_volume", 0) or 0
+            if whale_buy + whale_sell == 0:
+                merged_whale["iceberg_activity"] = 0
+                merged_whale["hidden_orders_detected"] = 0
             event["whale_activity"] = merged_whale
 
         # ------------------------------------------------------------------
@@ -2071,9 +2091,10 @@ def enrich_signal(
 
         # ------------------------------------------------------------------
         # ONDA 3: Price Targets Probabilísticos
+        # FIX 4.3: Só incluir se model_confidence >= 0.20 (abaixo disso é ruído)
         # ------------------------------------------------------------------
         price_targets = _build_price_targets_probabilistic(event, current_price)
-        if price_targets:
+        if price_targets and price_targets.get("model_confidence", 0) >= 0.20:
             event.setdefault("price_targets", price_targets)
 
         # ------------------------------------------------------------------
@@ -2082,6 +2103,19 @@ def enrich_signal(
         regime_analysis = _build_regime_probabilities(event)
         if regime_analysis:
             event.setdefault("regime_analysis", regime_analysis)
+
+        # ------------------------------------------------------------------
+        # FIX 4.5: Data reliability flags
+        # ------------------------------------------------------------------
+        _aa = _get_nested(event, "raw_event", "advanced_analysis") or {}
+        _quality = event.get("quality", {})
+        _latency = _quality.get("latency", {}) if isinstance(_quality, dict) else {}
+        event["data_reliability"] = {
+            "has_options_data": bool(_aa.get("options_metrics", {}).get("is_real_data")),
+            "onchain_coverage": "full" if _aa.get("onchain_metrics", {}).get("is_real_data") else "partial",
+            "latency_acceptable": _latency.get("is_acceptable", 1) == 1,
+            "price_targets_available": "price_targets" in event,
+        }
 
     except Exception as exc:
         logger.error(

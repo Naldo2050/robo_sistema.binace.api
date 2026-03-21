@@ -1,4 +1,4 @@
-from fix_optimization import clean_event, remove_enriched_snapshot, simplify_historical_vp
+from data_processing.fix_optimization import clean_event, remove_enriched_snapshot, simplify_historical_vp
 
 
 def test_clean_event_removes_large_fields_recursively():

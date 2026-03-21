@@ -1,21 +1,8 @@
 # orderbook_core/exceptions.py
-
-
-class OrderBookError(Exception):
-    """Base exception for order book operations."""
-    pass
-
-
-class InvalidUpdateError(OrderBookError):
-    """Raised when order book update is invalid."""
-    pass
-
-
-class OrderBookConnectionError(OrderBookError):
-    """Raised when order book connection fails."""
-    pass
-
-
-class OrderBookTimeoutError(OrderBookError):
-    """Raised when order book operation times out."""
-    pass
+# Mantido para compatibilidade - exceções movidas para common/exceptions.py
+from common.exceptions import (  # noqa: F401
+    OrderBookError,
+    InvalidUpdateError,
+    OrderBookConnectionError,
+    OrderBookTimeoutError,
+)
