@@ -529,10 +529,17 @@ class DataPipeline:
             # Dados para o raw_event - INCLUIR DADOS CONTEXTUAIS COMPLETOS
             raw_event_data = {
                 # Dados básicos do enriched
-                "delta": self.enriched_data.get("delta_fechamento", 0),
                 "volume_total": self.enriched_data.get("volume_total", 0),
                 "volume_compra": self.enriched_data.get("volume_compra", 0),
                 "volume_venda": self.enriched_data.get("volume_venda", 0),
+                # FIX: delta_fechamento pode ser 0/None — recalcular dos volumes
+                "delta": (
+                    self.enriched_data.get("delta_fechamento")
+                    or (
+                        float(self.enriched_data.get("volume_compra", 0))
+                        - float(self.enriched_data.get("volume_venda", 0))
+                    )
+                ),
                 "preco_fechamento": self.enriched_data.get("ohlc", {}).get("close", 0),
                 "advanced_analysis": (
                     self.contextual_data.get("advanced_analysis", {})
