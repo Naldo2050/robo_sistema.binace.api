@@ -1,4 +1,6 @@
-# macro_fetcher.py
+# macro_fetcher.py — DEPRECATED
+# Substituído por fetchers/macro_data_fetcher.py (versão estendida: VIX, Treasury, Commodities, Regime)
+# 0 imports ativos no projeto. Pode ser removido com segurança.
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone

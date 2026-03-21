@@ -1,5 +1,8 @@
 """
 Helpers para executar código async em contextos síncronos (threads).
+
+DEPRECATED: 0 imports ativos. Versão canônica em common/async_bridge.py.
+Helpers simples (safe_async_call, run_with_retry) em utils/async_helpers.py.
 """
 import asyncio
 import logging
