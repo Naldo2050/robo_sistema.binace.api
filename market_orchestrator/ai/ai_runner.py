@@ -18,8 +18,8 @@ from typing import Any, Dict
 import config
 from ai_analyzer_qwen import AIAnalyzer  # arquivo na raiz do projeto
 from ..utils.price_fetcher import get_current_price
-from export_signals import create_chart_signal_from_event, export_signal_to_csv
-from format_utils import (
+from trading.export_signals import create_chart_signal_from_event, export_signal_to_csv
+from common.format_utils import (
     format_price,
     format_large_number,
     format_delta,
@@ -552,6 +552,26 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                             ml_prediction = {"status": "error", "msg": str(e)}
                     else:
                         logging.debug("🤖 ML Engine não disponível - usando apenas IA Generativa")
+
+                    # FIX 5B: Overlay real window-level returns into ml_features.price_features.
+                    # common/ml_features.py computes returns from individual ticks (~1e-7 scale),
+                    # but the XGBoost model uses window closes (~1e-4 scale).
+                    # Copy the real features from feature_calc to keep the event consistent.
+                    try:
+                        if hasattr(bot, 'feature_calc') and bot.feature_calc.history_count >= 2:
+                            _real_fc = bot.feature_calc.compute()
+                            _pf = event_data.setdefault("ml_features", {}).setdefault("price_features", {})
+                            _r1 = _real_fc.get("return_1")
+                            if _r1 is not None:
+                                _pf["returns_1"] = _r1
+                            _r5 = _real_fc.get("return_5")
+                            if _r5 is not None and _r5 != 0:
+                                _pf["returns_5"] = _r5
+                            _r10 = _real_fc.get("return_10")
+                            if _r10 is not None and _r10 != 0:
+                                _pf["returns_10"] = _r10
+                    except Exception:
+                        pass
 
                     # Heartbeat extra
                     try:

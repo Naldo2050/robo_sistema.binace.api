@@ -21,7 +21,7 @@ import pandas as pd
 
 # Import para correlações cross-asset
 try:
-    from cross_asset_correlations import get_cross_asset_features
+    from market_analysis.cross_asset_correlations import get_cross_asset_features
 except ImportError as e:
     get_cross_asset_features = None
     logging.warning(f"cross_asset_correlations indisponível: {e}")
