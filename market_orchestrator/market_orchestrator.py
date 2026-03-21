@@ -61,7 +61,7 @@ from events.event_memory import (
 
 # Similarity search para eventos passados (memória longa)
 try:
-    from event_similarity import EventSimilaritySearch
+    from events.event_similarity import EventSimilaritySearch
     _similarity_search = EventSimilaritySearch()
     _SIMILARITY_OK = True
 except ImportError:
@@ -97,7 +97,7 @@ from orderbook_core.tracing_utils import TracerWrapper
 
 # ====== Alert engine (opcional) ======
 try:
-    from alert_engine import generate_alerts
+    from trading.alert_engine import generate_alerts
 except Exception:
     generate_alerts = None
 
