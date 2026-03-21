@@ -88,7 +88,7 @@ except ImportError:
 
 # LiquidityHeatmap
 try:
-    from liquidity_heatmap import LiquidityHeatmap
+    from market_analysis.liquidity_heatmap import LiquidityHeatmap
     HAS_HEATMAP = True
 except ImportError:
     HAS_HEATMAP = False

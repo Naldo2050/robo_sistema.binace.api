@@ -223,7 +223,7 @@ class InstitutionalAnalyticsEngine:
 
         try:
             if candles_df is not None and len(candles_df) >= 14:
-                from technical_indicators import stochastic_rsi, williams_r, twap_vwap_analysis
+                from common.technical_indicators import stochastic_rsi, williams_r, twap_vwap_analysis
 
                 # Detectar colunas
                 close_col = None

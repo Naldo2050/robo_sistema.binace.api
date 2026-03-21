@@ -630,7 +630,7 @@ def integrate_with_alert_manager(alert_manager=None):
         alert_manager: Instância do AlertManager (opcional)
     """
     try:
-        from alert_manager import get_alert_manager, AlertType
+        from trading.alert_manager import get_alert_manager, AlertType
         
         if alert_manager is None:
             alert_manager = get_alert_manager()
