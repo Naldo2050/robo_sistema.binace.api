@@ -24,7 +24,7 @@ try:
         _corr_last_window,
         _log_returns
     )
-    from macro_data_fetcher import (
+    from fetchers.macro_data_fetcher import (
         fetch_crypto_dominance,
         fetch_vix_data,
         fetch_treasury_yields,

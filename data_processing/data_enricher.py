@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # Importar fetchers reais
 try:
-    from onchain_fetcher import OnchainFetcher
+    from fetchers.onchain_fetcher import OnchainFetcher
     _ONCHAIN_FETCHER = OnchainFetcher()
     _ONCHAIN_OK = True
 except ImportError:
@@ -52,7 +52,7 @@ except ImportError:
     logger.warning("onchain_fetcher indisponível, usando dados parciais")
 
 try:
-    from funding_aggregator import FundingAggregator
+    from fetchers.funding_aggregator import FundingAggregator
     _FUNDING_AGG = FundingAggregator()
     _FUNDING_OK = True
 except ImportError:
