@@ -1,24 +1,34 @@
 """
-SISTEMA INSTITUCIONAL DE SUPORTE E RESISTÊNCIA
-==============================================
+Pacote institucional de suporte e resistência.
 
 Sistema modular para análise quantitativa de níveis de suporte e resistência
 com métricas institucionais, validação estatística e monitoramento em tempo real.
 """
 
-from .constants import *
-from .config import *
-from .validation import *
-from .utils import StatisticalUtils, StructuredLogger, timer
-from .pivot_points import InstitutionalPivotPoints
-from .volume_profile import VolumeProfileAnalyzer
-from .core import AdvancedSupportResistance
-from .monitor import InstitutionalMarketMonitor, HealthCheckResult
-from .system import InstitutionalSupportResistanceSystem
-from .reference_prices import ReferencePrices
+from .config import InstitutionalConfig, MonitorConfig, PivotConfig, SRConfig, VolumeProfileConfig  # noqa: F401
+from .constants import (  # noqa: F401
+    CONSTANTS,
+    ConfidenceLevel,
+    LevelType,
+    MarketBias,
+    QualityRating,
+    ReactionType,
+    SRAnalysisError,
+)
+from .core import AdvancedSupportResistance  # noqa: F401
+from .defense_zones import DefenseZoneDetector  # noqa: F401
+from .monitor import HealthCheckResult, InstitutionalMarketMonitor  # noqa: F401
+from .pivot_points import InstitutionalPivotPoints  # noqa: F401
+from .reference_prices import ReferencePrices  # noqa: F401
+from .sr_strength import SRStrengthScorer  # noqa: F401
+from .system import InstitutionalSupportResistanceSystem  # noqa: F401
+from .utils import StatisticalUtils  # noqa: F401
+from .validation import validate_dataframe, validate_series  # noqa: F401
+from .volume_profile import VolumeProfileAnalyzer  # noqa: F401
+
 
 def daily_pivot(df):
-    """Calculate daily pivot points from OHLC DataFrame"""
+    """Calculate daily pivot points from OHLC DataFrame."""
     if df.empty:
         return {}
     last = df.iloc[-1]
@@ -39,47 +49,44 @@ def daily_pivot(df):
         'r3': float(r3), 's3': float(s3)
     }
 
+
 def weekly_pivot(df):
-    """Calculate weekly pivot points from OHLC DataFrame"""
-    return daily_pivot(df)  # Same calculation for simplicity
+    """Calculate weekly pivot points from OHLC DataFrame."""
+    return daily_pivot(df)
+
 
 def monthly_pivot(df):
-    """Calculate monthly pivot points from OHLC DataFrame"""
-    return daily_pivot(df)  # Same calculation for simplicity
+    """Calculate monthly pivot points from OHLC DataFrame."""
+    return daily_pivot(df)
+
 
 __version__ = "2.0.0"
 __all__ = [
-    'InstitutionalSupportResistanceSystem',
-    'InstitutionalConfig',
-    'SRConfig',
-    'VolumeProfileConfig',
-    'MonitorConfig',
-    'PivotConfig',
-    'AdvancedSupportResistance',
-    'InstitutionalMarketMonitor',
-    'HealthCheckResult',
-    'VolumeProfileAnalyzer',
-    'InstitutionalPivotPoints',
-    'ReferencePrices',
-    'StatisticalUtils',
-    'StructuredLogger',
-    'timer',
-    'LevelType',
-    'ReactionType',
-    'ConfidenceLevel',
-    'MarketBias',
-    'QualityRating',
-    'SRAnalysisError',
-    'InsufficientDataError',
-    'InvalidConfigurationError',
-    'CalculationError',
-    'CONSTANTS',
-    'validate_dataframe',
-    'validate_series',
-    'validate_positive',
-    'validate_range',
-    'SafeJSONEncoder',
-    'daily_pivot',
-    'weekly_pivot',
-    'monthly_pivot'
+    "AdvancedSupportResistance",
+    "CONSTANTS",
+    "ConfidenceLevel",
+    "DefenseZoneDetector",
+    "HealthCheckResult",
+    "InstitutionalConfig",
+    "InstitutionalMarketMonitor",
+    "MonitorConfig",
+    "InstitutionalPivotPoints",
+    "InstitutionalSupportResistanceSystem",
+    "PivotConfig",
+    "LevelType",
+    "MarketBias",
+    "QualityRating",
+    "ReactionType",
+    "ReferencePrices",
+    "SRAnalysisError",
+    "SRConfig",
+    "SRStrengthScorer",
+    "StatisticalUtils",
+    "VolumeProfileAnalyzer",
+    "VolumeProfileConfig",
+    "daily_pivot",
+    "validate_dataframe",
+    "validate_series",
+    "monthly_pivot",
+    "weekly_pivot",
 ]
