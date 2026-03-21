@@ -1,16 +1,28 @@
 # data_processing/__init__.py
 """
-Pacote de processamento e validacao de dados.
+Pacote de processamento e validação de dados.
 
-Contém: DataHandler, DataEnricher, DataValidator, DataQualityValidator, FeatureStore.
+Contém: DataEnricher, DataValidator, DataQualityValidator,
+FeatureStore, EnrichmentIntegrator, DataHandler.
 """
 
-from data_processing.data_enricher import DataEnricher
-from data_processing.data_validator import DataValidator
-from data_processing.feature_store import FeatureStore
+from .data_enricher import DataEnricher  # noqa: F401
+from .data_handler import create_absorption_event, create_exhaustion_event  # noqa: F401
+from .data_quality_validator import DataQualityValidator  # noqa: F401
+from .data_validator import DataValidator  # noqa: F401
+from .enrichment_integrator import (  # noqa: F401
+    build_analysis_trigger_event,
+    enrich_analysis_trigger_event,
+)
+from .feature_store import FeatureStore  # noqa: F401
 
 __all__ = [
     "DataEnricher",
+    "DataQualityValidator",
     "DataValidator",
     "FeatureStore",
+    "build_analysis_trigger_event",
+    "create_absorption_event",
+    "create_exhaustion_event",
+    "enrich_analysis_trigger_event",
 ]
