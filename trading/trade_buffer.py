@@ -41,7 +41,7 @@ except ImportError:
 
 # Importar validador de trades
 try:
-    from trade_validator import validate_and_filter_trades
+    from trading.trade_validator import validate_and_filter_trades
     TRADE_VALIDATOR_AVAILABLE = True
 except ImportError:
     TRADE_VALIDATOR_AVAILABLE = False
@@ -50,7 +50,7 @@ except ImportError:
 
 # Importar monitor de latência (NOVO - não descarta trades)
 try:
-    from trade_validator import latency_monitor
+    from trading.trade_validator import latency_monitor
     LATENCY_MONITOR_AVAILABLE = True
 except ImportError:
     LATENCY_MONITOR_AVAILABLE = False

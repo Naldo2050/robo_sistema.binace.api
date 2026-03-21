@@ -58,7 +58,7 @@ except ImportError:
 
 # ===== CLOCK SYNC =====
 try:
-    from clock_sync import get_clock_sync
+    from monitoring.clock_sync import get_clock_sync
     HAS_CLOCK_SYNC = True
     _clock_sync_instance = None
 except ImportError:

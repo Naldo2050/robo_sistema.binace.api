@@ -90,13 +90,13 @@ from monitoring.metrics_collector import record_fred_fallback
 
 # Fetchers reais (on-chain e funding agregado)
 try:
-    from onchain_fetcher import OnchainFetcher
+    from fetchers.onchain_fetcher import OnchainFetcher
     _ONCHAIN_FETCHER_AVAILABLE = True
 except ImportError:
     _ONCHAIN_FETCHER_AVAILABLE = False
 
 try:
-    from funding_aggregator import FundingAggregator
+    from fetchers.funding_aggregator import FundingAggregator
     _FUNDING_AGG_AVAILABLE = True
 except ImportError:
     _FUNDING_AGG_AVAILABLE = False
