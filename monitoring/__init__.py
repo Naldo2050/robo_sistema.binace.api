@@ -2,13 +2,21 @@
 """
 Pacote de monitoramento e sistema.
 
-Contém: HealthMonitor, TimeManager, MetricsCollector, ClockSync, WebSocketHandler.
+Contém: TimeManager, HealthMonitor, MetricsCollector,
+ClockSync, HeartbeatManager, WebSocketHandler.
 """
 
-from monitoring.time_manager import TimeManager
-from monitoring.health_monitor import HealthMonitor
+from .clock_sync import ClockSync, get_clock_sync  # noqa: F401
+from .health_monitor import HealthMonitor  # noqa: F401
+from .heartbeat_manager import HeartbeatManager  # noqa: F401
+from .metrics_collector import MetricsCollector  # noqa: F401
+from .time_manager import TimeManager  # noqa: F401
 
 __all__ = [
-    "TimeManager",
+    "ClockSync",
     "HealthMonitor",
+    "HeartbeatManager",
+    "MetricsCollector",
+    "TimeManager",
+    "get_clock_sync",
 ]

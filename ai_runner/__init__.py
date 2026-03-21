@@ -1,7 +1,18 @@
 # ai_runner/__init__.py
+"""
+Pacote de execução de IA/LLM.
 
-from .ai_runner import AIRunner, QwenClient
-from .exceptions import AIAnalysisError, RateLimitError, ModelTimeoutError
-from .ai_runner import AIModelConfig
+Contém: AIRunner, QwenClient, AIModelConfig, exceptions.
+"""
 
-__all__ = ['AIRunner', 'QwenClient', 'AIModelConfig', 'AIAnalysisError', 'RateLimitError', 'ModelTimeoutError']
+from .ai_runner import AIModelConfig, AIRunner, QwenClient  # noqa: F401
+from .exceptions import AIAnalysisError, ModelTimeoutError, RateLimitError  # noqa: F401
+
+__all__ = [
+    "AIAnalysisError",
+    "AIModelConfig",
+    "AIRunner",
+    "ModelTimeoutError",
+    "QwenClient",
+    "RateLimitError",
+]
