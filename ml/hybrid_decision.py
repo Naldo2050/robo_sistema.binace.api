@@ -173,24 +173,43 @@ class HybridDecisionMaker:
         
         return False
     
-    def _check_model_validity(self, prob_up: float, confidence: float) -> bool:
+    def _check_model_validity(
+        self, prob_up: float, confidence: float,
+        warmup_ready: bool = True, features_real_count: int = 9,
+    ) -> bool:
         """
         Verifica se a predição do modelo é válida/confiável.
         Retorna False se modelo deve ser ignorado.
+
+        FIX 5A: warmup-aware — extreme predictions during warmup are rejected,
+        but after warmup they're accepted (the model may legitimately be confident).
         """
-        # Extremamente confident (provavelmente bug)
-        if prob_up > 0.95 or prob_up < 0.05:
-            logger.warning(
-                f"[ML_EXTREME] prob={prob_up:.4f} é extrema, "
-                f"provavelmente features ruins. Ignorando."
+        is_extreme = prob_up > 0.95 or prob_up < 0.05
+
+        if is_extreme and not warmup_ready:
+            # During warmup, extreme predictions are almost certainly from defaults
+            logger.info(
+                "[ML_SKIP] prob=%.4f extrema durante warmup "
+                "(features_real=%d/9). Ignorando.",
+                prob_up, features_real_count,
             )
             return False
-        
+
+        if is_extreme and warmup_ready:
+            # Warmup complete — model may be legitimately confident.
+            # Accept but log for monitoring.
+            logger.info(
+                "[ML_HIGH_CONF] prob=%.4f com warmup completo "
+                "(features_real=%d/9) — aceitando.",
+                prob_up, features_real_count,
+            )
+            return True
+
         # Confiança muito baixa
         if confidence < 0.10:
             logger.warning(f"[ML_LOW_CONF] confidence={confidence:.4f} < 0.10. Ignorando.")
             return False
-        
+
         return True
     
     def _detect_conflict(self, ml_action: str, llm_action: str) -> bool:
@@ -249,13 +268,25 @@ class HybridDecisionMaker:
             except (TypeError, ValueError):
                 model_confidence = 0.0
         
+        # ── FIX 5A: Extract warmup metadata for downstream decisions ──
+        _warmup_ready = True
+        _features_real_count = 9
+        _warmup_partial = False
+        if isinstance(ml_prediction, dict):
+            _warmup_ready = ml_prediction.get("_warmup_ready", True)
+            _features_real_count = ml_prediction.get("_features_real_count", 9)
+
         # Verificar se modelo está congelado ou predição extrema
         if model_ok and model_prob_up is not None:
             if self._check_frozen_model(model_prob_up):
                 model_ok = False
                 if isinstance(ml_prediction, dict):
                     ml_prediction["frozen_filtered"] = True
-            elif model_confidence is not None and not self._check_model_validity(model_prob_up, model_confidence):
+            elif model_confidence is not None and not self._check_model_validity(
+                model_prob_up, model_confidence,
+                warmup_ready=_warmup_ready,
+                features_real_count=_features_real_count,
+            ):
                 model_ok = False
                 if isinstance(ml_prediction, dict):
                     ml_prediction["extreme_filtered"] = True
@@ -267,10 +298,17 @@ class HybridDecisionMaker:
                 if not ml_usable:
                     logger.warning(
                         "[ML_WARMUP_BLOCK] features_real=%d — insuficiente para ML. Ignorando.",
-                        ml_prediction.get("_features_real_count", 0),
+                        _features_real_count,
                     )
                     model_ok = False
                     ml_prediction["warmup_insufficient"] = True
+                else:
+                    # FIX 5A: Partial warmup — ML participates with reduced weight
+                    _warmup_partial = True
+                    logger.info(
+                        "ML_PARTIAL: features_real=%d/9, warmup incompleto — peso reduzido 25%%",
+                        _features_real_count,
+                    )
 
         # ── 2. Extrai dados da IA ──
         llm_ok = ai_result is not None and isinstance(ai_result, dict)
@@ -332,14 +370,31 @@ class HybridDecisionMaker:
         if model_ok and ml_action in DIRECTIONAL_ACTIONS and llm_action in DIRECTIONAL_ACTIONS:
             is_conflict = self._detect_conflict(ml_action, llm_action)
         
+        # ── FIX 5A: Temporarily reduce weights during partial warmup ──
+        _saved_model_weight = self.model_weight
+        _saved_llm_weight = self.llm_weight
+        if _warmup_partial and model_ok:
+            self.model_weight = 0.25
+            self.llm_weight = 0.75
+
         # ── 7. Decidir baseado no modo ──
         if self.mode == "model_primary":
-            result = self._model_primary(
-                model_prob_up if model_ok else None,
-                model_confidence if model_ok else None,
-                llm_action, llm_sentiment, llm_confidence, llm_rationale,
-                ai_result
-            )
+            # During partial warmup, delegate to LLM primary instead
+            if _warmup_partial:
+                result = self._llm_primary(
+                    model_prob_up if model_ok else None,
+                    model_confidence if model_ok else None,
+                    llm_action, llm_sentiment, llm_confidence, llm_rationale,
+                    ai_result
+                )
+                result.source = "llm_warmup_partial"
+            else:
+                result = self._model_primary(
+                    model_prob_up if model_ok else None,
+                    model_confidence if model_ok else None,
+                    llm_action, llm_sentiment, llm_confidence, llm_rationale,
+                    ai_result
+                )
         elif self.mode == "ensemble":
             result = self._ensemble(
                 model_prob_up if model_ok else None,
@@ -354,6 +409,10 @@ class HybridDecisionMaker:
                 llm_action, llm_sentiment, llm_confidence, llm_rationale,
                 ai_result
             )
+
+        # Restore original weights
+        self.model_weight = _saved_model_weight
+        self.llm_weight = _saved_llm_weight
         
         # ── 8. Aplicar penalidade de conflito ──
         if is_conflict:
