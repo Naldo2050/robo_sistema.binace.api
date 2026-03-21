@@ -1,0 +1,546 @@
+{
+  "total_files": 492,
+  "duplicates": {
+    "ai_payload_compressor": [
+      "ai_payload_compressor.py",
+      "common\\ai_payload_compressor.py"
+    ],
+    "ai_response_validator": [
+      "ai_response_validator.py",
+      "common\\ai_response_validator.py"
+    ],
+    "alert_engine": [
+      "alert_engine.py",
+      "trading\\alert_engine.py"
+    ],
+    "alert_manager": [
+      "alert_manager.py",
+      "trading\\alert_manager.py"
+    ],
+    "clock_sync": [
+      "clock_sync.py",
+      "monitoring\\clock_sync.py"
+    ],
+    "config": [
+      "config.py",
+      "data_pipeline\\config.py",
+      "support_resistance\\config.py"
+    ],
+    "context_collector": [
+      "context_collector.py",
+      "fetchers\\context_collector.py"
+    ],
+    "cross_asset_correlations": [
+      "cross_asset_correlations.py",
+      "market_analysis\\cross_asset_correlations.py"
+    ],
+    "data_enricher": [
+      "data_enricher.py",
+      "data_processing\\data_enricher.py"
+    ],
+    "data_handler": [
+      "data_handler.py",
+      "data_processing\\data_handler.py"
+    ],
+    "data_quality_validator": [
+      "data_quality_validator.py",
+      "data_processing\\data_quality_validator.py"
+    ],
+    "data_validator": [
+      "data_validator.py",
+      "data_processing\\data_validator.py"
+    ],
+    "diagnose_optimization": [
+      "diagnose_optimization.py",
+      "scripts\\diagnostics\\diagnose_optimization.py"
+    ],
+    "dynamic_volume_profile": [
+      "dynamic_volume_profile.py",
+      "market_analysis\\dynamic_volume_profile.py"
+    ],
+    "enrichment_integrator": [
+      "enrichment_integrator.py",
+      "data_processing\\enrichment_integrator.py"
+    ],
+    "event_bus": [
+      "event_bus.py",
+      "events\\event_bus.py"
+    ],
+    "event_memory": [
+      "event_memory.py",
+      "events\\event_memory.py"
+    ],
+    "event_saver": [
+      "event_saver.py",
+      "events\\event_saver.py"
+    ],
+    "event_similarity": [
+      "event_similarity.py",
+      "events\\event_similarity.py"
+    ],
+    "export_signals": [
+      "export_signals.py",
+      "trading\\export_signals.py"
+    ],
+    "feature_store": [
+      "feature_store.py",
+      "data_processing\\feature_store.py"
+    ],
+    "fix_optimization": [
+      "fix_optimization.py",
+      "data_processing\\fix_optimization.py"
+    ],
+    "format_utils": [
+      "format_utils.py",
+      "common\\format_utils.py"
+    ],
+    "fred_fetcher": [
+      "fred_fetcher.py",
+      "fetchers\\fred_fetcher.py"
+    ],
+    "funding_aggregator": [
+      "funding_aggregator.py",
+      "fetchers\\funding_aggregator.py"
+    ],
+    "health_monitor": [
+      "health_monitor.py",
+      "auto_fixer\\monitor\\health_monitor.py",
+      "monitoring\\health_monitor.py"
+    ],
+    "historical_profiler": [
+      "historical_profiler.py",
+      "market_analysis\\historical_profiler.py"
+    ],
+    "levels_registry": [
+      "levels_registry.py",
+      "market_analysis\\levels_registry.py"
+    ],
+    "liquidity_heatmap": [
+      "liquidity_heatmap.py",
+      "market_analysis\\liquidity_heatmap.py"
+    ],
+    "macro_data_fetcher": [
+      "macro_data_fetcher.py",
+      "fetchers\\macro_data_fetcher.py"
+    ],
+    "metrics_collector": [
+      "metrics_collector.py",
+      "monitoring\\metrics_collector.py"
+    ],
+    "ml_features": [
+      "ml_features.py",
+      "common\\ml_features.py"
+    ],
+    "onchain_fetcher": [
+      "onchain_fetcher.py",
+      "fetchers\\onchain_fetcher.py"
+    ],
+    "optimize_ai_payload": [
+      "optimize_ai_payload.py",
+      "common\\optimize_ai_payload.py"
+    ],
+    "orderbook_fallback": [
+      "orderbook_fallback.py",
+      "orderbook_core\\orderbook_fallback.py"
+    ],
+    "pattern_recognition": [
+      "pattern_recognition.py",
+      "market_analysis\\pattern_recognition.py"
+    ],
+    "payload_optimizer_config": [
+      "payload_optimizer_config.py",
+      "common\\payload_optimizer_config.py"
+    ],
+    "report_generator": [
+      "report_generator.py",
+      "auto_fixer\\phase8_reporter\\report_generator.py",
+      "common\\report_generator.py"
+    ],
+    "technical_indicators": [
+      "technical_indicators.py",
+      "common\\technical_indicators.py"
+    ],
+    "time_manager": [
+      "time_manager.py",
+      "monitoring\\time_manager.py"
+    ],
+    "trade_buffer": [
+      "trade_buffer.py",
+      "trading\\trade_buffer.py"
+    ],
+    "trade_validator": [
+      "trade_validator.py",
+      "trading\\trade_validator.py"
+    ],
+    "ai_runner": [
+      "ai_runner\\ai_runner.py",
+      "market_orchestrator\\ai\\ai_runner.py"
+    ],
+    "exceptions": [
+      "ai_runner\\exceptions.py",
+      "common\\exceptions.py",
+      "orderbook_core\\exceptions.py",
+      "risk_management\\exceptions.py"
+    ],
+    "__init__": [
+      "ai_runner\\__init__.py",
+      "auto_fixer\\__init__.py",
+      "auto_fixer\\monitor\\__init__.py",
+      "auto_fixer\\phase1_scanner\\__init__.py",
+      "auto_fixer\\phase2_extractor\\__init__.py",
+      "auto_fixer\\phase3_chunker\\__init__.py",
+      "auto_fixer\\phase4_index\\__init__.py",
+      "auto_fixer\\phase5_rag\\__init__.py",
+      "auto_fixer\\phase6_analyzers\\__init__.py",
+      "auto_fixer\\phase7_patcher\\__init__.py",
+      "auto_fixer\\phase8_reporter\\__init__.py",
+      "common\\__init__.py",
+      "config\\__init__.py",
+      "core\\__init__.py",
+      "database\\__init__.py",
+      "data_pipeline\\__init__.py",
+      "data_pipeline\\cache\\__init__.py",
+      "data_pipeline\\fallback\\__init__.py",
+      "data_pipeline\\metrics\\__init__.py",
+      "data_pipeline\\validation\\__init__.py",
+      "data_processing\\__init__.py",
+      "diagnostics\\__init__.py",
+      "diagnostic_files\\__init__.py",
+      "diagnostic_files\\window_diagnostics\\__init__.py",
+      "events\\__init__.py",
+      "fetchers\\__init__.py",
+      "flow_analyzer\\__init__.py",
+      "market_analysis\\__init__.py",
+      "market_orchestrator\\__init__.py",
+      "market_orchestrator\\ai\\__init__.py",
+      "market_orchestrator\\analysis\\__init__.py",
+      "market_orchestrator\\connection\\__init__.py",
+      "market_orchestrator\\flow\\__init__.py",
+      "market_orchestrator\\orderbook\\__init__.py",
+      "market_orchestrator\\signals\\__init__.py",
+      "market_orchestrator\\utils\\__init__.py",
+      "market_orchestrator\\windows\\__init__.py",
+      "memory\\__init__.py",
+      "monitoring\\__init__.py",
+      "MQL5\\__init__.py",
+      "orderbook_analyzer\\__init__.py",
+      "orderbook_analyzer\\config\\__init__.py",
+      "orderbook_core\\__init__.py",
+      "risk_management\\__init__.py",
+      "src\\bridges\\__init__.py",
+      "src\\services\\__init__.py",
+      "src\\utils\\__init__.py",
+      "support_resistance\\__init__.py",
+      "tests\\__init__.py",
+      "tests\\e2e\\__init__.py",
+      "tests\\helpers\\__init__.py",
+      "tests\\integration\\__init__.py",
+      "tests\\legacy\\__init__.py",
+      "tests\\unit\\__init__.py",
+      "trading\\__init__.py",
+      "utils\\__init__.py"
+    ],
+    "async_helpers": [
+      "common\\async_helpers.py",
+      "src\\utils\\async_helpers.py",
+      "utils\\async_helpers.py"
+    ],
+    "logging_config": [
+      "common\\logging_config.py",
+      "flow_analyzer\\logging_config.py"
+    ],
+    "logging_utils": [
+      "data_pipeline\\logging_utils.py",
+      "market_orchestrator\\utils\\logging_utils.py"
+    ],
+    "analyze_ai_results": [
+      "diagnostics\\analyze_ai_results.py",
+      "scripts\\diagnostics\\analyze_ai_results.py"
+    ],
+    "auto_fix": [
+      "diagnostics\\auto_fix.py",
+      "scripts\\diagnostics\\auto_fix.py"
+    ],
+    "evaluate_ai_performance": [
+      "diagnostics\\evaluate_ai_performance.py",
+      "scripts\\diagnostics\\evaluate_ai_performance.py"
+    ],
+    "final_validation": [
+      "diagnostics\\final_validation.py",
+      "scripts\\diagnostics\\final_validation.py"
+    ],
+    "performance_metrics": [
+      "diagnostics\\performance_metrics.py",
+      "scripts\\diagnostics\\performance_metrics.py"
+    ],
+    "replay_validator": [
+      "diagnostics\\replay_validator.py",
+      "scripts\\diagnostics\\replay_validator.py"
+    ],
+    "test_decision_system": [
+      "diagnostics\\test_decision_system.py",
+      "scripts\\diagnostics\\test_decision_system.py"
+    ],
+    "test_integrated": [
+      "diagnostics\\test_integrated.py",
+      "scripts\\diagnostics\\test_integrated.py"
+    ],
+    "test_latency": [
+      "diagnostics\\test_latency.py",
+      "scripts\\diagnostics\\test_latency.py"
+    ],
+    "test_ml_model": [
+      "diagnostics\\test_ml_model.py",
+      "scripts\\diagnostics\\test_ml_model.py"
+    ],
+    "verify_ml_integration": [
+      "diagnostics\\verify_ml_integration.py",
+      "scripts\\diagnostics\\verify_ml_integration.py"
+    ],
+    "constants": [
+      "flow_analyzer\\constants.py",
+      "orderbook_core\\constants.py",
+      "support_resistance\\constants.py"
+    ],
+    "core": [
+      "flow_analyzer\\core.py",
+      "support_resistance\\core.py"
+    ],
+    "metrics": [
+      "flow_analyzer\\metrics.py",
+      "orderbook_core\\metrics.py"
+    ],
+    "protocols": [
+      "flow_analyzer\\protocols.py",
+      "orderbook_core\\protocols.py"
+    ],
+    "utils": [
+      "flow_analyzer\\utils.py",
+      "support_resistance\\utils.py"
+    ],
+    "validation": [
+      "flow_analyzer\\validation.py",
+      "support_resistance\\validation.py"
+    ],
+    "risk_manager": [
+      "market_orchestrator\\flow\\risk_manager.py",
+      "risk_management\\risk_manager.py"
+    ],
+    "signal_processor": [
+      "market_orchestrator\\flow\\signal_processor.py",
+      "market_orchestrator\\signals\\signal_processor.py"
+    ],
+    "heartbeat_manager": [
+      "monitoring\\heartbeat_manager.py",
+      "utils\\heartbeat_manager.py"
+    ],
+    "test_fixes_simple": [
+      "scripts\\test_fixes_simple.py",
+      "tests\\integration\\test_fixes_simple.py"
+    ],
+    "fix_broken_tests": [
+      "scripts\\fixes\\fix_broken_tests.py",
+      "tests\\helpers\\fix_broken_tests.py"
+    ],
+    "conftest": [
+      "tests\\conftest.py",
+      "tests\\payload\\conftest.py"
+    ],
+    "trade_filter": [
+      "trading\\trade_filter.py",
+      "utils\\trade_filter.py"
+    ],
+    "trade_timestamp_validator": [
+      "trading\\trade_timestamp_validator.py",
+      "utils\\trade_timestamp_validator.py"
+    ]
+  },
+  "proxies": [
+    {
+      "file": "ai_payload_compressor.py",
+      "importers_count": 1
+    },
+    {
+      "file": "ai_response_validator.py",
+      "importers_count": 2
+    },
+    {
+      "file": "alert_engine.py",
+      "importers_count": 1
+    },
+    {
+      "file": "alert_manager.py",
+      "importers_count": 1
+    },
+    {
+      "file": "clock_sync.py",
+      "importers_count": 2
+    },
+    {
+      "file": "context_collector.py",
+      "importers_count": 3
+    },
+    {
+      "file": "cross_asset_correlations.py",
+      "importers_count": 7
+    },
+    {
+      "file": "data_enricher.py",
+      "importers_count": 7
+    },
+    {
+      "file": "data_handler.py",
+      "importers_count": 5
+    },
+    {
+      "file": "data_quality_validator.py",
+      "importers_count": 2
+    },
+    {
+      "file": "data_validator.py",
+      "importers_count": 5
+    },
+    {
+      "file": "dynamic_volume_profile.py",
+      "importers_count": 3
+    },
+    {
+      "file": "enrichment_integrator.py",
+      "importers_count": 4
+    },
+    {
+      "file": "event_bus.py",
+      "importers_count": 3
+    },
+    {
+      "file": "event_saver.py",
+      "importers_count": 5
+    },
+    {
+      "file": "event_similarity.py",
+      "importers_count": 1
+    },
+    {
+      "file": "export_signals.py",
+      "importers_count": 2
+    },
+    {
+      "file": "feature_store.py",
+      "importers_count": 4
+    },
+    {
+      "file": "fix_optimization.py",
+      "importers_count": 4
+    },
+    {
+      "file": "format_utils.py",
+      "importers_count": 10
+    },
+    {
+      "file": "fred_fetcher.py",
+      "importers_count": 1
+    },
+    {
+      "file": "funding_aggregator.py",
+      "importers_count": 2
+    },
+    {
+      "file": "health_monitor.py",
+      "importers_count": 4
+    },
+    {
+      "file": "historical_profiler.py",
+      "importers_count": 1
+    },
+    {
+      "file": "levels_registry.py",
+      "importers_count": 1
+    },
+    {
+      "file": "liquidity_heatmap.py",
+      "importers_count": 1
+    },
+    {
+      "file": "macro_data_fetcher.py",
+      "importers_count": 1
+    },
+    {
+      "file": "metrics_collector.py",
+      "importers_count": 5
+    },
+    {
+      "file": "ml_features.py",
+      "importers_count": 6
+    },
+    {
+      "file": "onchain_fetcher.py",
+      "importers_count": 2
+    },
+    {
+      "file": "optimize_ai_payload.py",
+      "importers_count": 1
+    },
+    {
+      "file": "pattern_recognition.py",
+      "importers_count": 3
+    },
+    {
+      "file": "payload_optimizer_config.py",
+      "importers_count": 1
+    },
+    {
+      "file": "report_generator.py",
+      "importers_count": 1
+    },
+    {
+      "file": "technical_indicators.py",
+      "importers_count": 1
+    },
+    {
+      "file": "time_manager.py",
+      "importers_count": 16
+    },
+    {
+      "file": "trade_buffer.py",
+      "importers_count": 3
+    },
+    {
+      "file": "trade_validator.py",
+      "importers_count": 1
+    }
+  ],
+  "circular_candidates": [
+    [
+      "event_bus",
+      "events"
+    ],
+    [
+      "event_memory",
+      "events"
+    ],
+    [
+      "event_saver",
+      "events"
+    ],
+    [
+      "orderbook_core",
+      "orderbook_fallback"
+    ],
+    [
+      "trade_buffer",
+      "trading"
+    ],
+    [
+      "core",
+      "core.state_manager"
+    ]
+  ],
+  "exception_files": [
+    "ai_runner\\exceptions.py",
+    "common\\exceptions.py",
+    "flow_analyzer\\errors.py",
+    "orderbook_core\\exceptions.py",
+    "risk_management\\exceptions.py",
+    "scripts\\debug\\debug_keyerror.py"
+  ]
+}

@@ -39,7 +39,7 @@ async def test_macro_provider_integration():
         # 2. Teste das correlações cross-asset enhanced
         print("\n2. Testando correlações cross-asset enhanced...")
         
-        from cross_asset_correlations import get_enhanced_cross_asset_correlations
+        from market_analysis.cross_asset_correlations import get_enhanced_cross_asset_correlations
         
         correlations = get_enhanced_cross_asset_correlations()
         

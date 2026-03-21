@@ -4,7 +4,7 @@
 import sys
 sys.path.insert(0, ".")
 
-from ai_payload_compressor import PayloadCompressor
+from common.ai_payload_compressor import PayloadCompressor
 
 print("=" * 60)
 print("INICIANDO TESTES DO COMPRESSOR")

@@ -8,8 +8,8 @@ import pytest
 
 import ai_analyzer_qwen as ai_mod
 from build_compact_payload import build_compact_payload
-from event_bus import EventBus
-from health_monitor import HealthMonitor
+from events.event_bus import EventBus
+from monitoring.health_monitor import HealthMonitor
 from market_orchestrator.connection.robust_connection import RobustConnectionManager
 from ml.hybrid_decision import fuse_decisions
 

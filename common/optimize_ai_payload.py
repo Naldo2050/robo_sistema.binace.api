@@ -18,7 +18,7 @@ import json
 import logging
 from typing import Any, Dict, Iterable, List, Optional
 
-from payload_optimizer_config import (
+from common.payload_optimizer_config import (
     FIELDS_TO_REMOVE,
     FILTER_CONFIG,
     ROUNDING_CONFIG,

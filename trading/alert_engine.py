@@ -14,7 +14,7 @@ from typing import List, Dict, Any, Optional
 import logging
 
 # 🔹 IMPORTA UTILITÁRIOS DE FORMATAÇÃO
-from format_utils import (
+from common.format_utils import (
     format_price,
     format_quantity,
     format_percent,

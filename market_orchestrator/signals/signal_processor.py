@@ -18,7 +18,7 @@ import pandas as pd
 
 import config
 from data_pipeline import DataPipeline
-from enrichment_integrator import enrich_analysis_trigger_event, build_analysis_trigger_event
+from data_processing.enrichment_integrator import enrich_analysis_trigger_event, build_analysis_trigger_event
 
 # imports opcionais, como no arquivo original
 try:

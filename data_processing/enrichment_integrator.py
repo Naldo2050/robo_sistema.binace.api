@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Dict, Any
 import logging
 
-from data_enricher import DataEnricher
+from data_processing.data_enricher import DataEnricher
 
 logger = logging.getLogger(__name__)
 

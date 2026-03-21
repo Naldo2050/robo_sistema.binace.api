@@ -432,7 +432,7 @@ def validate_imports() -> bool:
     
     # Verificar módulos locais
     try:
-        import metrics_collector
+        from monitoring import metrics_collector
         import prometheus_exporter
         print_success("Módulos locais importados corretamente")
     except ImportError as e:

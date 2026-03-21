@@ -10,7 +10,7 @@ import json
 # Adicionar o diretório raiz ao path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from cross_asset_correlations import get_btc_eth_correlations, get_btc_macro_correlations
+from market_analysis.cross_asset_correlations import get_btc_eth_correlations, get_btc_macro_correlations
 from ml_features import calculate_cross_asset_features
 from market_orchestrator.ai.ai_payload_builder import build_payload_with_cross_asset
 

@@ -19,7 +19,7 @@ def test_correlation_functions():
     """Testa as funções básicas de correlação"""
     import numpy as np
     import pandas as pd
-    from cross_asset_correlations import _log_returns, _corr_last_window
+    from market_analysis.cross_asset_correlations import _log_returns, _corr_last_window
     
     # Criar dados sintéticos para teste
     dates = pd.date_range(start='2024-01-01', end='2024-12-31', freq='h')
@@ -52,7 +52,7 @@ def test_correlation_functions():
 def test_btc_eth_correlation():
     """Testa a função principal de correlação BTC-ETH"""
     import pandas as pd
-    from cross_asset_correlations import get_btc_eth_correlations
+    from market_analysis.cross_asset_correlations import get_btc_eth_correlations
     
     try:
         # Testar com datetime atual
@@ -81,7 +81,7 @@ def test_btc_eth_correlation():
 def test_btc_macro_correlations():
     """Testa a função de correlação BTC com indicadores macro"""
     import pandas as pd
-    from cross_asset_correlations import get_btc_macro_correlations
+    from market_analysis.cross_asset_correlations import get_btc_macro_correlations
     
     try:
         # Testar com datetime atual

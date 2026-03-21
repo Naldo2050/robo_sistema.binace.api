@@ -32,8 +32,8 @@ logger = logging.getLogger("IntegrationTest")
 
 # Imports dos Módulos
 try:
-    from context_collector import ContextCollector
-    from feature_store import FeatureStore
+    from fetchers.context_collector import ContextCollector
+    from data_processing.feature_store import FeatureStore
     from database.event_store import EventStore
     from tests.backtester import Backtester
 except ImportError as e:

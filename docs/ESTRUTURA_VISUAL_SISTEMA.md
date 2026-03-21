@@ -386,7 +386,7 @@ robo_sistema.binace.api/
 ├── pattern_recognition.py                     # Reconhecimento de padrões
 ├── technical_indicators.py                    # Indicadores técnicos
 ├── validation_check.py                        # Validação
-├── validar_evento.py                          # Validar evento
+├── validate_event.py                          # Validate event
 ├── log_formatter.py                           # Formatador de logs
 │
 ├─────────────────────────────────────────────────────────────────────────────┐
@@ -484,10 +484,10 @@ robo_sistema.binace.api/
 │
 ├── arquivos para diagnostico/                 # Diagnósticos de janelas
 │   └── diagnostico de janelas geradas/
-│       ├── diagnostico_avancado.py
-│       ├── diagnostico_duplicatas.py
-│       ├── diagnostico_janelas.py
-│       └── fix_duplicatas_completo.py
+│       ├── advanced_diagnostics.py
+│       ├── duplicate_diagnostics.py
+│       ├── window_diagnostics.py
+│       └── fix_duplicates_complete.py
 │
 ├── debug_bot.py                               # Debug do bot
 ├── debug_env.py                               # Debug de ambiente
@@ -498,10 +498,10 @@ robo_sistema.binace.api/
 ├── diagnose_optimization.py                   # Diagnóstico otimização
 ├── fix_bot_run.py                             # Fix execução bot
 ├── fix_broken_tests.py                        # Fix testes quebrados
-├── fix_duplicatas.py                          # Fix duplicatas
-├── fix_optimization.py                        # Fix otimização
+├── fix_duplicates.py                          # Fix duplicates
+├── fix_optimization.py                        # Fix optimization
 ├── fix_timestamp.py                           # Fix timestamp
-├── fix_separador_final.py                     # Fix separador
+├── fix_separator_final.py                     # Fix separator
 │
 ├─────────────────────────────────────────────────────────────────────────────┐
 │                         📚 DOCUMENTAÇÃO                                     │

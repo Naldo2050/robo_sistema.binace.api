@@ -23,7 +23,7 @@ import asyncio
 
 # Importar métricas do sistema
 try:
-    from metrics_collector import (
+    from monitoring.metrics_collector import (
         record_enrich_error,
         track_latency,
     )
@@ -79,10 +79,26 @@ class PriceTarget:
         }
 
 
+# FIX 4.4: Campos de onchain que têm dados reais (não dependem de API paga)
+_REAL_ONCHAIN_FIELDS = frozenset({
+    "difficulty", "active_addresses", "mempool_size",
+    "mempool_vsize_mb", "fees_fastest_sat_vb", "fees_half_hour_sat_vb",
+    "fees_hour_sat_vb", "total_btc_sent_24h", "trade_volume_btc_24h",
+    "difficulty_adjustment", "data_source", "is_real_data", "status",
+})
+
+
+def _filter_real_onchain(onchain: dict) -> dict:
+    """Remove campos zerados por falta de API paga (hash_rate, exchange_netflow, etc.)."""
+    if not onchain:
+        return onchain
+    return {k: v for k, v in onchain.items() if k in _REAL_ONCHAIN_FIELDS or v not in (0, None)}
+
+
 class DataEnricher:
     """
     Enriquecedor de dados baseado APENAS no raw_event atual.
-    
+
     v2: Melhorias no price_targets:
     - Extrai POC/VAH/VAL do historical_vp como targets primários (SEMPRE disponíveis)
     - Gera targets baseados em ATR quando multi_tf disponível
@@ -135,19 +151,22 @@ class DataEnricher:
             price_targets_dicts = []
 
         options_metrics = self._build_options_metrics()
-        onchain_metrics = self._build_onchain_metrics()
+        onchain_metrics = _filter_real_onchain(self._build_onchain_metrics())
         adaptive_thresholds = self._build_adaptive_thresholds(raw_event)
 
-        return {
+        result = {
             "symbol": symbol,
             "timestamp": timestamp,
             "price": price,
             "volume": volume,
             "price_targets": price_targets_dicts,
-            "options_metrics": options_metrics,
             "onchain_metrics": onchain_metrics,
             "adaptive_thresholds": adaptive_thresholds,
         }
+        # FIX 4.1: Só incluir options_metrics se tiver dados reais
+        if options_metrics and options_metrics.get("is_real_data"):
+            result["options_metrics"] = options_metrics
+        return result
 
     def enrich_event_with_advanced_analysis(self, event: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -202,20 +221,28 @@ class DataEnricher:
             price_targets = self._build_price_targets_enhanced(
                 outer_raw, price, current_volatility, historical_vp_src
             )
+            # FIX 4.1: Filtrar options_metrics fake (is_real_data=False)
+            _options = inner_raw.get("advanced_analysis", {}).get(
+                "options_metrics", self._build_options_metrics()
+            )
+            # FIX 4.4: Filtrar onchain_metrics — manter apenas campos com dados reais
+            _onchain = inner_raw.get("advanced_analysis", {}).get(
+                "onchain_metrics", self._build_onchain_metrics()
+            )
+            _onchain = _filter_real_onchain(_onchain)
+
             advanced_analysis = {
                 "symbol": outer_raw.get("symbol", inner_raw.get("symbol", "BTCUSDT")),
                 "price": price,
                 "volume": volume,
                 "timestamp": timestamp_utc,
-                "price_targets": price_targets,
+                # FIX 3.6: price_targets REMOVIDO — fonte canônica é event["price_targets"] (root)
                 "adaptive_thresholds": adaptive_thresholds,
-                "options_metrics": inner_raw.get("advanced_analysis", {}).get(
-                    "options_metrics", self._build_options_metrics()
-                ),
-                "onchain_metrics": inner_raw.get("advanced_analysis", {}).get(
-                    "onchain_metrics", self._build_onchain_metrics()
-                )
+                "onchain_metrics": _onchain,
             }
+            # FIX 4.1: Só incluir options_metrics se tiver dados reais
+            if _options and _options.get("is_real_data"):
+                advanced_analysis["options_metrics"] = _options
 
             # Salvar no raw_event
             if inner_raw:
@@ -668,12 +695,15 @@ class DataEnricher:
         for tf in ["1d", "4h", "1h", "15m"]:
             d = mtf.get(tf) or {}
             v = d.get("realized_vol")
-            if isinstance(v, (int, float)):
+            if isinstance(v, (int, float)) and v > 0:
                 realized_vol = v
                 break
 
         if realized_vol is None:
-            realized_vol = 0.01
+            # CORREÇÃO: fallback 0.03 (3%) é mais realista para BTC
+            # Antes: 0.01 causava thresholds desproporcionais e
+            # price targets errados no raw_event
+            realized_vol = 0.03
 
         vol_factor = 0.5 / realized_vol
         vol_factor = max(self.min_vol_factor, min(self.max_vol_factor, vol_factor))

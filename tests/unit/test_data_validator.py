@@ -20,7 +20,7 @@ from typing import Dict, Any
 # Garante que a raiz do projeto esteja no sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from data_validator import DataValidator
+from data_processing.data_validator import DataValidator
 
 
 # ==========================================

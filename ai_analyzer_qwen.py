@@ -48,7 +48,7 @@ except ImportError:
 
 # AI Response Validator (validaÃ§Ã£o rÃ­gida de respostas)
 try:
-    from ai_response_validator import (
+    from common.ai_response_validator import (
         # AIResponseValidator,  # noqa: F401
         build_fallback_response,
         validate_ai_response,
@@ -98,7 +98,7 @@ except Exception:
 
 # Format utils - com fallbacks inline
 try:
-    from format_utils import (
+    from common.format_utils import (
         format_delta as _format_delta,
         format_large_number as _format_large_number,
         format_percent as _format_percent,
@@ -182,7 +182,7 @@ except ImportError:
 # TimeManager - com fallback
 _TimeManager: Optional[type] = None
 try:
-    from time_manager import TimeManager as _TimeManagerImported
+    from monitoring.time_manager import TimeManager as _TimeManagerImported
     _TimeManager = _TimeManagerImported
 except ImportError:
     pass
@@ -203,7 +203,7 @@ else:
 # ========================
 
 if TYPE_CHECKING:
-    from health_monitor import HealthMonitor
+    from monitoring.health_monitor import HealthMonitor
 
 # ========================
 # IMPORTS OPCIONAIS COM TIPAGEM CORRETA
@@ -1023,12 +1023,12 @@ def _build_market_summary(payload: Dict[str, Any]) -> str:
                 parts.append("OVERBOUGHT")
             break
 
-    # 6. Regime/trend
+    # 6. Regime consensus
     regime = payload.get("regime") or {}
-    trend = regime.get("trend")
-    if trend:
-        parts.append(f"trend={trend}")
-    vol = regime.get("vol")
+    cs = regime.get("cs")
+    if cs:
+        parts.append(f"regime={cs}")
+    vol = regime.get("v")
     if vol:
         parts.append(f"vol={vol}")
 
@@ -1589,7 +1589,11 @@ class AIAnalyzer:
                             "OB extracted from order_book_depth.%s: bid=$%.0f, ask=$%.0f",
                             level_key, bid, ask,
                         )
-                        spread_val = event_data.get("spread_analysis", {}).get("current_spread_bps", 0)
+                        # FIX 3.7: spread consolidado em orderbook_data (antes era spread_analysis separado)
+                        spread_val = (
+                            event_data.get("orderbook_data", {}).get("spread_bps", 0)
+                            or event_data.get("spread_analysis", {}).get("current_spread_bps", 0)
+                        )
                         return {
                             "bid_depth_usd": float(bid),
                             "ask_depth_usd": float(ask),
@@ -1700,12 +1704,13 @@ class AIAnalyzer:
             if p:
                 out["p"] = p
 
-        # REGIME: dinamicos + regime change probability
+        # REGIME: consensus + confidence + volatility + dominant TF
         regime = payload.get("regime") or {}
         if regime:
             r = {}
-            for key in ("v", "tr", "st", "rgm", "chg",
-                         # Compat com v1 keys
+            for key in ("cs", "cf", "v", "dom", "bull%", "bear%",
+                         # Compat com v1 keys (legacy path)
+                         "tr", "st", "rgm", "chg",
                          "vol", "trend", "sentiment"):
                 if key in regime:
                     r[key] = regime[key]

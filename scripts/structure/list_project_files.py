@@ -137,7 +137,7 @@ def list_files_by_category():
             "pattern_recognition.py",
             "technical_indicators.py",
             "validation_check.py",
-            "validar_evento.py",
+            "validate_event.py",
             "log_formatter.py",
             "funding_aggregator.py",
             "historical_profiler.py"
@@ -159,10 +159,10 @@ def list_files_by_category():
             "diagnose_optimization.py",
             "fix_bot_run.py",
             "fix_broken_tests.py",
-            "fix_duplicatas.py",
+            "fix_duplicates.py",
             "fix_optimization.py",
             "fix_playwright.py",
-            "fix_separador_final.py",
+            "fix_separator_final.py",
             "fix_timestamp.py"
         ],
         

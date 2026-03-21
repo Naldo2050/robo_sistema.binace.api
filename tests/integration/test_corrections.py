@@ -236,7 +236,7 @@ def test_onchain_metrics_in_background_thread():
             except RuntimeError:
                 pass  # Esperado — sem loop na thread
 
-            from data_enricher import DataEnricher
+            from data_processing.data_enricher import DataEnricher
             enricher = DataEnricher({"SYMBOL": "BTCUSDT"})
 
             # Chamar o método que causava o warning

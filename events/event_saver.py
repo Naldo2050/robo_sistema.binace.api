@@ -146,7 +146,7 @@ except ImportError:
 
 # ===== IMPORT SEGURO DO TIME_MANAGER =====
 try:
-    from time_manager import TimeManager
+    from monitoring.time_manager import TimeManager
 except ImportError:
     class TimeManager:
         """
@@ -180,7 +180,7 @@ except ImportError:
 
 # ===== IMPORT SEGURO DE FORMAT_UTILS =====
 try:
-    from format_utils import (
+    from common.format_utils import (
         format_price,
         format_quantity,
         format_percent,
@@ -883,7 +883,7 @@ class EventSaver:
             event_copy = dict(event)
 
         try:
-            from fix_optimization import clean_event, simplify_historical_vp, remove_enriched_snapshot
+            from data_processing.fix_optimization import clean_event, simplify_historical_vp, remove_enriched_snapshot
             event_copy = clean_event(event_copy)
             event_copy = simplify_historical_vp(event_copy)
             event_copy = remove_enriched_snapshot(event_copy)
@@ -1079,7 +1079,7 @@ class EventSaver:
         # ✅ OTIMIZAÇÃO AUTOMÁTICA
         if event.get("tipo_evento") == "ANALYSIS_TRIGGER":
             try:
-                from fix_optimization import clean_event, simplify_historical_vp, remove_enriched_snapshot
+                from data_processing.fix_optimization import clean_event, simplify_historical_vp, remove_enriched_snapshot
                 event = clean_event(event)
                 event = simplify_historical_vp(event)
                 event = remove_enriched_snapshot(event)
@@ -1580,7 +1580,9 @@ class EventSaver:
                 result = {}
                 for k, v in obj.items():
                     cleaned_v = remove_empty(v)
-                    if cleaned_v is not None and cleaned_v != 0 and cleaned_v != "" and cleaned_v != []:
+                    # CORREÇÃO: não filtrar 0/0.0 — valores numéricos zero são legítimos
+                    # (ex: sector_flow buy=0 significa ausência de compras, não dado vazio)
+                    if cleaned_v is not None and cleaned_v != "" and cleaned_v != []:
                         result[k] = cleaned_v
                 return result if result else None
             elif isinstance(obj, list):

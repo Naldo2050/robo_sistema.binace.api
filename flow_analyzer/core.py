@@ -39,14 +39,12 @@ from .constants import (
     DEFAULT_ABSORCAO_DELTA_EPS,
     DEFAULT_ABSORCAO_GUARD_MODE,
     TIMESTAMP_JITTER_TOLERANCE_MS,
-    MAX_LATE_TRADE_MS,
     MAX_AGGREGATE_TRADES,
 )
-from .errors import FlowAnalyzerError, ConfigurationError
-from .protocols import IFlowAnalyzer, ITimeProvider, IClockSync
+from .errors import FlowAnalyzerError  # noqa: F401 (re-exported)
+from .protocols import IFlowAnalyzer, ITimeProvider
 from .utils import (
     lazy_log,
-    to_decimal,
     decimal_round,
     ui_safe_round_usd,
     ui_safe_round_btc,
@@ -58,7 +56,6 @@ from .validation import (
     TradeSchema,
     validate_ohlc,
     fix_ohlc,
-    guard_absorcao,
     FlowAnalyzerConfigValidator,
 )
 from .aggregates import RollingAggregate
@@ -76,7 +73,7 @@ from .absorption import (
 
 # TimeManager
 try:
-    from time_manager import TimeManager
+    from monitoring.time_manager import TimeManager
     HAS_TIME_MANAGER = True
 except ImportError:
     HAS_TIME_MANAGER = False
@@ -137,7 +134,7 @@ class FlowAnalyzer(IFlowAnalyzer):
     - Lock dedicado para contadores
     
     Example:
-        >>> from time_manager import TimeManager
+        >>> from monitoring.time_manager import TimeManager
         >>> analyzer = FlowAnalyzer(TimeManager())
         >>> analyzer.process_trade({'q': 1.5, 'T': 1234567890, 'p': 50000, 'm': True})
         >>> metrics = analyzer.get_flow_metrics()

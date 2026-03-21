@@ -1,7 +1,7 @@
 # teste_separador.py - Debug de separadores
 import logging
 import time
-from event_saver import EventSaver
+from events.event_saver import EventSaver
 from datetime import datetime
 
 logging.basicConfig(

@@ -81,7 +81,7 @@ def check_payload_size():
     return True, f"Payload OK: {size} bytes"
 
 def check_price_targets():
-    from data_enricher import DataEnricher
+    from data_processing.data_enricher import DataEnricher
     enricher = DataEnricher({"SYMBOL": "BTCUSDT"})
     event = {
         "symbol": "BTCUSDT",

@@ -30,8 +30,8 @@ REGIME_MAP = {
     "Acumulação": "ACCUM", "Manipulação": "MANIP",
     "Distribuição": "DIST", "Expansão": "EXPAN", "Range": "RANGE",
     # Encoding corrompido (fallback)
-    "AcumulaÃ§Ã£o": "ACCUM", "ManipulaÃ§Ã£o": "MANIP",
-    "DistribuiÃ§Ã£o": "DIST", "ExpansÃ£o": "EXPAN",
+    "Acumulação": "ACCUM", "Manipulação": "MANIP",
+    "Distribuição": "DIST", "Expansão": "EXPAN",
     # CORREÇÃO BUG2: inglês que o signal usa diretamente
     "neutral": "NEUT", "Neutral": "NEUT",
     "bullish": "UP",   "Bullish": "UP",

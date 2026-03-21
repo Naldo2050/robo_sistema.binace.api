@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-import event_saver
+from events import event_saver
 
 
 @pytest.mark.parametrize("max_bytes", [200, 500])

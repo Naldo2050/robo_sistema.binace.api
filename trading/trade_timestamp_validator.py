@@ -57,7 +57,7 @@ class TradeLatencyMonitor:
         
         # Timestamp atual em ms (usando TimeManager para compensar offset)
         try:
-            from time_manager import TimeManager
+            from monitoring.time_manager import TimeManager
             now_ms = TimeManager().now()
         except Exception:
             now_ms = int(time.time() * 1000)

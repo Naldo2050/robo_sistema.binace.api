@@ -83,10 +83,10 @@ except (ImportError, AttributeError):
     MACD_SLOW_PERIOD = 26
     MACD_SIGNAL_PERIOD = 9
 
-from historical_profiler import HistoricalVolumeProfiler
-from time_manager import TimeManager
-from fred_fetcher import FREDFetcher
-from metrics_collector import record_fred_fallback
+from market_analysis.historical_profiler import HistoricalVolumeProfiler
+from monitoring.time_manager import TimeManager
+from fetchers.fred_fetcher import FREDFetcher
+from monitoring.metrics_collector import record_fred_fallback
 
 # Fetchers reais (on-chain e funding agregado)
 try:
@@ -714,6 +714,8 @@ class ContextCollector:
                 except Exception:
                     pass
              
+            # FIX 5C: risk_sentiment must be consistent with Fear&Greed + VIX.
+            # Correlation-based sentiment is overridden when macro data is extreme.
             corr_spy = env.get("correlation_spy")
             corr_dxy = env.get("correlation_dxy")
             if corr_spy is not None and corr_dxy is not None:
@@ -1213,6 +1215,66 @@ class ContextCollector:
             "timestamp": self.time_manager.now_iso(),
         }
 
+    @staticmethod
+    def _adjust_risk_sentiment(ctx: dict) -> None:
+        """FIX 5C: Override risk_sentiment when Fear&Greed / VIX are extreme."""
+        env = ctx.get("market_environment")
+        ext = ctx.get("external")
+        if not isinstance(env, dict) or not isinstance(ext, dict):
+            return
+
+        fg_data = ext.get("FEAR_GREED", {}) or {}
+        fg = fg_data.get("preco_atual")  # 0-100 scale
+        vix_data = ext.get("VIX", {}) or {}
+        vix = vix_data.get("preco_atual")
+
+        # Fear & Greed extreme values dominate
+        if fg is not None:
+            try:
+                fg = float(fg)
+                if fg <= 20:
+                    env["risk_sentiment"] = "RISK_OFF"
+                    return
+                if fg >= 80:
+                    env["risk_sentiment"] = "RISK_ON"
+                    return
+            except (TypeError, ValueError):
+                pass
+
+        # High VIX = risk off
+        if vix is not None:
+            try:
+                vix = float(vix)
+                if vix > 25:
+                    env["risk_sentiment"] = "RISK_OFF"
+                    return
+                if vix < 15:
+                    env["risk_sentiment"] = "RISK_ON"
+                    return
+            except (TypeError, ValueError):
+                pass
+
+        # Otherwise keep correlation-based value (already set)
+
+    @staticmethod
+    def _validate_historical_vp(ctx: dict) -> None:
+        """FIX 6A: Mark degenerate VP periods as insufficient_data."""
+        hvp = ctx.get("historical_vp")
+        if not isinstance(hvp, dict):
+            return
+        for period in ("daily", "weekly", "monthly"):
+            vp = hvp.get(period)
+            if not isinstance(vp, dict):
+                continue
+            poc = vp.get("poc", 0)
+            vah = vp.get("vah", 0)
+            val = vp.get("val", 0)
+            if poc and vah and val and poc > 0:
+                # Range < 0.01% of POC → degenerate (e.g. POC=VAH=VAL)
+                if abs(vah - val) / poc < 0.0001:
+                    vp["status"] = "insufficient_data"
+                    vp["quality"] = "degenerate"
+
     async def _async_update_loop(self):
         logger.info("✅ Coletor de Contexto iniciado (async).")
         async with await self._build_retrying_session() as session:
@@ -1225,6 +1287,14 @@ class ContextCollector:
                     final_ctx["historical_vp"] = final_ctx.get("profile", {})
                     final_ctx.setdefault("intermarket", {})
                     final_ctx.setdefault("sentiment", {})
+
+                    # FIX 5C: Post-process risk_sentiment using Fear&Greed + VIX
+                    # (external and market_environment are gathered independently)
+                    self._adjust_risk_sentiment(final_ctx)
+
+                    # FIX 6A: Mark degenerate historical_vp as insufficient_data
+                    self._validate_historical_vp(final_ctx)
+
                     self._context_data = final_ctx
                     logger.info("✅ Contexto Macro atualizado.")
                 except Exception as e:

@@ -14,12 +14,12 @@ from .validation.adaptive import AdaptiveThresholds
 from .cache.lru_cache import LRUCache
 from .metrics.processor import MetricsProcessor
 from .fallback.registry import FallbackRegistry
-from enrichment_integrator import enrich_analysis_trigger_event, build_analysis_trigger_event
+from data_processing.enrichment_integrator import enrich_analysis_trigger_event, build_analysis_trigger_event
 import config as global_config
-from data_enricher import DataEnricher
+from data_processing.data_enricher import DataEnricher
 
 if TYPE_CHECKING:
-    from time_manager import TimeManager
+    from monitoring.time_manager import TimeManager
 
 try:
     from ml_features import generate_ml_features
@@ -235,7 +235,7 @@ class DataPipeline:
             return cached
 
         try:
-            from data_handler import (
+            from data_processing.data_handler import (
                 calcular_metricas_intra_candle,
                 calcular_volume_profile,
                 calcular_dwell_time,
@@ -428,14 +428,11 @@ class DataPipeline:
         }
 
         # Enriquecimento institucional no snapshot COMPLETO (outer raw_event)
+        # FIX 3.1: advanced_analysis fica APENAS em raw_event (fonte canônica)
+        # Removido de contextual root para evitar duplicação ~5KB
         try:
             if getattr(global_config, "ENABLE_DATA_ENRICHMENT", True):
-                advanced = self._data_enricher.enrich_from_raw_event(contextual)
-                contextual["advanced_analysis"] = advanced
-
-                # Compatibilidade: também copia para o raw_event interno (se existir)
-                if isinstance(contextual.get("raw_event"), dict):
-                    contextual["raw_event"]["advanced_analysis"] = advanced
+                self._data_enricher.enrich_from_raw_event(contextual)
         except Exception as e:
             self.logger.runtime_warning(
                 "⚠️ Fallback: advanced_analysis (contextual)",

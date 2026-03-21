@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from diagnose_optimization import (
+from scripts.diagnostics.diagnose_optimization import (
     OptimizationDiagnostic,
     DiagnosticConfig,
     EventAnalysis,

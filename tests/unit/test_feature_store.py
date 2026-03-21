@@ -18,7 +18,7 @@ import glob
 
 import numpy as np
 import pandas as pd
-from feature_store import FeatureStore
+from data_processing.feature_store import FeatureStore
 
 # Suprimir warnings do pandas
 warnings.filterwarnings('ignore', message="errors='ignore' is deprecated")

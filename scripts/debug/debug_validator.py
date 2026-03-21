@@ -1,5 +1,5 @@
 # debug_validator.py - Script temporário para debug
-from data_validator import DataValidator
+from data_processing.data_validator import DataValidator
 
 print("=" * 50)
 print("TESTE 1: whale_sell_volume > volume_venda")

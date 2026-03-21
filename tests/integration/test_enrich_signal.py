@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from fix_optimization import clean_event, simplify_historical_vp, remove_enriched_snapshot
+from data_processing.fix_optimization import clean_event, simplify_historical_vp, remove_enriched_snapshot
 
 
 import threading
@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import pytest
 
 import market_orchestrator.market_orchestrator as mo
-from data_handler import NY_TZ
+from data_processing.data_handler import NY_TZ
 
 
 # =======================
