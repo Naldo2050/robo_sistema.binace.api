@@ -1134,14 +1134,14 @@ class AIAnalyzer:
         self._start_heartbeat()
 
     def _load_config(self) -> None:
-        """Carrega configuraÃ§Ã£o do config.json."""
+        """Carrega configuração do config/defaults.json (fallback: config.json)."""
         try:
-            config_path = Path("config.json")
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
-                    self.config = json.load(f)
-            else:
-                logging.debug("config.json nÃ£o encontrado, usando configuraÃ§Ã£o padrÃ£o")
+            for candidate in (Path("config/defaults.json"), Path("config.json")):
+                if candidate.exists():
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        self.config = json.load(f)
+                    return
+            logging.debug("config.json não encontrado, usando configuração padrão")
         except Exception as e:
             logging.warning(f"Erro ao carregar config.json: {e}")
             self.config = {}
