@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from market_orchestrator.ai.payload_compressor import compress_payload
@@ -184,6 +185,29 @@ def _extract_safe_candidate(
             symbol, price, epoch
         )
         return minimal
+
+    # ── Prioridade 5: último recurso absoluto ─────────────────────
+    # Se temos ao menos o symbol, retorna payload mínimo funcional
+    # ao invés de None (que abortaria a análise completamente)
+    _symbol = None
+    for key in ("symbol", "ativo"):
+        if key in payload and isinstance(payload[key], str):
+            _symbol = payload[key]
+            break
+
+    if _symbol:
+        logging.warning(
+            "GUARDRAIL_LAST_RESORT symbol=%s bytes=%s",
+            _symbol,
+            len(json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+        )
+        return {
+            "symbol": _symbol,
+            "trigger": "GUARDRAIL_FALLBACK",
+            "price": {"c": 0},
+            "epoch_ms": int(time.time() * 1000),
+            "_guardrail_fallback": True,
+        }
 
     return None
 
