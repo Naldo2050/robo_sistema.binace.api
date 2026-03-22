@@ -841,6 +841,7 @@ def build_compact_payload(event_data: dict) -> dict:
     # ═══════════════════════════════════════════════════════════
     payload: dict[str, Any] = {
         "symbol": event_data.get("symbol", "BTCUSDT"),  # ← ADICIONADO
+        "epoch_ms": event_data.get("epoch_ms") or int(time.time() * 1000),
         "trigger": trigger,                              # ← ERA "t"
         "price": price,                                  # ← ERA "p"
     }

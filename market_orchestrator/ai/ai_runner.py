@@ -629,6 +629,25 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                             e,
                             exc_info=True,
                         )
+                        # Payload de emergência para que guardrail não falhe
+                        price = (
+                            event_data.get("preco_fechamento")
+                            or event_data.get("contextual_snapshot", {}).get("ohlc", {}).get("close")
+                            or 0
+                        )
+                        epoch = event_data.get("epoch_ms") or int(time.time() * 1000)
+                        emergency_payload = {
+                            "symbol": event_data.get("symbol", "BTCUSDT"),
+                            "trigger": "EMERGENCY",
+                            "price": {"c": price},
+                            "epoch_ms": epoch,
+                            "_emergency": True,
+                        }
+                        event_data["ai_payload"] = emergency_payload
+                        logging.warning(
+                            "EMERGENCY_PAYLOAD: build_compact falhou, usando payload mínimo (price=%s)",
+                            price,
+                        )
 
                     # [THROTTLE] Verificar se vale a pena chamar a IA
                     _throttled = False
