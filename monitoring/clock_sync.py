@@ -32,6 +32,7 @@ class ClockSync:
         self._is_synced = False
         self._last_sync = None
         self._stop_event = threading.Event()
+        self._initial_sync_event = threading.Event()
         self._thread = threading.Thread(target=self._sync_loop, daemon=True)
         self._thread.start()
         self.logger = logging.getLogger(__name__)
@@ -59,6 +60,10 @@ class ClockSync:
             self.logger.warning(f"⚠️ Falha ao obter hora do servidor: {e}")
             return None
 
+    def wait_for_sync(self, timeout: float = 5.0) -> bool:
+        """Aguarda a primeira sincronização completar (blocking)."""
+        return self._initial_sync_event.wait(timeout=timeout)
+
     def _sync_loop(self):
         """Loop de sincronização periódica."""
         # ✅ Sincronização inicial imediata
@@ -67,6 +72,7 @@ class ClockSync:
             self._offset_sec = offset
             self._is_synced = True
             self._last_sync = time.time()
+            self._initial_sync_event.set()
             self.logger.info(f"[ClockSync] Sincronização inicial concluída. Offset: {offset:+.3f}s")
 
         while not self._stop_event.wait(_SYNC_INTERVAL):
