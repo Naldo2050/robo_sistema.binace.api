@@ -437,10 +437,10 @@ class EventSaver:
                     self.logger.info("🕐 Inicializando Clock Sync...")
                     _clock_sync_instance = get_clock_sync()
                     
-                    # Aguarda primeira sincronização
-                    time.sleep(0.5)
-                    
-                    if _clock_sync_instance.is_synced():
+                    # Aguarda primeira sincronização (até 5s para HTTP completar)
+                    synced = _clock_sync_instance.wait_for_sync(timeout=5.0)
+
+                    if synced:
                         offset = _clock_sync_instance.get_offset_seconds()
                         if abs(offset) > 0.5:
                             self.logger.info(
@@ -454,7 +454,7 @@ class EventSaver:
                                 f"Relógio bem sincronizado (offset: {offset:+.3f}s)"
                             )
                     else:
-                        self.logger.warning("⚠️ Clock Sync: sincronização inicial pendente")
+                        self.logger.warning("⚠️ Clock Sync: sincronização inicial pendente (timeout 5s)")
                         
             except Exception as e:
                 self.logger.warning(f"⚠️ Clock Sync não disponível: {e}")

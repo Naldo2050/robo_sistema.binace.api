@@ -472,76 +472,77 @@ def test_temporal_consistency_in_order_events(validator):
 
 def test_temporal_consistency_out_of_order_within_tolerance(validator):
     """
-    Testa que eventos fora de ordem DENTRO da tolerância (200ms) são aceitos.
-    
+    Testa que eventos fora de ordem DENTRO da tolerância (5000ms) são aceitos.
+
     Garante:
-    - Tolerância temporal de 200ms
-    - Pequenos desvios de ordem são aceitos (jitter de rede)
-    
-    Referência: data_validator.py linha 627 (TEMPORAL_TOLERANCE_MS = 200)
+    - Tolerância temporal de 5000ms
+    - Desvios de ordem dentro da tolerância são aceitos (jitter de rede, clock offset)
+
+    Referência: data_validator.py _validate_temporal_consistency v2.4.0
     """
     event1 = {
-        "epoch_ms": 1733918400000,
-        "timestamp": "2024-12-11T10:00:00.000Z",
+        "epoch_ms": 1733918401000,  # Timestamp REAL (não-boundary)
+        "timestamp": "2024-12-11T10:00:01.000Z",
         "delta": 1.0,
         "volume_total": 10.0,
         "volume_compra": 6.0,
         "volume_venda": 4.0,
         "preco_fechamento": 50000.0,
     }
-    
+
     event2 = {
-        "epoch_ms": 1733918399850,  # 150ms ANTES (dentro da tolerância de 200ms)
-        "timestamp": "2024-12-11T09:59:59.850Z",
+        "epoch_ms": 1733918397000,  # 4s ANTES (dentro da tolerância de 5000ms)
+        "timestamp": "2024-12-11T09:59:57.000Z",
         "delta": 1.5,
         "volume_total": 12.0,
         "volume_compra": 7.0,
         "volume_venda": 5.0,
         "preco_fechamento": 49999.0,
     }
-    
+
     result1 = validator.validate_and_clean(event1)
     result2 = validator.validate_and_clean(event2)
-    
+
     assert result1 is not None, "Primeiro evento deveria passar"
-    assert result2 is not None, "Evento fora de ordem (150ms) deveria passar (tolerância 200ms)"
+    assert result2 is not None, "Evento fora de ordem (4s) deveria passar (tolerância 5000ms)"
 
 
 def test_temporal_consistency_out_of_order_exceeds_tolerance(validator):
     """
-    Testa que eventos fora de ordem ALÉM da tolerância (>200ms) são rejeitados.
-    
+    Testa que eventos fora de ordem ALÉM da tolerância (>5000ms) são rejeitados.
+
     Garante:
     - Eventos significativamente fora de ordem são rejeitados
     - Proteção contra dados corrompidos
-    
-    Referência: data_validator.py linhas 633-639
+    - Kline boundaries (múltiplos de 60s) não são usados como referência
+
+    Referência: data_validator.py _validate_temporal_consistency v2.4.0
     """
     event1 = {
-        "epoch_ms": 1733918400000,
-        "timestamp": "2024-12-11T10:00:00.000Z",
+        "epoch_ms": 1733918401000,  # Timestamp REAL (não-boundary)
+        "timestamp": "2024-12-11T10:00:01.000Z",
         "delta": 1.0,
         "volume_total": 10.0,
         "volume_compra": 6.0,
         "volume_venda": 4.0,
         "preco_fechamento": 50000.0,
     }
-    
+
     event2 = {
-        "epoch_ms": 1733918395000,  # ❌ 5 segundos ANTES (excede tolerância de 2000ms)
-        "timestamp": "2024-12-11T09:59:55.000Z",
+        "epoch_ms": 1733918394000,  # ❌ 7 segundos ANTES (excede tolerância de 5000ms)
+        "timestamp": "2024-12-11T09:59:54.000Z",
         "delta": 1.5,
         "volume_total": 12.0,
         "volume_compra": 7.0,
         "volume_venda": 5.0,
         "preco_fechamento": 49999.0,
     }
-    
+
     result1 = validator.validate_and_clean(event1)
     result2 = validator.validate_and_clean(event2)
-    
+
     assert result1 is not None, "Primeiro evento deveria passar"
-    assert result2 is None, "Evento fora de ordem (5s) deveria ser rejeitado (tolerância 2000ms)"
+    assert result2 is None, "Evento fora de ordem (7s) deveria ser rejeitado (tolerância 5000ms)"
 
 
 # ==========================================

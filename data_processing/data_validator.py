@@ -41,7 +41,7 @@ class DataValidator:
     RATIO_PRECISION = 6     # Ratios e percentuais
     
     # 🆕 Tolerâncias por tipo
-    BTC_TOLERANCE = 1e-4    # 0.0001 BTC (Alinhado com MetricsProcessor)
+    BTC_TOLERANCE = 2e-4    # 0.0002 BTC (~$14 @ $71K, cobre float rounding)
     USD_TOLERANCE = 0.01    # $0.01
     
     # 🆕 Limites de timestamp válido
@@ -718,14 +718,19 @@ class DataValidator:
     def _validate_temporal_consistency(self, data: Dict) -> bool:
         """
         Valida consistência temporal dos timestamps.
-        
-        v2.3.1 - Adiciona tolerância temporal.
+
+        v2.4.0 - Fix: kline boundary timestamps (múltiplos de 60s) não são
+        usados como referência temporal. Eles são sintéticos (close time do
+        candle) e causavam falsos positivos quando eventos reais chegavam
+        com timestamps anteriores ao boundary.
+        Tolerância aumentada de 2s → 5s para acomodar clock offset Binance
+        e jitter de rede.
         """
-        TEMPORAL_TOLERANCE_MS = 2000  # 2 segundos (Realista para rede/processamento)
+        TEMPORAL_TOLERANCE_MS = 5000  # 5s — rede + clock offset residual
         current_timestamp_ms = data.get('epoch_ms')
         if current_timestamp_ms and self.last_event_timestamp_ms > 0:
             time_diff = self.last_event_timestamp_ms - current_timestamp_ms
-            
+
             if time_diff > TEMPORAL_TOLERANCE_MS:
                 self.logger.error(
                     f"❌ Inconsistência temporal SIGNIFICATIVA: "
@@ -733,19 +738,38 @@ class DataValidator:
                     f"último={self.last_event_timestamp_ms})"
                 )
                 return False
-            
+
             elif time_diff > 0:
                 self.logger.debug(
                     f"⚠️ Evento fora de ordem (tolerado): "
                     f"diff={time_diff}ms (tolerância={TEMPORAL_TOLERANCE_MS}ms)"
                 )
                 return True
-        
+
         if current_timestamp_ms:
-            if current_timestamp_ms > self.last_event_timestamp_ms:
-                self.last_event_timestamp_ms = current_timestamp_ms
-        
+            self._update_reference_timestamp(current_timestamp_ms)
+
         return True
+
+    def _update_reference_timestamp(self, ts_ms: int) -> None:
+        """
+        Atualiza referência temporal apenas com timestamps reais.
+
+        Kline boundaries (múltiplos de 60000ms) são timestamps sintéticos
+        do close do candle — usá-los como referência faz eventos reais
+        subsequentes parecerem "no passado", gerando descartes falsos.
+        """
+        is_kline_boundary = (ts_ms % 60000 == 0)
+
+        if not is_kline_boundary:
+            if ts_ms > self.last_event_timestamp_ms:
+                self.last_event_timestamp_ms = ts_ms
+        else:
+            # Boundary: registra apenas se posterior e sem retroagir
+            if ts_ms > self.last_event_timestamp_ms:
+                self.logger.debug(
+                    f"Boundary timestamp {ts_ms} ignorado como referência temporal"
+                )
 
     def _validate_volume_consistency(self, event: Dict) -> bool:
         """
