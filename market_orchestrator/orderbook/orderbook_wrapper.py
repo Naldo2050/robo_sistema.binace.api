@@ -20,9 +20,15 @@ import asyncio
 import logging
 import copy  # PATCH W-03: deepcopy para evitar mutação acidental
 from typing import Any, Dict, Optional
+from collections import deque
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
 import config
+
+# ── Fallback counter (rolling window) ──────────────────────
+# Registra timestamps de cada fallback para contagem por hora/dia.
+_fallback_timestamps: deque = deque(maxlen=1000)
+_fallback_lock = threading.Lock()
 from orderbook_core.structured_logging import StructuredLogger
 from orderbook_core.tracing_utils import TracerWrapper
 from orderbook_core.protocols import BotProtocol  # Adicionado import do protocolo
@@ -266,9 +272,19 @@ def orderbook_fallback(bot: BotProtocol) -> Dict[str, Any]:
     if last_evt and (time.time() - last_time < fallback_max_age):
         age = time.time() - last_time
 
+        # ── Registrar fallback no rolling counter ──
+        now = time.time()
+        with _fallback_lock:
+            _fallback_timestamps.append(now)
+            # Contar fallbacks na última hora e nas últimas 24h
+            cutoff_1h = now - 3600
+            cutoff_24h = now - 86400
+            count_1h = sum(1 for t in _fallback_timestamps if t >= cutoff_1h)
+            count_24h = sum(1 for t in _fallback_timestamps if t >= cutoff_24h)
+
         logging.warning(
-            f"⚠️ Usando orderbook em cache (age={age:.0f}s) "
-            f"após {failures} falhas"
+            f"Usando orderbook em cache (age={age:.0f}s) "
+            f"após {failures} falhas | fallbacks: {count_1h}/1h, {count_24h}/24h"
         )
 
         # PATCH W-03: deepcopy para evitar mutação acidental
@@ -277,6 +293,8 @@ def orderbook_fallback(bot: BotProtocol) -> Dict[str, Any]:
             "is_valid": True,
             "data_source": "cache",
             "age_seconds": age,
+            "fallbacks_1h": count_1h,
+            "fallbacks_24h": count_24h,
         }
 
         try:
@@ -284,6 +302,8 @@ def orderbook_fallback(bot: BotProtocol) -> Dict[str, Any]:
                 "orderbook_fallback_cache",
                 age_seconds=age,
                 failures=failures,
+                fallbacks_1h=count_1h,
+                fallbacks_24h=count_24h,
             )
         except Exception:
             pass

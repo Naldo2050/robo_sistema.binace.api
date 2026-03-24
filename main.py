@@ -192,21 +192,54 @@ async def main() -> int:
     log_level_name = getattr(config, "LOG_LEVEL", "INFO").upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
 
-    # UTF-8 explicito -- evita UnicodeEncodeError com emojis no Windows (cp1252)
+    # Garantir pasta de logs
+    os.makedirs("logs", exist_ok=True)
+
+    # Console UTF-8 -- evita UnicodeEncodeError com emojis no Windows
     if hasattr(sys.stdout, "buffer"):
         utf8_stream = io.TextIOWrapper(
-            sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
+            sys.stdout.buffer,
+            encoding="utf-8",
+            errors="replace",
+            line_buffering=True,
         )
     else:
         utf8_stream = sys.stdout
-    handler = logging.StreamHandler(stream=utf8_stream)
-    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+
+    console_handler = logging.StreamHandler(stream=utf8_stream)
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    )
+
+    from logging.handlers import RotatingFileHandler
+
+    # Arquivo de problemas: WARNING + ERROR + CRITICAL
+    issues_handler = RotatingFileHandler(
+        "logs/issues.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    issues_handler.setLevel(logging.WARNING)
+    issues_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+        )
+    )
+
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
+
+    # Limpar handlers antigos
     for h in root_logger.handlers[:]:
         root_logger.removeHandler(h)
-    root_logger.addHandler(handler)
+
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(issues_handler)
+
     logging.info(f"📊 Nível de log configurado: {log_level_name}")
+    logging.info("🚨 Logs de problemas em: logs/issues.log")
 
     logger = logging.getLogger(__name__)
 
@@ -245,7 +278,6 @@ async def main() -> int:
         # ✅ PATCH 2.6: Iniciar servidor Prometheus para métricas
         try:
             from prometheus_client import start_http_server
-            import os
 
             # Porta configurável via env var (default 8000)
             prometheus_port = int(os.getenv("PROMETHEUS_PORT", "8000"))

@@ -38,14 +38,23 @@ class HealthMonitor:
         # Logger estruturado
         self.slog = StructuredLogger("health_monitor", "SYSTEM")
         
-        # OCI Monitoring
+        # OCI Monitoring — só instanciar se compartment_id configurado
+        # (evita 5s timeout em ambientes sem Instance Principal)
         self.oci_monitor = None
-        if OCIMonitor:
+        _oci_compartment = getattr(config, "OCI_COMPARTMENT_ID", None) if "config" in dir() else None
+        try:
+            from config import settings as _cfg
+            _oci_compartment = getattr(_cfg, "OCI_COMPARTMENT_ID", None)
+        except Exception:
+            pass
+        if OCIMonitor and _oci_compartment:
             try:
-                self.oci_monitor = OCIMonitor()
-                logging.info(f"☁️ OCI Monitoring habilitado: {self.oci_monitor.enabled}")
+                self.oci_monitor = OCIMonitor(compartment_id=_oci_compartment)
+                logging.info(f"OCI Monitoring habilitado: {self.oci_monitor.enabled}")
             except Exception as e:
-                logging.warning(f"⚠️ Falha ao iniciar OCI Monitor: {e}")
+                logging.warning(f"Falha ao iniciar OCI Monitor: {e}")
+        elif OCIMonitor:
+            logging.debug("OCI Monitor: pulado (OCI_COMPARTMENT_ID=None)")
 
         # Inicia thread de verificação
         self._stop_event = threading.Event()

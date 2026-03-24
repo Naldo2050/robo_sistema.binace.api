@@ -1,107 +1,168 @@
 {
   "ai_payload": {
-    "technical_indicators": {
-      "rsi": 42.8,
-      "macd": {
-        "line": -301.3043,
-        "signal": -336.3872,
-        "histogram": 35.0829
-      },
-      "adx": 27.1,
-      "stoch": null,
-      "pivots": {}
-    },
-    "orderbook_context": {
-      "bid_depth_usd": 390358.98,
-      "ask_depth_usd": 1017091.66,
-      "imbalance": -0.4453,
-      "spread_percent": 0.0001,
-      "market_impact_score": -0.4453,
-      "walls_detected": true,
-      "depth_metrics": {
-        "bid_liquidity_top5": 200147.8073,
-        "ask_liquidity_top5": 543099.8956,
-        "depth_imbalance": -0.4614
-      }
-    },
     "symbol": "BTCUSDT",
-    "historical_stats": {},
-    "epoch_ms": 1768873920000,
-    "signal_metadata": {
-      "type": "ANALYSIS_TRIGGER",
-      "battle_result": "N/A",
-      "severity": "INFO",
-      "window_id": 6,
-      "description": "Evento automático para análise da IA"
+    "epoch_ms": 1774320360000,
+    "trigger": "AT",
+    "price": {
+      "c": 70549,
+      "o": 70531,
+      "h": 70567,
+      "l": 70490,
+      "vw": 70535,
+      "sh": "B",
+      "auc": "expect_retest_high",
+      "ph": 1,
+      "pl": 1,
+      "brk_risk": "VERY"
     },
-    "macro_context": {
-      "session": "NY",
-      "phase": "ACTIVE",
-      "regime": {
-        "structure": "RANGE_BOUND",
-        "trend": "SIDEWAYS",
-        "sentiment": "NEUTRAL"
+    "regime": {
+      "cs": "BULL",
+      "cf": 0.5,
+      "v": "L",
+      "dom": "4h",
+      "bull%": 75,
+      "bear%": 25
+    },
+    "flow": {
+      "d1": "+15K",
+      "d5": "+267K",
+      "d15": "+548K",
+      "cvd": -42.9,
+      "imb": 0.52,
+      "ab": 76,
+      "bsr": 3.19,
+      "pa": "buy_absorp",
+      "conv": "M",
+      "abs_buy_str": 7.6,
+      "abs_sell_exh": 5.2
+    },
+    "ob": {
+      "b": "223K",
+      "a": "314K",
+      "imb": -0.17,
+      "bias": "SELL",
+      "t5": -0.32
+    },
+    "tf": {
+      "15m": {
+        "t": "DN",
+        "rsi": 43,
+        "macd": [
+          -64,
+          -39
+        ],
+        "adx": 16,
+        "atr": 243,
+        "r": "RNG"
+      },
+      "1h": {
+        "t": "UP",
+        "rsi": 50,
+        "macd": [
+          453,
+          504
+        ],
+        "adx": 18,
+        "atr": 595,
+        "r": "RNG"
+      },
+      "4h": {
+        "t": "UP",
+        "rsi": 62,
+        "macd": [
+          -178,
+          -496
+        ],
+        "adx": 41,
+        "atr": 1238,
+        "r": "MNP"
+      },
+      "1d": {
+        "t": "UP",
+        "rsi": 52,
+        "macd": [
+          55,
+          89
+        ],
+        "adx": 20,
+        "atr": 2624,
+        "r": "MNP"
       }
     },
-    "cross_asset_context": {},
-    "flow_context": {
-      "net_flow": 0.0,
-      "cvd_accumulated": 2.30693,
-      "flow_imbalance": null,
-      "aggressive_buyers": null,
-      "aggressive_sellers": null,
-      "whale_activity": {
-        "whale_delta": 0.0,
-        "whale_buy_vol": 0.0,
-        "whale_sell_vol": 0.0
-      },
-      "liquidity_clusters_count": 1,
-      "absorption_type": "Neutra"
+    "sr": {
+      "r1": [
+        70590,
+        78
+      ],
+      "r1_conf": 6,
+      "r2": [
+        70804,
+        60
+      ],
+      "r2_conf": 3,
+      "s1": [
+        70249,
+        44
+      ],
+      "s1_conf": 3,
+      "s2": [
+        70438,
+        43
+      ],
+      "def_bias": "strong_sel"
     },
-    "price_context": {
-      "current_price": 92795.2,
-      "ohlc": {
-        "open": 92810.0,
-        "high": 92810.0,
-        "low": 92795.1,
-        "close": 92795.2,
-        "vwap": 92807.0
+    "w": {
+      "s": -20,
+      "c": "MD"
+    },
+    "ext": {
+      "cci": "OB",
+      "stoch": 50,
+      "wr": -41,
+      "garch": 0.0051
+    },
+    "alerts": [
+      {
+        "type": "SUPPORT_TEST",
+        "sev": "H",
+        "lvl": 70541
       },
-      "price_action": {
-        "candle_range_pct": 0.01605430449304405,
-        "candle_body_pct": 0.015946557483032982,
-        "upper_shadow_pct": 0.0,
-        "lower_shadow_pct": 0.6711409395389792,
-        "close_position": 0.006711409395389793
-      },
-      "volume_profile_daily": {
-        "poc": 92767.0,
-        "vah": 92861.0,
-        "val": 92622.0,
-        "in_value_area": true
-      },
-      "volatility": {
-        "atr": null,
-        "volatility_regime": "LOW"
+      {
+        "type": "RESISTANCE_TEST",
+        "sev": "H",
+        "lvl": 70590
       }
+    ],
+    "ctx": {
+      "ses": "ASIA_OFF",
+      "dxy": 99.31,
+      "tnx": 4.39,
+      "spy": 6581.0,
+      "ndx": 21946.76,
+      "gold": 4365,
+      "wti": 91.47,
+      "vix": 26.1,
+      "fg": 11,
+      "poc": 70804,
+      "val": 70541,
+      "vah": 71075,
+      "lsr": 1.41,
+      "eth_lsr": 1.79,
+      "oi": 85,
+      "eth7": 0.9,
+      "dxy30": 0.2
     },
-    "quant_model": {
-      "model_probability_up": 0.539702296257019,
-      "model_probability_down": 0.46029770374298096,
-      "model_sentiment": "NEUTRO / INDEFINIDO",
-      "action_bias": "aguardar",
-      "confidence_score": 0.07940459251403809,
-      "features_used": 8,
-      "total_features": 51
-    },
-    "_v": 2
+    "tipo_evento": "ANALYSIS_TRIGGER",
+    "descricao": "Evento automático para análise da IA"
   },
   "tipo_evento": "ANALYSIS_TRIGGER",
   "descricao": "Evento automático para análise da IA",
   "symbol": "BTCUSDT",
+  "ativo": "BTCUSDT",
+  "epoch_ms": 1774320360000,
   "_dump_meta": {
-    "payload_bytes_final": 1913,
-    "timestamp_utc": "2026-01-20T01:57:17.096292+00:00",
+    "payload_bytes_final": 1607,
+    "timestamp_utc": "2026-03-24T02:46:20.704604+00:00",
     "flags": {
       "v2_enabled": true,
       "max_bytes": 6144,

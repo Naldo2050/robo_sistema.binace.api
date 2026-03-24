@@ -7,9 +7,8 @@ import time
 import logging
 import asyncio
 import threading
-import requests
 from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime
 import aiohttp
 
 logger = logging.getLogger(__name__)

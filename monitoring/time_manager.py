@@ -1,4 +1,5 @@
 import time
+import asyncio
 import requests
 import logging
 import random
@@ -164,6 +165,10 @@ class TimeManager:
 
         # Thread safety
         self._lock = Lock()
+
+        # Async sync control
+        self._sync_needed: bool = False
+        self._sync_lock = asyncio.Lock()
 
         # Inicialização com retry
         self._initialize_sync()
@@ -393,107 +398,66 @@ class TimeManager:
     
     def _validate_offset(self) -> None:
         """
-        Previne loop infinito de re-sincronização.
-        
-        Aceita offsets estáveis até 1000ms como "aceitáveis para uso"
-        mesmo que acima do ideal de 600ms.
+        Valida offset após sync — SEM re-sync recursivo.
+
+        - offset < max_acceptable: ok
+        - offset < 10s: degraded (aceitável, drift normal)
+        - offset 10s–60s: degraded + marca _sync_needed para próximo ciclo
+        - offset > 60s (CRITICAL): log critical, tenta NTP, marca _sync_needed
         """
         with self._lock:
             offset_abs = abs(self.server_time_offset_ms)
-            
+
             self._last_offset_history.append(offset_abs)
             if len(self._last_offset_history) > 10:
                 self._last_offset_history.pop(0)
-        
-        if offset_abs > self.CRITICAL_OFFSET_MS:
-            logging.critical("=" * 80)
-            logging.critical(f"⛔ OFFSET CRÍTICO: {offset_abs/1000:.1f}s")
-            logging.critical("=" * 80)
-            logging.critical("   🔧 AÇÃO NECESSÁRIA:")
-            logging.critical("   1. PARE o bot")
-            logging.critical("   2. Sincronize o relógio do sistema:")
-            logging.critical("      - Windows: w32tm /resync")
-            logging.critical("      - Linux:   sudo ntpdate pool.ntp.org")
-            logging.critical("      - macOS:   sudo sntp -sS pool.ntp.org")
-            logging.critical("=" * 80)
-            
-            logging.info("🔄 Tentando sincronização NTP automática...")
-            if self._try_system_ntp_sync():
-                logging.info("✅ NTP bem-sucedido. Re-sincronizando com Binance...")
-                self._sync_with_binance()
-            else:
-                logging.error("❌ NTP falhou. Intervenção manual necessária.")
-        
-        elif offset_abs > self.WARNING_OFFSET_MS:
-            logging.warning("=" * 80)
-            logging.warning(f"⚠️ OFFSET ALTO: {offset_abs/1000:.1f}s")
-            logging.warning("=" * 80)
-            logging.warning("   Comandos para sincronizar:")
-            logging.warning("   - Windows: w32tm /resync")
-            logging.warning("   - Linux:   sudo ntpdate pool.ntp.org")
-            logging.warning("=" * 80)
-            
-            logging.info("🔄 Tentando NTP automático...")
-            if self._try_system_ntp_sync():
-                logging.info("✅ NTP bem-sucedido. Re-sincronizando...")
-                self._sync_with_binance()
-        
-        elif offset_abs > self.max_acceptable_offset_ms:
-            is_stable = self._is_offset_stable(offset_abs)
-            
-            if offset_abs <= 10000 and is_stable:
-                if self._correction_attempts == 0:
-                    logging.warning(
-                        f"⚠️ Offset {offset_abs}ms > {self.max_acceptable_offset_ms}ms "
-                        f"ESTÁVEL e < 10s — aceitando como drift normal (modo degradado)."
-                    )
-                self._correction_attempts = 0
-                self.time_sync_status = "degraded"
-                return
 
-            if self._correction_attempts >= self.MAX_CORRECTION_ATTEMPTS:
-                if offset_abs <= 10000:
-                    logging.warning(
-                        f"⚠️ Offset {offset_abs}ms > {self.max_acceptable_offset_ms}ms "
-                        f"estável após {self.MAX_CORRECTION_ATTEMPTS} tentativas — "
-                        f"aceitando como drift (modo degradado)."
-                    )
-                    self._correction_attempts = 0
-                    self.time_sync_status = "degraded"
-                    return
-                else:
-                    logging.error(
-                        f"❌ Offset {offset_abs}ms muito alto e não corrigível."
-                    )
-                    logging.error("   Sistema continuará mas pode haver problemas.")
-                    return
-            
-            self._correction_attempts += 1
-            logging.warning(
-                f"⚠️ Offset {offset_abs}ms > {self.max_acceptable_offset_ms}ms "
-                f"(tentativa {self._correction_attempts}/{self.MAX_CORRECTION_ATTEMPTS})"
-            )
-            logging.info("🔄 Tentando re-sincronização...")
-            
-            old_offset = self.server_time_offset_ms
-            self._sync_with_binance()
-            
-            new_offset_abs = abs(self.server_time_offset_ms)
-            
-            if new_offset_abs <= self.max_acceptable_offset_ms:
-                logging.info(
-                    f"✅ Offset corrigido: {old_offset}ms → {self.server_time_offset_ms}ms"
-                )
-                self.auto_corrections += 1
-                self._correction_attempts = 0
-            else:
-                logging.warning(
-                    f"⚠️ Re-sync não melhorou: {old_offset}ms → {self.server_time_offset_ms}ms"
-                )
-        
-        else:
+        # Caso 1: offset dentro do limite aceitável
+        if offset_abs <= self.max_acceptable_offset_ms:
             logging.info(f"✅ Offset dentro do limite aceitável: {offset_abs}ms")
             self._correction_attempts = 0
+            return
+
+        # Caso 2: offset < 10s — degraded mas aceitável
+        if offset_abs <= 10000:
+            logging.warning(
+                f"⚠️ Offset {offset_abs}ms > {self.max_acceptable_offset_ms}ms "
+                f"— modo degradado (drift < 10s, aceitável)"
+            )
+            self.time_sync_status = "degraded"
+            self._correction_attempts = 0
+            return
+
+        # Caso 3: offset 10s–60s — degraded + solicita re-sync no próximo ciclo
+        if offset_abs <= self.CRITICAL_OFFSET_MS:
+            logging.warning(
+                f"⚠️ Offset {offset_abs}ms alto (10s-60s) — "
+                f"degraded, re-sync será agendado"
+            )
+            self.time_sync_status = "degraded"
+            self._sync_needed = True
+            return
+
+        # Caso 4: offset > 60s — CRÍTICO
+        logging.critical("=" * 80)
+        logging.critical(f"⛔ OFFSET CRÍTICO: {offset_abs/1000:.1f}s")
+        logging.critical("=" * 80)
+        logging.critical("   🔧 AÇÃO NECESSÁRIA:")
+        logging.critical("   1. PARE o bot")
+        logging.critical("   2. Sincronize o relógio do sistema:")
+        logging.critical("      - Windows: w32tm /resync")
+        logging.critical("      - Linux:   sudo ntpdate pool.ntp.org")
+        logging.critical("      - macOS:   sudo sntp -sS pool.ntp.org")
+        logging.critical("=" * 80)
+
+        logging.info("🔄 Tentando sincronização NTP automática...")
+        if self._try_system_ntp_sync():
+            logging.info("✅ NTP bem-sucedido — re-sync será feito no próximo ciclo")
+        else:
+            logging.error("❌ NTP falhou. Intervenção manual necessária.")
+
+        self.time_sync_status = "degraded"
+        self._sync_needed = True
     
     def _is_offset_stable(self, current_offset: int) -> bool:
         """Verifica se o offset é estável (não está aumentando)."""
@@ -579,17 +543,22 @@ class TimeManager:
     # ========================================================================
     
     def now(self) -> int:
-        """Retorna o timestamp atual em milissegundos, ajustado pelo offset da Binance."""
+        """
+        Retorna o timestamp atual em milissegundos, ajustado pelo offset da Binance.
+
+        NÃO bloqueia: se precisa re-sync, apenas seta _sync_needed = True.
+        O periodic_sync (ou sync_async) faz o trabalho pesado em background.
+        """
         try:
             if self._should_sync():
-                logging.debug("⏰ Tempo de re-sincronização automática")
-                self._sync_with_binance()
-            
+                self._sync_needed = True
+                logging.debug("⏰ Re-sync necessário — flag setada (non-blocking)")
+
             with self._lock:
                 offset = int(self.server_time_offset_ms)
-            
+
             return int(time.time() * 1000) + offset
-            
+
         except Exception as e:
             logging.error(f"❌ Erro ao obter timestamp: {e}")
             return int(time.time() * 1000)
@@ -603,6 +572,60 @@ class TimeManager:
         logging.info("🔄 Forçando sincronização com Binance...")
         self._sync_with_binance()
         return self.get_sync_stats()
+
+    # ========================================================================
+    # ASYNC SYNC (não bloqueia o event loop)
+    # ========================================================================
+
+    async def sync_async(self) -> None:
+        """
+        Sincroniza com Binance em thread separada (não bloqueia event loop).
+        Usa lock async para evitar syncs concorrentes.
+        """
+        async with self._sync_lock:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._sync_with_binance_safe)
+            self._sync_needed = False
+
+    def _sync_with_binance_safe(self) -> None:
+        """
+        Wrapper seguro de _sync_with_binance.
+        Captura exceções para nunca derrubar o event loop.
+        """
+        try:
+            self._sync_with_binance()
+        except Exception as e:
+            logging.error("sync_with_binance falhou: %s", e)
+            with self._lock:
+                if self.last_successful_sync_ms is not None:
+                    self.time_sync_status = "degraded"
+                else:
+                    self.time_sync_status = "failed"
+
+    async def periodic_sync(self, interval: int = 600) -> None:
+        """
+        Task de background que re-sincroniza periodicamente.
+
+        Args:
+            interval: Segundos entre syncs (default 600 = 10min).
+        """
+        logging.info("periodic_sync iniciado (interval=%ds)", interval)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self.sync_async()
+                logging.debug(
+                    "periodic_sync concluído — offset=%dms status=%s",
+                    self.server_time_offset_ms,
+                    self.time_sync_status,
+                )
+            except Exception as e:
+                logging.warning("periodic_sync erro: %s", e)
+
+    @property
+    def needs_sync(self) -> bool:
+        """Retorna True se uma sync foi solicitada mas ainda não executada."""
+        return self._sync_needed
 
     # ========================================================================
     # MÉTODO from_timestamp_ms()

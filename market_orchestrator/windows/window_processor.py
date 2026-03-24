@@ -528,8 +528,9 @@ def process_window_snapshot(
                     )
                     historical_profile = bot.last_valid_vp.copy()
                 else:
-                    logging.warning(
-                        "⚠️ Value Area indisponível e sem cache válido"
+                    # Esperado na primeira janela (VP ainda não calculado)
+                    logging.info(
+                        "Value Area indisponível e sem cache válido (normal no startup)"
                     )
             else:
                 bot.last_valid_vp = historical_profile.copy()

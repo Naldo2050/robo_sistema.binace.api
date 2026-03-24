@@ -234,18 +234,72 @@ class HybridDecisionMaker:
         self,
         ml_prediction: Optional[Dict[str, Any]],
         ai_result: Optional[Dict[str, Any]],
+        bias_info: Optional[Dict[str, Any]] = None,
     ) -> DecisionResult:
         """
         Combina decisões do modelo e IA.
-        
-        v6 MELHORIAS:
-        1. Detecta LLM em modo fallback → usa ML como decisor
-        2. Detecta modelo congelado → ignora ML
-        3. Conflito direcional → penalidade de confiança
-        4. Conflito severo (confiança similar) → força WAIT
+
+        v7 MELHORIAS:
+        1. GUARDA: HYBRID_ENABLED=False → LLM only
+        2. GUARDA: Bias extremo → bloqueia ML
+        3. Detecta LLM em modo fallback → usa ML como decisor
+        4. Detecta modelo congelado → ignora ML
+        5. Conflito direcional → penalidade de confiança
+        6. Conflito severo (confiança similar) → força WAIT
         """
         self._decision_count += 1
-        
+
+        # ── GUARDA 1: Hybrid desabilitado ──
+        if not HYBRID_ENABLED:
+            llm_action = "wait"
+            llm_confidence = 0.0
+            llm_sentiment = "neutral"
+            llm_rationale = ""
+            if isinstance(ai_result, dict):
+                llm_action = ai_result.get("action", "wait") or "wait"
+                llm_confidence = float(ai_result.get("confidence", 0.0) or 0.0)
+                llm_sentiment = ai_result.get("sentiment", "neutral") or "neutral"
+                llm_rationale = ai_result.get("rationale", "") or ""
+            result = DecisionResult(
+                action=llm_action,
+                confidence=llm_confidence,
+                sentiment=llm_sentiment,
+                rationale=f"[HYBRID_ENABLED=False] {llm_rationale}",
+                source="llm_only",
+                entry_zone=ai_result.get("entry_zone") if ai_result else None,
+                invalidation_zone=ai_result.get("invalidation_zone") if ai_result else None,
+                region_type=ai_result.get("region_type") if ai_result else None,
+            )
+            self._log_decision(result)
+            return result
+
+        # ── GUARDA 2: Bias extremo detectado ──
+        if bias_info and bias_info.get("block", False):
+            logger.warning(
+                "ML BLOCKED by bias monitor: %s", bias_info.get("detail", "")
+            )
+            llm_action = "wait"
+            llm_confidence = 0.0
+            llm_sentiment = "neutral"
+            llm_rationale = ""
+            if isinstance(ai_result, dict):
+                llm_action = ai_result.get("action", "wait") or "wait"
+                llm_confidence = float(ai_result.get("confidence", 0.0) or 0.0) * 0.9
+                llm_sentiment = ai_result.get("sentiment", "neutral") or "neutral"
+                llm_rationale = ai_result.get("rationale", "") or ""
+            result = DecisionResult(
+                action=llm_action,
+                confidence=llm_confidence,
+                sentiment=llm_sentiment,
+                rationale=f"[ML bloqueado por bias: {bias_info.get('detail', '')}] {llm_rationale}",
+                source="llm_only_bias_block",
+                entry_zone=ai_result.get("entry_zone") if ai_result else None,
+                invalidation_zone=ai_result.get("invalidation_zone") if ai_result else None,
+                region_type=ai_result.get("region_type") if ai_result else None,
+            )
+            self._log_decision(result)
+            return result
+
         # ── 1. Extrai dados do modelo ──
         model_ok = False
         model_prob_up: Optional[float] = None
@@ -715,9 +769,12 @@ def get_hybrid_decision_maker() -> HybridDecisionMaker:
 def fuse_decisions(
     ml_prediction: Optional[Dict[str, Any]],
     ai_result: Optional[Dict[str, Any]],
+    bias_info: Optional[Dict[str, Any]] = None,
 ) -> DecisionResult:
     """Função de conveniência para fusão de decisões."""
-    return get_hybrid_decision_maker().fuse_decisions(ml_prediction, ai_result)
+    return get_hybrid_decision_maker().fuse_decisions(
+        ml_prediction, ai_result, bias_info=bias_info
+    )
 
 
 def decision_to_ai_result(decision: DecisionResult) -> Dict[str, Any]:

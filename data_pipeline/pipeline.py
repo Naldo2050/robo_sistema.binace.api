@@ -532,13 +532,13 @@ class DataPipeline:
                 "volume_total": self.enriched_data.get("volume_total", 0),
                 "volume_compra": self.enriched_data.get("volume_compra", 0),
                 "volume_venda": self.enriched_data.get("volume_venda", 0),
-                # FIX: delta_fechamento pode ser 0/None — recalcular dos volumes
+                # FIX 15: delta SEMPRE calculado a partir dos volumes autoritativos.
+                # Antes: usava delta_fechamento (intra-candle), que pode ser 0.0
+                # como default quando a computação falha — causando INVARIANTE
+                # VIOLADA quando volumes são non-zero.
                 "delta": (
-                    self.enriched_data.get("delta_fechamento")
-                    or (
-                        float(self.enriched_data.get("volume_compra", 0))
-                        - float(self.enriched_data.get("volume_venda", 0))
-                    )
+                    float(self.enriched_data.get("volume_compra", 0))
+                    - float(self.enriched_data.get("volume_venda", 0))
                 ),
                 "preco_fechamento": self.enriched_data.get("ohlc", {}).get("close", 0),
                 "advanced_analysis": (
@@ -631,7 +631,8 @@ class DataPipeline:
         Contexto 'signal': Valida consistência de volumes de compra/venda e delta.
         """
         try:
-            TOLERANCE_BTC = 1e-2  # Aumentar tolerância para 0.01 BTC para evitar erros de centavos
+            TOLERANCE_VOL = 1e-4    # 0.0001 BTC — arredondamento float
+            TOLERANCE_DELTA = 1e-2  # 0.01 BTC — delta acumula erros
 
             if context == "enrich":
                 # Validação OHLC
@@ -657,25 +658,36 @@ class DataPipeline:
 
                 # 1. Soma dos volumes
                 vol_sum = vol_buy + vol_sell
-                # Nota: volume_total às vezes vem direto do candle original e buy/sell são inferidos
-                # Uma divergência grande indica perda de dados na inferência de agressão 'm'
-                if abs(vol_sum - vol_total) > TOLERANCE_BTC:
-                    # Apenas loga se a diferença for relevante (> 0.0001 BTC por exemplo)
-                    if abs(vol_sum - vol_total) > 0.0001:
+                vol_diff = abs(vol_sum - vol_total)
+
+                if vol_diff > TOLERANCE_VOL:
+                    if vol_diff > 0.01:
                         logging.warning(
                             f"⚠️ INVARIANTE VIOLADA (Vol Sum): "
-                            f"Buy({vol_buy:.4f}) + Sell({vol_sell:.4f}) != Total({vol_total:.4f}) "
-                            f"[Diff: {vol_sum - vol_total:.6f}] em {self.symbol}"
+                            f"Buy + Sell ({vol_sum:.8f}) != Total ({vol_total:.8f}) "
+                            f"diff={vol_diff:.8f} em {self.symbol}"
+                        )
+                    else:
+                        logging.debug(
+                            f"Volume ajustado por arredondamento: "
+                            f"diff={vol_diff:.8f} BTC em {self.symbol}"
                         )
 
-                # 2. Consistência do Delta
+                # 2. Consistência do Delta — recalcular e corrigir automaticamente
                 delta_calc = vol_buy - vol_sell
-                if abs(delta_calc - delta) > TOLERANCE_BTC:
+                if abs(delta_calc - delta) > TOLERANCE_DELTA:
                     logging.warning(
                         f"⚠️ INVARIANTE VIOLADA (Delta): "
                         f"Buy - Sell ({delta_calc:.4f}) != Delta Armazenado ({delta:.4f}) "
                         f"em {self.symbol}"
                     )
+                    # Correção automática
+                    logging.info(
+                        f"Delta corrigido: {delta:.4f} -> {delta_calc:.4f}"
+                    )
+                    data["delta"] = delta_calc
+                    if hasattr(self, 'enriched_data') and self.enriched_data:
+                        self.enriched_data["delta_fechamento"] = delta_calc
         except Exception as e:
             logging.debug(f"Erro na validação de invariantes Pipeline ({context}): {e}", exc_info=True)
 

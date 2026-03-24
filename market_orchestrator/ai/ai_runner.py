@@ -17,7 +17,6 @@ from typing import Any, Dict
 
 import config
 from ai_analyzer_qwen import AIAnalyzer  # arquivo na raiz do projeto
-from ..utils.price_fetcher import get_current_price
 from trading.export_signals import create_chart_signal_from_event, export_signal_to_csv
 from common.format_utils import (
     format_price,
@@ -31,10 +30,15 @@ from orderbook_core.tracing_utils import TracerWrapper
 # [BUILD_COMPACT] Payload compacto direto do event_data
 from build_compact_payload import build_compact_payload
 
-# [THROTTLE] Controle de frequencia de chamadas IA
+# [THROTTLE] Controle de frequencia de chamadas IA (v3 singleton)
 try:
-    from common.ai_throttler import SmartAIThrottler
-    _ai_throttler = SmartAIThrottler(min_interval=180, significant_imb_change=0.25)
+    from common.ai_throttler import get_throttler
+    _ai_throttler = get_throttler(
+        min_interval=180,
+        hard_min_interval=60,
+        daily_token_budget=85_000,
+        max_calls_per_hour=10,
+    )
 except ImportError:
     _ai_throttler = None
 
@@ -124,10 +128,13 @@ def initialize_ai_async(bot) -> None:
                         "fluxo_continuo": {"microstructure": {"tick_rule_sum": 0.2}}
                     })
 
-                    if test_result.get("status") == "ok":
+                    _ml_status = test_result.get("status", "unknown")
+                    if _ml_status == "ok":
                         logging.info(f"ML engine testado: {test_result.get('prob_up', 0):.1%}")
+                    elif _ml_status == "hybrid_disabled":
+                        logging.info("ML Engine: hybrid mode desabilitado (usando LLM only)")
                     else:
-                        logging.warning(f"⚠️ ML Engine teste falhou: {test_result.get('status')}")
+                        logging.warning(f"⚠️ ML Engine teste falhou: {_ml_status}")
 
                     try:
                         slog.info(
@@ -148,130 +155,30 @@ def initialize_ai_async(bot) -> None:
                     except Exception:
                         pass
 
-                logging.info(
-                    "Modulo da IA carregado. Realizando teste de analise..."
-                )
-
-                current_price = get_current_price(bot.symbol)
-
-                test_event = {
-                    "tipo_evento": "Teste de Conexão",
-                    "ativo": bot.symbol,
-                    "descricao": (
-                        "Teste inicial do sistema de análise "
-                        "para garantir operacionalidade."
-                    ),
-                    "delta": 150.5,
-                    "volume_total": 50000,
-                    "preco_fechamento": current_price,
-                    "orderbook_data": {
-                        "bid_depth_usd": 1000000,
-                        "ask_depth_usd": 800000,
-                        "bid_usd": 1000000,
-                        "ask_usd": 800000,
-                        "imbalance": 0.2,
-                        "mid": current_price,
-                        "spread": 0.10,
-                        "spread_percent": 0.0001,
-                    },
-                    "spread_metrics": {
-                        "bid_depth_usd": 1000000,
-                        "ask_depth_usd": 800000,
-                    },
-                }
-
-                ai_payload = None
-                try:
-                    from datetime import datetime, timezone
-                    import time
-
-                    now_ms = int(time.time() * 1000)
-                    test_event["symbol"] = bot.symbol
-                    test_event["epoch_ms"] = now_ms
-                    test_event["timestamp_utc"] = datetime.now(timezone.utc).isoformat()
-
-                    # opcionais p/ evitar missing flow/tf no teste:
-                    test_event.setdefault("fluxo_continuo", {
-                        "cvd": 0.0,
-                        "order_flow": {
-                            "net_flow_1m": 0.0,
-                            "flow_imbalance": 0.0,
-                            "aggressive_buy_pct": 50.0,
-                            "aggressive_sell_pct": 50.0,
-                        },
-                    })
-                    test_event.setdefault("multi_tf", {
-                        "1h": {"tendencia": "Neutra", "preco_atual": current_price}
-                    })
-
-                    ai_payload = build_compact_payload(test_event)
-
-                    _payload_bytes = len(json.dumps(ai_payload, ensure_ascii=False).encode("utf-8"))
-                    logging.debug("PAYLOAD_READY_FOR_LLM bytes=%d keys=%s v=%s",
-                                  _payload_bytes, list(ai_payload.keys())[:8], ai_payload.get("_v", 2))
-
-                except Exception as e:
-                    logging.warning("Falha ao construir ai_payload para teste de conexão: %s", e, exc_info=True)
-
-                analysis_input = dict(test_event)
-                if isinstance(ai_payload, dict) and ai_payload:
-                    analysis_input["ai_payload"] = ai_payload
-                analysis = bot.ai_analyzer.analyze(analysis_input)
-
-                min_chars = getattr(config, "AI_TEST_MIN_CHARS", 10)
-                analysis_ok = bool((analysis or {}).get("success"))
-                analysis_fallback = bool((analysis or {}).get("is_fallback"))
-
-                if analysis_ok and len(analysis.get("raw_response", "")) >= min_chars:
+                # ── Health check sem consumir tokens ──────────────
+                # Antigo: enviava "Teste de Conexão" ao Groq,
+                # gastava tokens e frequentemente tomava 429.
+                # Agora: apenas verifica se API key existe e o
+                # analyzer carregou. A primeira análise real
+                # serve como teste efetivo.
+                _api_key = getattr(config, "GROQ_API_KEY", None)
+                if bot.ai_analyzer and _api_key:
                     bot.ai_test_passed = True
-                    logging.info("Teste da IA bem-sucedido")
-                    logging.info("=" * 25 + " RESULTADO DO TESTE DA IA " + "=" * 25)
-                    logging.info(analysis.get("raw_response", ""))
-                    logging.info("=" * 75)
-
-                    try:
-                        slog.info(
-                            "ai_init_success",
-                            test_response_len=len(analysis.get("raw_response", "")),
-                        )
-                    except Exception:
-                        pass
-                elif analysis_fallback and len((analysis or {}).get("raw_response", "")) >= min_chars:
-                    bot.ai_test_passed = True
-                    logging.warning(
-                        "Teste da IA concluído com fallback estruturado | reason=%s",
-                        (analysis or {}).get("fallback_reason") or "unknown",
+                    logging.info(
+                        "AI configurada (API key presente). "
+                        "Será testada na primeira análise real."
                     )
-                    logging.info("=" * 25 + " RESULTADO DO TESTE DA IA " + "=" * 25)
-                    logging.info(analysis.get("raw_response", ""))
-                    logging.info("=" * 75)
-
                     try:
-                        slog.warning(
-                            "ai_init_fallback",
-                            test_response_len=len((analysis or {}).get("raw_response", "")),
-                            fallback_reason=(analysis or {}).get("fallback_reason"),
-                        )
+                        slog.info("ai_init_ready", mode="deferred_test")
                     except Exception:
                         pass
                 else:
-                    bot.ai_test_passed = True
+                    bot.ai_test_passed = False
                     logging.warning(
-                        "⚠️ Teste da IA retornou resultado inesperado. "
-                        "Prosseguindo em modo fallback."
+                        "AI: analyzer=%s, api_key=%s — análise desabilitada",
+                        bool(bot.ai_analyzer),
+                        bool(_api_key),
                     )
-                    logging.warning(f"Resultado recebido: {analysis}")
-                    logging.info("═" * 75)
-
-                    try:
-                        slog.warning(
-                            "ai_init_unexpected_result",
-                            test_response_len=len(
-                                (analysis or {}).get("raw_response", "")
-                            ),
-                        )
-                    except Exception:
-                        pass
 
             except Exception as e:
                 bot.ai_analyzer = None
@@ -545,6 +452,8 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                 except Exception:
                                     pass
 
+                            elif ml_prediction.get("status") == "hybrid_disabled":
+                                logging.debug("ML skip: hybrid_disabled")
                             else:
                                 logging.warning(f"⚠️ ML Engine retornou status: {ml_prediction.get('status')}")
                         except Exception as e:
@@ -552,6 +461,29 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                             ml_prediction = {"status": "error", "msg": str(e)}
                     else:
                         logging.debug("🤖 ML Engine não disponível - usando apenas IA Generativa")
+
+                    # ── Coleta contínua de dados para retreino (independe de ML ativo) ──
+                    try:
+                        from ml.dataset_collector import get_dataset_collector
+                        _price = float(
+                            event_data.get("preco_fechamento")
+                            or event_data.get("enriched_snapshot", {}).get("ohlc", {}).get("close", 0)
+                            or 0
+                        )
+                        if _price > 0:
+                            _ml_feats = event_data.get("ml_features", {})
+                            _flat_feats = {}
+                            for _sec, _vals in _ml_feats.items():
+                                if isinstance(_vals, dict):
+                                    for _k, _v in _vals.items():
+                                        if isinstance(_v, (int, float)):
+                                            _flat_feats[f"{_sec}.{_k}"] = _v
+                            get_dataset_collector().collect_window(
+                                features=_flat_feats,
+                                price_close=_price,
+                            )
+                    except Exception as _dc_err:
+                        logging.debug("DatasetCollector: %s", _dc_err)
 
                     # FIX 5B: Overlay real window-level returns into ml_features.price_features.
                     # common/ml_features.py computes returns from individual ticks (~1e-7 scale),
@@ -649,14 +581,27 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                             price,
                         )
 
-                    # [THROTTLE] Verificar se vale a pena chamar a IA
+                    # [THROTTLE] Verificar se vale a pena chamar a IA (v3)
                     _throttled = False
                     if _ai_throttler is not None:
-                        _ai_p = event_data.get("ai_payload", {})
-                        if not _ai_throttler.should_call_ai(_ai_p):
+                        _should = _ai_throttler.should_call_ai(
+                            event_type=event_data.get("tipo_evento", "ANALYSIS_TRIGGER"),
+                            delta=event_data.get("delta", 0.0),
+                            volume=event_data.get("volume", 0.0),
+                            avg_volume=event_data.get("avg_volume", 10.0),
+                            window_count=event_data.get("window_count", 99),
+                        )
+                        if not _should:
                             _throttled = True
 
-                    analysis_result = None if _throttled else bot.ai_analyzer.analyze(event_data)
+                    if _throttled:
+                        analysis_result = None
+                        logging.info(
+                            "IA nao chamada (throttled) | status=%s",
+                            _ai_throttler.get_status() if _ai_throttler else "N/A",
+                        )
+                    else:
+                        analysis_result = bot.ai_analyzer.analyze(event_data)
 
                     if analysis_result and not bot.should_stop:
                         try:
@@ -704,7 +649,14 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                 if HYBRID_AVAILABLE and getattr(config, "HYBRID_ENABLED", True) and fuse_decisions and decision_to_ai_result:
                                     try:
                                         ml_pred = ml_prediction if ml_prediction.get("status") == "ok" else None
-                                        hybrid_result = fuse_decisions(ml_pred, ai_result_json)
+                                        # Obter bias_info do monitor
+                                        _bias_info = None
+                                        try:
+                                            from ml.bias_monitor import get_bias_monitor
+                                            _bias_info = get_bias_monitor().get_confidence_adjustment()
+                                        except Exception:
+                                            pass
+                                        hybrid_result = fuse_decisions(ml_pred, ai_result_json, bias_info=_bias_info)
                                         ai_result_json = decision_to_ai_result(hybrid_result)
 
                                         logging.info(

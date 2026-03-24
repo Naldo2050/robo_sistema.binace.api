@@ -86,8 +86,6 @@ except (ImportError, AttributeError):
 from market_analysis.historical_profiler import HistoricalVolumeProfiler
 from monitoring.time_manager import TimeManager
 from fetchers.fred_fetcher import FREDFetcher
-from monitoring.metrics_collector import record_fred_fallback
-
 # Fetchers reais (on-chain e funding agregado)
 try:
     from fetchers.onchain_fetcher import OnchainFetcher
@@ -701,18 +699,45 @@ class ContextCollector:
             env["liquidity_environment"] = "NORMAL"
              
             if ENABLE_ALPHAVANTAGE:
-                try:
-                    env["correlation_spy"] = await self._compute_correlation(session, "SP500", EXTERNAL_MARKETS.get("SP500", ""))
-                except Exception:
-                    pass
-                try:
-                    env["correlation_dxy"] = await self._compute_correlation(session, "DXY", "DXY")
-                except Exception:
-                    pass
-                try:
-                    env["correlation_gold"] = await self._compute_correlation(session, "GOLD", EXTERNAL_MARKETS.get("GOLD", ""))
-                except Exception:
-                    pass
+                # Tentar correlações via cache (históricos prefetched)
+                from common.yfinance_cache import get_market_cache
+                _cache = get_market_cache()
+                _dxy_hist = _cache.get_sync("DXY_HISTORY")
+                _sp500_hist = _cache.get_sync("SP500_HISTORY")
+                _gold_hist = _cache.get_sync("GOLD_HISTORY")
+
+                # BTC returns para correlação (já temos df_daily do bloco acima)
+                _btc_returns = None
+                if not df_daily.empty:
+                    _btc_close = pd.to_numeric(df_daily["close"], errors="coerce").dropna()
+                    if len(_btc_close) > 10:
+                        _btc_returns = _btc_close.pct_change().dropna()
+
+                if _btc_returns is not None:
+                    for _label, _hist_df, _env_key in [
+                        ("SP500", _sp500_hist, "correlation_spy"),
+                        ("DXY", _dxy_hist, "correlation_dxy"),
+                        ("GOLD", _gold_hist, "correlation_gold"),
+                    ]:
+                        try:
+                            if _hist_df is not None and not _hist_df.empty and "close" in _hist_df.columns:
+                                _ext_close = pd.to_numeric(_hist_df["close"], errors="coerce").dropna()
+                                _ext_returns = _ext_close.pct_change().dropna()
+                                _n = min(len(_btc_returns), len(_ext_returns), CORRELATION_LOOKBACK)
+                                if _n >= 10:
+                                    _corr = float(np.corrcoef(
+                                        _btc_returns.values[-_n:],
+                                        _ext_returns.values[-_n:],
+                                    )[0, 1])
+                                    env[_env_key] = round(_corr, 4)
+                            else:
+                                # Fallback: busca via método original
+                                env[_env_key] = await self._compute_correlation(
+                                    session, _label,
+                                    EXTERNAL_MARKETS.get(_label, _label),
+                                )
+                        except Exception:
+                            pass
              
             # FIX 5C: risk_sentiment must be consistent with Fear&Greed + VIX.
             # Correlation-based sentiment is overridden when macro data is extreme.
@@ -850,200 +875,65 @@ class ContextCollector:
     
     async def _fetch_intermarket_data(self, session: aiohttp.ClientSession):
         data = {}
-        
+
         # Binance intermarket (mantém como está)
         for sym in self.intermarket_symbols:
             df = await self._fetch_klines(session, sym, '5m', limit=2)
             if not df.empty:
                 last, prev = float(df['close'].iloc[-1]), float(df['close'].iloc[-2])
                 data[sym] = {"preco_atual": last, "movimento": "Alta" if last > prev else "Baixa"}
-        
+
         if not ENABLE_ALPHAVANTAGE:
             return data
-        
-        # 🆕 Buscar DXY via FRED (fallback do yfinance) + cache
-        try:
-            dxy_result = None
 
-            # Tentativa 1: FRED ou yfinance
-            if self.fred_fetcher.is_failing("DXY"):
-                logger.debug("FRED: DXY em modo fallback, usando yfinance diretamente")
-                hist = await self._yfinance_history("DXY", period="5d", interval="1d")
-                if not hist.empty:
-                    last = float(hist["close"].iloc[-1])
-                    dxy_result = {
-                        "preco_atual": round(last, 2),
-                        "movimento": "Neutro",
-                        "source": "yfinance",
-                        "ticker": "DX-Y.NYB"
-                    }
-                    logger.info(f"✅ DXY obtido via yfinance (fallback): {last:.2f}")
-            else:
-                dxy_value = await self.fred_fetcher.fetch_latest_value("DXY", session)
+        # DXY e TNX: ler do cache centralizado (prefetched)
+        from common.yfinance_cache import get_market_cache
+        cache = get_market_cache()
 
-                if dxy_value is not None:
-                    dxy_result = {
-                        "preco_atual": round(dxy_value, 2),
-                        "movimento": "Neutro",
-                        "source": "FRED",
-                        "ticker": "DTWEXBGS"
-                    }
-                    logger.info(f"✅ DXY obtido via FRED: {dxy_value:.2f}")
-                else:
-                    # Fallback para yfinance se FRED falhar
-                    logger.debug("DXY via FRED falhou, tentando yfinance...")
-                    record_fred_fallback()
-                    hist = await self._yfinance_history("DXY", period="5d", interval="1d")
-                    if not hist.empty:
-                        last = float(hist["close"].iloc[-1])
-                        dxy_result = {
-                            "preco_atual": round(last, 2),
-                            "movimento": "Neutro",
-                            "source": "yfinance",
-                            "ticker": "DX-Y.NYB"
-                        }
-                        logger.info(f"✅ DXY obtido via yfinance: {last:.2f}")
+        dxy_cached = cache.get_sync("DXY")
+        if dxy_cached is not None:
+            data["DXY"] = dxy_cached
+            # Manter _dxy_cache local sincronizado
+            self._dxy_cache = dxy_cached.copy() if isinstance(dxy_cached, dict) else {"preco_atual": dxy_cached}
+            self._dxy_cache_time = time.time()
+        elif self._dxy_cache and (time.time() - self._dxy_cache_time) < 3600:
+            cached = self._dxy_cache.copy()
+            cached["source"] = f"{cached.get('source', 'unknown')}_cached"
+            cached["cache_age_min"] = round((time.time() - self._dxy_cache_time) / 60, 1)
+            data["DXY"] = cached
+            logger.debug("DXY: usando cache local (%.1fmin)", cached["cache_age_min"])
 
-            # Salvar em cache se obtivemos resultado
-            if dxy_result:
-                data["DXY"] = dxy_result
-                self._dxy_cache = dxy_result.copy()
-                self._dxy_cache_time = time.time()
-            elif self._dxy_cache and (time.time() - self._dxy_cache_time) < 3600:
-                # Tentativa 2: Cache recente (< 1 hora)
-                cached = self._dxy_cache.copy()
-                age_min = round((time.time() - self._dxy_cache_time) / 60, 1)
-                cached["source"] = f"{cached.get('source', 'unknown')}_cached"
-                cached["cache_age_min"] = age_min
-                data["DXY"] = cached
-                logger.info(f"✅ DXY obtido via cache ({age_min}min): {cached.get('preco_atual')}")
-            else:
-                logger.warning("⚠️ DXY indisponível: FRED, yfinance e cache falharam")
-        except Exception as e:
-            # Em caso de exceção, tentar cache antes de desistir
-            if self._dxy_cache and (time.time() - self._dxy_cache_time) < 3600:
-                cached = self._dxy_cache.copy()
-                cached["source"] = f"{cached.get('source', 'unknown')}_cached"
-                cached["cache_age_min"] = round((time.time() - self._dxy_cache_time) / 60, 1)
-                data["DXY"] = cached
-                logger.info(f"✅ DXY via cache após erro: {cached.get('preco_atual')}")
-            else:
-                logger.warning(f"⚠️ Erro ao buscar DXY: {e}")
-        
+        tnx_cached = cache.get_sync("TNX")
+        if tnx_cached is not None:
+            data["TNX"] = tnx_cached
+
         return data
 
     async def _fetch_external_markets(self, session: aiohttp.ClientSession):
-        """Busca dados externos com FRED como fallback."""
+        """Busca dados externos via cache centralizado (prefetched)."""
         ext_data: Dict[str, Any] = {}
 
         if not ENABLE_ALPHAVANTAGE:
             logger.info("External markets desabilitados")
             return ext_data
-        
-        # Símbolos que o FRED pode fornecer
-        fred_symbols = ["DXY", "TNX"]
-        
-        # Símbolos que precisam do yfinance (inclui VIX)
-        yfinance_symbols = {
-            "SP500": "^GSPC",
-            "NASDAQ": "^IXIC",
-            "GOLD": "GC=F",
-            "WTI": "CL=F",
-            "VIX": "^VIX",
-        }
 
-        # 1. Buscar via FRED primeiro (mais confiável para indicadores econômicos)
-        for symbol in fred_symbols:
-            try:
-                # 🆕 Verificar se FRED está em modo fallback para este símbolo
-                if self.fred_fetcher.is_failing(symbol):
-                    logger.debug(f"FRED: {symbol} em modo fallback, pulando")
-                    continue
+        from common.yfinance_cache import get_market_cache
+        cache = get_market_cache()
 
-                value = await self.fred_fetcher.fetch_latest_value(symbol, session)
+        # Ler tudo do cache (populado pelo _prefetch_market_data)
+        for key in ["DXY", "TNX", "SP500", "NASDAQ", "GOLD", "WTI", "VIX"]:
+            cached = cache.get_sync(key)
+            if cached is not None:
+                ext_data[key] = cached
 
-                if value is not None:
-                    ext_data[symbol] = {
-                        "preco_atual": round(value, 4),
-                        "movimento": "Neutro",
-                        "source": "FRED",
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    logger.info(f"✅ {symbol}: {value:.4f} (FRED)")
-                else:
-                    logger.debug(f"⚠️ {symbol} não disponível via FRED")
-            except Exception as e:
-                logger.warning(f"⚠️ Erro FRED para {symbol}: {e}")
+        # Fear & Greed
+        fng = cache.get_sync("FEAR_GREED")
+        if fng is not None:
+            ext_data["FEAR_GREED"] = fng
 
-        # 1b. Fallback yfinance para DXY se FRED falhou
-        if "DXY" not in ext_data:
-            try:
-                hist = await self._yfinance_history("DXY", period="5d", interval="1d")
-                if not hist.empty:
-                    last = float(hist["close"].iloc[-1])
-                    prev = float(hist["close"].iloc[-2]) if len(hist) > 1 else last
-                    ext_data["DXY"] = {
-                        "preco_atual": round(last, 4),
-                        "movimento": "Alta" if last > prev else "Baixa" if last < prev else "Neutro",
-                        "source": "yfinance",
-                        "ticker": "DX-Y.NYB",
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    logger.info(f"DXY: {last:.4f} (yfinance fallback)")
-            except Exception as e:
-                logger.warning(f"DXY yfinance fallback falhou: {e}")
-
-        # 2. Buscar via yfinance (índices, commodities e VIX)
-        for name, ticker in yfinance_symbols.items():
-            try:
-                hist = await self._yfinance_history(name, period="5d", interval="1d")
-
-                if not hist.empty:
-                    last = float(hist["close"].iloc[-1])
-                    prev = float(hist["close"].iloc[-2]) if len(hist) > 1 else last
-
-                    ext_data[name] = {
-                        "preco_atual": round(last, 2),
-                        "movimento": "Alta" if last > prev else "Baixa" if last < prev else "Neutro",
-                        "source": "yfinance",
-                        "ticker": ticker,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    logger.info(f"✅ {name}: ${last:.2f} (yfinance)")
-                else:
-                    logger.debug(f"⚠️ {name} ({ticker}) vazio via yfinance")
-
-            except Exception as e:
-                logger.warning(f"⚠️ Erro yfinance para {name}: {e}")
-                continue
-
-        # 3. Fear & Greed Index via alternative.me (gratuito, sem API key)
-        try:
-            async with session.get(
-                "https://api.alternative.me/fng/?limit=2&format=json",
-                timeout=aiohttp.ClientTimeout(total=8)
-            ) as resp:
-                if resp.status == 200:
-                    fng_data = await resp.json()
-                    entries = fng_data.get("data", [])
-                    if entries:
-                        current = entries[0]
-                        prev_entry = entries[1] if len(entries) > 1 else current
-                        fng_value = int(current.get("value", 50))
-                        fng_prev = int(prev_entry.get("value", fng_value))
-                        ext_data["FEAR_GREED"] = {
-                            "preco_atual": fng_value,
-                            "prev": fng_prev,
-                            "movimento": "Alta" if fng_value > fng_prev else "Baixa" if fng_value < fng_prev else "Neutro",
-                            "classification": current.get("value_classification", "Unknown"),
-                            "source": "alternative.me",
-                            "timestamp": datetime.now().isoformat()
-                        }
-                        logger.info(f"✅ Fear&Greed: {fng_value} ({current.get('value_classification', '')})")
-                else:
-                    logger.debug(f"⚠️ Fear&Greed API status {resp.status}")
-        except Exception as e:
-            logger.debug(f"Fear&Greed indisponível: {e}")
+        cached_count = len(ext_data)
+        if cached_count > 0:
+            logger.debug("External markets: %d/%d do cache", cached_count, 8)
 
         return ext_data
 
@@ -1202,18 +1092,183 @@ class ContextCollector:
     # ---------- Consolidação ----------
     
     async def _async_build_full_context(self, session: aiohttp.ClientSession):
-        return {
-            "mtf": await self._analyze_mtf_trends(session),
-            "intermarket": await self._fetch_intermarket_data(session),
-            "external": await self._fetch_external_markets(session),
-            "derivatives": await self._fetch_derivatives_data(session),
-            "sentiment": await self._fetch_onchain_sentiment(session),
-            "profile": await asyncio.to_thread(self.historical_profiler.update_profiles),
-            "market_context": self._calculate_market_context(),
-            "market_environment": await self._calculate_market_environment(session),
-            "pivots": await self._calculate_pivots(session),
-            "timestamp": self.time_manager.now_iso(),
+        """
+        Constrói contexto completo com fetches PARALELOS.
+
+        Antes: ~17s (tudo sequencial + DXY 3x)
+        Depois: ~2-3s (paralelo + cache dedup)
+        """
+        from common.yfinance_cache import get_market_cache
+        cache = get_market_cache()
+
+        # Fase 1: Prefetch todos os dados de mercado em paralelo (popula cache)
+        await self._prefetch_market_data(session, cache)
+
+        # Fase 2: Construir contexto — agora as sub-funções leem do cache
+        tasks = {
+            "mtf": asyncio.create_task(self._analyze_mtf_trends(session)),
+            "intermarket": asyncio.create_task(self._fetch_intermarket_data(session)),
+            "external": asyncio.create_task(self._fetch_external_markets(session)),
+            "derivatives": asyncio.create_task(self._fetch_derivatives_data(session)),
+            "sentiment": asyncio.create_task(self._fetch_onchain_sentiment(session)),
+            "profile": asyncio.create_task(
+                asyncio.to_thread(self.historical_profiler.update_profiles)
+            ),
+            "market_environment": asyncio.create_task(
+                self._calculate_market_environment(session)
+            ),
+            "pivots": asyncio.create_task(self._calculate_pivots(session)),
         }
+
+        results = await asyncio.gather(
+            *tasks.values(), return_exceptions=True,
+        )
+
+        context = {}
+        for key, result in zip(tasks.keys(), results):
+            if isinstance(result, Exception):
+                logger.warning(
+                    "Context section '%s' failed: %s: %s",
+                    key, type(result).__name__, result,
+                )
+                context[key] = {} if key != "profile" else None
+            else:
+                context[key] = result
+
+        context["market_context"] = self._calculate_market_context()
+        context["timestamp"] = self.time_manager.now_iso()
+
+        stats = cache.get_stats()
+        logger.info(
+            "Cache stats: hits=%d, misses=%d, hit_rate=%.1f%%",
+            stats["hits"], stats["misses"], stats["hit_rate_pct"],
+        )
+
+        return context
+
+    async def _prefetch_market_data(self, session: aiohttp.ClientSession, cache):
+        """
+        Busca todos os dados de mercado de uma vez (paralelo).
+        Popula o cache para que as sub-funções não precisem re-buscar.
+        """
+        start = time.time()
+
+        async def _yf_value(symbol: str, period: str = "5d") -> Optional[Dict[str, Any]]:
+            """Wrapper: busca via _yfinance_history e retorna dict formatado."""
+            try:
+                hist = await self._yfinance_history(symbol, period=period, interval="1d")
+                if hist is not None and not hist.empty and "close" in hist.columns:
+                    last = float(hist["close"].iloc[-1])
+                    prev = float(hist["close"].iloc[-2]) if len(hist) > 1 else last
+                    return {
+                        "preco_atual": round(last, 4),
+                        "movimento": "Alta" if last > prev else "Baixa" if last < prev else "Neutro",
+                        "source": "yfinance",
+                        "ticker": TICKER_MAPPING.get(symbol, symbol),
+                        "timestamp": datetime.now().isoformat(),
+                    }
+            except Exception as e:
+                logger.debug("prefetch %s failed: %s", symbol, e)
+            return None
+
+        async def _fred_value(symbol: str) -> Optional[Dict[str, Any]]:
+            """Wrapper: busca via FRED."""
+            try:
+                if self.fred_fetcher.is_failing(symbol):
+                    return None
+                value = await self.fred_fetcher.fetch_latest_value(symbol, session)
+                if value is not None:
+                    return {
+                        "preco_atual": round(value, 4),
+                        "movimento": "Neutro",
+                        "source": "FRED",
+                        "timestamp": datetime.now().isoformat(),
+                    }
+            except Exception as e:
+                logger.debug("prefetch FRED %s failed: %s", symbol, e)
+            return None
+
+        async def _dxy_fetcher():
+            """DXY: tenta FRED primeiro, fallback yfinance."""
+            result = await _fred_value("DXY")
+            if result is not None:
+                logger.info("DXY: %.4f (FRED)", result["preco_atual"])
+                return result
+            result = await _yf_value("DXY", period="5d")
+            if result is not None:
+                logger.info("DXY: %.4f (yfinance)", result["preco_atual"])
+            return result
+
+        async def _tnx_fetcher():
+            result = await _fred_value("TNX")
+            if result is not None:
+                logger.info("TNX: %.4f (FRED)", result["preco_atual"])
+            return result
+
+        async def _fng_fetcher():
+            """Fear & Greed via alternative.me."""
+            try:
+                async with session.get(
+                    "https://api.alternative.me/fng/?limit=2&format=json",
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as resp:
+                    if resp.status == 200:
+                        fng_data = await resp.json()
+                        entries = fng_data.get("data", [])
+                        if entries:
+                            current = entries[0]
+                            prev_entry = entries[1] if len(entries) > 1 else current
+                            fng_value = int(current.get("value", 50))
+                            fng_prev = int(prev_entry.get("value", fng_value))
+                            logger.info(
+                                "Fear&Greed: %d (%s)",
+                                fng_value, current.get("value_classification", ""),
+                            )
+                            return {
+                                "preco_atual": fng_value,
+                                "prev": fng_prev,
+                                "movimento": "Alta" if fng_value > fng_prev else "Baixa" if fng_value < fng_prev else "Neutro",
+                                "classification": current.get("value_classification", "Unknown"),
+                                "source": "alternative.me",
+                                "timestamp": datetime.now().isoformat(),
+                            }
+            except Exception as e:
+                logger.debug("prefetch Fear&Greed failed: %s", e)
+            return None
+
+        async def _yf_history_fetcher(symbol: str, period: str = "180d"):
+            """Busca dados históricos para correlações."""
+            try:
+                hist = await self._yfinance_history(symbol, period=period, interval="1d")
+                if hist is not None and not hist.empty and "close" in hist.columns:
+                    return hist
+            except Exception as e:
+                logger.debug("prefetch history %s failed: %s", symbol, e)
+            return None
+
+        if not ENABLE_ALPHAVANTAGE:
+            return
+
+        # Executar TUDO em paralelo
+        fetch_tasks = [
+            cache.get("DXY", fetcher=_dxy_fetcher),
+            cache.get("TNX", fetcher=_tnx_fetcher),
+            cache.get("SP500", fetcher=lambda: _yf_value("SP500")),
+            cache.get("NASDAQ", fetcher=lambda: _yf_value("NASDAQ")),
+            cache.get("GOLD", fetcher=lambda: _yf_value("GOLD")),
+            cache.get("WTI", fetcher=lambda: _yf_value("WTI")),
+            cache.get("VIX", fetcher=lambda: _yf_value("VIX")),
+            cache.get("FEAR_GREED", fetcher=_fng_fetcher),
+            # Históricos para correlações
+            cache.get("DXY_HISTORY", fetcher=lambda: _yf_history_fetcher("DXY", "180d"), ttl=900),
+            cache.get("SP500_HISTORY", fetcher=lambda: _yf_history_fetcher("SP500", "180d"), ttl=900),
+            cache.get("GOLD_HISTORY", fetcher=lambda: _yf_history_fetcher("GOLD", "180d"), ttl=900),
+        ]
+
+        await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+        elapsed = time.time() - start
+        logger.info("Prefetch completo: %d assets em %.1fs", len(fetch_tasks), elapsed)
 
     @staticmethod
     def _adjust_risk_sentiment(ctx: dict) -> None:

@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Deque
 from collections import deque
 
+from config import settings as config
+
 logger = logging.getLogger("MLInference")
 
 
@@ -99,14 +101,15 @@ class MLInferenceEngine:
     }
     
     # Defaults seguros caso a feature não exista no payload
+    # BB defaults = NaN → XGBoost trata como feature ausente (melhor que valor fixo falso)
     FEATURE_DEFAULTS = {
         'price_close': 0.0,
         'return_1': 0.0,
         'return_5': 0.0,
         'return_10': 0.0,
-        'bb_upper': 0.0,
-        'bb_lower': 0.0,
-        'bb_width': 0.0,
+        'bb_upper': float('nan'),
+        'bb_lower': float('nan'),
+        'bb_width': float('nan'),
         'rsi': 50.0,
         'volume_ratio': 1.0
     }
@@ -213,28 +216,35 @@ class MLInferenceEngine:
         return result
 
     def _compute_bollinger_bands(self) -> Dict[str, float]:
-        """Computa Bollinger Bands a partir do histórico de preços."""
+        """Computa Bollinger Bands a partir do histórico de preços.
+
+        Requer pelo menos BB_PERIOD (20) janelas de histórico.
+        Com menos dados, retorna NaN → XGBoost trata como feature ausente,
+        o que é mais honesto do que passar um valor fixo falso.
+        """
         prices = list(self._price_history)
         n = len(prices)
-        result = {}
-        
-        # Precisa de pelo menos alguns preços para calcular
-        period = min(self.BB_PERIOD, n)
-        if period < 5:
-            return result
-        
-        window = prices[-period:]
-        sma = np.mean(window)
-        std = np.std(window, ddof=1) if period > 1 else 0.0
-        
+
+        if n < self.BB_PERIOD:
+            # Histórico insuficiente → NaN (XGBoost trata como missing)
+            return {
+                'bb_upper': float('nan'),
+                'bb_lower': float('nan'),
+                'bb_width': float('nan'),
+            }
+
+        window = prices[-self.BB_PERIOD:]
+        sma = float(np.mean(window))
+        std = float(np.std(window, ddof=1))
+
         bb_upper = sma + self.BB_STD_MULT * std
         bb_lower = sma - self.BB_STD_MULT * std
-        
-        result['bb_upper'] = bb_upper
-        result['bb_lower'] = bb_lower
-        result['bb_width'] = (bb_upper - bb_lower) / sma if sma > 0 else 0.0
-        
-        return result
+
+        return {
+            'bb_upper': bb_upper,
+            'bb_lower': bb_lower,
+            'bb_width': (bb_upper - bb_lower) / sma if sma > 0 else 0.0,
+        }
 
     def _compute_rsi(self) -> Dict[str, float]:
         """Computa RSI a partir do histórico de preços."""
@@ -417,32 +427,31 @@ class MLInferenceEngine:
         """
         Computa features derivadas se estiverem zeradas mas o preço for conhecido.
         Safety net — raramente necessário com o FEATURE_MAP v3.
+
+        BB fallback REMOVIDO: quando histórico < 20, BB fica NaN e XGBoost
+        trata como feature ausente — mais honesto que injetar valor falso.
         """
-        price = features.get('price_close', 0.0)
-        
-        if price > 0:
-            # BB Check - só usar fallback se realmente não foi calculado
-            if features.get('bb_upper', 0.0) == 0.0 and features.get('bb_lower', 0.0) == 0.0:
-                # CORREÇÃO: bb_width fallback realista para BTC (~0.002)
-                # Antes: 1.02/0.98 produzia bb_width=0.04 (163x maior que real)
-                # Agora: 0.1% band → bb_width=0.002 (faixa típica BTC)
-                features['bb_upper'] = price * 1.001
-                features['bb_lower'] = price * 0.999
-                features['bb_width'] = (features['bb_upper'] - features['bb_lower']) / price
-                logger.debug("[DERIVED] BB fallback aplicado (sem dados históricos) bb_w=%.6f", features['bb_width'])
-        
         return features
 
     def predict(self, raw_features: Dict[str, Any]) -> Dict[str, Any]:
         """
         Faz predição com o modelo XGBoost.
-        
+
         FLUXO:
+        0. Se HYBRID_ENABLED=False → retorna neutro sem computar
         1. Extrai preço/volume do payload → atualiza histórico interno
         2. Mapeia features: payload externo > cálculo interno > defaults
         3. Aplica derived features (safety net)
         4. Predição via XGBoost
         """
+        if not getattr(config, 'HYBRID_ENABLED', True):
+            return {
+                'prob_up': 0.5,
+                'signal': 'neutral',
+                'status': 'hybrid_disabled',
+                'confidence': 0.0,
+            }
+
         if self.model is None:
             return {
                 'prob_up': 0.5,
@@ -530,12 +539,36 @@ class MLInferenceEngine:
                 or history_n >= (self.RSI_PERIOD + 1)
             )
 
+            # Bias monitor: registrar predição e ajustar confiança
+            confidence = abs(prob - 0.5) * 2
+            try:
+                from ml.bias_monitor import get_bias_monitor
+                _bias_monitor = get_bias_monitor()
+                _bias_monitor.record(
+                    prob_up=prob,
+                    features={
+                        "rsi": mapped_features.get("rsi", 50),
+                        "bb_w": mapped_features.get("bb_width", 0),
+                        "ret1": mapped_features.get("return_1", 0),
+                        "vol_r": mapped_features.get("volume_ratio", 1),
+                    },
+                )
+                _bias_adj = _bias_monitor.get_confidence_adjustment()
+                if _bias_adj < 1.0:
+                    logger.info(
+                        "ML confidence adjusted for bias: %.1f%% -> %.1f%% (factor=%.2f)",
+                        confidence * 100, confidence * _bias_adj * 100, _bias_adj,
+                    )
+                    confidence *= _bias_adj
+            except Exception as e:
+                logger.debug("Bias monitor error (non-critical): %s", e)
+
             return {
                 'prob_up': prob,
                 'prob_down': 1.0 - prob,
                 'signal': signal,
                 'status': 'ok',
-                'confidence': abs(prob - 0.5) * 2,
+                'confidence': confidence,
                 'features_used': len(mapped_features),
                 'features_from_history': history_n,
                 'features_detail': {

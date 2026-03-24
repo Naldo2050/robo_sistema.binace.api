@@ -174,8 +174,14 @@ AI_ANALYSIS_INTERVAL = 300     # 5 minutos (Evita spammar a Groq)
 # Otimização de IA - pula análise quando volume baixo em regime lateral
 AI_SKIP_VOLUME_THRESHOLD = 100_000  # USD - threshold para pular IA em sideways
 
+# ===== ML / HYBRID DECISION =====
+HYBRID_ENABLED = False          # Desativado até dataset ter 500+ amostras balanceadas
+HYBRID_MODE = "llm_primary"
+HYBRID_MODEL_WEIGHT = 0.6
+HYBRID_LLM_WEIGHT = 0.4
+
 # ===== CONFIGURAÇÕES DE IA / PIPELINE =====
-AI_MIN_INTERVAL_SEC = 60       # Intervalo mínimo entre análises da IA (segundos)
+AI_MIN_INTERVAL_SEC = 300      # Intervalo mínimo entre análises da IA (5 min, era 60s)
 AI_TEST_MIN_CHARS = 10         # Mínimo de chars para teste da IA ser considerado ok
 MIN_TRADES_FOR_PIPELINE = 10   # Mínimo de trades por janela para processar pipeline
 WARMUP_WINDOWS = 3             # Janelas de aquecimento após reconexão

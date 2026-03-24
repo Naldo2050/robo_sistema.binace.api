@@ -3431,10 +3431,26 @@ class AIAnalyzer:
                             create_kwargs["reasoning_effort"] = params["reasoning_effort"]
                         if params.get("top_p") is not None:
                             create_kwargs["top_p"] = params["top_p"]
-                        
+
                         response = self.client.chat.completions.create(**create_kwargs)
+
+                        # Sucesso: registrar no throttler
+                        tokens_used = 0
+                        if hasattr(response, "usage") and response.usage:
+                            tokens_used = getattr(response.usage, "total_tokens", 0)
+
+                        try:
+                            from common.ai_throttler import get_throttler
+                            _throttler = get_throttler()
+                            _throttler.record_call(tokens_used)
+                            _throttler.record_success()
+                        except Exception:
+                            pass
+
                     except Exception as e:
+                        error_str = str(e)
                         reason = self._classify_provider_error(e)
+
                         if strict_json and reason == "json_validate_failed":
                             logging.warning(
                                 "Groq JSON mode rejected response; retrying without provider JSON mode | attempt=%d",
@@ -3442,6 +3458,22 @@ class AIAnalyzer:
                             )
                             last_error_reason = reason
                             continue
+
+                        # Tratamento específico de 429: abortar retries
+                        if reason == "rate_limited" or "429" in error_str:
+                            try:
+                                from common.ai_throttler import get_throttler
+                                _throttler = get_throttler()
+                                retry_after = _throttler.parse_retry_after(error_str)
+                                _throttler.record_rate_limit(retry_after)
+                            except Exception:
+                                pass
+
+                            logging.warning(
+                                "GROQ 429 (tentativa %d). Cooldown ativado. Abortando retries.",
+                                attempt + 1,
+                            )
+                            return "", "rate_limited"
 
                         last_error_reason = reason
                         logging.error(
@@ -3478,7 +3510,12 @@ class AIAnalyzer:
                         continue
             except Exception:
                 if attempt < max_retries - 1:
-                    time.sleep(base_delay * (2**attempt))
+                    wait_time = base_delay * (2 ** attempt)
+                    logging.info(
+                        "Retry em %.0fs (tentativa %d/%d)",
+                        wait_time, attempt + 2, max_retries,
+                    )
+                    time.sleep(wait_time)
                 continue
 
         return "", last_error_reason or "provider_exception"
@@ -3718,7 +3755,7 @@ class AIAnalyzer:
                     list(leak_keys.intersection(payload_for_llm.keys())),
                 )
 
-            if os.getenv("DUMP_LLM_PAYLOAD", "0") == "1":
+            if os.getenv("DUMP_LLM_PAYLOAD", "1") == "1":
                 self._dump_llm_payload(event_data, payload_bytes)
 
         except Exception as e:
@@ -3757,8 +3794,9 @@ class AIAnalyzer:
             )
 
             ap = event_data.get("ai_payload") if isinstance(event_data, dict) else None
-            mc = (ap or {}).get("macro_context") if isinstance(ap, dict) else None
-            ca = (ap or {}).get("cross_asset_context") if isinstance(ap, dict) else None
+            # v2 compact uses "ctx" key; legacy uses "macro_context"
+            mc = ((ap or {}).get("macro_context") or (ap or {}).get("ctx")) if isinstance(ap, dict) else None
+            ca = ((ap or {}).get("cross_asset_context") or (ap or {}).get("cor")) if isinstance(ap, dict) else None
             logging.info(
                 "DUMP_LLM_PAYLOAD wrote=logs/last_llm_payload.json "
                 "macro_type=%s cross_type=%s has_section_cache=%s",

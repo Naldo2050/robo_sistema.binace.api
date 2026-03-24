@@ -845,4 +845,30 @@ docs/
 
 ---
 
-*Ultima atualizacao: 2026-03-20 (atualizacao completa: novos arquivos em common/, monitoring/, trading/, tests/ expandidos para ~120 arquivos, scripts/ atualizados, docs/ adicionados, .github/workflows criado, infrastructure/, core/, diagnostic_files/, tools/ documentados)*
+## Atualizacoes Posteriores (2026-03-23)
+
+| Categoria | Arquivos Adicionados |
+|-----------|---------------------|
+| fetchers/ | macro_data_provider.py, macro_service.py, macro_update_service.py |
+| market_analysis/ | integrate_regime_detector.py, regime_detector.py, regime_integration.py, regime_rules.py |
+| tests/unit/ | test_support_resistance_consolidated.py |
+| tests/e2e/ | regime_scenario_tester.py |
+| tests/integration/ | test_ai_analyzer_mock.py, test_corrections.py, test_dynamic_volume_profile_2.py, test_enrich_correction.py, test_event_saver_jsonl_guardian.py, test_fix_optimization_storage.py, test_fixes_simple_fixed.py, test_institutional_alerts.py, test_integrated_macro_provider.py, test_invariant_fix.py, test_latency_fix_simple.py, test_macro_singleton_fix.py, test_new_payload.py, test_optimization.py, test_orderbook_analyze_core.py, test_orderbook_config_injection.py, test_out_of_order_pruning.py, test_patch_2_fallback_controlado.py, test_patch_2_simples.py, test_patch_compressor_v3.py, test_regime_integration.py, test_regime_integration_legacy.py, test_window_processor_queue.py |
+| tests/payload/ | test_ai_throttler_v2.py, test_build_compact_v3.py, test_payload_metrics_aggregator.py |
+| scripts/ | error_monitor.py, validate_regime_system.py, validation_check.py, enhanced_market_bot.py |
+| scripts/migration/ | commit_etapa2.sh, commit_etapa3.sh, etapa0_baseline.sh, etapa1_dependency_map.py, etapa2_check_exceptions.py, etapa3_check_duplicates.py, etapa4_check_src.py, etapa5_proxy_eliminator.py, etapa6_check_config.py, etapa7_check_contracts.py, etapa8_check_language.py, validate_after_step.sh, validate_all_final.py, validate_fix3_dedup.py, validate_fix4_fake_data.py |
+| scripts/diagnostics/ | diagnose_crash.py, final_replace.py, reproduce_issue.py, show_problem_lines.py, validate_event.py, verify_implementations.py, verify_optimization.py, verify_patch.py |
+| scripts/structure/ | compare_structure_filtered.py |
+| infrastructure/ | market-bot.service, oci/monitoring.py, oci/security_config.md, oci/vault_helper.py, terraform/main.tf |
+| tools/ | test_groq_models_http.py, test_groq_models_v2.py, test_groq_official.py, inspect_events_schema.py |
+| .github/workflows/ | deploy_oci.yml |
+| MQL5/Indicators/ | ChartSignalsFromCSV.mq5 |
+| config/ | settings.py |
+| ml/ | hybrid_decision.py, inference_engine.py, model_metadata.json, model_metadata_latest.json |
+| orderbook_core/ | event_factory.py, structured_logging.py, tracing_utils.py |
+| orderbook_analyzer/config/ | settings.py |
+| monitoring/ | orderbook_ws_manager.py (placeholder) |
+
+---
+
+*Ultima atualizacao: 2026-03-23 (novos arquivos: fetchers/market_analysis expandidos, tests/ com ~80 novos arquivos, scripts/migration/ criado, infrastructure/, tools/, ml/ atualizados)*
