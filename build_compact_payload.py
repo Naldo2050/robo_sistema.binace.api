@@ -849,11 +849,15 @@ def build_compact_payload(event_data: dict) -> dict:
     if regime:
         payload["regime"] = regime                       # ← ERA "r"
 
-    if flow:
-        payload["flow"] = flow                           # ← ERA "f"
-
-    if ob:
-        payload["ob"] = ob
+    # ═══════════════════════════════════════════════════════════
+    # SEÇÕES OBRIGATÓRIAS: sempre incluir, mesmo que vazias.
+    # IA sem flow/ob/tf/sr decide às cegas → pior que payload
+    # um pouco maior com stubs indicando "no data".
+    # ═══════════════════════════════════════════════════════════
+    payload["flow"] = flow if flow else {"d1": "0", "imb": 0.0}
+    payload["ob"] = ob if ob else {"imb": 0.0, "bias": "N/A"}
+    payload["tf"] = tf_section if tf_section else {"_": "no_data"}
+    payload["sr"] = sr if sr else {"_": "no_data"}
 
     if whale:
         payload["w"] = whale
@@ -861,17 +865,20 @@ def build_compact_payload(event_data: dict) -> dict:
     if quant and quant.get("pu", 0.5) != 0.5:
         payload["quant"] = quant                         # ← ERA "q"
 
-    if tf_section:
-        payload["tf"] = tf_section
-
     if ext_indicators:
         payload["ext"] = ext_indicators
 
     if alerts:
         payload["alerts"] = alerts
 
-    if sr:
-        payload["sr"] = sr
+    # Validação: avisar se seções obrigatórias estão com stub
+    _required = {"flow", "ob", "tf", "sr"}
+    _stub = {s for s in _required if isinstance(payload.get(s), dict) and "_" in payload[s]}
+    if _stub:
+        logger.warning(
+            "PAYLOAD_INCOMPLETE: seções com stub (dados insuficientes): %s",
+            sorted(_stub),
+        )
 
     # --- CONTEXTO ESTÁTICO ---
     force_ctx = (

@@ -880,8 +880,34 @@ class EnhancedMarketBot:
         
         if tipo == "ANALYSIS_TRIGGER":
             now = time.time()
-            if now - self._last_ai_analysis_ts >= self._ai_min_interval_sec:
+            if now - self._last_ai_analysis_ts < self._ai_min_interval_sec:
+                return False
+            # Além do intervalo mínimo, exigir pelo menos uma condição relevante
+            flow = event_data.get("fluxo_continuo", {}) or {}
+            ob = event_data.get("orderbook_data", {}) or {}
+            sr = event_data.get("zone_context", {}) or {}
+            volume_ratio = float(flow.get("volume_ratio", 0) or 0)
+            absorption_score = abs(float(
+                flow.get("absorption_analysis", {}).get(
+                    "current_absorption", {}
+                ).get("index", 0) or 0
+            ))
+            whale_activity = abs(float(flow.get("whale_delta", 0) or 0)) > 0.5
+            near_sr = bool(sr) or bool(event_data.get("near_level"))
+            ob_imbalance = abs(float(ob.get("imbalance", 0) or 0)) > 0.7
+            if any([
+                volume_ratio > 1.5,
+                absorption_score > 0.6,
+                whale_activity,
+                near_sr,
+                ob_imbalance,
+            ]):
                 return True
+            logging.debug(
+                "ANALYSIS_TRIGGER skipped: no relevant condition "
+                "(vol_r=%.2f, abs=%.2f, whale=%s, sr=%s, ob_imb=%s)",
+                volume_ratio, absorption_score, whale_activity, near_sr, ob_imbalance,
+            )
             return False
         
         return False
@@ -2071,8 +2097,13 @@ class EnhancedMarketBot:
         )
         
         await self.window_processor.start()
-        
+
         logging.info("✅ WindowProcessor iniciado | windows=%s", windows_min)
+
+        # Background task: re-sync periódico com Binance (non-blocking)
+        self._periodic_sync_task = asyncio.create_task(
+            self.time_manager.periodic_sync(600)
+        )
 
         self._initialized = True
 
@@ -2090,6 +2121,10 @@ class EnhancedMarketBot:
             pass
 
         self.should_stop = True
+
+        # Cancela periodic_sync task
+        if hasattr(self, "_periodic_sync_task") and self._periodic_sync_task:
+            self._periodic_sync_task.cancel()
 
         # 1) Para geradores de trabalho primeiro
         try:

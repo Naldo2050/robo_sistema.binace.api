@@ -17,7 +17,7 @@ import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Dict, Any, Optional, Union
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
@@ -565,7 +565,8 @@ def get_enhanced_cross_asset_correlations(now_utc: Optional[datetime] = None) ->
                 macro_data = _get_macro_data_sync()
             else:
                 # Contexto sync - pode usar asyncio.run
-                macro_data = _run_async_safely(_get_macro_data_async(), timeout=15.0)
+                # Timeout aumentado para 30s para permitir múltiplas chamadas de API
+                macro_data = _run_async_safely(_get_macro_data_async(), timeout=30.0)
             
             # TRATAR None de forma segura
             if macro_data is None or not macro_data:

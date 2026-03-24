@@ -102,15 +102,19 @@ def enrich_analysis_trigger_event(
             else:
                 advanced = raw_event.get("advanced_analysis", {})
 
-        # >>> ADICIONE ESTE LOG DE DIAGNÓSTICO <<<
+        # Log de diagnóstico — price_targets pode estar no advanced, event root ou raw_event
         try:
+            pt = (
+                advanced.get("price_targets")
+                or event.get("price_targets")
+                or raw_event.get("price_targets")
+            )
+            pt_len = len(pt) if isinstance(pt, (list, dict)) else "N/A"
             logger.info(
                 "[EnrichmentIntegrator] advanced_analysis runtime keys=%s | "
                 "price_targets_len=%s | symbol=%s | price=%s",
                 list(advanced.keys()),
-                len(advanced.get("price_targets", []))
-                if isinstance(advanced.get("price_targets"), list)
-                else "N/A",
+                pt_len,
                 advanced.get("symbol"),
                 advanced.get("price"),
             )

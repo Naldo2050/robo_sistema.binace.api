@@ -6,9 +6,11 @@ Federal Reserve Economic Data - API gratuita e ilimitada.
 
 import asyncio
 import aiohttp
+import json
 import logging
 import os
 import pandas as pd
+from pathlib import Path
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
 
@@ -45,9 +47,14 @@ class FREDFetcher:
             "GDP": "GDP",             # Gross Domestic Product
         }
         
-        # Cache simples (TTL: 5 minutos)
+        # Cache em memória (TTL: 5 minutos)
         self._cache = {}
         self._cache_ttl = 300  # segundos
+
+        # Cache persistente em disco (TTL: 24 horas)
+        self._disk_cache_path = Path("dados/fred_cache.json")
+        self._disk_cache_ttl = 86400  # 24h
+        self._disk_cache = self._load_disk_cache()
         
         # 🆕 Cache de falhas específicas por símbolo (para fallback inteligente)
         self._failure_cache = {}  # {symbol: timestamp_falha}
@@ -58,6 +65,49 @@ class FREDFetcher:
         else:
             logger.warning("⚠️ FRED_API_KEY não encontrada no .env")
     
+    # ── Cache persistente em disco ──
+
+    def _load_disk_cache(self) -> dict:
+        """Carrega cache de disco (JSON)."""
+        try:
+            if self._disk_cache_path.exists():
+                data = json.loads(self._disk_cache_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except Exception as e:
+            logger.debug("FRED disk cache load failed: %s", e)
+        return {}
+
+    def _save_disk_cache(self) -> None:
+        """Salva cache em disco."""
+        try:
+            self._disk_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self._disk_cache_path.write_text(
+                json.dumps(self._disk_cache, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.debug("FRED disk cache save failed: %s", e)
+
+    def _get_from_disk_cache(self, symbol: str) -> Optional[float]:
+        """Retorna valor do cache em disco se dentro do TTL."""
+        entry = self._disk_cache.get(symbol)
+        if not entry:
+            return None
+        ts = entry.get("ts", 0)
+        if datetime.now().timestamp() - ts > self._disk_cache_ttl:
+            return None
+        return entry.get("value")
+
+    def _set_disk_cache(self, symbol: str, value: float) -> None:
+        """Salva valor no cache em disco."""
+        self._disk_cache[symbol] = {
+            "value": value,
+            "ts": datetime.now().timestamp(),
+            "updated": datetime.now().isoformat(),
+        }
+        self._save_disk_cache()
+
     def is_available(self) -> bool:
         """Verifica se a API está configurada."""
         return bool(self.api_key)
@@ -131,23 +181,27 @@ class FREDFetcher:
             logger.debug("FRED API não configurada")
             return None
         
-        # 🆕 Verificar se símbolo está em modo de falha (fallback ativo)
+        # Verificar se símbolo está em modo de falha (fallback ativo)
         if self.is_failing(symbol):
-            logger.debug(f"FRED: {symbol} está em modo fallback (falha recente), pulando requisição")
-            return None
-        
-        # Verificar cache
+            logger.debug(f"FRED: {symbol} está em modo fallback (falha recente)")
+            # Tentar cache persistente como fallback
+            disk_val = self._get_from_disk_cache(symbol)
+            if disk_val is not None:
+                logger.debug(f"FRED: {symbol} = {disk_val:.4f} (disk cache fallback)")
+            return disk_val
+
+        # Verificar cache em memória
         cache_key = f"{symbol}_{days_lookback}"
         if cache_key in self._cache:
             cached_data, timestamp = self._cache[cache_key]
             if (datetime.now().timestamp() - timestamp) < self._cache_ttl:
                 logger.debug(f"FRED cache hit para {symbol}")
                 return cached_data
-        
+
         try:
             end_date = datetime.now().strftime("%Y-%m-%d")
             start_date = (datetime.now() - timedelta(days=days_lookback)).strftime("%Y-%m-%d")
-            
+
             params = {
                 "series_id": fred_id,
                 "api_key": self.api_key,
@@ -157,47 +211,47 @@ class FREDFetcher:
                 "sort_order": "desc",
                 "limit": 1
             }
-            
+
             async with session.get(self.base_url, params=params, timeout=5) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    
+
                     if data.get("observations") and len(data["observations"]) > 0:
                         value_str = data["observations"][0]["value"]
-                        
+
                         # FRED pode retornar "." para dados ausentes
                         if value_str == ".":
                             logger.warning(f"FRED: {symbol} ({fred_id}) sem dados recentes")
-                            return None
-                        
+                            return self._get_from_disk_cache(symbol)
+
                         value = float(value_str)
-                        
-                        # Armazenar em cache
+
+                        # Armazenar em ambos os caches
                         self._cache[cache_key] = (value, datetime.now().timestamp())
-                        
-                        logger.info(f"✅ FRED: {symbol} = {value:.4f} (série: {fred_id})")
+                        self._set_disk_cache(symbol, value)
+                        self.clear_failure(symbol)
+
+                        logger.info(f"FRED: {symbol} = {value:.4f} (serie: {fred_id})")
                         return value
                     else:
-                        logger.warning(f"FRED: {symbol} sem observações")
-                        # 🆕 Marcar como falho para ativar fallback temporário
-                        if symbol == "DXY":
-                            self.mark_as_failing(symbol)
-                        return None
-                
+                        # DTWEXM (DXY) é série semanal — sem observações na maioria dos dias é normal
+                        logger.info(f"FRED: {symbol} sem observações recentes, usando disk cache")
+                        return self._get_from_disk_cache(symbol)
+
                 elif resp.status == 400:
                     error_data = await resp.json()
                     logger.error(f"FRED erro 400 para {symbol}: {error_data.get('error_message', 'Desconhecido')}")
-                    return None
+                    return self._get_from_disk_cache(symbol)
                 else:
                     logger.warning(f"FRED status {resp.status} para {symbol}")
-                    return None
-                    
+                    return self._get_from_disk_cache(symbol)
+
         except asyncio.TimeoutError:
             logger.warning(f"FRED timeout para {symbol}")
-            return None
+            return self._get_from_disk_cache(symbol)
         except Exception as e:
             logger.warning(f"FRED erro para {symbol}: {e}")
-            return None
+            return self._get_from_disk_cache(symbol)
     
     async def fetch_historical(
         self,

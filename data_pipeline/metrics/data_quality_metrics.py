@@ -55,9 +55,9 @@ class DataQualityMetrics:
         metrics.emit_periodic_log()
     """
     
-    # Configurações de alerta (ajustados: whale reconciliation é esperada)
-    CORRECTION_RATE_WARNING = 15.0  # % (era 5% — muito agressivo com janelas pequenas)
-    CORRECTION_RATE_ERROR = 25.0    # % (era 10% — 3 correções em 22 eventos = 13.6%)
+    # Configurações de alerta (baseado em correções problemáticas, excl. whale)
+    CORRECTION_RATE_WARNING = 20.0  # % (excluindo whale corrections)
+    CORRECTION_RATE_ERROR = 35.0    # % (excluindo whale corrections)
     DISCARD_RATE_WARNING = 2.0      # %
     LATENCY_P95_WARNING_MS = 50.0   # ms (antes: 10ms, muito agressivo)
     
@@ -185,10 +185,11 @@ class DataQualityMetrics:
             "alerts": self._compute_alerts(correction_rate, discard_rate, latency_p95, top_corrections),
         }
 
-    # Correções esperadas (whale reconciliation) — não contam para taxa crítica
+    # Correções esperadas (whale reconciliation) — excluídas do rate
     _EXPECTED_CORRECTIONS = frozenset({
         "reconciled_whale_volume",
         "recalculated_whale_delta",
+        "reconciled_whale_count",
     })
 
     def _compute_alerts(
@@ -198,55 +199,77 @@ class DataQualityMetrics:
         latency_p95: float,
         corrections_by_type: Optional[Dict[str, int]] = None,
     ) -> List[Dict[str, str]]:
-        """Computa alertas baseados nos thresholds."""
+        """
+        Computa alertas baseados nos thresholds.
+        Whale corrections são excluídas do rate (são esperadas).
+        """
         alerts = []
+        total = self._stats.total_events
 
-        # Separar correções esperadas (whale) das reais (delta)
+        # Separar correções esperadas (whale) das problemáticas
+        expected_count = 0
         if corrections_by_type:
             expected_count = sum(
                 v for k, v in corrections_by_type.items()
                 if k in self._EXPECTED_CORRECTIONS
             )
-            real_count = sum(
-                v for k, v in corrections_by_type.items()
-                if k not in self._EXPECTED_CORRECTIONS
-            )
-            if expected_count > 0:
-                alerts.append({
-                    "level": "INFO",
-                    "type": "EXPECTED_WHALE_CORRECTIONS",
-                    "message": f"Correções de whale esperadas: {expected_count} (reconciliação normal)"
-                })
-        else:
-            real_count = 0
 
-        if correction_rate >= self.CORRECTION_RATE_ERROR:
+        if expected_count > 0:
+            alerts.append({
+                "level": "INFO",
+                "type": "EXPECTED_WHALE_CORRECTIONS",
+                "message": (
+                    f"Correções de whale esperadas: {expected_count} "
+                    f"(reconciliação normal)"
+                ),
+            })
+
+        # Rate baseado APENAS em correções problemáticas
+        total_corrections = self._stats.corrected_events
+        problematic = max(0, total_corrections - expected_count)
+        problematic_rate = (problematic / total * 100) if total > 0 else 0.0
+
+        if problematic_rate >= self.CORRECTION_RATE_ERROR:
             alerts.append({
                 "level": "ERROR",
                 "type": "HIGH_CORRECTION_RATE",
-                "message": f"Taxa de correção crítica: {correction_rate:.1f}% (limite: {self.CORRECTION_RATE_ERROR}%)"
+                "message": (
+                    f"Taxa de correção CRÍTICA: {problematic_rate:.1f}% "
+                    f"({problematic}/{total} eventos, "
+                    f"excl. {expected_count} whale corrections)"
+                ),
             })
-        elif correction_rate >= self.CORRECTION_RATE_WARNING:
+        elif problematic_rate >= self.CORRECTION_RATE_WARNING:
             alerts.append({
                 "level": "WARNING",
                 "type": "HIGH_CORRECTION_RATE",
-                "message": f"Taxa de correção elevada: {correction_rate:.1f}% (limite: {self.CORRECTION_RATE_WARNING}%)"
+                "message": (
+                    f"Taxa de correção elevada: {problematic_rate:.1f}% "
+                    f"({problematic}/{total} eventos, "
+                    f"excl. {expected_count} whale corrections)"
+                ),
             })
-        
+
+        if problematic_rate != correction_rate and total > 0:
+            logging.debug(
+                "Quality rates: total=%.1f%% problematic=%.1f%% whale=%d",
+                correction_rate, problematic_rate, expected_count,
+            )
+
         if discard_rate >= self.DISCARD_RATE_WARNING:
             alerts.append({
                 "level": "WARNING",
                 "type": "HIGH_DISCARD_RATE",
                 "message": f"Taxa de descarte elevada: {discard_rate:.1f}% (limite: {self.DISCARD_RATE_WARNING}%)"
             })
-        
+
         if latency_p95 >= self.LATENCY_P95_WARNING_MS:
             alerts.append({
                 "level": "WARNING",
                 "type": "HIGH_LATENCY",
                 "message": f"Latência P95 alta: {latency_p95:.1f}ms (limite: {self.LATENCY_P95_WARNING_MS}ms)"
             })
-        
+
         return alerts
     
     def emit_periodic_log(self) -> None:
