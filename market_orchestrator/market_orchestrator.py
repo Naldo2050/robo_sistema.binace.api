@@ -803,16 +803,28 @@ class EnhancedMarketBot:
     # PONTOS DE DELEGAÇÃO PARA SUBMÓDULOS
     # ========================================
     def _process_window(self) -> None:
-        if self.window_processor is not None and self.window_data:
-            window_snapshot = [dict(trade) for trade in self.window_data if isinstance(trade, dict)]
-            close_ms = self.window_end_ms
-            self.window_data = []
+        # FIX P2: Nunca bloquear o event loop com processamento síncrono.
+        # Se a fila estiver cheia, descartamos a janela ao invés de travar.
+        if not self.window_data:
+            return
 
+        window_snapshot = [dict(trade) for trade in self.window_data if isinstance(trade, dict)]
+        close_ms = self.window_end_ms
+        self.window_data = []
+
+        if self.window_processor is not None:
             if self.window_processor.submit_window(self, window_snapshot, close_ms):
                 return
+            # Fila cheia — descartar janela protegendo o event loop
+            logging.warning(
+                "⚠️ Janela descartada (fila cheia, %d pendentes). "
+                "Event loop protegido contra bloqueio.",
+                self.window_processor._queue.qsize(),
+            )
+            return
 
-            self.window_data = window_snapshot
-
+        # Sem WindowProcessor — processar sync (só acontece se initialize() falhou)
+        self.window_data = window_snapshot
         process_window(self)
 
     def _process_signals(
@@ -2100,12 +2112,45 @@ class EnhancedMarketBot:
 
         logging.info("✅ WindowProcessor iniciado | windows=%s", windows_min)
 
+        # Pre-popular histórico OHLC para habilitar indicadores avançados imediatamente
+        await self._prefetch_ohlc_history()
+
         # Background task: re-sync periódico com Binance (non-blocking)
         self._periodic_sync_task = asyncio.create_task(
             self.time_manager.periodic_sync(600)
         )
 
         self._initialized = True
+
+    async def _prefetch_ohlc_history(self) -> None:
+        """
+        Pré-carrega pattern_ohlc_history com 200 klines de 1m do Binance.
+        Habilita Hurst, Kalman, Shannon, Regressão, Fourier, Fractal, Monte Carlo
+        imediatamente (sem aguardar acumulação orgânica de 100-200 janelas).
+        Falha silenciosamente — indicadores ficam disponíveis após warmup orgânico.
+        """
+        import aiohttp as _aiohttp
+        url = "https://api.binance.com/api/v3/klines"
+        params = {"symbol": self.symbol, "interval": "1m", "limit": 200}
+        try:
+            async with _aiohttp.ClientSession() as _sess:
+                async with _sess.get(url, params=params,
+                                     timeout=_aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for k in data:
+                            self.pattern_ohlc_history.append({
+                                "open": float(k[1]),
+                                "high": float(k[2]),
+                                "low": float(k[3]),
+                                "close": float(k[4]),
+                            })
+                        logging.info(
+                            "✅ OHLC history pré-carregado: %d barras (indicadores avançados ativos)",
+                            len(self.pattern_ohlc_history),
+                        )
+        except Exception as _e:
+            logging.warning("⚠️  OHLC prefetch falhou (não-crítico): %s", _e)
 
     # ========================================
     # SHUTDOWN (assíncrono)
