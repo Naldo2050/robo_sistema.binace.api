@@ -598,10 +598,21 @@ def _build_ext_indicators(event_data: dict) -> dict:
     Crítico para evitar BUY em condições de OVERBOUGHT.
     """
     ext_ind = event_data.get("technical_indicators_extended", {})
-    if not ext_ind:
-        return {}
-
     ext: dict[str, Any] = {}
+    if not ext_ind:
+        # Mesmo sem ext_ind, Fibonacci pode existir
+        fib = event_data.get("fibonacci_levels") or {}
+        if fib and isinstance(fib, dict):
+            sh = fib.get("swing_high")
+            sl = fib.get("swing_low")
+            if sh and sl and float(sh) > float(sl) > 0:
+                fib_entry: dict[str, Any] = {"hi": round(float(sh)), "lo": round(float(sl))}
+                for lvl in ("38.2", "61.8"):
+                    v = fib.get(lvl)
+                    if v is not None:
+                        fib_entry[lvl.replace(".", "")] = round(float(v))
+                ext["fib"] = fib_entry
+        return ext
 
     # CCI — Commodity Channel Index
     cci_signal = ext_ind.get("cci_signal")
@@ -633,6 +644,87 @@ def _build_ext_indicators(event_data: dict) -> dict:
     garch = ext_ind.get("garch_forecast_1h")
     if garch is not None:
         ext["garch"] = round(float(garch), 4)
+
+    # Hurst Exponent (#23): H>0.5=trending, H<0.5=mean-rev
+    hurst = ext_ind.get("hurst_exponent")
+    if hurst is not None:
+        ext["hurst"] = round(float(hurst), 3)
+
+    # Shannon Entropy (#25): alta=ruído, baixa=previsível
+    entropy = ext_ind.get("shannon_entropy")
+    if entropy is not None:
+        ext["entropy"] = round(float(entropy), 3)
+
+    # Fractal Dimension (#24): <1.5=trending, >1.5=ruído
+    frac = ext_ind.get("fractal_dimension")
+    if frac is not None:
+        ext["fd"] = round(float(frac), 3)
+
+    # Kalman Filter (#27): preço suavizado vs raw
+    kalman = ext_ind.get("kalman_filter")
+    if kalman and isinstance(kalman, dict):
+        ext["kalman"] = {
+            "kp": kalman.get("kalman_price"),
+            "dev": kalman.get("deviation_pct"),
+            "dir": kalman.get("trend_direction"),
+        }
+
+    # Regression Channel (#28): posição no canal
+    reg = ext_ind.get("regression_channel")
+    if reg and isinstance(reg, dict):
+        ext["reg"] = {
+            "sl": reg.get("slope_per_bar"),
+            "pos": reg.get("position_in_channel"),
+            "dev": reg.get("deviation_from_trend"),
+        }
+
+    # Monte Carlo (#18): prob_up e percentis
+    mc = ext_ind.get("monte_carlo")
+    if mc and isinstance(mc, dict):
+        ext["mc"] = {
+            "pu": mc.get("prob_up"),
+            "p10": mc.get("p10"),
+            "p90": mc.get("p90"),
+        }
+
+    # Dominant Cycles (#26): períodos dominantes
+    cyc = ext_ind.get("dominant_cycles")
+    cyc_list = (cyc or {}).get("dominant_cycles") if isinstance(cyc, dict) else None
+    if cyc_list:
+        ext["cycles"] = list(cyc_list)[:2]  # top 2 ciclos
+
+    # Smart Money: FVG + BOS (do pattern_recognition)
+    pr = event_data.get("pattern_recognition", {})
+    sm = pr.get("smart_money", {}) if isinstance(pr, dict) else {}
+    if sm:
+        fvg_list = sm.get("fair_value_gaps", [])
+        bos = sm.get("market_structure", {})
+        smc: dict[str, Any] = {}
+        if fvg_list:
+            smc["fvg"] = len(fvg_list)
+            smc["fvg_last"] = fvg_list[-1].get("type", "")[:1]  # B/U
+        if bos and isinstance(bos, dict):
+            smc["struct"] = bos.get("structure", "")[:4]
+            smc["bos"] = bos.get("bos_detected", False)
+        if smc:
+            ext["smc"] = smc
+
+    # Fibonacci retracement levels (#10)
+    # Fonte: event_data["fibonacci_levels"] — injetado por institutional_enricher._build_fibonacci()
+    fib = event_data.get("fibonacci_levels") or {}
+    if fib and isinstance(fib, dict):
+        sh = fib.get("swing_high")
+        sl = fib.get("swing_low")
+        if sh and sl and float(sh) > float(sl) > 0:
+            fib_entry: dict[str, Any] = {
+                "hi": round(float(sh)),
+                "lo": round(float(sl)),
+            }
+            for lvl in ("38.2", "61.8"):
+                v = fib.get(lvl)
+                if v is not None:
+                    fib_entry[lvl.replace(".", "")] = round(float(v))
+            ext["fib"] = fib_entry
 
     return ext
 
