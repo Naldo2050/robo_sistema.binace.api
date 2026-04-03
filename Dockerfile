@@ -11,7 +11,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # curl para healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
-    max_user_watches=524288 \
     python3-dev \
     curl \
     git \
@@ -37,7 +36,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY . .
 
 # Criar diretórios necessários e ajustar permissões
-RUN mkdir -p data logs features && \
+RUN mkdir -p dados logs features && \
     chown -R trader:trader /app
 
 # Mudar para o usuário não-root

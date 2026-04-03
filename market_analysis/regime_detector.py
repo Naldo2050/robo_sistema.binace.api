@@ -129,19 +129,48 @@ class EnhancedRegimeDetector:
         )
     
     def _analyze_volatility(self, macro_data: Dict) -> VolatilityRegime:
-        """Classifica regime de volatilidade baseado no VIX"""
+        """Classifica regime de volatilidade baseado no VIX + realized vol BTC."""
         vix = macro_data.get("vix")
-        if vix is None:
+        realized_vol = macro_data.get("realized_vol_24h")  # ex: 0.0322 = 3.22%
+
+        # Thresholds específicos de crypto: BTC < 1% = LOW, 1-3% = NORMAL, > 3% = HIGH
+        _CRYPTO_LOW = 0.01
+        _CRYPTO_NORMAL = 0.03
+
+        if vix is None and realized_vol is None:
             return VolatilityRegime.NORMAL_VOL
-        
-        if vix < 15:
-            return VolatilityRegime.LOW_VOL
-        elif vix < 25:
-            return VolatilityRegime.NORMAL_VOL
-        elif vix < 35:
-            return VolatilityRegime.HIGH_VOL
+
+        # Regime baseado em realized_vol BTC (fonte primária para crypto)
+        if realized_vol is not None:
+            if realized_vol < _CRYPTO_LOW:
+                crypto_regime = VolatilityRegime.LOW_VOL
+            elif realized_vol < _CRYPTO_NORMAL:
+                crypto_regime = VolatilityRegime.NORMAL_VOL
+            else:
+                crypto_regime = VolatilityRegime.HIGH_VOL
         else:
-            return VolatilityRegime.EXTREME_VOL
+            crypto_regime = None
+
+        # Regime baseado em VIX (macro, equity-focused)
+        if vix is not None:
+            if vix < 15:
+                vix_regime = VolatilityRegime.LOW_VOL
+            elif vix < 25:
+                vix_regime = VolatilityRegime.NORMAL_VOL
+            elif vix < 35:
+                vix_regime = VolatilityRegime.HIGH_VOL
+            else:
+                vix_regime = VolatilityRegime.EXTREME_VOL
+        else:
+            vix_regime = None
+
+        # Se ambos disponíveis, usar o mais conservador (evita subestimar risco crypto)
+        if crypto_regime and vix_regime:
+            order = [VolatilityRegime.LOW_VOL, VolatilityRegime.NORMAL_VOL,
+                     VolatilityRegime.HIGH_VOL, VolatilityRegime.EXTREME_VOL]
+            return max(crypto_regime, vix_regime, key=lambda r: order.index(r))
+
+        return crypto_regime or vix_regime or VolatilityRegime.NORMAL_VOL
     
     def _calculate_risk_score(self, macro_data: Dict) -> float:
         """

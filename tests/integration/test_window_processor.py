@@ -258,8 +258,8 @@ def test_process_window_insufficient_trades_no_buffer(monkeypatch, tm):
 
 def test_process_window_uses_trades_buffer_when_insufficient(monkeypatch, tm):
     """
-    Quando a janela tem poucos trades mas o trades_buffer tem dados suficientes,
-    process_window deve usar o buffer e ainda assim processar a janela.
+    Quando a janela tem poucos trades (window_data insuficiente), process_window
+    descarta a janela mesmo que trades_buffer tenha dados — não há fallback para o buffer.
     """
     bot = FakeBot()
     bot.time_manager = tm
@@ -268,48 +268,22 @@ def test_process_window_uses_trades_buffer_when_insufficient(monkeypatch, tm):
     # Apenas 1 trade na janela
     bot.window_data = [{"p": 100.0, "q": 1.0, "T": tm.now_ms()}]
 
-    # Buffer com trades suficientes
+    # Buffer com trades suficientes (mas não é consultado pelo process_window)
     bot.trades_buffer.clear()
     for i in range(3):
         bot.trades_buffer.append({"p": 100.0 + i, "q": 1.0 + i, "T": tm.now_ms() + i})
 
-    # Patch de DataPipeline -> FakePipeline
-    monkeypatch.setattr(wp, "DataPipeline", FakePipeline)
+    # DataPipeline não deve ser chamado (janela descartada)
+    def _boom(*args, **kwargs):
+        raise AssertionError("DataPipeline não deve ser chamado com dados insuficientes")
 
-    # Patch de fetch_orderbook_with_retry para contar chamadas
-    calls = {"count": 0}
-
-    def _fake_fetch(bot_arg, close_ms):
-        calls["count"] += 1
-        return {
-            "is_valid": True,
-            "orderbook_data": {"bid_depth_usd": 1000.0, "ask_depth_usd": 1000.0},
-            "data_quality": {"data_source": "test"},
-        }
-
-    monkeypatch.setattr(wp, "fetch_orderbook_with_retry", _fake_fetch)
-
-    # Stubs de detectors para não depender de data_handler real
-    monkeypatch.setattr(
-        wp,
-        "create_absorption_event",
-        lambda *a, **k: {"tipo_evento": "ABS", "resultado_da_batalha": "ABS_TEST"},
-    )
-    monkeypatch.setattr(
-        wp,
-        "create_exhaustion_event",
-        lambda *a, **k: {"tipo_evento": "EXH", "resultado_da_batalha": "EXH_TEST"},
-    )
+    monkeypatch.setattr(wp, "DataPipeline", _boom)
 
     wp.process_window(bot)
 
-    assert bot.window_count == 1
-    assert calls["count"] == 1  # orderbook foi buscado
-    # Deve ter salvo features pelo FakePipeline
-    assert len(bot.feature_store.saved) == 1
-    # Data usada no pipeline deve vir do buffer (3 trades)
-    pipeline_instance: FakePipeline = bot.last_process_signals_args["pipeline"]
-    assert len(pipeline_instance.data) == 3
+    # Janela descartada — process_window não usa o buffer como fallback
+    assert bot.window_count == 0
+    assert bot.window_data == []
 
 
 def test_process_window_happy_path_calls_process_signals_and_feature_store(monkeypatch, tm):

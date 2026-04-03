@@ -1,5 +1,10 @@
+import time
 import pytest
 from flow_analyzer.absorption import AbsorptionZoneMapper
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 def test_absorption_zone_mapper_initialization():
@@ -19,13 +24,13 @@ def test_absorption_zone_mapper_initialization():
 def test_absorption_zone_mapper_record_event():
     """Testa o registro de eventos de absorção."""
     mapper = AbsorptionZoneMapper()
-    
+
     # Registro de evento básico
     mapper.record_event(
         price=64800,
         classification="Absorção de Compra",
         index=0.65,
-        timestamp_ms=1771888200000,
+        timestamp_ms=_now_ms(),
         buyer_strength=8.5,
         seller_exhaustion=6.2,
         volume_usd=150000
@@ -53,11 +58,12 @@ def test_absorption_zone_mapper_get_zones_empty():
 def test_absorption_zone_mapper_single_zone():
     """Testa a obtenção de zonas com um único evento."""
     mapper = AbsorptionZoneMapper()
+    now = _now_ms()
     mapper.record_event(
         price=64800,
         classification="Absorção de Compra",
         index=0.65,
-        timestamp_ms=1771888200000,
+        timestamp_ms=now,
         buyer_strength=8.5,
         seller_exhaustion=6.2,
         volume_usd=150000
@@ -70,7 +76,7 @@ def test_absorption_zone_mapper_single_zone():
     assert zones["total_events"] == 1
     assert zones["buy_zone_count"] == 1
     assert zones["sell_zone_count"] == 0
-    
+
     # Verificar detalhes da zona
     zone = zones["zones"][0]
     assert zone["center"] == 64800.0
@@ -82,7 +88,7 @@ def test_absorption_zone_mapper_single_zone():
     assert zone["avg_strength"] == 0.65
     assert zone["max_strength"] == 0.65
     assert zone["total_volume_usd"] == 150000.0
-    assert zone["last_event_ms"] == 1771888200000
+    assert zone["last_event_ms"] == now
     assert zone["last_classification"] == "Absorção de Compra"
     assert zone["distance_from_price"] == 92.0
     assert zone["direction"] == "below"
@@ -91,11 +97,11 @@ def test_absorption_zone_mapper_single_zone():
 def test_absorption_zone_mapper_multiple_events_same_zone():
     """Testa a agregação de eventos na mesma zona."""
     mapper = AbsorptionZoneMapper(zone_tolerance_pct=0.2)
-    
+    now = _now_ms()
     # Registra eventos próximos (muitos compras)
-    mapper.record_event(price=64800, classification="Absorção de Compra", index=0.65, timestamp_ms=1771888200000)
-    mapper.record_event(price=64810, classification="Absorção de Compra", index=0.70, timestamp_ms=1771888260000)
-    mapper.record_event(price=64805, classification="Absorção de Compra", index=0.68, timestamp_ms=1771888320000)
+    mapper.record_event(price=64800, classification="Absorção de Compra", index=0.65, timestamp_ms=now)
+    mapper.record_event(price=64810, classification="Absorção de Compra", index=0.70, timestamp_ms=now + 60000)
+    mapper.record_event(price=64805, classification="Absorção de Compra", index=0.68, timestamp_ms=now + 120000)
     
     zones = mapper.get_zones(current_price=64892)
     assert zones["total_zones"] == 1
@@ -115,14 +121,14 @@ def test_absorption_zone_mapper_multiple_events_same_zone():
 def test_absorption_zone_mapper_multiple_zones():
     """Testa a criação de múltiplas zonas de absorção."""
     mapper = AbsorptionZoneMapper(zone_tolerance_pct=0.15)
-    
+    now = _now_ms()
     # Zona de compra
-    mapper.record_event(price=64800, classification="Absorção de Compra", index=0.65, timestamp_ms=1771888200000)
-    mapper.record_event(price=64810, classification="Absorção de Compra", index=0.70, timestamp_ms=1771888260000)
-    
+    mapper.record_event(price=64800, classification="Absorção de Compra", index=0.65, timestamp_ms=now)
+    mapper.record_event(price=64810, classification="Absorção de Compra", index=0.70, timestamp_ms=now + 60000)
+
     # Zona de venda (distante o suficiente)
-    mapper.record_event(price=64950, classification="Absorção de Venda", index=0.75, timestamp_ms=1771888320000)
-    mapper.record_event(price=64940, classification="Absorção de Venda", index=0.68, timestamp_ms=1771888380000)
+    mapper.record_event(price=64950, classification="Absorção de Venda", index=0.75, timestamp_ms=now + 120000)
+    mapper.record_event(price=64940, classification="Absorção de Venda", index=0.68, timestamp_ms=now + 180000)
     
     zones = mapper.get_zones(current_price=64892)
     assert zones["total_zones"] == 2
@@ -139,12 +145,12 @@ def test_absorption_zone_mapper_multiple_zones():
 def test_absorption_zone_mapper_reset():
     """Testa a limpeza do histórico de eventos."""
     mapper = AbsorptionZoneMapper()
-    mapper.record_event(price=64800, classification="Absorção de Compra", index=0.65)
-    
+    mapper.record_event(price=64800, classification="Absorção de Compra", index=0.65, timestamp_ms=_now_ms())
+
     # Verificar que há eventos
     summary = mapper.get_summary()
     assert summary["total_events"] == 1
-    
+
     # Limpar histórico
     mapper.reset()
     
@@ -168,9 +174,10 @@ def test_absorption_zone_mapper_get_summary():
     assert summary["total_events"] == 0
     
     # Com eventos mistos
-    mapper.record_event(price=64800, classification="Absorção de Compra", index=0.65)
-    mapper.record_event(price=64810, classification="Absorção de Compra", index=0.70)
-    mapper.record_event(price=64950, classification="Absorção de Venda", index=0.75)
+    now = _now_ms()
+    mapper.record_event(price=64800, classification="Absorção de Compra", index=0.65, timestamp_ms=now)
+    mapper.record_event(price=64810, classification="Absorção de Compra", index=0.70, timestamp_ms=now + 60000)
+    mapper.record_event(price=64950, classification="Absorção de Venda", index=0.75, timestamp_ms=now + 120000)
     
     summary = mapper.get_summary()
     assert summary["status"] == "ok"

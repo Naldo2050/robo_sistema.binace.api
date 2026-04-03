@@ -443,12 +443,6 @@ def recognize_patterns(df: pd.DataFrame) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "active_patterns": [],
         "fibonacci_levels": {},
-        "candlestick_patterns": {
-            "patterns_detected": 0,
-            "patterns": [],
-            "dominant_signal": "none",
-            "max_confidence": 0,
-        },
     }
 
     if df is None or df.empty:
@@ -478,10 +472,92 @@ def recognize_patterns(df: pd.DataFrame) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # 3. Candlestick patterns
-    try:
-        result["candlestick_patterns"] = detect_candlestick_patterns(df)
-    except Exception:
-        pass
-
     return result
+
+
+# ==============================================================================
+# SMART MONEY CONCEPTS (SMC)
+# ==============================================================================
+
+def detect_fair_value_gaps(
+    candles: List[Dict[str, Any]],
+    min_gap_pct: float = 0.05,
+) -> List[Dict[str, Any]]:
+    """
+    Detecta Fair Value Gaps (desequilíbrios) entre candles consecutivos.
+    Bullish FVG: low[i] > high[i-2]
+    Bearish FVG: high[i] < low[i-2]
+    """
+    if len(candles) < 3:
+        return []
+    fvgs: List[Dict[str, Any]] = []
+    for i in range(2, len(candles)):
+        c0, c2 = candles[i - 2], candles[i]
+        h0 = float(c0.get("high", 0) or 0)
+        l0 = float(c0.get("low", 0) or 0)
+        h2 = float(c2.get("high", 0) or 0)
+        l2 = float(c2.get("low", 0) or 0)
+        if h0 <= 0 or l0 <= 0:
+            continue
+        if l2 > h0:
+            gap = l2 - h0
+            gap_pct = gap / h0 * 100
+            if gap_pct >= min_gap_pct:
+                fvgs.append({"type": "BULLISH", "top": round(l2, 2), "bottom": round(h0, 2),
+                              "gap_size": round(gap, 2), "gap_pct": round(gap_pct, 4)})
+        if h2 < l0:
+            gap = l0 - h2
+            gap_pct = gap / l0 * 100
+            if gap_pct >= min_gap_pct:
+                fvgs.append({"type": "BEARISH", "top": round(l0, 2), "bottom": round(h2, 2),
+                              "gap_size": round(gap, 2), "gap_pct": round(gap_pct, 4)})
+    return fvgs[-5:]
+
+
+def detect_market_structure(
+    candles: List[Dict[str, Any]],
+    lookback: int = 5,
+) -> Dict[str, Any]:
+    """
+    Detecta Break of Structure (BOS) e estrutura de mercado.
+    Analisa Higher Highs / Higher Lows para identificar tendência.
+    """
+    _default = {"structure": "UNKNOWN", "bos_detected": False}
+    if len(candles) < lookback * 3:
+        return _default
+    try:
+        highs = [float(c.get("high", 0) or 0) for c in candles]
+        lows = [float(c.get("low", 0) or 0) for c in candles]
+        closes = [float(c.get("close", 0) or 0) for c in candles]
+        swing_highs, swing_lows = [], []
+        for i in range(lookback, len(candles) - lookback):
+            window_h = highs[i - lookback: i + lookback + 1]
+            window_l = lows[i - lookback: i + lookback + 1]
+            if highs[i] >= max(window_h):
+                swing_highs.append(highs[i])
+            if lows[i] <= min(window_l):
+                swing_lows.append(lows[i])
+        if len(swing_highs) < 2 or len(swing_lows) < 2:
+            return {"structure": "UNDEFINED", "bos_detected": False}
+        hh = swing_highs[-1] > swing_highs[-2]
+        hl = swing_lows[-1] > swing_lows[-2]
+        current = closes[-1] if closes[-1] > 0 else 0
+        if hh and hl:
+            structure = "BULLISH"
+            bos = bool(current > 0 and current < swing_lows[-1])
+        elif not hh and not hl:
+            structure = "BEARISH"
+            bos = bool(current > 0 and current > swing_highs[-1])
+        else:
+            structure = "TRANSITIONING"
+            bos = False
+        return {
+            "structure": structure,
+            "bos_detected": bos,
+            "last_swing_high": round(swing_highs[-1], 2),
+            "last_swing_low": round(swing_lows[-1], 2),
+            "higher_highs": hh,
+            "higher_lows": hl,
+        }
+    except Exception:
+        return _default

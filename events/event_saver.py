@@ -201,7 +201,7 @@ except ImportError:
                 return f"${value:,.2f}"
             else:
                 return f"${value:.4f}"
-        except:
+        except Exception:
             return str(value)
 
     def format_quantity(value):
@@ -214,7 +214,7 @@ except ImportError:
                 return f"{value/1_000:.2f}K"
             else:
                 return f"{value:.3f}"
-        except:
+        except Exception:
             return str(value)
 
     def format_percent(value):
@@ -222,7 +222,7 @@ except ImportError:
             return "null"
         try:
             return f"{value:.2f}%"
-        except:
+        except Exception:
             return str(value)
 
     def format_large_number(value):
@@ -237,7 +237,7 @@ except ImportError:
                 return f"{value/1_000:.2f}K"
             else:
                 return f"{value:,.2f}"
-        except:
+        except Exception:
             return str(value)
 
     def format_delta(value):
@@ -246,7 +246,7 @@ except ImportError:
         try:
             sign = "+" if value > 0 else ""
             return f"{sign}{value:.3f}"
-        except:
+        except Exception:
             return str(value)
 
     def format_time_seconds(value):
@@ -254,7 +254,7 @@ except ImportError:
             return "null"
         try:
             return f"{value:.1f}s"
-        except:
+        except Exception:
             return str(value)
 
     def format_scientific(value):
@@ -265,7 +265,7 @@ except ImportError:
                 return f"{value:.2e}"
             else:
                 return f"{value:.6f}"
-        except:
+        except Exception:
             return str(value)
 
 # ===== DIRETÓRIO DE DADOS =====
@@ -582,7 +582,7 @@ class EventSaver:
                     dt_str = ts.replace("Z", "").replace("T", " ").split(".")[0]
                     dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
                     return dt.replace(tzinfo=UTC_TZ)
-                except:
+                except Exception:
                     raise ValueError(f"Não foi possível parsear timestamp: {ts}") from e
 
     def _cleanup_loop(self):
@@ -661,7 +661,7 @@ class EventSaver:
                 if isinstance(value, float):
                     return value != value or value in (float('inf'), float('-inf'))
                 return False
-            except:
+            except Exception:
                 return False
 
     def _clean_numeric_value(
@@ -1332,7 +1332,7 @@ class EventSaver:
                     lock_file.close()
                     try:
                         lock_file_path.unlink(missing_ok=True)
-                    except:
+                    except Exception:
                         pass
                 
         except Exception as e:
@@ -1369,7 +1369,7 @@ class EventSaver:
                     return str(value)
             else:
                 return str(value)
-        except:
+        except Exception:
             return str(value)
 
     def _add_visual_log_entry(self, event: Dict):
@@ -1607,7 +1607,7 @@ class EventSaver:
                 try:
                     import subprocess
                     subprocess.run(["afplay", "/System/Library/Sounds/Glass.aiff"], capture_output=True, timeout=2)
-                except:
+                except Exception:
                     print("\n🔔 ALERTA: Sinal detectado! 🔔\n")
             elif system == "Linux":
                 try:
@@ -1620,9 +1620,9 @@ class EventSaver:
                         try:
                             subprocess.run(cmd, capture_output=True, timeout=1)
                             break
-                        except:
+                        except Exception:
                             continue
-                except:
+                except Exception:
                     print("\n🔔 ALERTA: Sinal detectado! 🔔\n")
             else:
                 print("\n🔔 ALERTA: Sinal detectado! 🔔\n")
@@ -1653,7 +1653,7 @@ class EventSaver:
                     "offset_ms": clock_stats.get('offset_ms', 0),
                     "offset_seconds": clock_stats.get('offset_seconds', 0),
                 }
-            except:
+            except Exception:
                 stats["clock_sync"] = {"enabled": False}
         else:
             stats["clock_sync"] = {"enabled": False}

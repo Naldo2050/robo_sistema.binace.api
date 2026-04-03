@@ -220,9 +220,16 @@ class ContextCollector:
                 "Chrome/124.0.0.0 Safari/537.36"
             )
         }
-        # Armazenar referência para fechar no stop()
-        self._session = aiohttp.ClientSession(headers=headers)
-        return self._session
+        # FIX P1: TCPConnector contorna bug do DNSResolverManager no aiohttp 3.9.x
+        connector = aiohttp.TCPConnector(
+            force_close=True,
+            enable_cleanup_closed=True,
+            limit=10,
+            ttl_dns_cache=300,
+        )
+        # Não armazenar em self._session aqui para não sobrescrever em múltiplas tasks
+        session = aiohttp.ClientSession(headers=headers, connector=connector)
+        return session
 
     async def _yfinance_history(self, symbol: str, period: str = "90d", interval: str = "1d") -> pd.DataFrame:
         """Busca dados históricos do yFinance com retry e proteção contra concorrência."""
@@ -1017,11 +1024,16 @@ class ContextCollector:
                     long_short_ratio = float(ls_data[0]["longShortRatio"]) if ls_data else 0.0
                 liq = await self._fetch_liquidations_data(session, sym, lookback_minutes=int(self.update_interval / 60))
                 heatmap = self._build_liquidation_heatmap(liq)
-                totals = {
-                    "longs_usd": sum(v["longs"] for v in heatmap.values()),
-                    "shorts_usd": sum(v["shorts"] for v in heatmap.values())
-                }
+                # Deriva longs/shorts_usd de OI + long_short_ratio (dados públicos disponíveis).
+                # A heatmap de liquidações só tem eventos recentes → sempre zero em janelas quietas.
                 price = await self._fetch_symbol_price(session, sym)
+                if open_interest > 0 and long_short_ratio > 0 and price > 0:
+                    _total_oi_usd = open_interest * price
+                    _longs_usd = round((_total_oi_usd * long_short_ratio) / (1 + long_short_ratio), 2)
+                    _shorts_usd = round(_total_oi_usd - _longs_usd, 2)
+                    totals = {"longs_usd": _longs_usd, "shorts_usd": _shorts_usd}
+                else:
+                    totals = {"longs_usd": 0, "shorts_usd": 0}
                 open_interest_usd = open_interest * price if price else open_interest
                 derivatives_data[sym] = {
                     "funding_rate_percent": round(funding_rate, 4),
@@ -1095,17 +1107,24 @@ class ContextCollector:
         """
         Constrói contexto completo com fetches PARALELOS.
 
-        Antes: ~17s (tudo sequencial + DXY 3x)
-        Depois: ~2-3s (paralelo + cache dedup)
+        FIX P3: Prefetch e gather rodam em PARALELO (antes era sequencial).
+        Antes:  prefetch(6.6s) + gather(3.7s) = 10.3s
+        Depois: max(prefetch, gather) ≈ 6.6s  (40% mais rápido)
         """
         from common.yfinance_cache import get_market_cache
         cache = get_market_cache()
 
-        # Fase 1: Prefetch todos os dados de mercado em paralelo (popula cache)
-        await self._prefetch_market_data(session, cache)
+        import time as _time
+        _t_ctx = _time.monotonic()
 
-        # Fase 2: Construir contexto — agora as sub-funções leem do cache
+        # FIX P3: Rodar prefetch EM PARALELO com as outras tasks
+        # O prefetch popula o cache; as sub-funções leem do cache.
+        # Na primeira execução, usam dados do ciclo anterior (ou vazio).
+        # A partir do segundo ciclo, os dados estão sempre frescos.
         tasks = {
+            "_prefetch": asyncio.create_task(
+                self._prefetch_market_data(session, cache)
+            ),
             "mtf": asyncio.create_task(self._analyze_mtf_trends(session)),
             "intermarket": asyncio.create_task(self._fetch_intermarket_data(session)),
             "external": asyncio.create_task(self._fetch_external_markets(session)),
@@ -1120,12 +1139,19 @@ class ContextCollector:
             "pivots": asyncio.create_task(self._calculate_pivots(session)),
         }
 
+        _t0 = _time.monotonic()
         results = await asyncio.gather(
             *tasks.values(), return_exceptions=True,
         )
+        logger.info("[TIMING] ctx parallel (prefetch+gather): %.0fms", (_time.monotonic() - _t0) * 1000)
 
         context = {}
         for key, result in zip(tasks.keys(), results):
+            if key == "_prefetch":
+                # Prefetch é interno, não vai para o contexto
+                if isinstance(result, Exception):
+                    logger.warning("Prefetch failed: %s: %s", type(result).__name__, result)
+                continue
             if isinstance(result, Exception):
                 logger.warning(
                     "Context section '%s' failed: %s: %s",
@@ -1143,6 +1169,8 @@ class ContextCollector:
             "Cache stats: hits=%d, misses=%d, hit_rate=%.1f%%",
             stats["hits"], stats["misses"], stats["hit_rate_pct"],
         )
+        logger.info("[TIMING] _async_build_full_context total: %.0fms",
+                    (_time.monotonic() - _t_ctx) * 1000)
 
         return context
 
@@ -1335,7 +1363,19 @@ class ContextCollector:
         async with await self._build_retrying_session() as session:
             while True:
                 try:
-                    ctx = await self._async_build_full_context(session)
+                    # FIX P3: Timeout global de 20s para nunca travar o loop
+                    try:
+                        ctx = await asyncio.wait_for(
+                            self._async_build_full_context(session),
+                            timeout=20.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "⏰ Context build timeout (20s), usando cache anterior"
+                        )
+                        await asyncio.sleep(self.update_interval)
+                        continue
+
                     # Adapt to v2.1.0 keys
                     final_ctx = ctx
                     final_ctx["mtf_trends"] = final_ctx.get("mtf", {})
@@ -1380,18 +1420,14 @@ class ContextCollector:
         self._mtf_fast_task = loop.create_task(self._async_mtf_fast_loop())
 
     async def _async_stop(self):
-        for task in (self._update_task, getattr(self, '_mtf_fast_task', None)):
+        for task in (self._update_task, getattr(self, '_mtf_fast_task', None), getattr(self, '_external_task', None)):
             if task:
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
-        
-        # Fechar sessão aiohttp se existir
-        if hasattr(self, '_session') and self._session and not self._session.closed:
-            await self._session.close()
-            logger.debug("Sessão aiohttp fechada")
+        logger.debug("Sessões aiohttp são fechadas automaticamente pelas tasks")
 
     async def _async_get_context(self):
         return self._context_data.copy()

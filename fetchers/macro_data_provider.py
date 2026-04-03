@@ -334,7 +334,8 @@ class MacroDataProvider:
         connector = aiohttp.TCPConnector(
             limit=10,
             limit_per_host=5,
-            force_close=True,  # Importante para evitar reuso em loop errado
+            force_close=True,  # Importante para evitar reuso em loop errado e bypassar bug _loop_data
+            enable_cleanup_closed=True
         )
         session = aiohttp.ClientSession(
             timeout=timeout,

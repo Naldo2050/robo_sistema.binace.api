@@ -795,11 +795,15 @@ def _build_volatility_metrics(event: dict, epoch_ms: int) -> dict:
     if current_vol:
         _update_vol_history(epoch_ms, current_vol)
 
-    if current_vol and len(_STATE.vol_history) >= 5:
+    # Mínimo 20 janelas para percentil estatisticamente significativo.
+    # Com menos dados, qualquer valor pode ser o máximo (percentil=100) por acidente.
+    if current_vol and len(_STATE.vol_history) >= 20:
         hist_vols = [v for _, v in _STATE.vol_history]
         below = sum(1 for v in hist_vols if v <= current_vol)
         pct = round(below / len(hist_vols) * 100, 1)
         result["volatility_percentile"] = pct
+    elif current_vol:
+        result["volatility_percentile"] = None  # histórico insuficiente (<20 janelas)
     elif vol_regime == "LOW":
         result["volatility_percentile"] = 25.0
     elif vol_regime == "HIGH":
@@ -1625,6 +1629,43 @@ def _calc_williams_r_real(period: int = 14) -> Optional[Dict[str, Any]]:
     }
 
 
+def _inject_advanced_indicators(event: dict) -> None:
+    """
+    Injeta Hurst, Shannon Entropy, Kalman, Regression Channel, Fourier Cycles,
+    Fractal Dimension, Monte Carlo e SMC (FVG, BOS) em technical_indicators_extended
+    e pattern_recognition. Lê de institutional_analytics.technical_extras.
+    """
+    ia = event.get("institutional_analytics", {}) or {}
+    tech_extras = ia.get("technical_extras", {}) or {}
+    if not tech_extras:
+        return
+
+    ti = event.setdefault("technical_indicators_extended", {})
+
+    # Métricas escalares
+    for key in ("hurst_exponent", "shannon_entropy", "fractal_dimension"):
+        val = tech_extras.get(key)
+        if val is not None:
+            ti.setdefault(key, val)
+
+    # Dicts compactos
+    for key in ("kalman_filter", "regression_channel", "dominant_cycles", "monte_carlo"):
+        val = tech_extras.get(key)
+        if val and isinstance(val, dict):
+            ti.setdefault(key, val)
+
+    # SMC → pattern_recognition
+    fvg = tech_extras.get("fair_value_gaps")
+    bos = tech_extras.get("market_structure")
+    if fvg is not None or bos is not None:
+        pr = event.setdefault("pattern_recognition", {})
+        sm = pr.setdefault("smart_money", {})
+        if fvg is not None:
+            sm.setdefault("fair_value_gaps", fvg)
+        if bos is not None:
+            sm.setdefault("market_structure", bos)
+
+
 def _inject_stochastic_williams(event: dict) -> None:
     """
     Injeta stochastic (k, d, signal) e williams_r no technical_indicators_extended.
@@ -2056,6 +2097,11 @@ def enrich_signal(
         # ONDA 2: Stochastic e Williams %R (via institutional_analytics ou cálculo direto)
         # ------------------------------------------------------------------
         _inject_stochastic_williams(event)
+
+        # ------------------------------------------------------------------
+        # ONDA 2: Indicadores avançados (#23-28, #18, SMC)
+        # ------------------------------------------------------------------
+        _inject_advanced_indicators(event)
 
         # ------------------------------------------------------------------
         # ONDA 2: Active Patterns (padrões gráficos básicos)

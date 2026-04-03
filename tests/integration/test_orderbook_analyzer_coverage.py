@@ -69,11 +69,11 @@ def test_cache_operations_expiry():
     assert expired is None
 
 def test_cache_operations_stale():
-    """Testa que dados stale são removidos."""
+    """Testa que dados expirados são removidos do cache."""
     analyzer = OrderBookAnalyzer(
         symbol="BTCUSDT",
-        cache_ttl_seconds=10.0,
-        max_stale_seconds=0.1  # Dados ficam stale muito rápido
+        cache_ttl_seconds=0.1,  # Cache expira rápido (_get_from_cache usa cache_ttl_seconds)
+        max_stale_seconds=0.2
     )
     
     snapshot = OrderBookSnapshot(
@@ -122,72 +122,64 @@ def test_rate_limiter_with_time_window():
 def test_validate_snapshot_method():
     """Testa o método _validate_snapshot (que é chamado internamente)."""
     analyzer = OrderBookAnalyzer(symbol="BTCUSDT")
-    
-    # Snapshot válido
-    valid_snapshot = OrderBookSnapshot(
-        symbol="BTCUSDT",
-        last_update_id=123,
-        bids=[(50000, 1.0)],
-        asks=[(50100, 1.0)],
-        timestamp=time.time()
-    )
-    
-    # Usando o método interno _validate_snapshot (se existir)
+
+    # Snapshot válido como dict (API atual)
+    now_ms = int(time.time() * 1000)
+    valid_snapshot = {
+        "E": now_ms,
+        "lastUpdateId": 123,
+        "symbol": "BTCUSDT",
+        "bids": [(50000, 1.0)],
+        "asks": [(50100, 1.0)],
+    }
+
+    # _validate_snapshot retorna (bool, List[str], Dict)
     if hasattr(analyzer, '_validate_snapshot'):
-        is_valid = analyzer._validate_snapshot(valid_snapshot)
+        is_valid, issues, converted = analyzer._validate_snapshot(valid_snapshot)
         assert is_valid is True
-    
-    # Snapshot inválido (sem bids)
-    invalid_snapshot = OrderBookSnapshot(
-        symbol="BTCUSDT",
-        last_update_id=124,
-        bids=[],
-        asks=[(50100, 1.0)],
-        timestamp=time.time()
-    )
-    
+
+    # Snapshot inválido (sem bids) como dict
+    invalid_snapshot = {
+        "E": now_ms,
+        "lastUpdateId": 124,
+        "symbol": "BTCUSDT",
+        "bids": [],
+        "asks": [(50100, 1.0)],
+    }
+
     if hasattr(analyzer, '_validate_snapshot'):
-        is_valid = analyzer._validate_snapshot(invalid_snapshot)
-        # Pode ser False ou True, dependendo da implementação
+        is_valid, issues, converted = analyzer._validate_snapshot(invalid_snapshot)
+        assert is_valid is False  # bids vazio → inválido
 
 def test_detect_walls_method():
     """Testa o método _detect_walls."""
     analyzer = OrderBookAnalyzer(symbol="BTCUSDT", wall_detection_factor=2.0)
-    
-    snapshot = OrderBookSnapshot(
-        symbol="BTCUSDT",
-        last_update_id=123,
-        bids=[(50000, 10.0), (49900, 1.0), (49800, 1.0)],
-        asks=[(50100, 10.0), (50200, 1.0), (50300, 1.0)],
-        timestamp=time.time()
-    )
-    
+
+    bids = [(50000.0, 10.0), (49900.0, 1.0), (49800.0, 1.0)]
+    asks = [(50100.0, 10.0), (50200.0, 1.0), (50300.0, 1.0)]
+
+    # API atual: _detect_walls(side_levels, side) → List[Dict]
     if hasattr(analyzer, '_detect_walls'):
-        walls = analyzer._detect_walls(snapshot, levels=10)
-        assert walls is not None
-        assert 'bid_walls' in walls
-        assert 'ask_walls' in walls
+        bid_walls = analyzer._detect_walls(bids, 'bids')
+        ask_walls = analyzer._detect_walls(asks, 'asks')
+        assert isinstance(bid_walls, list)
+        assert isinstance(ask_walls, list)
 
 def test_compute_core_metrics_method():
     """Testa o método _compute_core_metrics."""
     analyzer = OrderBookAnalyzer(symbol="BTCUSDT")
-    
-    snapshot = OrderBookSnapshot(
-        symbol="BTCUSDT",
-        last_update_id=123,
-        bids=[(50000, 1.0), (49900, 2.0)],
-        asks=[(50100, 1.0), (50200, 2.0)],
-        timestamp=time.time()
-    )
-    
+
+    bids = [(50000.0, 1.0), (49900.0, 2.0)]
+    asks = [(50100.0, 1.0), (50200.0, 2.0)]
+
+    # API atual: _compute_core_metrics(bids, asks) → (Dict, Optional[str])
     if hasattr(analyzer, '_compute_core_metrics'):
-        metrics = analyzer._compute_core_metrics(snapshot)
+        metrics, err = analyzer._compute_core_metrics(bids, asks)
         assert metrics is not None
-        assert 'best_bid' in metrics
-        assert 'best_ask' in metrics
-        assert 'spread' in metrics
-        assert 'mid_price' in metrics
-        assert 'imbalance_10' in metrics
+        assert err is None
+        assert 'mid' in metrics
+        assert 'spread_bps' in metrics
+        assert 'imbalance' in metrics
 
 def test_check_liquidity_flow_method():
     """Testa o método _check_liquidity_flow."""
@@ -323,8 +315,8 @@ def test_analyze_orderbook_with_forced_refresh():
     result1 = analyzer.analyze_orderbook(snapshot)
     assert result1 is not None
     
-    # Segunda análise com forced_refresh (deve ignorar cache)
-    result2 = analyzer.analyze_orderbook(snapshot, forced_refresh=True)
+    # Segunda análise (forced_refresh removido da API)
+    result2 = analyzer.analyze_orderbook(snapshot)
     assert result2 is not None
 
 def test_analyze_orderbook_with_alert():
@@ -370,24 +362,23 @@ def test_analyze_orderbook_with_critical_imbalance():
     if 'critical_flags' in result:
         assert isinstance(result['critical_flags'], dict)
 
-@patch('orderbook_analyzer.time.time')
-def test_analyze_orderbook_with_mock_time(mock_time):
-    """Testa analyze_orderbook com tempo mockado."""
-    mock_time.return_value = 1000.0
-    
+def test_analyze_orderbook_with_mock_time():
+    """Testa analyze_orderbook com snapshot recente (sem mock de time)."""
+    # orderbook_analyzer é um package — não expõe 'time' diretamente para patch
+    # Testa comportamento normal com timestamp atual
     analyzer = OrderBookAnalyzer(
         symbol="BTCUSDT",
         cache_ttl_seconds=10.0
     )
-    
+
     snapshot = OrderBookSnapshot(
         symbol="BTCUSDT",
         last_update_id=123,
         bids=[(50000, 1.0)],
         asks=[(50100, 1.0)],
-        timestamp=999.0  # 1 segundo antes
+        timestamp=time.time()  # timestamp atual (segundos)
     )
-    
+
     result = analyzer.analyze_orderbook(snapshot)
     assert result is not None
 

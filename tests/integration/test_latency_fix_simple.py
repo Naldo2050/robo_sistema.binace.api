@@ -35,20 +35,18 @@ def test_buffer_size_control():
     def processor(trade):
         processed.append(trade)
     
-    # Testa overflow
-    overflow_count = 0
+    # Testa overflow — add_trade_sync always returns True (trades never silently dropped),
+    # but _overflow_count is incremented when buffer is full
     for i in range(10):  # Mais que o limite
         trade = {"id": i, "p": 50000, "q": 1.0}
-        success = buffer.add_trade_sync(trade, processor)
-        if not success:
-            overflow_count += 1
-    
+        buffer.add_trade_sync(trade, processor)
+
+    overflow_count = buffer._overflow_count
     print(f"  Trades adicionados: {len(processed)}")
     print(f"  Trades descartados por overflow: {overflow_count}")
-    
-    # Deve ter descartado alguns trades
-    assert overflow_count > 0, "Deveria ter descartado trades por overflow"
-    assert len(processed) <= 5, "Não deveria processar mais que o limite do buffer"
+
+    # Deve ter registrado overflow (buffer size 5, adicionados 10)
+    assert overflow_count > 0, "Deveria ter registrado overflow no buffer"
     
     print("  OK Controle de buffer funcionando!")
     return True

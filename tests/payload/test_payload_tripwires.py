@@ -25,8 +25,9 @@ def test_tripwire_triggers_warning(caplog, monkeypatch):
     }
 
     # Força thresholds customizados para este teste
+    # função é _get_llm_payload_config (com underscore) em ai_analyzer_qwen
     monkeypatch.setattr(
-        "ai_analyzer_qwen.get_llm_payload_config",
+        "ai_analyzer_qwen._get_llm_payload_config",
         lambda: {"tripwires": tripwires},
     )
 

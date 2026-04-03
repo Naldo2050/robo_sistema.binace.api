@@ -201,6 +201,8 @@ class WindowProcessor:
 
     def _worker_loop(self) -> None:
         """Worker dedicado para tirar processamento pesado do caminho do WebSocket."""
+        import concurrent.futures
+
         while not self._worker_stop.is_set() or not self._queue.empty():
             try:
                 item = self._queue.get(timeout=0.25)
@@ -213,8 +215,25 @@ class WindowProcessor:
 
             bot, window_data, close_ms = item
             try:
-                process_window_snapshot(bot, window_data, close_ms)
-                self.window_count += 1
+                # FIX P2: Timeout de 45s por janela — proteção contra travamento
+                # Usar um executor longo na classe evitaria overhead, mas para timeout seguro síncrono 
+                # (evitando que o __exit__ do context manager bloqueie se a task congelar), 
+                # gerenciamos o loop aqui com um Thread genérico que não nos força a um join.
+                # Como future.result/cancel não para threads em execução e ThreadPool context trava,
+                # usamos um executor sem context manager puro para ignorar o travamento da thead se ocorrer OOM/hang:
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(process_window_snapshot, bot, window_data, close_ms)
+                try:
+                    future.result(timeout=45.0)
+                except concurrent.futures.TimeoutError:
+                    self.logger.error(
+                        "⏰ TIMEOUT: Janela demorou >45s para processar. Pulando. (Possível trava na IA)"
+                    )
+                    # Não esperamos pelo shutdown se travou (pode causar leaks de thead, mas previne travamento do worker)
+                    executor.shutdown(wait=False, cancel_futures=True)
+                else:
+                    executor.shutdown(wait=True)
+                    self.window_count += 1
             except Exception as e:
                 self.logger.error(f"Erro no worker de janelas: {e}", exc_info=True)
             finally:

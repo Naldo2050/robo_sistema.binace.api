@@ -926,6 +926,8 @@ class FlowAnalyzer(IFlowAnalyzer):
                 "in_burst": bool(snapshot['_in_burst']),
                 "last_reset_ms": snapshot['last_reset_ms'],
                 "config_version": self._config_version,
+                "num_trades": len(snapshot.get('flow_trades', [])),
+                "window_sec": float(min(self.net_flow_windows_min) * 60) if self.net_flow_windows_min else 60.0,
             },
         }
         

@@ -414,6 +414,20 @@ def calculate_microstructure_features(
         logging.warning(f"⚠️ Erro ao calcular trade_intensity: {e}")
         features["trade_intensity"] = 0.0
 
+    # ========================================
+    # 4b. TRADE INTENSITY V2 (trades/segundo)
+    # Corrige trade_intensity original que usa burst_count (always 0 em janelas retail).
+    # trade_intensity mantido para compatibilidade com XGBoost treinado.
+    # ========================================
+    try:
+        _meta = (flow_metrics or {}).get("metadata", {}) or {}
+        _num_trades = int(_meta.get("num_trades", 0) or 0)
+        _window_sec = float(_meta.get("window_sec", 60) or 60)
+        features["trade_intensity_v2"] = float(_num_trades / _window_sec) if _window_sec > 0 else 0.0
+    except Exception as e:
+        logging.warning(f"⚠️ Erro ao calcular trade_intensity_v2: {e}")
+        features["trade_intensity_v2"] = 0.0
+
     return features
 
 

@@ -67,6 +67,7 @@ class FakeBot:
     ny_tz = NY_TZ
 
     # usados em _enrich_signal
+    institutional_analytics: Any = None
     orderbook_fetch_failures: int = 0
     volume_history: deque = field(default_factory=lambda: deque(maxlen=100))
     volatility_history: deque = field(default_factory=lambda: deque(maxlen=100))
@@ -214,7 +215,7 @@ def test_enrich_signal_happy_path(monkeypatch, fake_ob_event, base_signal):
     assert evt["tipo_evento"] == "ABSORÇÃO"
     assert evt["janela_numero"] == bot.window_count
     assert "orderbook_data" in evt
-    assert "orderbook_data_quality" in evt
+    assert "orderbook_quality" in evt
 
     # Deve ter salvo um evento institucional
     assert len(bot.event_saver.saved_events) == 1

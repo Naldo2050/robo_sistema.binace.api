@@ -503,8 +503,8 @@ class AbsorptionZoneMapper:
         if price <= 0:
             return
 
-        if index < self._min_index and "NONE" not in classification.upper():
-            # Absorção muito fraca, mas se for classificada, registrar
+        if index < self._min_index:
+            # Absorção muito fraca — só registrar se tiver classificação real
             if "Neutra" in classification or "NONE" in classification.upper():
                 return
 
