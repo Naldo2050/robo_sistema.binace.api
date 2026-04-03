@@ -25,7 +25,7 @@ DEFAULT_FLOW_LOG_PERF = False
 DEFAULT_FLOW_LOG_DETAILED = False
 DEFAULT_FLOW_TIME_BUDGET_MS = 500.0
 DEFAULT_FLOW_CACHE_ENABLED = True
-DEFAULT_WHALE_TRADE_THRESHOLD = 5.0
+DEFAULT_WHALE_TRADE_THRESHOLD = 1.0  # reduzido de 5.0 → detecta trades ~$68K+ (top ~0.5%)
 DEFAULT_CVD_RESET_INTERVAL_HOURS = 4
 
 # ==============================================================================
@@ -86,8 +86,8 @@ MEMORY_USAGE_WARNING_RATIO = 0.9
 # ==============================================================================
 DEFAULT_ORDER_SIZE_BUCKETS: Dict[str, Tuple[float, float]] = {
     "retail": (0.0, 0.5),
-    "mid": (0.5, 2.0),
-    "whale": (2.0, 9999.0),
+    "mid": (0.5, 1.0),
+    "whale": (1.0, 9999.0),
 }
 
 # Pesos para composite score

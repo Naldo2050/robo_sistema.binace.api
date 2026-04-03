@@ -73,16 +73,17 @@ async def test_treasury_10y_twelve_data_fallback_to_yahoo(macro_provider):
     # Mock da resposta do Yahoo Finance
     mock_yahoo_data = MagicMock()
     mock_yahoo_data.empty = False
+    mock_yahoo_data.columns = ['Close']
     mock_yahoo_data.__getitem__.return_value.iloc = [4.30]
-    
+
     with patch('aiohttp.ClientSession.get') as mock_twelve_get, \
          patch('yfinance.Ticker') as mock_yahoo_ticker:
-        
+
         # Configurar Twelve Data para falhar
         mock_twelve_resp = MagicMock()
         mock_twelve_resp.status = 404
         mock_twelve_get.return_value.__aenter__.return_value = mock_twelve_resp
-        
+
         # Configurar Yahoo Finance para retornar sucesso
         mock_yahoo_ticker.return_value = mock_yahoo_data
         mock_yahoo_data.history.return_value = mock_yahoo_data
@@ -172,8 +173,9 @@ async def test_dxy_yahoo_finance_success(macro_provider):
     # Mock da resposta do Yahoo Finance
     mock_yahoo_data = MagicMock()
     mock_yahoo_data.empty = False
+    mock_yahoo_data.columns = ['Close']
     mock_yahoo_data.__getitem__.return_value.iloc = [102.50]
-    
+
     with patch('yfinance.Ticker') as mock_yahoo_ticker:
         # Configurar Yahoo Finance para retornar sucesso
         mock_yahoo_ticker.return_value = mock_yahoo_data

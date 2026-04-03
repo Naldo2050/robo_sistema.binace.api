@@ -244,7 +244,8 @@ class TestExternalMarkets:
 
         assert "dxy" in ctx, f"Missing DXY price in ctx: {ctx}"
         assert "tnx" in ctx, f"Missing TNX price in ctx: {ctx}"
-        assert "spx" in ctx, f"Missing SP500 price in ctx: {ctx}"
+        # SP500 stored as "spy" (ETF ticker), not "spx"
+        assert "spy" in ctx, f"Missing SP500 price in ctx: {ctx}"
         assert "ndx" in ctx, f"Missing NASDAQ price in ctx: {ctx}"
         assert "gold" in ctx, f"Missing GOLD price in ctx: {ctx}"
         assert "wti" in ctx, f"Missing WTI price in ctx: {ctx}"
@@ -257,7 +258,7 @@ class TestExternalMarkets:
 
         assert ctx["dxy"] == 119.49
         assert ctx["tnx"] == 4.21
-        assert ctx["spx"] == 662.97
+        assert ctx["spy"] == 662.97  # SP500 stored as "spy"
         assert ctx["ndx"] == 593.33
         assert ctx["gold"] == 5051
         assert ctx["wti"] == 98.07
@@ -285,7 +286,9 @@ class TestExternalMarkets:
         assert ctx["dxy30"] == 0.23
 
     def test_ctx_has_volume_profile(self):
+        # poc/val/vah only included when vp["status"] == "success"
         event = _make_event_data()
+        event["historical_vp"]["daily"]["status"] = "success"
         ctx = _build_static_context(event)
 
         assert ctx["poc"] == 73025
@@ -315,19 +318,22 @@ class TestForceCtx:
     def test_important_event_forces_ctx(self):
         _reset_static_cache()
         event = _make_event_data(tipo_evento="ANALYSIS_TRIGGER")
-        # Primeira chamada — sempre envia ctx
+        # Primeira chamada — sempre envia ctx completo
         result1 = build_compact_payload(event)
         assert "ctx" in result1
+        assert result1["ctx"].get("cached") is None  # full ctx, not cached
 
-        # Segunda chamada imediata — ctx cacheado
+        # Segunda chamada imediata — ctx mini-cached (always present)
         result2 = build_compact_payload(event)
-        assert "ctx" not in result2, "ctx should be CACHED on second AT call"
+        assert "ctx" in result2, "ctx always present (mini-cached if stale)"
+        assert result2["ctx"].get("cached") is True  # mini ctx, cached=True
 
-        # Evento importante — ctx forçado
+        # Evento importante — ctx forçado (full, not cached)
         event_abs = _make_event_data(tipo_evento="Absorção")
         result3 = build_compact_payload(event_abs)
         assert "ctx" in result3, "ctx should be FORCED for Absorção"
-        assert result3["t"] == "ABS"
+        assert result3["ctx"].get("cached") is None  # forced full ctx
+        assert result3["trigger"] == "ABS"  # trigger key (not "t")
 
     def test_important_events_set(self):
         assert "Absorção" in IMPORTANT_EVENTS
@@ -365,18 +371,19 @@ class TestTimeframes:
 # ============================================================
 
 class TestWhale:
-    def test_whale_is_int(self):
+    def test_whale_is_dict_with_score(self):
+        # _build_whale returns {"s": score, ...} dict (not bare int)
         event = _make_event_data()
         whale = _build_whale(event)
-        assert isinstance(whale, int)
-        assert whale == 35
+        assert isinstance(whale, dict)
+        assert whale.get("s") == 35
 
     def test_whale_zero_not_in_payload(self):
         _reset_static_cache()
         event = _make_event_data()
         event["institutional_analytics"]["flow_analysis"]["whale_accumulation"]["score"] = 0
         result = build_compact_payload(event)
-        assert "w" not in result
+        assert "w" not in result  # whale dict is empty → not added to payload
 
 
 # ============================================================
@@ -389,29 +396,28 @@ class TestFullPayload:
         event = _make_event_data()
         result = build_compact_payload(event)
 
-        # Chaves v3
-        assert "t" in result  # trigger
-        assert "p" in result  # price
-        assert "r" in result  # regime
-        assert "f" in result  # flow
-        assert "ob" in result  # orderbook
-        assert "w" in result  # whale
-        assert "tf" in result  # timeframes
-        assert "ctx" in result  # context (first call)
+        # Current keys (long-form for pipeline compatibility)
+        assert "trigger" in result   # trigger abbrev
+        assert "price" in result     # price section
+        assert "flow" in result      # flow section
+        assert "ob" in result        # orderbook
+        assert "w" in result         # whale (score > 0)
+        assert "tf" in result        # timeframes
+        assert "ctx" in result       # context (first call = full)
+        assert "symbol" in result    # always included
+        assert "epoch_ms" in result  # always included
 
-        # Chaves v2 NÃO devem existir
-        assert "symbol" not in result
+        # Keys that should NOT exist
         assert "window" not in result
-        assert "epoch_ms" not in result
-        assert "trigger" not in result
-        assert "price" not in result
-        assert "regime" not in result
+        assert "t" not in result
+        assert "p" not in result
+        assert "f" not in result
 
     def test_payload_flow_keys_are_v3(self):
         _reset_static_cache()
         event = _make_event_data()
         result = build_compact_payload(event)
-        flow = result["f"]
+        flow = result["flow"]  # key is "flow" not "f"
         assert "d1" in flow
         assert "n1" not in flow
 
@@ -421,7 +427,7 @@ class TestFullPayload:
         result = build_compact_payload(event)
         ctx = result["ctx"]
         assert "dxy" in ctx
-        assert "spx" in ctx
+        assert "spy" in ctx   # SP500 stored as "spy"
         assert "gold" in ctx
 
 

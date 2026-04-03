@@ -266,7 +266,7 @@ class TestLogSanitizer(unittest.TestCase):
     
     def test_groq_token_redaction(self):
         """Tokens Groq devem ser redigidos."""
-        from log_sanitizer import sanitize_log_message
+        from scripts.log_sanitizer import sanitize_log_message
         
         message = "Groq key: gsk_abcdef1234567890abcdef"
         
@@ -278,7 +278,7 @@ class TestLogSanitizer(unittest.TestCase):
     
     def test_partial_key_redaction(self):
         """Chaves parciais devem ser redigidas."""
-        from log_sanitizer import sanitize_log_message
+        from scripts.log_sanitizer import sanitize_log_message
         
         message = "Chave: abcdef123456"
         
@@ -289,7 +289,7 @@ class TestLogSanitizer(unittest.TestCase):
     
     def test_env_var_redaction(self):
         """Variáveis de ambiente com chaves devem ser redigidas."""
-        from log_sanitizer import sanitize_log_message
+        from scripts.log_sanitizer import sanitize_log_message
         
         message = "GROQ_API_KEY=gsk_abcdef1234567890"
         

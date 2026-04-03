@@ -65,7 +65,7 @@ class TestEnhancedCrossAsset:
     def test_enhanced_correlations_structure(self):
         """Testa estrutura básica das enhanced correlations."""
         # Mock dos dados macro
-        with patch('cross_asset_correlations._MACRO_DATA_OK', False):
+        with patch('market_analysis.cross_asset_correlations._MACRO_DATA_OK', False):
             result = get_enhanced_cross_asset_correlations()
             
             # Deve ter status
@@ -84,7 +84,7 @@ class TestEnhancedCrossAsset:
     
     def test_vix_data_structure(self):
         """Testa estrutura dos dados VIX."""
-        with patch('macro_data_fetcher.requests.get') as mock_get:
+        with patch('fetchers.macro_data_fetcher.requests.get') as mock_get:
             # Mock da resposta da CoinGecko
             mock_response = Mock()
             mock_response.status_code = 200
@@ -107,7 +107,7 @@ class TestEnhancedCrossAsset:
             assert result['usdt_dominance'] == 7.1
             assert 'timestamp' in result
     
-    @patch('macro_data_fetcher._fetch_yfinance_data_with_fallbacks')
+    @patch('fetchers.macro_data_fetcher._fetch_yfinance_data_with_fallbacks')
     def test_vix_metrics_calculation(self, mock_yf):
         """Testa cálculo de métricas VIX."""
         # Mock DataFrame do VIX
@@ -121,10 +121,10 @@ class TestEnhancedCrossAsset:
         
         assert result['status'] == 'ok'
         assert result['vix_current'] == 24.5
-        assert abs(result['vix_change_1d'] - 5.71) < 0.1  # (24.5-23.1)/23.1 * 100
+        assert abs(result['vix_change_1d'] - 6.06) < 0.1  # (24.5-23.1)/23.1 * 100
         assert not result['historical'].empty
     
-    @patch('macro_data_fetcher._fetch_yfinance_data_with_fallbacks')
+    @patch('fetchers.macro_data_fetcher._fetch_yfinance_data_with_fallbacks')
     def test_treasury_yields_calculation(self, mock_yf):
         """Testa cálculo de Treasury Yields."""
         import pandas as pd
@@ -133,7 +133,7 @@ class TestEnhancedCrossAsset:
         mock_10y = pd.DataFrame({'close': [4.25, 4.30, 4.28, 4.32, 4.35]})
         mock_2y = pd.DataFrame({'close': [4.80, 4.85, 4.83, 4.87, 4.90]})
         
-        def mock_fallback(name, period, interval):
+        def mock_fallback(name, period="90d", interval="1d"):
             if name == "US10Y":
                 return mock_10y
             elif name == "US2Y":
@@ -169,14 +169,14 @@ class TestEnhancedCrossAsset:
     
     def test_commodities_data_structure(self):
         """Testa estrutura dos dados de commodities."""
-        with patch('macro_data_fetcher._fetch_yfinance_data_with_fallbacks') as mock_yf:
+        with patch('fetchers.macro_data_fetcher._fetch_yfinance_data_with_fallbacks') as mock_yf:
             import pandas as pd
             
             # Mock DataFrames para commodities
             mock_gold = pd.DataFrame({'close': [2000, 2010, 1995, 2005, 2015]})
             mock_oil = pd.DataFrame({'close': [75, 76, 74, 75, 77]})
             
-            def mock_fallback(name, period, interval):
+            def mock_fallback(name, period="90d", interval="1d"):
                 if name == "GOLD":
                     return mock_gold
                 elif name == "OIL":
@@ -209,7 +209,7 @@ class TestEnhancedCrossAsset:
             "correlation_regime": "INVERSE"
         }
         
-        with patch('ml_features.get_cross_asset_features') as mock_get:
+        with patch('common.ml_features.get_cross_asset_features') as mock_get:
             mock_get.return_value = mock_correlations
             
             features = calculate_cross_asset_features("BTCUSDT")
@@ -227,7 +227,7 @@ class TestEnhancedCrossAsset:
     
     def test_enhanced_features_count(self):
         """Testa se enhanced features estão sendo contadas corretamente."""
-        with patch('ml_features.get_cross_asset_features') as mock_get:
+        with patch('common.ml_features.get_cross_asset_features') as mock_get:
             # Mock com todas as novas métricas
             mock_correlations = {
                 "status": "ok",
@@ -281,7 +281,7 @@ class TestEnhancedCrossAsset:
     def test_error_handling(self):
         """Testa tratamento de erros."""
         # Testa quando macro_data_fetcher não está disponível
-        with patch('cross_asset_correlations._MACRO_DATA_OK', False):
+        with patch('market_analysis.cross_asset_correlations._MACRO_DATA_OK', False):
             result = get_enhanced_cross_asset_correlations()
             assert 'enhanced_status' in result
             assert result['enhanced_status'] == 'unavailable'
@@ -289,7 +289,7 @@ class TestEnhancedCrossAsset:
     def test_fallback_behavior(self):
         """Testa comportamento de fallback."""
         # Mock falha no yfinance
-        with patch('macro_data_fetcher._fetch_yfinance_data_with_fallbacks') as mock_yf:
+        with patch('fetchers.macro_data_fetcher._fetch_yfinance_data_with_fallbacks') as mock_yf:
             mock_yf.return_value = None  # Dados vazios
             
             result = fetch_vix_data()

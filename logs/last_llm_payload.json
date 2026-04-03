@@ -1,156 +1,176 @@
 {
   "ai_payload": {
     "symbol": "BTCUSDT",
-    "epoch_ms": 1774320360000,
+    "epoch_ms": 1775173800000,
     "trigger": "AT",
     "price": {
-      "c": 70549,
-      "o": 70531,
-      "h": 70567,
-      "l": 70490,
-      "vw": 70535,
-      "sh": "B",
-      "auc": "expect_retest_high",
+      "c": 66875,
+      "o": 66884,
+      "h": 66884,
+      "vw": 66879,
+      "sh": "b",
+      "auc": "expect_retest_both",
       "ph": 1,
-      "pl": 1,
       "brk_risk": "VERY"
     },
     "regime": {
-      "cs": "BULL",
-      "cf": 0.5,
-      "v": "L",
-      "dom": "4h",
-      "bull%": 75,
-      "bear%": 25
+      "cs": "BEAR",
+      "cf": 1.0,
+      "v": "H",
+      "dom": "4h"
     },
     "flow": {
-      "d1": "+15K",
-      "d5": "+267K",
-      "d15": "+548K",
-      "cvd": -42.9,
-      "imb": 0.52,
-      "ab": 76,
-      "bsr": 3.19,
+      "d1": "+16K",
+      "d5": "+16K",
+      "d15": "+16K",
+      "cvd": 0.2,
+      "imb": 0.18,
+      "ab": 59,
+      "bsr": 1.44,
       "pa": "buy_absorp",
       "conv": "M",
-      "abs_buy_str": 7.6,
-      "abs_sell_exh": 5.2
+      "abs_buy_str": 5.9,
+      "abs_sell_exh": 1.8
     },
     "ob": {
-      "b": "223K",
-      "a": "314K",
-      "imb": -0.17,
+      "b": "303K",
+      "a": "1.7M",
+      "imb": -0.7,
       "bias": "SELL",
-      "t5": -0.32
+      "t5": -0.96
     },
     "tf": {
       "15m": {
         "t": "DN",
-        "rsi": 43,
+        "rsi": 45,
         "macd": [
-          -64,
-          -39
+          27,
+          41
         ],
-        "adx": 16,
-        "atr": 243,
+        "adx": 11,
+        "atr": 127,
         "r": "RNG"
       },
       "1h": {
-        "t": "UP",
+        "t": "DN",
         "rsi": 50,
         "macd": [
-          453,
-          504
+          -151,
+          -241
         ],
-        "adx": 18,
-        "atr": 595,
+        "adx": 21,
+        "atr": 384,
         "r": "RNG"
       },
       "4h": {
-        "t": "UP",
-        "rsi": 62,
+        "t": "DN",
+        "rsi": 43,
         "macd": [
           -178,
-          -496
+          -64
         ],
-        "adx": 41,
-        "atr": 1238,
+        "adx": 27,
+        "atr": 968,
         "r": "MNP"
       },
       "1d": {
-        "t": "UP",
-        "rsi": 52,
+        "t": "DN",
+        "rsi": 40,
         "macd": [
-          55,
-          89
+          -829,
+          -584
         ],
-        "adx": 20,
-        "atr": 2624,
-        "r": "MNP"
+        "adx": 21,
+        "atr": 2525,
+        "r": "ACC"
       }
     },
     "sr": {
       "r1": [
-        70590,
-        78
+        66931,
+        66
       ],
-      "r1_conf": 6,
+      "r1_conf": 5,
       "r2": [
-        70804,
-        60
+        67771,
+        52
       ],
       "r2_conf": 3,
       "s1": [
-        70249,
-        44
+        66410,
+        62
       ],
-      "s1_conf": 3,
+      "s1_conf": 4,
       "s2": [
-        70438,
-        43
+        66839,
+        42
       ],
-      "def_bias": "strong_sel"
+      "def_bias": "neutral"
     },
     "w": {
-      "s": -20,
-      "c": "MD"
+      "s": 12,
+      "c": "N"
     },
     "ext": {
-      "cci": "OB",
-      "stoch": 50,
-      "wr": -41,
-      "garch": 0.0051
+      "cci": "N",
+      "stoch": 51,
+      "wr": -58,
+      "garch": 0.0055,
+      "hurst": 0.341,
+      "entropy": 3.461,
+      "fd": 0.619,
+      "kalman": {
+        "kp": 66938.24,
+        "dev": -0.0815,
+        "dir": "DOWN"
+      },
+      "reg": {
+        "sl": -2.8103,
+        "pos": 0.4995,
+        "dev": -0.06
+      },
+      "mc": {
+        "pu": 0.426,
+        "p10": 66756.3,
+        "p90": 66976.79
+      },
+      "cycles": [
+        66.7,
+        100.0
+      ],
+      "smc": {
+        "fvg": 5,
+        "fvg_last": "B",
+        "struct": "TRAN",
+        "bos": 0
+      }
     },
     "alerts": [
       {
         "type": "SUPPORT_TEST",
         "sev": "H",
-        "lvl": 70541
+        "lvl": 66868
       },
       {
         "type": "RESISTANCE_TEST",
         "sev": "H",
-        "lvl": 70590
+        "lvl": 66931
+      },
+      {
+        "type": "VOLUME_SPIKE",
+        "sev": "H"
       }
     ],
     "ctx": {
-      "ses": "ASIA_OFF",
-      "dxy": 99.31,
-      "tnx": 4.39,
-      "spy": 6581.0,
-      "ndx": 21946.76,
-      "gold": 4365,
-      "wti": 91.47,
-      "vix": 26.1,
-      "fg": 11,
-      "poc": 70804,
-      "val": 70541,
-      "vah": 71075,
-      "lsr": 1.41,
-      "eth_lsr": 1.79,
-      "oi": 85,
+      "ses": "NY",
+      "poc": 66444,
+      "val": 66388,
+      "vah": 67771,
+      "lsr": 1.83,
+      "eth_lsr": 1.66,
+      "oi": 90,
       "eth7": 0.9,
-      "dxy30": 0.2
+      "dxy30": -0.41
     },
     "tipo_evento": "ANALYSIS_TRIGGER",
     "descricao": "Evento automático para análise da IA"
@@ -159,10 +179,10 @@
   "descricao": "Evento automático para análise da IA",
   "symbol": "BTCUSDT",
   "ativo": "BTCUSDT",
-  "epoch_ms": 1774320360000,
+  "epoch_ms": 1775173800000,
   "_dump_meta": {
-    "payload_bytes_final": 1607,
-    "timestamp_utc": "2026-03-24T02:46:20.704604+00:00",
+    "payload_bytes_final": 1777,
+    "timestamp_utc": "2026-04-02T23:50:09.485420+00:00",
     "flags": {
       "v2_enabled": true,
       "max_bytes": 6144,

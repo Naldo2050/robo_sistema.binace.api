@@ -15,16 +15,18 @@ def test_guardrail_allows_safe_payload():
 
 
 def test_guardrail_blocks_forbidden_and_uses_ai_analysis_payload():
+    # "ai_payload" at top level is the safe candidate the guardrail extracts
+    # "raw_event" is a FORBIDDEN_KEY that triggers extraction
     candidate = {"symbol": "BTCUSDT", "epoch_ms": 1, "price_context": {"current_price": 1}}
     payload = {
-        "ANALYSIS_TRIGGER": {"some": "thing"},
-        "AI_ANALYSIS": {"ai_payload": candidate},
+        "ai_payload": candidate,
+        "raw_event": {"should_be": "stripped"},  # forbidden key
     }
     safe = ensure_safe_llm_payload(payload)
     assert safe is not None
-    assert "ai_payload" in safe
-    assert safe["ai_payload"].get("_v") == 2
-    assert "ANALYSIS_TRIGGER" not in safe["ai_payload"]
+    # guardrail returns the candidate directly (no wrapper)
+    assert safe.get("symbol") == "BTCUSDT"
+    assert "raw_event" not in safe
 
 
 def test_guardrail_aborts_without_candidate(tmp_path):

@@ -632,10 +632,12 @@ Provide risk assessment."""
             if cache_key in self.cache:
                 entry = self.cache[cache_key]
                 timestamp, result = entry['timestamp'], entry['result']
-                
+
                 if time.time() - timestamp < self.cache_expiry_seconds:
                     return result
-            
+                else:
+                    del self.cache[cache_key]  # Remove expired entry
+
             return None
         
         def cache_result(self, cache_key, result):
@@ -802,6 +804,7 @@ Provide risk assessment."""
             self.max_tokens = new_config.max_tokens
             self.temperature = new_config.temperature
             self.timeout_seconds = new_config.timeout_seconds
+            self.max_retries = new_config.max_retries
             
             # Reinicia client para novo modelo
             self.client = None
@@ -1730,9 +1733,9 @@ class TestAIRunnerComprehensive:
         
         mock_chunk3 = Mock()
         mock_chunk3.choices = [Mock(delta=Mock(content='"confidence":'))]
-        
+
         mock_chunk4 = Mock()
-        mock_chunk4.choices = [Mock(delta=Mock(content='0.85}'))]
+        mock_chunk4.choices = [Mock(delta=Mock(content='0.85,"reasoning":"test reason"}'))]
         
         # Cria async generator
         async def stream_generator():

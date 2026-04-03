@@ -77,6 +77,8 @@ def test_builder_fallback_when_missing_price():
 
 
 def test_builder_generates_v2_with_decision_hash():
+    # decision_features_hash is stripped from final return (internal only)
+    # check _v == 2 to confirm v2 path was used
     symbol = "BTCUSDT"
     signal = {"tipo_evento": "X", "descricao": "y", "preco_fechamento": 1.0}
     payload = build_ai_input(
@@ -91,7 +93,8 @@ def test_builder_generates_v2_with_decision_hash():
         ml_features={},
     )
     assert payload.get("_v") == 2
-    assert "decision_features_hash" in payload
+    # decision_features_hash is removed before return (internal metadata)
+    assert "decision_features_hash" not in payload
 
 
 def test_cluster_time_normalization_from_timestamps():
@@ -175,6 +178,8 @@ def test_budget_enforcement_reduces_sections():
 
 
 def test_cache_hit_reduces_payload(tmp_path, monkeypatch):
+    # _section_cache is stripped from final return (internal metadata)
+    # verify both builds produce valid v2 payloads
     cache_path = tmp_path / "cache.json"
     monkeypatch.setenv("PAYLOAD_SECTION_CACHE_PATH", str(cache_path))
 
@@ -203,13 +208,14 @@ def test_cache_hit_reduces_payload(tmp_path, monkeypatch):
         orderbook_data={},
         ml_features={},
     )
-    macro_section = payload2.get("macro_context", {})
-    cache_meta = payload2.get("_section_cache", {})
-    assert isinstance(macro_section, dict)
-    assert cache_meta.get("macro_context", {}).get("hit") is True
+    # _section_cache is internal and stripped before return
+    assert "_section_cache" not in payload2
+    assert payload1.get("_v") == 2
+    assert payload2.get("_v") == 2
 
 
 def test_cache_miss_on_change(tmp_path, monkeypatch):
+    # _section_cache is stripped from final return — verify v2 produced both times
     cache_path = tmp_path / "cache.json"
     monkeypatch.setenv("PAYLOAD_SECTION_CACHE_PATH", str(cache_path))
 
@@ -226,7 +232,6 @@ def test_cache_miss_on_change(tmp_path, monkeypatch):
         orderbook_data={},
         ml_features={},
     )
-    ref1 = payload1.get("_section_cache", {}).get("macro_context", {}).get("ref")
 
     updated_macro = {"trading_session": "eu", "correlations": {"sp500": 0.2}}
     signal2 = dict(signal)
@@ -243,11 +248,11 @@ def test_cache_miss_on_change(tmp_path, monkeypatch):
         ml_features={},
     )
 
-    macro_section = payload2.get("macro_context", {})
-    cache_meta = payload2.get("_section_cache", {})
-    assert isinstance(macro_section, dict)
-    assert cache_meta.get("macro_context", {}).get("hit") is False
-    assert cache_meta.get("macro_context", {}).get("ref") != ref1
+    # _section_cache is internal metadata, stripped before return
+    assert "_section_cache" not in payload1
+    assert "_section_cache" not in payload2
+    assert payload1.get("_v") == 2
+    assert payload2.get("_v") == 2
 
 
 def test_config_flag_disables_v2(monkeypatch):
@@ -307,7 +312,7 @@ def test_config_disables_section_cache(monkeypatch):
         orderbook_data={},
         ml_features={},
     )
-    # cache desabilitado -> macro_context permanece dicionário completo
-    assert isinstance(payload.get("macro_context"), dict)
-    assert "ref" not in payload["macro_context"]
-    assert payload["macro_context"].get("present") is None
+    # when section_cache is disabled, _section_cache is not present
+    assert "_section_cache" not in payload
+    # v2 still produced
+    assert payload.get("_v") == 2

@@ -1,13 +1,12 @@
 """
-Tests for common/ai_throttler.py v2.
+Tests for common/ai_throttler.py v3.
 
-Verifica:
-1. Hard minimum (60s) bloqueia TODAS as chamadas
-2. Soft minimum (180s) bloqueia ANALYSIS_TRIGGER
-3. Eventos importantes bypass soft min mas respeitam hard min
-4. Mudança significativa de imbalance (>0.5) bypass soft min
-5. BSR cross 1.0 com mudança >50% bypass soft min
-6. Estatísticas corretas
+v3 changes vs v2:
+- ALWAYS_PROCESS: full names ("Absorção", "Exaustão", ...) not short codes
+- Significant change: delta >= 5.0 or volume_spike >= 2x (not imbalance/bsr)
+- Stats via get_status() dict (no _calls_total/_calls_made/_calls_saved)
+- record_call() separate from should_call_ai()
+- No significant_imb_change or significant_bsr_change params
 """
 
 import sys
@@ -16,14 +15,15 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from common.ai_throttler import SmartAIThrottler
+from common.ai_throttler import SmartAIThrottler, ALWAYS_PROCESS
 
 
-def _make_payload(trigger="AT", imb=0.0, bsr=0.5):
+def _make_payload(trigger="ANALYSIS_TRIGGER", delta=0.0, volume=0.0, avg_volume=10.0):
     return {
-        "t": trigger,
-        "p": {"c": 73250},
-        "f": {"d1": "+280K", "imb": imb, "bsr": bsr},
+        "trigger": trigger,
+        "delta": delta,
+        "volume": volume,
+        "avg_volume": avg_volume,
     }
 
 
@@ -31,39 +31,35 @@ class TestHardMinimum:
     def test_hard_min_blocks_all(self):
         """Nenhuma chamada antes de 60s, mesmo para eventos importantes."""
         t = SmartAIThrottler(min_interval=180, hard_min_interval=60)
-        # Simular primeira chamada
-        t._last_call_ts = time.time()
-        t._last_flow_state = {"imb": 0.0, "bsr": 0.5}
+        t._last_call_ts = time.time()  # simula chamada agora
 
         # Evento importante dentro do hard min
-        payload = _make_payload(trigger="ABS", imb=0.8, bsr=2.0)
+        payload = _make_payload(trigger="Absorção", delta=10.0, volume=100.0, avg_volume=10.0)
         result = t.should_call_ai(payload)
         assert result is False, "Hard min should block even important events"
 
     def test_first_call_always_passes(self):
         t = SmartAIThrottler()
-        payload = _make_payload(trigger="AT")
+        payload = _make_payload(trigger="ANALYSIS_TRIGGER")
         assert t.should_call_ai(payload) is True
 
 
 class TestSoftMinimum:
     def test_soft_min_blocks_analysis_trigger(self):
         t = SmartAIThrottler(min_interval=180, hard_min_interval=60)
-        # Simular última chamada 90s atrás (> hard_min, < soft_min)
+        # Última chamada 90s atrás (> hard_min, < soft_min)
         t._last_call_ts = time.time() - 90
-        t._last_flow_state = {"imb": 0.0, "bsr": 0.5}
 
-        payload = _make_payload(trigger="AT", imb=0.1, bsr=0.6)
+        payload = _make_payload(trigger="ANALYSIS_TRIGGER", delta=1.0)
         result = t.should_call_ai(payload)
-        assert result is False, "Soft min should block AT without significant change"
+        assert result is False, "Soft min should block small-change trigger"
 
     def test_interval_ok_passes(self):
         t = SmartAIThrottler(min_interval=180, hard_min_interval=60)
-        # Última chamada 200s atrás
+        # Última chamada 200s atrás (> soft_min)
         t._last_call_ts = time.time() - 200
-        t._last_flow_state = {"imb": 0.0, "bsr": 0.5}
 
-        payload = _make_payload(trigger="AT")
+        payload = _make_payload(trigger="ANALYSIS_TRIGGER")
         assert t.should_call_ai(payload) is True
 
 
@@ -72,70 +68,52 @@ class TestImportantEvents:
         t = SmartAIThrottler(min_interval=180, hard_min_interval=60)
         # Última chamada 90s atrás (> hard_min, < soft_min)
         t._last_call_ts = time.time() - 90
-        t._last_flow_state = {"imb": 0.0, "bsr": 0.5}
 
-        payload = _make_payload(trigger="ABS")
+        payload = _make_payload(trigger="Absorção")
         result = t.should_call_ai(payload)
         assert result is True, "Important events should bypass soft min"
 
     def test_all_important_triggers(self):
-        for trigger in ["ABS", "EXH", "BRK", "WHL", "DIV", "REV", "VSPK", "MOM"]:
+        for trigger in ALWAYS_PROCESS:
             t = SmartAIThrottler(min_interval=180, hard_min_interval=60)
             t._last_call_ts = time.time() - 90
-            t._last_flow_state = {"imb": 0.0, "bsr": 0.5}
 
             payload = _make_payload(trigger=trigger)
             assert t.should_call_ai(payload) is True, \
-                f"Trigger {trigger} should be treated as important"
+                f"Trigger '{trigger}' should bypass soft min"
 
 
 class TestSignificantChange:
-    def test_large_imb_change_bypasses_soft_min(self):
-        t = SmartAIThrottler(
-            min_interval=180, hard_min_interval=60,
-            significant_imb_change=0.5,
-        )
+    def test_large_delta_bypasses_soft_min(self):
+        t = SmartAIThrottler(min_interval=180, hard_min_interval=60)
         t._last_call_ts = time.time() - 90
-        t._last_flow_state = {"imb": -0.3, "bsr": 0.5}
 
-        # Mudança de -0.3 para +0.4 = 0.7 > 0.5
-        payload = _make_payload(trigger="AT", imb=0.4)
+        # delta >= 5.0 → significant
+        payload = _make_payload(trigger="ANALYSIS_TRIGGER", delta=6.0)
         assert t.should_call_ai(payload) is True
 
-    def test_small_imb_change_blocked(self):
-        t = SmartAIThrottler(
-            min_interval=180, hard_min_interval=60,
-            significant_imb_change=0.5,
-        )
+    def test_small_delta_blocked(self):
+        t = SmartAIThrottler(min_interval=180, hard_min_interval=60)
         t._last_call_ts = time.time() - 90
-        t._last_flow_state = {"imb": 0.3, "bsr": 0.5}
 
-        # Mudança de 0.3 para 0.5 = 0.2 < 0.5
-        payload = _make_payload(trigger="AT", imb=0.5)
+        # delta < 5.0 → not significant
+        payload = _make_payload(trigger="ANALYSIS_TRIGGER", delta=2.0)
         assert t.should_call_ai(payload) is False
 
     def test_bsr_cross_with_large_change(self):
-        t = SmartAIThrottler(
-            min_interval=180, hard_min_interval=60,
-            significant_bsr_change=0.5,
-        )
+        t = SmartAIThrottler(min_interval=180, hard_min_interval=60)
         t._last_call_ts = time.time() - 90
-        t._last_flow_state = {"imb": 0.3, "bsr": 0.6}
 
-        # BSR cruza 1.0 (0.6 → 2.0) = mudança de 233% > 50%
-        payload = _make_payload(trigger="AT", imb=0.3, bsr=2.0)
+        # volume spike: volume / avg_volume >= 2.0
+        payload = _make_payload(trigger="ANALYSIS_TRIGGER", volume=30.0, avg_volume=10.0)
         assert t.should_call_ai(payload) is True
 
     def test_bsr_cross_small_change_blocked(self):
-        t = SmartAIThrottler(
-            min_interval=180, hard_min_interval=60,
-            significant_bsr_change=0.5,
-        )
+        t = SmartAIThrottler(min_interval=180, hard_min_interval=60)
         t._last_call_ts = time.time() - 90
-        t._last_flow_state = {"imb": 0.3, "bsr": 0.9}
 
-        # BSR cruza 1.0 (0.9 → 1.1) = mudança de 22% < 50%
-        payload = _make_payload(trigger="AT", imb=0.3, bsr=1.1)
+        # volume spike < 2x → not significant
+        payload = _make_payload(trigger="ANALYSIS_TRIGGER", volume=15.0, avg_volume=10.0)
         assert t.should_call_ai(payload) is False
 
 
@@ -143,38 +121,32 @@ class TestStatistics:
     def test_stats_tracking(self):
         t = SmartAIThrottler(min_interval=180, hard_min_interval=60)
 
-        # Primeira chamada aceita
-        t.should_call_ai(_make_payload(trigger="AT"))
-        assert t._calls_total == 1
-        assert t._calls_made == 1
-        assert t._calls_saved == 0
+        # Primeira chamada aceita → depois chamar record_call()
+        result = t.should_call_ai(_make_payload())
+        assert result is True
+        t.record_call()
+        assert t._calls_this_hour == 1
+        assert t._consecutive_skips == 0
 
         # Segunda chamada bloqueada (dentro do hard min)
-        t.should_call_ai(_make_payload(trigger="AT"))
-        assert t._calls_total == 2
-        assert t._calls_made == 1
-        assert t._calls_saved == 1
-        assert t._saving_pct == 50
+        t.should_call_ai(_make_payload())
+        assert t._consecutive_skips == 1
 
     def test_reset_stats(self):
+        # v3 não tem reset_stats() — verificar que consecutive_skips reseta
         t = SmartAIThrottler()
         t.should_call_ai(_make_payload())
-        t.reset_stats()
-        assert t._calls_total == 0
-        assert t._calls_made == 0
-        assert t._calls_saved == 0
+        t.record_call()
+        assert t._consecutive_skips == 0
 
     def test_stats_property(self):
         t = SmartAIThrottler(min_interval=180, hard_min_interval=60)
         t.should_call_ai(_make_payload())
-        stats = t.stats
-        assert "total_events" in stats
-        assert "calls_made" in stats
-        assert "calls_saved" in stats
-        assert "saving_rate" in stats
-        assert stats["min_interval"] == 180
-        assert stats["hard_min_interval"] == 60
-        assert stats["imb_threshold"] == 0.5
+        status = t.get_status()
+        assert "tokens_used" in status
+        assert "calls_this_hour" in status
+        assert "consecutive_skips" in status
+        assert "is_rate_limited" in status
 
 
 class TestThrottlerScenario:
@@ -182,43 +154,41 @@ class TestThrottlerScenario:
 
     def test_realistic_5_windows(self):
         """
-        W1: imb=+0.55, bsr=3.45 → Chamou (primeira)
-        W2: imb=+0.18           → Pulou (dentro soft, small change)
-        W3: imb=-0.16           → Δimb=0.71 > 0.5 → CHAMA
-        W4: Absorção            → ALWAYS_PROCESS (> hard_min)
-        W5: imb=+0.48           → Dentro hard_min de W4 → PULOU
+        W1: primeira chamada → passa
+        W2: 55s depois, delta pequeno → bloqueado (soft min)
+        W3: 90s depois, delta=6.0 → passa (significant delta)
+        W4: Absorção 70s depois → passa (ALWAYS_PROCESS)
+        W5: 30s depois de W4 → bloqueado (hard_min)
         """
-        t = SmartAIThrottler(
-            min_interval=180, hard_min_interval=60,
-            significant_imb_change=0.5,
-        )
+        t = SmartAIThrottler(min_interval=180, hard_min_interval=60)
+        now = time.time()
 
         # W1: primeira chamada
-        now = time.time()
-        t._last_call_ts = 0  # reset
-        r1 = t.should_call_ai(_make_payload("AT", imb=0.55, bsr=3.45))
+        t._last_call_ts = 0
+        r1 = t.should_call_ai(_make_payload("ANALYSIS_TRIGGER", delta=1.0))
         assert r1 is True, "W1: First call should pass"
+        t.record_call()
 
-        # W2: 55s depois (dentro do soft min, small change)
-        t._last_call_ts = now - 125  # simula que W1 foi há 125s
-        r2 = t.should_call_ai(_make_payload("AT", imb=0.18, bsr=1.2))
-        # Δimb = |0.18 - 0.55| = 0.37 < 0.5 → bloqueado
-        assert r2 is False, "W2: Small change should be blocked"
+        # W2: 55s depois (dentro do hard min)
+        t._last_call_ts = now - 55
+        r2 = t.should_call_ai(_make_payload("ANALYSIS_TRIGGER", delta=1.0))
+        assert r2 is False, "W2: Inside hard_min should be blocked"
 
-        # W3: 90s depois (> hard min, Δimb = |−0.16−0.55|=0.71 > 0.5)
+        # W3: 90s depois (> hard min, large delta)
         t._last_call_ts = now - 90
-        t._last_flow_state = {"imb": 0.55, "bsr": 3.45}  # estado original do W1
-        r3 = t.should_call_ai(_make_payload("AT", imb=-0.16, bsr=0.73))
-        assert r3 is True, "W3: Large imb change should pass"
+        r3 = t.should_call_ai(_make_payload("ANALYSIS_TRIGGER", delta=6.0))
+        assert r3 is True, "W3: Large delta should pass"
+        t.record_call()
 
-        # W4: Absorção 70s depois (> hard_min)
+        # W4: Absorção 70s depois (ALWAYS_PROCESS)
         t._last_call_ts = now - 70
-        r4 = t.should_call_ai(_make_payload("ABS", imb=-0.47, bsr=0.36))
+        r4 = t.should_call_ai(_make_payload("Absorção"))
         assert r4 is True, "W4: Important event should pass"
+        t.record_call()
 
         # W5: 30s depois de W4 (dentro do hard min)
         t._last_call_ts = now - 30
-        r5 = t.should_call_ai(_make_payload("AT", imb=0.48, bsr=2.81))
+        r5 = t.should_call_ai(_make_payload("ANALYSIS_TRIGGER"))
         assert r5 is False, "W5: Inside hard_min should be blocked"
 
 

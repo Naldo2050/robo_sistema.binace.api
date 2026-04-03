@@ -117,10 +117,10 @@ def test_pipeline_empty_data(mock_config):
 # TESTES DE ENRICH (MÉTRICAS)
 # ==========================================
 
-@patch("data_handler.calcular_metricas_intra_candle")
-@patch("data_handler.calcular_volume_profile")
-@patch("data_handler.calcular_dwell_time")
-@patch("data_handler.calcular_trade_speed")
+@patch("data_processing.data_handler.calcular_metricas_intra_candle")
+@patch("data_processing.data_handler.calcular_volume_profile")
+@patch("data_processing.data_handler.calcular_dwell_time")
+@patch("data_processing.data_handler.calcular_trade_speed")
 def test_enrich_metrics(
     mock_speed, mock_dwell, mock_vp, mock_intra,
     sample_trades, mock_config
@@ -166,10 +166,10 @@ def test_add_context(sample_trades, mock_config):
     pipeline = DataPipeline(sample_trades, "BTCUSDT", config=mock_config)
     
     # Gera enriched primeiro (necessário)
-    with patch("data_handler.calcular_metricas_intra_candle", return_value={}):
-        with patch("data_handler.calcular_volume_profile", return_value={}):
-            with patch("data_handler.calcular_dwell_time", return_value={}):
-                with patch("data_handler.calcular_trade_speed", return_value={}):
+    with patch("data_processing.data_handler.calcular_metricas_intra_candle", return_value={}):
+        with patch("data_processing.data_handler.calcular_volume_profile", return_value={}):
+            with patch("data_processing.data_handler.calcular_dwell_time", return_value={}):
+                with patch("data_processing.data_handler.calcular_trade_speed", return_value={}):
                     pipeline.enrich()
 
     external_flow = {"net_flow_1m": 1000}
@@ -268,10 +268,10 @@ def test_get_final_features_integration(sample_trades, mock_config):
     pipeline = DataPipeline(sample_trades, "BTCUSDT", config=mock_config)
     
     # Mockando componentes internos para evitar dependências reais
-    with patch("data_handler.calcular_metricas_intra_candle", return_value={}):
-        with patch("data_handler.calcular_volume_profile", return_value={}):
-            with patch("data_handler.calcular_dwell_time", return_value={}):
-                with patch("data_handler.calcular_trade_speed", return_value={}):
+    with patch("data_processing.data_handler.calcular_metricas_intra_candle", return_value={}):
+        with patch("data_processing.data_handler.calcular_volume_profile", return_value={}):
+            with patch("data_processing.data_handler.calcular_dwell_time", return_value={}):
+                with patch("data_processing.data_handler.calcular_trade_speed", return_value={}):
                       final = pipeline.get_final_features()
 
     assert "schema_version" in final

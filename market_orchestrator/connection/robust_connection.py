@@ -178,7 +178,18 @@ class RobustConnectionManager:
         ):
             while not self.should_stop:
                 try:
-                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+                    # FIX P1: TCPConnector contorna bug do DNSResolverManager no aiohttp 3.9.x
+                    # ('_DNSResolverManager' object has no attribute '_loop_data')
+                    connector = aiohttp.TCPConnector(
+                        force_close=True,
+                        enable_cleanup_closed=True,
+                        limit=10,
+                        ttl_dns_cache=300,
+                    )
+                    async with aiohttp.ClientSession(
+                        timeout=aiohttp.ClientTimeout(total=30),
+                        connector=connector,
+                    ) as session:
                         self._session = session
 
                         # Tentativa de conexão

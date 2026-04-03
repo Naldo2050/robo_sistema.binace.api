@@ -246,3 +246,197 @@ def detect_regime(adx_series: pd.Series, vol_series: pd.Series, adx_threshold: f
     df = pd.DataFrame({'adx': adx_series, 'vol': vol_series})
     regime = df.apply(classify_row, axis=1)
     return regime
+
+
+# ==============================================================================
+# MÉTODOS INSTITUCIONAIS AVANÇADOS
+# ==============================================================================
+
+def hurst_exponent(prices: list, max_lag: int = 50) -> Optional[float]:
+    """
+    Hurst Exponent via R/S analysis.
+    H > 0.5 = trending (persistente)
+    H < 0.5 = mean-reverting
+    H ≈ 0.5 = random walk
+    """
+    if len(prices) < max_lag * 2:
+        return None
+    try:
+        ts = np.array(prices, dtype=float)
+        lags = range(2, min(max_lag, len(ts) // 2))
+        tau = []
+        for lag in lags:
+            diffs = ts[lag:] - ts[:-lag]
+            std = float(np.std(diffs))
+            tau.append(std if std > 1e-12 else 1e-12)
+        if len(tau) < 2:
+            return None
+        x = np.log(list(lags)[:len(tau)])
+        y = np.log(tau)
+        reg = np.polyfit(x, y, 1)
+        return round(float(reg[0]), 4)
+    except Exception:
+        return None
+
+
+def shannon_entropy(returns: list, bins: int = 20) -> Optional[float]:
+    """
+    Entropia de Shannon dos retornos.
+    Baixa = mercado previsível, Alta = ruído/incerteza.
+    """
+    if len(returns) < 30:
+        return None
+    try:
+        arr = np.array(returns, dtype=float)
+        hist, _ = np.histogram(arr, bins=bins)
+        hist = hist[hist > 0]
+        probs = hist / float(hist.sum())
+        return round(float(-np.sum(probs * np.log2(probs))), 4)
+    except Exception:
+        return None
+
+
+def simple_kalman_filter(prices: list, Q: float = 1e-5, R: float = 0.01) -> Optional[dict]:
+    """
+    Kalman filter escalar para suavização de preço.
+    Q = ruído do processo, R = ruído de medição.
+    """
+    if len(prices) < 10:
+        return None
+    try:
+        x = float(prices[0])
+        P = 1.0
+        for z in prices:
+            P_pred = P + Q
+            K = P_pred / (P_pred + R)
+            x = x + K * (float(z) - x)
+            P = (1.0 - K) * P_pred
+        raw = float(prices[-1])
+        deviation_pct = round((raw - x) / x * 100, 4) if x > 0 else 0.0
+        trend_dir = "UP" if raw > x * 1.0001 else "DOWN" if raw < x * 0.9999 else "FLAT"
+        return {
+            "kalman_price": round(x, 2),
+            "raw_price": round(raw, 2),
+            "deviation_pct": deviation_pct,
+            "trend_direction": trend_dir,
+        }
+    except Exception:
+        return None
+
+
+def regression_channel(prices: list, window: int = 50) -> Optional[dict]:
+    """
+    Canal de regressão linear com bandas ±1σ e ±2σ.
+    """
+    if len(prices) < window:
+        return None
+    try:
+        y = np.array(prices[-window:], dtype=float)
+        x = np.arange(window, dtype=float)
+        coeffs = np.polyfit(x, y, 1)
+        trend_line = np.polyval(coeffs, x)
+        residuals = y - trend_line
+        std = float(np.std(residuals))
+        current_trend = float(trend_line[-1])
+        pos = float((prices[-1] - (current_trend - 2 * std)) / (4 * std)) if std > 0 else 0.5
+        return {
+            "slope_per_bar": round(float(coeffs[0]), 4),
+            "trend_price": round(current_trend, 2),
+            "upper_1sd": round(current_trend + std, 2),
+            "lower_1sd": round(current_trend - std, 2),
+            "upper_2sd": round(current_trend + 2 * std, 2),
+            "lower_2sd": round(current_trend - 2 * std, 2),
+            "deviation_from_trend": round(float(prices[-1]) - current_trend, 2),
+            "position_in_channel": round(max(0.0, min(1.0, pos)), 4),
+        }
+    except Exception:
+        return None
+
+
+def dominant_cycles(prices: list, min_period: int = 5, max_period: int = 100) -> Optional[dict]:
+    """
+    Ciclos dominantes via FFT. Encontra os 3 períodos com maior amplitude.
+    """
+    if len(prices) < max_period * 2:
+        return None
+    try:
+        arr = np.array(prices, dtype=float)
+        fft_vals = np.fft.fft(arr - np.mean(arr))
+        n = len(arr)
+        freqs = np.fft.fftfreq(n)
+        magnitudes = np.abs(fft_vals[1: n // 2])
+        periods = 1.0 / np.abs(freqs[1: n // 2] + 1e-12)
+        mask = (periods >= min_period) & (periods <= max_period)
+        if not np.any(mask):
+            return None
+        m_masked = magnitudes[mask]
+        p_masked = periods[mask]
+        top_idx = np.argsort(m_masked)[-3:][::-1]
+        return {
+            "dominant_cycles": [round(float(p_masked[i]), 1) for i in top_idx],
+            "cycle_strengths": [round(float(m_masked[i]), 2) for i in top_idx],
+        }
+    except Exception:
+        return None
+
+
+def fractal_dimension(prices: list) -> Optional[float]:
+    """
+    Dimensão fractal (método de Higuchi aproximado).
+    < 1.5 = trending, > 1.5 = ruído/mean-reverting.
+    """
+    if len(prices) < 50:
+        return None
+    try:
+        arr = np.array(prices, dtype=float)
+        N = len(arr)
+        max_k = min(N // 4, 50)
+        lengths = []
+        for k in range(1, max_k):
+            segs = [arr[m::k] for m in range(k) if len(arr[m::k]) > 1]
+            if not segs:
+                continue
+            Lk = np.mean([
+                np.sum(np.abs(np.diff(s))) * (N - 1) / (((N - m) // k) * k + 1e-12)
+                for m, s in enumerate(segs)
+            ])
+            if Lk > 0:
+                lengths.append((np.log(1.0 / k), np.log(Lk)))
+        if len(lengths) < 2:
+            return None
+        x, y = zip(*lengths)
+        return round(float(np.polyfit(x, y, 1)[0]), 4)
+    except Exception:
+        return None
+
+
+def monte_carlo_forecast(
+    returns: list,
+    current_price: float,
+    n_sims: int = 1000,
+    horizon: int = 12,
+) -> Optional[dict]:
+    """
+    Monte Carlo: simula n_sims cenários de preço para 'horizon' passos.
+    Retorna percentis e probabilidade de alta.
+    """
+    if len(returns) < 30 or current_price <= 0:
+        return None
+    try:
+        ret = np.array(returns, dtype=float)
+        mu = float(np.mean(ret))
+        sigma = float(np.std(ret))
+        rng = np.random.default_rng(seed=42)
+        sims = rng.normal(mu, sigma, (n_sims, horizon))
+        final_prices = current_price * np.exp(np.cumsum(sims, axis=1)[:, -1])
+        return {
+            "median_price": round(float(np.median(final_prices)), 2),
+            "p10": round(float(np.percentile(final_prices, 10)), 2),
+            "p25": round(float(np.percentile(final_prices, 25)), 2),
+            "p75": round(float(np.percentile(final_prices, 75)), 2),
+            "p90": round(float(np.percentile(final_prices, 90)), 2),
+            "prob_up": round(float(np.mean(final_prices > current_price)), 4),
+            "horizon_bars": horizon,
+        }
+    except Exception:
+        return None

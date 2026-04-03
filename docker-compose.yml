@@ -12,7 +12,7 @@ services:
       - LOG_FORMAT=json
       - LOG_LEVEL=INFO
     volumes:
-      - ./data:/app/data
+      - ./dados:/app/dados
       - ./logs:/app/logs
       - ./features:/app/features
     # Configuração de recursos (ajuste conforme instância OCI)

@@ -148,6 +148,7 @@ class InstitutionalAnalyticsEngine:
         Retorna dict organizado por seção. Cada seção pode falhar
         independentemente sem afetar as outras.
         """
+        _t_start = time.monotonic()
         result = {
             "status": "ok",
             "computed_at_ms": int(time.time() * 1000),
@@ -158,59 +159,74 @@ class InstitutionalAnalyticsEngine:
         # SEÇÃO 1: INDICADORES TÉCNICOS EXTRAS
         # (#8 StochRSI, #9 Williams%R, #3 TWAP)
         # ═══════════════════════════════════════
+        _t0 = time.monotonic()
         result["technical_extras"] = self._compute_technical_extras(
             candles_df, current_price, flow_metrics
         )
+        logger.debug("[TIMING] technical_extras: %.0fms", (time.monotonic() - _t0) * 1000)
 
         # ═══════════════════════════════════════
         # SEÇÃO 2: VOLUME PROFILE AVANÇADO
-        # (#7 Poor H/L, #11 Shape, #12 VA%, 
+        # (#7 Poor H/L, #11 Shape, #12 VA%,
         #  #6 No-Man's Land, #13 HVN/LVN Strength)
         # ═══════════════════════════════════════
+        _t0 = time.monotonic()
         result["profile_analysis"] = self._compute_profile_analysis(
             trades_df, vp_data, current_price, weekly_vp, monthly_vp
         )
+        logger.debug("[TIMING] profile_analysis: %.0fms", (time.monotonic() - _t0) * 1000)
 
         # ═══════════════════════════════════════
         # SEÇÃO 3: FLOW AVANÇADO
         # (#14 Passive/Aggressive, #15 Buy/Sell Ratio,
         #  #16 Whale Score, #17 Absorption Zones)
         # ═══════════════════════════════════════
+        _t0 = time.monotonic()
         result["flow_analysis"] = self._compute_flow_analysis(
             flow_metrics, orderbook_data, absorption_data,
             derivatives_data, onchain_data
         )
+        logger.debug("[TIMING] flow_analysis: %.0fms", (time.monotonic() - _t0) * 1000)
 
         # ═══════════════════════════════════════
         # SEÇÃO 4: S/R AVANÇADO
         # (#4 S/R Strength, #5 Defense Zones,
         #  #2 Reference Prices)
         # ═══════════════════════════════════════
+        _t0 = time.monotonic()
         result["sr_analysis"] = self._compute_sr_analysis(
             current_price, vp_data, pivot_data, ema_values,
             candles_df, weekly_vp, monthly_vp, orderbook_data,
             absorption_data
         )
+        logger.debug("[TIMING] sr_analysis: %.0fms", (time.monotonic() - _t0) * 1000)
 
         # ═══════════════════════════════════════
         # SEÇÃO 5: QUALIDADE E INFRAESTRUTURA
-        # (#18 Completeness, #19 Anomaly, 
+        # (#18 Completeness, #19 Anomaly,
         #  #20 Spread %, #21 Latency, #22 Calendar)
         # ═══════════════════════════════════════
+        _t0 = time.monotonic()
         result["quality"] = self._compute_quality(
             current_price, orderbook_data, flow_metrics,
             window_close_ms, time_manager
         )
+        logger.debug("[TIMING] quality: %.0fms", (time.monotonic() - _t0) * 1000)
 
         # ═══════════════════════════════════════
         # SEÇÃO 6: CANDLESTICK PATTERNS
         # (#23 — já integrado via recognize_patterns)
         # ═══════════════════════════════════════
         # FIX 7A: Only include candlestick_patterns if patterns were detected
+        _t0 = time.monotonic()
         _cp = self._compute_candlestick(candles_df)
         if _cp.get("patterns_detected", 0) > 0:
             result["candlestick_patterns"] = _cp
+        logger.debug("[TIMING] candlestick: %.0fms", (time.monotonic() - _t0) * 1000)
 
+        logger.info("[TIMING] institutional_analytics.compute_all total: %.0fms",
+                    (time.monotonic() - _t_start) * 1000)
+        result["computed_at_ms"] = int(time.time() * 1000)  # atualiza ao final (mais preciso)
         return result
 
     # ═══════════════════════════════════════════════════════════
@@ -292,11 +308,89 @@ class InstitutionalAnalyticsEngine:
                                 of = flow_metrics.get("order_flow", {})
                                 if isinstance(of, dict):
                                     vwap_ref = of.get("vwap")
-                            
+
                             twap_result = twap_vwap_analysis(closes, volumes, vwap_ref)
                             extras["twap_analysis"] = twap_result
                         except Exception as e:
                             extras["twap_analysis"] = {"error": str(e)}
+
+                    # ── MÉTODOS AVANÇADOS (#23, #24, #25, #26, #27, #28, #18) ──
+                    from common.technical_indicators import (
+                        hurst_exponent, shannon_entropy, simple_kalman_filter,
+                        regression_channel, dominant_cycles, fractal_dimension,
+                        monte_carlo_forecast,
+                    )
+                    prices_list = closes.tolist()
+                    try:
+                        ret_list = list(closes.pct_change().dropna())
+                        log_ret = list((closes / closes.shift()).apply(
+                            lambda r: __import__("math").log(r) if r > 0 else 0.0
+                        ).dropna())
+                    except Exception:
+                        ret_list, log_ret = [], []
+
+                    # #23 — Hurst Exponent
+                    try:
+                        extras["hurst_exponent"] = hurst_exponent(prices_list)
+                    except Exception:
+                        extras["hurst_exponent"] = None
+
+                    # #25 — Shannon Entropy
+                    try:
+                        extras["shannon_entropy"] = shannon_entropy(log_ret or ret_list)
+                    except Exception:
+                        extras["shannon_entropy"] = None
+
+                    # #27 — Kalman Filter
+                    try:
+                        extras["kalman_filter"] = simple_kalman_filter(prices_list)
+                    except Exception:
+                        extras["kalman_filter"] = None
+
+                    # #28 — Regression Channel
+                    try:
+                        extras["regression_channel"] = regression_channel(prices_list)
+                    except Exception:
+                        extras["regression_channel"] = None
+
+                    # #26 — Dominant Cycles (Fourier)
+                    try:
+                        extras["dominant_cycles"] = dominant_cycles(prices_list)
+                    except Exception:
+                        extras["dominant_cycles"] = None
+
+                    # #24 — Fractal Dimension
+                    try:
+                        extras["fractal_dimension"] = fractal_dimension(prices_list)
+                    except Exception:
+                        extras["fractal_dimension"] = None
+
+                    # #18 — Monte Carlo Forecast
+                    try:
+                        extras["monte_carlo"] = monte_carlo_forecast(
+                            log_ret or ret_list, current_price
+                        )
+                    except Exception:
+                        extras["monte_carlo"] = None
+
+                    # #48/#50 — Smart Money Concepts (FVG + BOS)
+                    if high_col and low_col:
+                        try:
+                            from market_analysis.pattern_recognition import (
+                                detect_fair_value_gaps, detect_market_structure,
+                            )
+                            candles_list = [
+                                {
+                                    "high": float(candles_df[high_col].iloc[i]),
+                                    "low": float(candles_df[low_col].iloc[i]),
+                                    "close": float(closes.iloc[i]),
+                                }
+                                for i in range(len(candles_df))
+                            ]
+                            extras["fair_value_gaps"] = detect_fair_value_gaps(candles_list)
+                            extras["market_structure"] = detect_market_structure(candles_list)
+                        except Exception:
+                            pass
 
         except Exception as e:
             extras["_error"] = str(e)
@@ -373,9 +467,7 @@ class InstitutionalAnalyticsEngine:
                         dummy_vols = pd.Series([1.0])
                         vpa = VolumeProfileAnalyzer(dummy_prices, dummy_vols)
                     _va = vpa.calculate_value_area_volume_pct(vp_profile)
-                    # FIX 7A: Only include if it has actual data
-                    if _va.get("value_area_volume_pct", 0) > 0:
-                        profile["va_volume_pct"] = _va
+                    profile["va_volume_pct"] = _va  # sempre inclui, mesmo com 0
                 except Exception as e:
                     logger.debug("va_volume_pct error (non-critical): %s", e)
 

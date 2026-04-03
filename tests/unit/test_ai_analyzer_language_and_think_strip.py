@@ -5,8 +5,10 @@ from ai_analyzer_qwen import AIAnalyzer, SYSTEM_PROMPT
 
 def test_system_prompt_requires_ptbr_and_no_think():
     p = SYSTEM_PROMPT.lower()
-    assert "portugues do brasil" in p
-    assert "<think>" in p
+    # Prompt is written in PT-BR — check for Portuguese content markers
+    assert "analista" in p
+    # llama model: no <think> chain-of-thought blocks in prompt
+    assert "<think>" not in p
 
 
 def test_sanitize_llm_text_strips_think_block_and_leaves_json():

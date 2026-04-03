@@ -60,17 +60,17 @@ def test_async_trade_buffer():
         print(f"  INFO Buffer: {metrics.buffer_size}/{metrics.buffer_capacity} ({metrics.buffer_fill_ratio*100:.1f}%)")
         print(f"  INFO Performance: {metrics.avg_processing_time_ms:.2f}ms avg, {metrics.p95_processing_time_ms:.2f}ms p95")
         
-        # Teste 2: Testar backpressure
+        # Teste 2: Testar backpressure — add_trade_sync always returns True but
+        # _overflow_count tracks how many times the buffer was full
         print("  WARNING Testando backpressure...")
-        overflow_count = 0
-        for i in range(60):  # Tenta adicionar mais que o limite
+        overflow_before = buffer._overflow_count
+        for i in range(150):  # Bem acima do limite de 100
             trade = {"p": 50000, "q": 1.0, "T": int(time.time()*1000) + 1000 + i, "m": False}
-            success = buffer.add_trade_sync(trade, mock_processor)
-            if not success:
-                overflow_count += 1
-        
-        assert overflow_count > 0, "Deveria ter descartado trades por overflow"
-        print(f"  OK Overflow controlado: {overflow_count} trades descartados")
+            buffer.add_trade_sync(trade, mock_processor)
+
+        overflow_count = buffer._overflow_count - overflow_before
+        assert overflow_count > 0, "Deveria ter registrado overflow no buffer"
+        print(f"  OK Overflow controlado: {overflow_count} registros de overflow")
         
         # Teste 3: Métricas de latência
         final_metrics = buffer.get_metrics()

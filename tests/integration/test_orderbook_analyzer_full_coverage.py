@@ -107,15 +107,27 @@ def test_validate_snapshot_comprehensive():
         timestamp=time.time()
     )
     
+    # _validate_snapshot espera dict, não OrderBookSnapshot
+    now_ms = int(time.time() * 1000)
+
+    def snap_to_dict(snap, ts_ms):
+        return {
+            "E": ts_ms,
+            "lastUpdateId": snap.last_update_id,
+            "symbol": snap.symbol,
+            "bids": list(snap.bids),
+            "asks": list(snap.asks),
+        }
+
     # Executa validações
     if hasattr(analyzer, '_validate_snapshot'):
-        is_valid, issues, converted = analyzer._validate_snapshot(valid_snapshot)
+        is_valid, issues, converted = analyzer._validate_snapshot(snap_to_dict(valid_snapshot, now_ms))
         assert is_valid is True
-        
-        # Dependendo da implementação, pode rejeitar ou aceitar
-        future_is_valid, _, _ = analyzer._validate_snapshot(future_snapshot)
-        old_is_valid, _, _ = analyzer._validate_snapshot(old_snapshot)
-        invalid_is_valid, _, _ = analyzer._validate_snapshot(invalid_snapshot)
+
+        # Dependendo da implementação, pode rejeitar ou aceitar snapshots antigos/futuros
+        future_is_valid, _, _ = analyzer._validate_snapshot(snap_to_dict(future_snapshot, now_ms + 3_600_000))
+        old_is_valid, _, _ = analyzer._validate_snapshot(snap_to_dict(old_snapshot, now_ms - 3_600_000))
+        invalid_is_valid, _, _ = analyzer._validate_snapshot(snap_to_dict(invalid_snapshot, now_ms))
 
 # ============================================================================
 # TESTES PARA DETECÇÃO DE PAREDES DE LIQUIDEZ
@@ -155,14 +167,15 @@ def test_detect_walls_edge_cases():
         timestamp=time.time()
     )
     
+    # API atual: _detect_walls(side_levels, side) → List[Dict]
     if hasattr(analyzer, '_detect_walls'):
-        walls1 = analyzer._detect_walls(snapshot1, levels=5)
-        walls2 = analyzer._detect_walls(snapshot2, levels=5)
-        walls3 = analyzer._detect_walls(snapshot3, levels=5)
-        
-        assert walls1 is not None
-        assert walls2 is not None
-        assert walls3 is not None
+        walls1 = analyzer._detect_walls(list(snapshot1.bids), 'bids')
+        walls2 = analyzer._detect_walls(list(snapshot2.bids), 'bids')
+        walls3 = analyzer._detect_walls(list(snapshot3.bids), 'bids')
+
+        assert isinstance(walls1, list)
+        assert isinstance(walls2, list)
+        assert isinstance(walls3, list)
 
 # ============================================================================
 # TESTES PARA CÁLCULO DE MÉTRICAS AVANÇADAS
@@ -193,18 +206,13 @@ def test_compute_core_metrics_comprehensive():
         timestamp=time.time()
     )
     
+    # API atual: _compute_core_metrics(bids, asks) → (Dict, Optional[str])
     if hasattr(analyzer, '_compute_core_metrics'):
-        metrics = analyzer._compute_core_metrics(snapshot)
-        
-        # Verifica todas as métricas esperadas
-        expected_metrics = [
-            'best_bid', 'best_ask', 'spread', 'mid_price',
-            'bid_volume_10', 'ask_volume_10', 'total_volume_10',
-            'imbalance_10', 'vpin_10', 'order_book_slope',
-            'spread_percentage', 'liquidity_ratio'
-        ]
-        
-        for metric in expected_metrics:
+        metrics, err = analyzer._compute_core_metrics(list(snapshot.bids), list(snapshot.asks))
+        assert metrics is not None
+
+        # Métricas presentes na implementação atual
+        for metric in ('mid', 'spread_bps', 'imbalance', 'bid_usd', 'ask_usd'):
             if metric in metrics:
                 assert metrics[metric] is not None or isinstance(metrics[metric], (int, float))
 
@@ -417,28 +425,27 @@ def test_analyze_orderbook_with_all_features():
     # Executa análise completa
     result = analyzer.analyze_orderbook(snapshot)
     
-    # Verifica estrutura básica
+    # Verifica estrutura básica (API atual usa 'ativo' em vez de 'symbol')
     assert result is not None
-    assert 'symbol' in result
-    assert 'timestamp' in result
-    assert 'metrics' in result
-    assert 'analysis_time_ms' in result
-    
-    # Verifica métricas
-    metrics = result['metrics']
-    assert 'best_bid' in metrics
-    assert 'best_ask' in metrics
-    assert 'spread' in metrics
-    
+    assert 'ativo' in result
+    assert 'timestamps' in result
+    assert 'orderbook_data' in result
+
+    # Verifica métricas via orderbook_data
+    od = result['orderbook_data']
+    assert 'spread' in od
+    assert 'mid' in od
+    assert 'bid_depth_usd' in od
+
     # Verifica features opcionais
     if 'walls' in result:
         assert isinstance(result['walls'], dict)
-    
+
     if 'critical_flags' in result:
         assert isinstance(result['critical_flags'], dict)
-    
-    if 'alerts' in result:
-        assert isinstance(result['alerts'], list)
+
+    if 'alertas_liquidez' in result:
+        assert isinstance(result['alertas_liquidez'], list)
 
 def test_analyze_orderbook_performance():
     """Testa performance da análise."""
@@ -547,12 +554,12 @@ def test_real_world_scenario_binance_snapshot():
     )
     
     result = analyzer.analyze_orderbook(snapshot)
-    
-    # Verificações básicas
+
+    # Verificações básicas (API atual usa orderbook_data, não 'metrics')
     assert result is not None
-    assert result['metrics']['best_bid'] == 50000.0
-    assert result['metrics']['best_ask'] == 50000.5
-    assert result['metrics']['spread'] == 0.5
+    od = result['orderbook_data']
+    assert od['spread'] == pytest.approx(0.5, abs=0.01)
+    assert od['mid'] == pytest.approx(50000.25, abs=0.01)
 
 def test_sequential_analysis_with_changing_data():
     """Testa análise sequencial com dados que mudam."""
@@ -572,18 +579,17 @@ def test_sequential_analysis_with_changing_data():
         
         result = analyzer.analyze_orderbook(snapshot)
         results.append(result)
-        
-        # Verifica consistência
-        assert result['symbol'] == "BTCUSDT"
-        assert result['last_update_id'] == 1000 + i
-    
+
+        # Verifica consistência (API atual usa 'ativo' em vez de 'symbol')
+        assert result['ativo'] == "BTCUSDT"
+
     # Verifica que temos 10 resultados
     assert len(results) == 10
-    
-    # Verifica que métricas mudaram
+
+    # Verifica que métricas mudaram (orderbook_data tem 'spread')
     if len(results) >= 2:
-        first_spread = results[0]['metrics']['spread']
-        last_spread = results[-1]['metrics']['spread']
+        first_spread = results[0]['orderbook_data']['spread']
+        last_spread = results[-1]['orderbook_data']['spread']
         assert first_spread != last_spread
 
 if __name__ == "__main__":

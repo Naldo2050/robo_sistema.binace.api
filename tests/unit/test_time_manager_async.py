@@ -88,7 +88,7 @@ class TestNowNonBlocking:
 
     def test_now_sets_sync_needed_flag(self, tm):
         """now() seta _sync_needed quando _should_sync() retorna True."""
-        tm.last_sync_mono = 0  # forçar _should_sync() == True
+        tm.last_sync_mono = time.monotonic() - tm.sync_interval_seconds - 1  # forçar _should_sync() == True
         assert tm._sync_needed is False
         tm.now()
         assert tm._sync_needed is True
@@ -119,7 +119,7 @@ class TestNeedsSync:
 
     def test_needs_sync_true_after_now_triggers(self, tm):
         """needs_sync é True após now() detectar necessidade."""
-        tm.last_sync_mono = 0
+        tm.last_sync_mono = time.monotonic() - tm.sync_interval_seconds - 1
         tm.now()
         assert tm.needs_sync is True
 
@@ -332,7 +332,7 @@ class TestE2EFlow:
         1. now() detecta que precisa sync → seta flag
         2. sync_async() executa → limpa flag
         """
-        tm.last_sync_mono = 0  # forçar _should_sync() == True
+        tm.last_sync_mono = time.monotonic() - tm.sync_interval_seconds - 1  # forçar _should_sync() == True
 
         # Step 1: now() seta flag
         result = tm.now()
