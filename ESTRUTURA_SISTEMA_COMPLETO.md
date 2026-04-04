@@ -871,4 +871,27 @@ docs/
 
 ---
 
-*Ultima atualizacao: 2026-03-23 (novos arquivos: fetchers/market_analysis expandidos, tests/ com ~80 novos arquivos, scripts/migration/ criado, infrastructure/, tools/, ml/ atualizados)*
+## Atualizacoes Posteriores (2026-04-02)
+
+| Categoria | Arquivos Adicionados |
+|-----------|---------------------|
+| common/ | yfinance_cache.py |
+| dados/ | fred_cache.json |
+| institutional/ | __init__.py, absorption_detector.py, base.py, confluence_engine.py, crypto_cot.py, cvd.py, entropy_analyzer.py, event_bridge.py, footprint.py, fourier_cycles.py, garch_volatility.py, hurst_exponent.py, iceberg_detector.py, kalman_filter.py, market_regime_hmm.py, mean_reversion.py, monte_carlo.py, order_flow_imbalance.py, smart_money.py, vwap_twap.py, whale_detector.py |
+| ml/ | bias_monitor.py, dataset_collector.py |
+| tests/unit/ | test_ai_throttler_v3.py, test_data_invariants.py, test_institutional_absorption.py, test_institutional_base.py, test_institutional_confluence.py, test_institutional_cot.py, test_institutional_cvd.py, test_institutional_entropy.py, test_institutional_footprint.py, test_institutional_fourier.py, test_institutional_garch.py, test_institutional_hmm.py, test_institutional_hurst.py, test_institutional_iceberg.py, test_institutional_kalman.py, test_institutional_mean_reversion.py, test_institutional_monte_carlo.py, test_institutional_ofi.py, test_institutional_smart_money.py, test_institutional_vwap.py, test_institutional_whale.py, test_ml_bias_monitor.py, test_time_manager_async.py, test_yfinance_cache.py |
+
+---
+
+## Atualizacoes Posteriores (2026-04-03)
+
+| Categoria | Arquivos Adicionados/Modificados |
+|-----------|---------------------|
+| raiz | flow_analyzer.py |
+| tests/ | test_support_resistance_institutional.py, test_support_resistance_consolidated.py, test_support_resistance_modular.py, test_flow_analyzer.py, test_rolling_aggregate.py, test_out_of_order_pruning.py, verify_patch_2.py, verify_prune_logic_only.py |
+| flow_analyzer/ | errors.py, logging_config.py, profiling.py, prometheus_metrics.py, protocols.py, serialization.py, utils.py, validation.py |
+| support_resistance/ | config.py, constants.py, system.py |
+
+---
+
+*Ultima atualizacao: 2026-04-03 (novos arquivos: flow_analyzer.py, testes adicionais, atualizacoes em pacotes)*

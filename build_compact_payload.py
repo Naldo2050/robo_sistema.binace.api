@@ -25,6 +25,25 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 # ============================================================
+# SUMMARY BUILDERS — interpretação pré-processada para a IA
+# ============================================================
+try:
+    from market_orchestrator.ai.payload_sections import (
+        build_flow_summary,
+        build_sr_summary,
+        build_regime_summary,
+        build_institutional_summary,
+        build_quality_summary,
+    )
+    _SUMMARIES_AVAILABLE = True
+except ImportError:
+    _SUMMARIES_AVAILABLE = False
+    logger.warning(
+        "payload_sections não disponível — "
+        "payload será enviado sem seção summary"
+    )
+
+# ============================================================
 # CONSTANTES E MAPAS
 # ============================================================
 
@@ -258,10 +277,8 @@ def _build_price(event_data: dict) -> dict:
             price["ph"] = 1
 
         pl = pe.get("poor_low", {})
-        if isinstance(pl, dict):
-            vol_ratio = pl.get("volume_ratio", 1.0)
-            if vol_ratio and vol_ratio < 0.5:
-                price["pl"] = 1
+        if isinstance(pl, dict) and pl.get("detected"):
+            price["pl"] = 1
 
     # FIX 4a: breakout_risk do Volume Profile compression
     va_pct = pa.get("va_volume_pct", {})
@@ -269,7 +286,7 @@ def _build_price(event_data: dict) -> dict:
         brk_risk = va_pct.get("breakout_risk")
         compression = va_pct.get("compression_signal", 0)
         if brk_risk and brk_risk in ("HIGH", "VERY_HIGH"):
-            price["brk_risk"] = brk_risk[:4]
+            price["brk_risk"] = {"HIGH": "HI", "VERY_HIGH": "V_HI"}.get(brk_risk, brk_risk[:4])
         elif compression:
             price["brk_risk"] = "MOD"
 
@@ -335,6 +352,25 @@ def _calculate_regime_consensus(event_data: dict) -> dict:
     vol_regime = env.get("volatility_regime", "")
     vol_short = vol_regime[0] if vol_regime in ("LOW", "MEDIUM", "HIGH") else vol_regime[:3]
 
+    # FIX 3c: usar regime_analysis.current_regime como fonte primária de mode
+    _regime_to_mode: dict[str, str] = {
+        "MEAN_REVERTING": "MR",
+        "MEAN_REVERSION": "MR",
+        "TRENDING":       "TRD",
+        "BREAKOUT":       "BRK",
+        "RANGE":          "RB",
+        "RANGE_BOUND":    "RB",
+    }
+
+    regime_analysis = event_data.get("regime_analysis", {})
+    current_regime = regime_analysis.get("current_regime", "")
+    mode_short = _regime_to_mode.get(current_regime.upper(), "") if current_regime else ""
+
+    # fallback: inferir do market_environment se regime_analysis ausente
+    if not mode_short:
+        ms = str(env.get("market_structure", "")).upper()
+        mode_short = _regime_to_mode.get(ms, ms[:3] if ms else "")
+
     # --- Consensus calculation ---
     total_weight = max(total_weight, 1)
     bull_pct = round(votes_bull / total_weight * 100)
@@ -357,6 +393,9 @@ def _calculate_regime_consensus(event_data: dict) -> dict:
     if vol_short:
         result["v"] = vol_short
 
+    if mode_short:
+        result["mode"] = mode_short
+
     if dominant_tf:
         result["dom"] = dominant_tf
 
@@ -364,6 +403,14 @@ def _calculate_regime_consensus(event_data: dict) -> dict:
     if votes_bull > 0 and votes_bear > 0:
         result["bull%"] = bull_pct
         result["bear%"] = bear_pct
+
+    vol_metrics = event_data.get("volatility_metrics", {})
+    bbw = vol_metrics.get("bbw")
+    atr_pct = vol_metrics.get("atr_pct")
+    if bbw is not None:
+        result["bbw"] = round(bbw, 2)
+    if atr_pct is not None:
+        result["atr%"] = round(atr_pct, 2)
 
     return result
 
@@ -387,6 +434,35 @@ def _build_flow(event_data: dict) -> dict:
     flow: dict[str, Any] = {
         "d1": compact_number(of.get("net_flow_1m", 0)),
     }
+
+    delta = event_data.get("delta")
+    vol = event_data.get("volume_total")
+    vol_buy = event_data.get("volume_compra")
+    if delta is not None:
+        flow["delta"] = round(delta, 3)
+    if vol:
+        flow["vol"] = round(vol, 3)
+    if vol_buy and vol:
+        flow["buy_pct"] = round(vol_buy / vol * 100)
+        
+    micro = event_data.get("ml_features", {}).get("microstructure", {})
+    if micro:
+        ti = micro.get("trade_intensity_v2")
+        trs = micro.get("tick_rule_sum")
+        obs_slope = micro.get("order_book_slope")
+        if ti is not None:
+            flow["ti"] = round(ti, 1)
+        if trs is not None:
+            flow["trs"] = int(trs)
+        if obs_slope is not None and abs(obs_slope - 1.0) > 0.01:
+            flow["obs"] = round(obs_slope, 3)
+
+    sf = fluxo.get("sector_flow", {})
+    if sf:
+        for cat in ("whale", "retail"):
+            d = sf.get(cat, {}).get("delta")
+            if d is not None and abs(d) > 0.001:
+                flow[f"sf_{cat[0]}"] = round(d, 3)
 
     d5 = of.get("net_flow_5m")
     d15 = of.get("net_flow_15m")
@@ -463,6 +539,12 @@ def _build_orderbook(event_data: dict) -> dict:
     t5_imb = depth.get("L5", {}).get("imbalance")
     if t5_imb is not None:
         ob["t5"] = round(t5_imb, 2)
+
+    mi = event_data.get("market_impact", {}).get("slippage_matrix", {})
+    s100 = mi.get("100k_usd", {})
+    if s100:
+        ob["slip_b"] = round(s100.get("buy", 0) * 100, 2)
+        ob["slip_s"] = round(s100.get("sell", 0) * 100, 2)
 
     return ob
 
@@ -599,20 +681,7 @@ def _build_ext_indicators(event_data: dict) -> dict:
     """
     ext_ind = event_data.get("technical_indicators_extended", {})
     ext: dict[str, Any] = {}
-    if not ext_ind:
-        # Mesmo sem ext_ind, Fibonacci pode existir
-        fib = event_data.get("fibonacci_levels") or {}
-        if fib and isinstance(fib, dict):
-            sh = fib.get("swing_high")
-            sl = fib.get("swing_low")
-            if sh and sl and float(sh) > float(sl) > 0:
-                fib_entry: dict[str, Any] = {"hi": round(float(sh)), "lo": round(float(sl))}
-                for lvl in ("38.2", "61.8"):
-                    v = fib.get(lvl)
-                    if v is not None:
-                        fib_entry[lvl.replace(".", "")] = round(float(v))
-                ext["fib"] = fib_entry
-        return ext
+
 
     # CCI — Commodity Channel Index
     cci_signal = ext_ind.get("cci_signal")
@@ -624,11 +693,24 @@ def _build_ext_indicators(event_data: dict) -> dict:
         else:
             ext["cci"] = "N"
 
-    # Stochastic %K
+    # Stochastic %K + signal
     stochastic = ext_ind.get("stochastic", {})
     stoch_k = stochastic.get("k") if isinstance(stochastic, dict) else None
     if stoch_k is not None:
         ext["stoch"] = round(stoch_k)
+        # FIX 3b: incluir signal se não neutro
+        stoch_sig = (
+            stochastic.get("signal", "")
+            if isinstance(stochastic, dict) else ""
+        )
+        if stoch_sig and stoch_sig.upper() not in ("NEUTRAL", ""):
+            _stoch_sig_map = {
+                "OVERBOUGHT": "OB",
+                "OVERSOLD":   "OS",
+            }
+            ext["stoch_sig"] = _stoch_sig_map.get(
+                stoch_sig.upper(), stoch_sig[:2].upper()
+            )
 
     # Williams %R
     williams = ext_ind.get("williams_r", {})
@@ -702,7 +784,7 @@ def _build_ext_indicators(event_data: dict) -> dict:
         smc: dict[str, Any] = {}
         if fvg_list:
             smc["fvg"] = len(fvg_list)
-            smc["fvg_last"] = fvg_list[-1].get("type", "")[:1]  # B/U
+            smc["fvg_last"] = fvg_list[-1].get("type", "")[:2]  # BU/BE
         if bos and isinstance(bos, dict):
             smc["struct"] = bos.get("structure", "")[:4]
             smc["bos"] = bos.get("bos_detected", False)
@@ -710,11 +792,12 @@ def _build_ext_indicators(event_data: dict) -> dict:
             ext["smc"] = smc
 
     # Fibonacci retracement levels (#10)
-    # Fonte: event_data["fibonacci_levels"] — injetado por institutional_enricher._build_fibonacci()
-    fib = event_data.get("fibonacci_levels") or {}
+    # Fonte: event_data["fibonacci_levels"] ou pattern_recognition
+    pr = event_data.get("pattern_recognition", {})
+    fib = event_data.get("fibonacci_levels") or (pr.get("fibonacci_levels", {}) if isinstance(pr, dict) else {})
     if fib and isinstance(fib, dict):
-        sh = fib.get("swing_high")
-        sl = fib.get("swing_low")
+        sh = fib.get("swing_high") or fib.get("high")
+        sl = fib.get("swing_low") or fib.get("low")
         if sh and sl and float(sh) > float(sl) > 0:
             fib_entry: dict[str, Any] = {
                 "hi": round(float(sh)),
@@ -725,6 +808,25 @@ def _build_ext_indicators(event_data: dict) -> dict:
                 if v is not None:
                     fib_entry[lvl.replace(".", "")] = round(float(v))
             ext["fib"] = fib_entry
+
+    # FIX 3b: Candlestick patterns (de institutional_analytics)
+    ia = event_data.get("institutional_analytics", {})
+    candles = ia.get("candlestick_patterns", {})
+    if candles and isinstance(candles, dict):
+        dominant = candles.get("dominant_signal", "")
+        patterns = candles.get("patterns", [])
+        max_conf = candles.get("max_confidence", 0) or 0
+
+        if dominant and dominant != "neutral" and max_conf >= 0.65:
+            cand: dict[str, Any] = {
+                "sig":  dominant[:4],
+                "conf": round(float(max_conf), 2),
+            }
+            if patterns and isinstance(patterns, list) and len(patterns) > 0:
+                top = patterns[0]
+                if isinstance(top, dict):
+                    cand["name"] = str(top.get("name", ""))[:12]
+            ext["candle"] = cand
 
     return ext
 
@@ -771,12 +873,16 @@ def _build_sr(event_data: dict) -> dict:
 
     sr: dict[str, Any] = {}
 
+    close = event_data.get("preco_fechamento", 0)
+
     # sell_defense = zonas de resistência (acima do preço)
     for i, zone in enumerate(dz.get("sell_defense", [])[:2]):
         price_r = zone.get("center")
         if price_r is not None:
             key = f"r{i+1}"
             sr[key] = [round(float(price_r)), round(zone.get("strength", 0), 1)]
+            if close:
+                sr[f"{key}_dist"] = abs(round(float(close) - float(price_r)))
             sources = zone.get("source_count", zone.get("sources", 0))
             if sources and sources >= 3:
                 sr[f"{key}_conf"] = sources
@@ -787,6 +893,8 @@ def _build_sr(event_data: dict) -> dict:
         if price_s is not None:
             key = f"s{i+1}"
             sr[key] = [round(float(price_s)), round(zone.get("strength", 0), 1)]
+            if close:
+                sr[f"{key}_dist"] = abs(round(float(close) - float(price_s)))
             sources = zone.get("source_count", zone.get("sources", 0))
             if sources and sources >= 3:
                 sr[f"{key}_conf"] = sources
@@ -881,6 +989,17 @@ def _build_static_context(event_data: dict) -> dict:
     if oi and oi > 0:
         ctx["oi"] = round(oi / 1000)
 
+    fr = btc_deriv.get("funding_rate_percent")
+    if fr is not None:
+        ctx["fr"] = round(fr, 4) if fr is not None else 0.0
+
+    longs = btc_deriv.get("longs_usd")
+    shorts = btc_deriv.get("shorts_usd")
+    if longs:
+        ctx["longs"] = compact_number(longs)
+    if shorts:
+        ctx["shorts"] = compact_number(shorts)
+
     # --- Correlações ---
     eth7 = ml_cross.get("btc_eth_corr_7d")
     if eth7:
@@ -894,12 +1013,377 @@ def _build_static_context(event_data: dict) -> dict:
 
 
 # ============================================================
+# BUILDERS DOS GAPS CRÍTICOS
+# ============================================================
+
+def _build_ofi(event_data: dict) -> dict:
+    """
+    Order Flow Imbalance — pressão líquida no livro.
+    Fonte 1: institutional_analytics.order_flow_imbalance
+    Fonte 2: fluxo_continuo.order_flow.flow_imbalance (mais confiável)
+    Fonte 3: ml_features.microstructure.flow_imbalance
+    """
+    ia = event_data.get("institutional_analytics", {})
+    ofi_raw = ia.get("order_flow_imbalance", {})
+
+    if ofi_raw and isinstance(ofi_raw, dict):
+        score = ofi_raw.get("score") or ofi_raw.get("ofi_score")
+        direction = ofi_raw.get("direction", "")
+        if score is not None:
+            return {
+                "score": round(float(score), 3),
+                "dir": str(direction)[:4].upper() or "N",
+            }
+
+    # FIX 3e: usar order_flow como fonte secundária (mais rico que microstructure)
+    fluxo = event_data.get("fluxo_continuo", {})
+    of = fluxo.get("order_flow", {})
+    fi_of = of.get("flow_imbalance")
+
+    if fi_of is not None:
+        direction = "BUY" if fi_of > 0.05 else "SELL" if fi_of < -0.05 else "NEU"
+        return {
+            "score": round(float(fi_of), 3),
+            "dir": direction,
+            "src": "order_flow",
+        }
+
+    # Fallback final: microstructure
+    micro = event_data.get("ml_features", {}).get("microstructure", {})
+    fi = micro.get("flow_imbalance")
+    if fi is not None:
+        direction = "BUY" if fi > 0.05 else "SELL" if fi < -0.05 else "NEU"
+        return {
+            "score": round(float(fi), 3),
+            "dir": direction,
+            "src": "micro",
+        }
+
+    return {}
+
+
+def _build_vwap_context(event_data: dict) -> dict:
+    """
+    Desvio do VWAP — posição relativa ao fair value intraday.
+    Fontes: institutional/vwap_twap, contextual_snapshot.ohlc.vwap
+    """
+    ia = event_data.get("institutional_analytics", {})
+    vwap_data = ia.get("vwap_twap", {})
+
+    if vwap_data and isinstance(vwap_data, dict):
+        dev_pct = vwap_data.get("deviation_pct") or vwap_data.get("vwap_deviation_pct")
+        signal = vwap_data.get("signal", "")
+        if dev_pct is not None:
+            side = "above" if float(dev_pct) > 0 else "below"
+            return {
+                "dev": round(float(dev_pct), 3),
+                "side": side,
+                "sig": str(signal)[:10] if signal else side,
+            }
+
+    # Fallback: calcular via ohlc.vwap e preco_fechamento
+    close = event_data.get("preco_fechamento", 0) or 0
+    ohlc = event_data.get("contextual_snapshot", {}).get("ohlc", {})
+    vwap = ohlc.get("vwap", 0) or 0
+
+    if close and vwap and vwap > 0:
+        dev = (close - vwap) / vwap * 100
+        side = "above" if dev > 0 else "below"
+        signal = "premium" if dev > 0.1 else "discount" if dev < -0.1 else "fair"
+        return {
+            "dev": round(dev, 3),
+            "side": side,
+            "sig": signal,
+            "src": "ohlc",
+        }
+
+    return {}
+
+
+def _build_iceberg(event_data: dict) -> dict:
+    """
+    Detecção de ordens iceberg — liquidez oculta.
+    Fonte: institutional_analytics ou whale_activity
+    """
+    ia = event_data.get("institutional_analytics", {})
+    iceberg_data = ia.get("iceberg_detector", {})
+
+    if iceberg_data and isinstance(iceberg_data, dict):
+        detected = iceberg_data.get("detected", False)
+        if detected:
+            return {
+                "det": 1,
+                "side": str(iceberg_data.get("side", ""))[:4].upper(),
+                "sz": str(iceberg_data.get("estimated_size", ""))[:6],
+            }
+        return {}
+
+    # Fallback: whale_activity do payload bruto
+    wa = event_data.get("whale_activity", {})
+    if isinstance(wa, dict) and wa.get("iceberg_activity"):
+        return {"det": 1, "src": "whale_activity"}
+
+    return {}
+
+
+def _build_liquidity_clusters(event_data: dict) -> list:
+    """
+    Top 2 clusters de liquidez — ímãs de preço de curto prazo.
+    Fonte: fluxo_continuo.liquidity_heatmap
+    """
+    fluxo = event_data.get("fluxo_continuo", {})
+    heatmap = fluxo.get("liquidity_heatmap", {})
+    clusters = heatmap.get("clusters", [])
+
+    if not clusters:
+        return []
+
+    close = event_data.get("preco_fechamento", 0) or 0
+    result = []
+
+    sorted_clusters = sorted(
+        clusters,
+        key=lambda c: abs((c.get("center") or 0) - close)
+    )
+
+    for c in sorted_clusters[:2]:
+        center = c.get("center")
+        imb = c.get("imbalance_ratio") or c.get("imbalance", 0)
+        if center is None:
+            continue
+        side = "sell" if (imb or 0) < 0 else "buy"
+        entry: dict[str, Any] = {
+            "p": round(float(center)),
+            "side": side,
+        }
+        vol = c.get("total_volume")
+        if vol:
+            entry["vol"] = round(float(vol), 2)
+        result.append(entry)
+
+    return result
+
+
+def _build_smart_money_score(event_data: dict) -> dict:
+    """
+    Smart Money Score — footprint institucional agregado.
+    Fonte: institutional_analytics.smart_money
+    """
+    ia = event_data.get("institutional_analytics", {})
+    sm_data = ia.get("smart_money", {})
+
+    if not sm_data or not isinstance(sm_data, dict):
+        return {}
+
+    score = sm_data.get("score") or sm_data.get("smart_money_score")
+    signal = sm_data.get("signal") or sm_data.get("direction", "")
+
+    if score is None:
+        return {}
+
+    return {
+        "score": round(float(score), 3),
+        "sig": str(signal)[:10] if signal else "",
+    }
+
+
+def _build_cvd_divergence(event_data: dict) -> dict:
+    """
+    Divergência CVD vs preço — confirmação ou negação do movimento.
+    Fonte: institutional_analytics.cvd ou fluxo_continuo.cvd
+    """
+    ia = event_data.get("institutional_analytics", {})
+    cvd_data = ia.get("cvd", {})
+
+    if cvd_data and isinstance(cvd_data, dict):
+        div = cvd_data.get("divergence") or cvd_data.get("price_cvd_divergence", {})
+        if div and isinstance(div, dict):
+            detected = div.get("detected", False)
+            if detected:
+                return {
+                    "det": 1,
+                    "type": str(div.get("type", ""))[:12],
+                    "bars": div.get("bars", 0),
+                }
+        return {}
+
+    # Fallback: usar CVD bruto + tendência de preço para inferir
+    fluxo = event_data.get("fluxo_continuo", {})
+    cvd_val = fluxo.get("cvd", 0) or 0
+    multi_tf = event_data.get("multi_tf", {})
+    trend_1h = multi_tf.get("1h", {}).get("tendencia", "")
+
+    if abs(cvd_val) > 0.5:
+        price_up = trend_1h in ("Alta",)
+        cvd_up = cvd_val > 0
+        diverging = price_up != cvd_up
+
+        if diverging:
+            div_type = "bearish_div" if price_up and not cvd_up else "bullish_div"
+            return {
+                "det": 1,
+                "type": div_type,
+                "src": "inferred",
+            }
+
+    return {}
+
+
+def _build_mean_reversion_score(event_data: dict) -> dict:
+    """
+    Score de mean reversion — quão esticado está o preço.
+    Fonte: institutional_analytics.mean_reversion
+    """
+    ia = event_data.get("institutional_analytics", {})
+    mr_data = ia.get("mean_reversion", {})
+
+    if mr_data and isinstance(mr_data, dict):
+        score = mr_data.get("score") or mr_data.get("reversion_score")
+        signal = mr_data.get("signal", "")
+        if score is not None:
+            return {
+                "score": round(float(score), 3),
+                "sig": str(signal)[:15] if signal else "",
+            }
+
+    # Fallback: inferir via Hurst + posição no regression channel
+    # FIX 3d: threshold reduzido de 0.3 para 0.2, hurst de 0.45 para 0.48
+    ext = event_data.get("technical_indicators_extended", {})
+    hurst = ext.get("hurst_exponent")
+    reg = ext.get("regression_channel", {})
+    pos = reg.get("position_in_channel") if isinstance(reg, dict) else None
+
+    if hurst is not None and pos is not None:
+        h = float(hurst)
+        p = float(pos)
+
+        if h < 0.48 and abs(p - 0.5) > 0.2:
+            strength = round((0.5 - h) * abs(p - 0.5) * 4, 3)
+            if p < 0.35:
+                sig = "stretched_bear"
+            elif p > 0.65:
+                sig = "stretched_bull"
+            else:
+                sig = "mild_stretch"
+
+            return {
+                "score": strength,
+                "sig": sig,
+                "src": "inferred",
+            }
+
+    return {}
+
+
+# ============================================================
+# ESCALA GRADUAL DE COMPACTAÇÃO DO SUMMARY
+# ============================================================
+
+_SUMMARY_THRESHOLDS = [
+    (4000, "full"),             # Era 2500, aumentado para 4KB para Qwen/Groq 70B
+    (5000, "truncate_notes"),    # Era 3500
+    (6000, "essentials_only"),   # Era 4500
+    (8192, "remove"),            # Era 6144
+]
+
+_SUMMARY_ESSENTIAL_KEYS: dict[str, set] = {
+    "flow":          {"bias", "type", "conf", "actor"},
+    "sr":            {"nearest", "compressed", "conf_bias"},
+    "regime":        {"label", "strategies"},
+    "institutional": {"whale_bias", "profile_bias", "unfinished"},
+    "quality":       {"reliable", "confidence_cap", "issues"},
+}
+
+_SUMMARY_REQUIRED_KEYS: dict[str, set] = {
+    "flow":          {"bias", "type", "actor", "conf", "note"},
+    "sr":            {"nearest", "compressed", "conf_bias", "note"},
+    "regime":        {"label", "strategies", "avoid", "duration", "note"},
+    "institutional": {"auction_state", "whale_bias", "profile_bias", "unfinished", "note"},
+    "quality":       {"reliable", "confidence_cap", "issues", "note"},
+}
+
+
+def _compact_summary_by_level(summary: dict, level: str) -> dict:
+    """Compacta o summary progressivamente conforme o nível."""
+    if level == "full":
+        return summary
+
+    if level == "truncate_notes":
+        # Mantém todos os campos obrigatórios, remove extras desconhecidos,
+        # trunca notas a 100 chars e listas a 2 itens
+        compacted = {}
+        for key, section in summary.items():
+            required = _SUMMARY_REQUIRED_KEYS.get(key, {"note"})
+            compacted[key] = {
+                k: (v[:100] if isinstance(v, str) and k == "note" else
+                    v[:2] if isinstance(v, list) else v)
+                for k, v in section.items()
+                if k in required
+            }
+        return compacted
+
+    if level == "essentials_only":
+        return {
+            key: {
+                k: (v[:2] if isinstance(v, list) else v)
+                for k, v in section.items()
+                if k in _SUMMARY_ESSENTIAL_KEYS.get(key, set())
+            }
+            for key, section in summary.items()
+        }
+
+    return {}
+
+
+def _determine_compaction_level(size: int) -> str:
+    """Determina o nível de compactação baseado no tamanho."""
+    for threshold, level in _SUMMARY_THRESHOLDS:
+        if size <= threshold:
+            return level
+    return "remove"
+
+
+# ============================================================
 # FUNÇÃO PRINCIPAL
 # ============================================================
 
+def _build_summary_section(payload: dict) -> dict:
+    """
+    Constrói seção de resumos interpretativos.
+    Cada builder é isolado — falha em um não afeta os outros.
+    """
+    if not _SUMMARIES_AVAILABLE:
+        return {}
+
+    summary: dict[str, Any] = {}
+
+    _builders = {
+        "flow":          build_flow_summary,
+        "sr":            build_sr_summary,
+        "regime":        build_regime_summary,
+        "institutional": build_institutional_summary,
+        "quality":       build_quality_summary,
+    }
+
+    for name, builder in _builders.items():
+        try:
+            result = builder(payload)
+            if result:
+                summary[name] = result
+        except Exception as exc:
+            logger.warning(
+                "SUMMARY_BUILD_ERROR: builder=%s error=%s",
+                name,
+                str(exc),
+            )
+
+    return summary
+
+
 def build_compact_payload(event_data: dict) -> dict:
     """
-    Constrói payload compactado para envio à LLM.
+    Construtor Principal de Payload Compactado.
+ para envio à LLM.
 
     IMPORTANTE: Usa keys LONGAS (price, flow, regime, etc.) para
     compatibilidade com o pipeline existente (ai_analyzer_qwen.py).
@@ -941,6 +1425,35 @@ def build_compact_payload(event_data: dict) -> dict:
     if regime:
         payload["regime"] = regime                       # ← ERA "r"
 
+    ia_quality = event_data.get("institutional_analytics", {}).get("quality", {})
+    reliability = event_data.get("data_reliability", {})
+
+    latency_data = (ia_quality.get("latency", {}) or {})
+    calendar_data = (ia_quality.get("calendar", {}) or {})
+
+    lat = latency_data.get("latency_ms") or reliability.get("latency_ms")
+    cat = latency_data.get("latency_category") or reliability.get("latency_category", "OK")
+    # FIX 3a: preservar valor completo de liquidez (não truncar)
+    liq = calendar_data.get("expected_liquidity") or reliability.get("expected_liquidity", "NORMAL")
+    # FIX 3a: capturar feriado
+    is_holiday = calendar_data.get("is_us_holiday", 0)
+    holiday_name = calendar_data.get("holiday_name", "")
+
+    if lat or cat != "OK" or liq != "NORMAL" or is_holiday:
+        qual: dict[str, Any] = {}
+        if cat and cat != "OK":
+            qual["lat"] = cat[:4]
+        # FIX 3a: não truncar liq — preservar VERY_LOW intacto
+        if liq and liq != "NORMAL":
+            qual["liq"] = liq
+        if lat and lat > 2000:
+            qual["ms"] = round(lat)
+        # FIX 3a: incluir feriado no payload
+        if is_holiday and holiday_name:
+            qual["holiday"] = holiday_name[:25]
+        if qual:
+            payload["qual"] = qual
+
     # ═══════════════════════════════════════════════════════════
     # SEÇÕES OBRIGATÓRIAS: sempre incluir, mesmo que vazias.
     # IA sem flow/ob/tf/sr decide às cegas → pior que payload
@@ -978,50 +1491,130 @@ def build_compact_payload(event_data: dict) -> dict:
         or trigger in IMPORTANT_EVENTS
     )
 
+    global _last_static_ctx, _last_static_ts
+
     if force_ctx or _should_send_static(static_ctx):
         payload["ctx"] = static_ctx
         ctx_status = "SENT" + (" (forced)" if force_ctx else "")
+        # Atualizar cache
+        _last_static_ctx = static_ctx
+        _last_static_ts = time.time()
     else:
-        # P3: ctx CACHED — enviar versão mínima para IA não ficar "cega"
+        # P3: ctx CACHED — enviar versão mínima com campos essenciais
         if _last_static_ctx:
-            payload["ctx"] = {
+            mini_ctx: dict[str, Any] = {
                 "cached": True,
                 "ses": _last_static_ctx.get("ses"),
-                "fg": _last_static_ctx.get("fg"),
-                "vix": _last_static_ctx.get("vix"),
-                "poc": _last_static_ctx.get("poc"),
-                "val": _last_static_ctx.get("val"),
-                "vah": _last_static_ctx.get("vah"),
             }
-            # Remover keys None para compactar
-            payload["ctx"] = {k: v for k, v in payload["ctx"].items() if v is not None}
+            # Incluir campos críticos para continuidade analítica
+            for _key in ("lsr", "oi", "dxy30", "vix", "fg"):
+                if _key in _last_static_ctx:
+                    mini_ctx[_key] = _last_static_ctx[_key]
+            payload["ctx"] = mini_ctx
         else:
+            # Fallback (não deveria acontecer se cache funciona)
             payload["ctx"] = {"cached": True}
         ctx_status = "CACHED(mini)"
 
-    # --- LOG ---
-    sections = len(payload)
+    # ═══════════════════════════════════════════════════════════
+    # DADOS CRÍTICOS FALTANTES — gaps identificados na auditoria
+    # Injetados ANTES do summary para que os builders possam usá-los
+    # ═══════════════════════════════════════════════════════════
+
+    ofi = _build_ofi(event_data)
+    if ofi:
+        payload["ofi"] = ofi
+
+    vwap_ctx = _build_vwap_context(event_data)
+    if vwap_ctx:
+        payload["vwap"] = vwap_ctx
+
+    iceberg = _build_iceberg(event_data)
+    if iceberg:
+        payload["iceberg"] = iceberg
+
+    liq_clusters = _build_liquidity_clusters(event_data)
+    if liq_clusters:
+        payload["liq"] = liq_clusters
+
+    sm_score = _build_smart_money_score(event_data)
+    if sm_score:
+        payload["sm"] = sm_score
+
+    cvd_div = _build_cvd_divergence(event_data)
+    if cvd_div:
+        payload["cvd_div"] = cvd_div
+
+    mr_score = _build_mean_reversion_score(event_data)
+    if mr_score:
+        payload["mr"] = mr_score
+
+    # ═══════════════════════════════════════════════════════════
+    # SUMMARY BUILDERS
+    # ═══════════════════════════════════════════════════════════
+    summary = _build_summary_section(payload)
+    if summary:
+        payload["summary"] = summary
+
+    # ═══════════════════════════════════════════════════════════
+    # ESCALA GRADUAL DE COMPACTAÇÃO
+    # ═══════════════════════════════════════════════════════════
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    payload_size = len(payload_json)
+
+    compaction_level = _determine_compaction_level(payload_size)
+
+    if compaction_level == "remove":
+        logger.error(
+            "PAYLOAD_OVER_HARD_LIMIT: %d bytes — removendo summary",
+            payload_size,
+        )
+        payload.pop("summary", None)
+    elif compaction_level != "full":
+        logger.warning(
+            "PAYLOAD_COMPACTION: %d bytes — nível=%s",
+            payload_size,
+            compaction_level,
+        )
+        # Remover seção ext (indicadores secundários) — salva ~350 bytes
+        payload.pop("ext", None)
+
+        # Compactar TFs: remover macd/atr/r mas MANTER adx (crítico)
+        if "tf" in payload:
+            for tf_name in payload["tf"]:
+                if isinstance(payload["tf"][tf_name], dict):
+                    for k in ["macd", "atr", "r"]:
+                        payload["tf"][tf_name].pop(k, None)
+
+        if "summary" in payload:
+            payload["summary"] = _compact_summary_by_level(
+                payload["summary"], compaction_level
+            )
+            payload["summary"]["_compacted"] = compaction_level
+
+    # Recalcular após compactação
     payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     payload_size = len(payload_json)
     estimated_tokens = payload_size // 4
     tf_keys = list(tf_section.keys()) if tf_section else "NONE"
+    summary_keys = list(summary.keys()) if summary else "NONE"
+    gaps_added = [k for k in ("ofi", "vwap", "iceberg", "liq", "sm", "cvd_div", "mr")
+                  if k in payload]
 
     logger.info(
-        f"BUILD_COMPACT: OK | price={price.get('c')} | "
-        f"sections={sections} | size={payload_size} chars | "
-        f"~{estimated_tokens} tokens | tf={tf_keys} | ctx={ctx_status}"
+        "BUILD_COMPACT: OK | price=%s | size=%d chars | ~%d tokens | "
+        "tf=%s | summary=%s | gaps=%s | compaction=%s | ctx=%s",
+        price.get("c"),
+        payload_size,
+        estimated_tokens,
+        tf_keys,
+        summary_keys,
+        gaps_added,
+        compaction_level,
+        ctx_status,
     )
 
-    logger.debug(f"COMPACT_PAYLOAD_DEBUG: {payload_json}")
-
-    # ═══════════════════════════════════════════════════════════
-    # NÃO injetar em event_data aqui.                ← CORRIGIDO
-    # O pipeline (ai_analyzer_qwen.py linha 3499)
-    # detecta "price" no event_data FLAT e faz o
-    # empacotamento como ai_payload automaticamente.
-    # Basta que o CALLER coloque o payload flat no
-    # event_data, o que já acontece no fluxo normal.
-    # ═══════════════════════════════════════════════════════════
+    logger.debug("COMPACT_PAYLOAD_DEBUG: %s", payload_json)
 
     return payload
 

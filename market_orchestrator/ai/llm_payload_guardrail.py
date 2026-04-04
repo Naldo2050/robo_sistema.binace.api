@@ -59,6 +59,85 @@ _MAX_BYTES_LLM = 6144  # 6KB
 _GUARDRAIL_THRESHOLD_BYTES = 8192  # 8KB
 
 
+# ============================================================
+# WHITELIST DE KEYS PERMITIDAS NO PAYLOAD FLAT
+# Atualizada para incluir todos os campos do build_compact_payload v3.1+
+# ============================================================
+
+_ALLOWED_FLAT_KEYS: frozenset[str] = frozenset({
+    # Identidade
+    "symbol",
+    "epoch_ms",
+    "trigger",
+    "tipo_evento",
+    "descricao",
+    "ativo",
+    "window",
+
+    # Seções principais — obrigatórias
+    "price",
+    "regime",
+    "flow",
+    "ob",
+    "tf",
+    "sr",
+
+    # Seções principais — opcionais
+    "qual",
+    "w",
+    "ctx",
+    "ext",
+    "alerts",
+    "quant",
+
+    # Gaps críticos — adicionados em v3.1
+    "ofi",
+    "vwap",
+    "liq",
+    "sm",
+    "cvd_div",
+    "mr",
+    "iceberg",
+
+    # Summary builders — adicionados em v3.2
+    "summary",
+
+    # Metadados internos
+    "_v",
+    "_compacted",
+})
+
+
+def _is_allowed_key(key: str) -> bool:
+    """Verifica se uma key é permitida no payload flat."""
+    return key in _ALLOWED_FLAT_KEYS or key.startswith("_")
+
+
+def guardrail_rewrap(payload: dict) -> dict:
+    """
+    Re-empacota payload flat como event_data[ai_payload].
+
+    IMPORTANTE: preserva TODAS as keys da whitelist.
+    Keys fora da whitelist são logadas e descartadas.
+    """
+    allowed = {k: v for k, v in payload.items() if _is_allowed_key(k)}
+    dropped = [k for k in payload if not _is_allowed_key(k)]
+
+    if dropped:
+        logging.debug(
+            "GUARDRAIL_REWRAP: keys descartadas (não na whitelist): %s",
+            dropped,
+        )
+
+    logging.info(
+        "GUARDRAIL_REWRAP flat payload re-wrapped as event_data[ai_payload] "
+        "keys=%s",
+        sorted(allowed.keys()),
+    )
+
+    return {"ai_payload": allowed}
+
+
 def _is_already_compressed(payload: Dict[str, Any]) -> bool:
     """
     Verifica se o payload já foi comprimido pelo builder ou compressor.

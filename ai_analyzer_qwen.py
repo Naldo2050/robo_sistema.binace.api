@@ -310,11 +310,13 @@ def _create_structured_logger(name: str, prefix: str) -> Any:
 _ensure_safe_llm_payload: Callable[[Any], Any]
 try:
     from market_orchestrator.ai.llm_payload_guardrail import ensure_safe_llm_payload as _ensure_safe
+    from market_orchestrator.ai.llm_payload_guardrail import guardrail_rewrap as _guardrail_rewrap
     _ensure_safe_llm_payload = _ensure_safe
 except ImportError:
     def _fallback_ensure_safe(payload: Any) -> Any:
         return payload
     _ensure_safe_llm_payload = _fallback_ensure_safe
+    _guardrail_rewrap = None  # type: ignore[assignment]
 
 # AI Payload Builder
 _get_llm_payload_config: Callable[[], Dict[str, Any]]
@@ -1808,6 +1810,15 @@ class AIAnalyzer:
         if isinstance(ctx, dict) and ctx:
             out["ctx"] = ctx
         # Se ctx nao presente, IA usa ultimo contexto recebido
+
+        # FIX 5: pass-through de seções adicionadas em v3.1+
+        # Estas seções eram descartadas pelo groq summary, causando
+        # perda de ~60% do payload antes de chegar na IA.
+        for passthrough_key in ("ofi", "vwap", "liq", "mr", "sm",
+                                "cvd_div", "iceberg", "qual", "summary"):
+            val = payload.get(passthrough_key)
+            if val is not None and val not in ({}, [], ""):
+                out[passthrough_key] = val
 
         return {
             key: value
@@ -3636,29 +3647,32 @@ class AIAnalyzer:
         # O guardrail (BUG3 fix) retorna o compact payload como raiz,
         # mas _create_prompt espera event_data["ai_payload"].
         # Se detectar payload flat (tem "price" mas não "ai_payload"),
-        # re-empacotar para que _create_prompt encontre o ai_payload.
+        # re-empacotar via guardrail_rewrap (preserva whitelist completa).
         if (
             isinstance(event_data, dict)
             and "ai_payload" not in event_data
             and "price" in event_data
             and any(k in event_data for k in ("ob", "flow", "quant"))
         ):
-            _flat_payload = dict(event_data)
-            event_data = {
-                "ai_payload": _flat_payload,
-                "tipo_evento": _flat_payload.get("tipo_evento"),
-                "descricao": _flat_payload.get("descricao"),
-                "symbol": _flat_payload.get("symbol"),
-                "ativo": _flat_payload.get("symbol"),
-                "epoch_ms": _flat_payload.get("epoch_ms"),
-                "janela_numero": _flat_payload.get("window"),
-            }
-            event_data = {k: v for k, v in event_data.items() if v is not None}
-            logging.info(
-                "GUARDRAIL_REWRAP flat payload re-wrapped as event_data[ai_payload] "
-                "keys=%s",
-                list(_flat_payload.keys())[:10],
-            )
+            if _guardrail_rewrap is not None:
+                event_data = _guardrail_rewrap(event_data)
+            else:
+                _flat_payload = dict(event_data)
+                event_data = {
+                    "ai_payload": _flat_payload,
+                    "tipo_evento": _flat_payload.get("tipo_evento"),
+                    "descricao": _flat_payload.get("descricao"),
+                    "symbol": _flat_payload.get("symbol"),
+                    "ativo": _flat_payload.get("symbol"),
+                    "epoch_ms": _flat_payload.get("epoch_ms"),
+                    "janela_numero": _flat_payload.get("window"),
+                }
+                event_data = {k: v for k, v in event_data.items() if v is not None}
+                logging.info(
+                    "GUARDRAIL_REWRAP flat payload re-wrapped as event_data[ai_payload] "
+                    "keys=%s",
+                    list(_flat_payload.keys())[:10],
+                )
 
         # Preservar info de v2 que foi removida pelo guardrail
         if _ai_payload_has_v2:

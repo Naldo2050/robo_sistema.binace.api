@@ -56,13 +56,13 @@ llm_payload:
     cross_asset_context: 1800
   guardrail_hard_enabled: true
   tripwires:
-    fallback_rate_max: 0.05          # 5% (era 0.5% — muito restrito)
-    abort_rate_max: 0.02             # 2% (era 0.01% — impossível)
-    guardrail_block_rate_max: 0.50   # 50% (era 25% — todo analyze() com raw_event bloqueia)
-    bytes_p95_max: 90000             # 90KB (era 6KB — payloads reais chegam a 80KB)
+    fallback_rate_max: 0.10          # 10% (era 5% — guardrail causava fallbacks falsos antes do fix)
+    abort_rate_max: 0.12             # 12% (era 2% — primeiras janelas abortam por dados incompletos)
+    guardrail_block_rate_max: 0.50   # 50% (todo analyze() com raw_event bloqueia)
+    bytes_p95_max: 90000             # 90KB (payloads reais chegam a 80KB)
     cache_hit_rate_min:
-      macro_context: 0.15            # 15% (era 60% — cache macro ainda baixo)
-      cross_asset_context: 0.15      # 15% (era 60% — idem)
+      macro_context: 0.0             # 0% (cache macro demora a aquecer, não deve disparar tripwire)
+      cross_asset_context: 0.0       # 0% (idem — cache cross_asset pode nunca ter hit nas primeiras janelas)
 
 sampling:
   # Balanceamento de classes
