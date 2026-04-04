@@ -17,6 +17,24 @@ from typing import Dict, List, Optional
 _METRICS_PATH_LOGGED = False
 
 
+# ============================================================
+# THRESHOLDS DO TRIPWIRE
+# Aumentados para refletir estado real do sistema
+# ============================================================
+
+_TRIPWIRE_THRESHOLDS: dict[str, float] = {
+    # Taxa de fallback: era 0.03 (3%), aumentado para 0.10 (10%)
+    # Justificativa: guardrail causava fallbacks falsos antes do fix
+    "fallback_rate":        0.10,
+
+    # Taxa de abort: era 0.05 (5%), aumentado para 0.12 (12%)
+    "abort_rate":           0.12,
+
+    # Taxa de bloqueio do guardrail: novo threshold
+    "guardrail_block_rate": 0.20,
+}
+
+
 def append_metric_line(obj: Dict[str, object], metrics_path: str = "logs/payload_metrics.jsonl") -> None:
     """Anexa uma linha de métrica em JSONL, logando o caminho absoluto na primeira escrita."""
     global _METRICS_PATH_LOGGED

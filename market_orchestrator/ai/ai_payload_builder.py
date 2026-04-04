@@ -807,12 +807,13 @@ def build_ai_input(
             regime_analysis = {}
 
     # 6. Metadados do Sinal
+    # DEDUP-4: timestamp_utc removido — redundante com root timestamp
+    # DEDUP-7: battle_result removido — resultado_da_batalha é STORAGE_ONLY
+    #           (sempre "N/A" para ANALYSIS_TRIGGER, sem valor analítico para IA)
     signal_metadata = {
         "type": signal.get("tipo_evento"),
-        "battle_result": signal.get("resultado_da_batalha"),
         "severity": signal.get("severity", "INFO"),
         "window_id": signal.get("janela_numero"),
-        "timestamp_utc": signal.get("timestamp_utc"),
         "description": signal.get("descricao")
     }
 
@@ -1259,6 +1260,20 @@ def build_ai_input(
         "_section_cache",          # metadado de cache
     ]
     for _k in _internal_keys:
+        ai_payload.pop(_k, None)
+
+    # DEDUP-7: Remover campos STORAGE_ONLY / DEBUG_ONLY da raiz do payload IA
+    # Estes campos existem para auditoria/logs mas não têm valor analítico para o LLM.
+    _storage_only_keys = [
+        "backup_exchanges",   # metadado de infraestrutura
+        "primary_exchange",   # metadado de infraestrutura
+        "data_feed_type",     # metadado de debug
+        "sequence_id",        # metadado de auditoria
+        "_log_id",            # metadado de auditoria
+        "resultado_da_batalha",  # STORAGE_ONLY — sempre "N/A" para ANALYSIS_TRIGGER
+        "is_signal",          # booleano interno de pipeline
+    ]
+    for _k in _storage_only_keys:
         ai_payload.pop(_k, None)
 
     # Remover total_features do quant_model (não ajuda LLM)
