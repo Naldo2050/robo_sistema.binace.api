@@ -413,6 +413,11 @@ class EventSaver:
         self._seen_in_block: Dict[Tuple, float] = {}
         self._last_cleanup_time = time.time()
         
+        # 🆕 Rastreador de timestamps para deduplicação
+        self._last_event_timestamp_ms: Optional[int] = None
+        self._duplicate_event_count = 0
+        self._max_timestamp_gap_ms = 100  # Detecta saltos de tempo fora do esperado
+        
         # Buffer de escrita + thread de flush
         self._write_buffer: List[Dict] = []
         self._buffer_lock = threading.Lock()
@@ -1135,6 +1140,35 @@ class EventSaver:
                     epoch_ms = _clock_sync_instance.get_server_time_ms()
                     event["epoch_ms"] = epoch_ms
             
+            # 🆕 DEDUPLICAÇÃO DE TIMESTAMPS
+            # Detecta e avisa quando eventos com timestamps duplicados são salvos
+            if epoch_ms is not None:
+                try:
+                    epoch_ms_int_candidate = int(epoch_ms)
+                    if self._last_event_timestamp_ms is not None and epoch_ms_int_candidate == self._last_event_timestamp_ms:
+                        self._duplicate_event_count += 1
+                        self.logger.warning(
+                            f"⚠️ Timestamp DUPLICADO detectado: {epoch_ms_int_candidate}ms "
+                            f"(ocorrência #{self._duplicate_event_count} nesta sequência) "
+                            f"| evento: {event.get('tipo_evento', 'unknown')}"
+                        )
+                        # Ajustar timestamp para evitar colisão
+                        epoch_ms_int = epoch_ms_int_candidate + self._duplicate_event_count
+                        event["epoch_ms"] = epoch_ms_int
+                        event["_dedup_adjusted"] = True
+                        self.logger.info(f"✅ Timestamp ajustado para: {epoch_ms_int}ms")
+                    elif epoch_ms_int_candidate - (self._last_event_timestamp_ms or 0) > self._max_timestamp_gap_ms * 10:
+                        # Reset contador se houver gap grande
+                        self._duplicate_event_count = 0
+                        epoch_ms_int = epoch_ms_int_candidate
+                        self._last_event_timestamp_ms = epoch_ms_int
+                    else:
+                        self._duplicate_event_count = 0
+                        epoch_ms_int = epoch_ms_int_candidate
+                        self._last_event_timestamp_ms = epoch_ms_int
+                except Exception as dedup_err:
+                    self.logger.debug(f"Erro na deduplicação: {dedup_err}")
+            
             # 🆕 Garante ID único para rastreabilidade
             if "event_id" not in event:
                 # Gera ID determinístico baseado em timestamp e tipo se possível, ou aleatório
@@ -1143,7 +1177,8 @@ class EventSaver:
 
             if epoch_ms is not None and isinstance(epoch_ms, (int, float, str)):
                 try:
-                    epoch_ms_int = int(epoch_ms)
+                    if epoch_ms_int is None:
+                        epoch_ms_int = int(epoch_ms)
                     if 946684800000 <= epoch_ms_int <= 4102444800000:
                         dt_utc = datetime.fromtimestamp(epoch_ms_int / 1000, tz=UTC_TZ)
                     else:

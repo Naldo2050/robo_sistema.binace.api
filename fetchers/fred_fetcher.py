@@ -181,6 +181,10 @@ class FREDFetcher:
             logger.debug("FRED API não configurada")
             return None
         
+        if os.getenv("BOT_TEST_MODE") == "1":
+            logger.debug(f"[TEST_MODE] FRED: Ignorando busca real para {symbol}")
+            return self._get_from_disk_cache(symbol) or 0.0
+
         # Verificar se símbolo está em modo de falha (fallback ativo)
         if self.is_failing(symbol):
             logger.debug(f"FRED: {symbol} está em modo fallback (falha recente)")
@@ -270,10 +274,13 @@ class FREDFetcher:
         Returns:
             DataFrame com colunas ['date', 'value'] ou vazio
         """
-        fred_id = self.symbol_map.get(symbol)
         if not fred_id or not self.is_available():
             return pd.DataFrame()
         
+        if os.getenv("BOT_TEST_MODE") == "1":
+            logger.debug(f"[TEST_MODE] FRED: Ignorando busca histórica para {symbol}")
+            return pd.DataFrame()
+
         try:
             end_date = datetime.now().strftime("%Y-%m-%d")
             start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")

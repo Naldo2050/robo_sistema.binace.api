@@ -9,14 +9,15 @@ do arquivo market_orchestrator.py original, adaptados para funções
 que recebem `bot` como argumento.
 """
 
+from __future__ import annotations
+
 import threading
 import logging
 import time
 import json
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Callable, Dict
 
 import config
-from ai_analyzer_qwen import AIAnalyzer  # arquivo na raiz do projeto
 from trading.export_signals import create_chart_signal_from_event, export_signal_to_csv
 from common.format_utils import (
     format_price,
@@ -27,8 +28,12 @@ from common.format_utils import (
 from orderbook_core.structured_logging import StructuredLogger
 from orderbook_core.tracing_utils import TracerWrapper
 
-# [BUILD_COMPACT] Payload compacto direto do event_data
-from build_compact_payload import build_compact_payload
+if TYPE_CHECKING:
+    from common.ai_protocols import (
+        AIAnalyzerProtocol,
+        BotAIRuntimeProtocol,
+        BuildCompactPayloadProtocol,
+    )
 
 # [THROTTLE] Controle de frequencia de chamadas IA (v3 singleton)
 try:
@@ -58,7 +63,46 @@ except ImportError:
     decision_to_ai_result = None
 
 
-def initialize_ai_async(bot) -> None:
+class AIRunner:
+    """
+    Wrapper de dependências da IA com imports lazy para evitar ciclos.
+    """
+
+    def __init__(
+        self,
+        analyzer_factory: Callable[..., "AIAnalyzerProtocol"],
+        payload_builder: "BuildCompactPayloadProtocol",
+    ) -> None:
+        self._analyzer_factory = analyzer_factory
+        self._payload_builder = payload_builder
+
+    @classmethod
+    def create(cls) -> "AIRunner":
+        from ai_analyzer_qwen import AIAnalyzer
+        from build_compact_payload import build_compact_payload
+
+        return cls(
+            analyzer_factory=AIAnalyzer,
+            payload_builder=build_compact_payload,
+        )
+
+    def create_analyzer(self, **kwargs: Any) -> "AIAnalyzerProtocol":
+        return self._analyzer_factory(**kwargs)
+
+    def build_payload(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
+        # _payload_builder retorna CompactAIPayload (TypedDict), que é um Dict em runtime
+        return self._payload_builder(event_data)  # type: ignore[return-value]
+
+
+def _get_ai_runner(bot: "BotAIRuntimeProtocol") -> AIRunner:
+    runner = getattr(bot, "ai_runner", None)
+    if runner is None:
+        runner = AIRunner.create()
+        setattr(bot, "ai_runner", runner)
+    return runner
+
+
+def initialize_ai_async(bot: "BotAIRuntimeProtocol") -> None:
     """
     Inicializa a IA em uma thread separada, exatamente como no método
     EnhancedMarketBot._initialize_ai_async original.
@@ -108,7 +152,7 @@ def initialize_ai_async(bot) -> None:
                 except Exception:
                     hm = None
 
-                bot.ai_analyzer = AIAnalyzer(
+                bot.ai_analyzer = _get_ai_runner(bot).create_analyzer(
                     health_monitor=hm,
                     module_name="ai",
                 )
@@ -119,7 +163,7 @@ def initialize_ai_async(bot) -> None:
                 try:
                     from ml.inference_engine import MLInferenceEngine
                     bot.ml_engine = MLInferenceEngine()
-                    logging.info("ML engine: XGBoost inicializado")
+                    logging.info("✅ ML engine: XGBoost inicializado com sucesso")
 
                     # Teste rápido do ML Engine
                     test_result = bot.ml_engine.predict({
@@ -130,11 +174,17 @@ def initialize_ai_async(bot) -> None:
 
                     _ml_status = test_result.get("status", "unknown")
                     if _ml_status == "ok":
-                        logging.info(f"ML engine testado: {test_result.get('prob_up', 0):.1%}")
+                        logging.info(f"✅ ML engine testado com sucesso: prob_up={test_result.get('prob_up', 0):.1%}")
                     elif _ml_status == "hybrid_disabled":
-                        logging.info("ML Engine: hybrid mode desabilitado (usando LLM only)")
+                        logging.warning(
+                            "⚠️ ML Engine: hybrid mode DESABILITADO (usando LLM only) - "
+                            "XGBoost carregado mas retorno com status degradado"
+                        )
                     else:
-                        logging.warning(f"⚠️ ML Engine teste falhou: {_ml_status}")
+                        logging.warning(
+                            f"⚠️ ML Engine teste retornou status: {_ml_status} "
+                            f"(esperado: 'ok')"
+                        )
 
                     try:
                         slog.info(
@@ -202,7 +252,10 @@ def initialize_ai_async(bot) -> None:
     threading.Thread(target=ai_init_worker, daemon=True).start()
 
 
-def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
+def run_ai_analysis_threaded(
+    bot: "BotAIRuntimeProtocol",
+    event_data: Dict[str, Any],
+) -> None:
     """
     Executa a análise da IA em uma thread separada, com:
     - rate limiter
@@ -421,9 +474,10 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                         logging.debug("WindowState inject falhou (nao-critico): %s", _ws_err)
 
                     ml_prediction = {}
-                    if hasattr(bot, 'ml_engine') and bot.ml_engine:
+                    ml_engine = getattr(bot, "ml_engine", None)
+                    if ml_engine:
                         try:
-                            ml_prediction = bot.ml_engine.predict(event_data)
+                            ml_prediction = ml_engine.predict(event_data)
 
                             if ml_prediction.get("status") == "ok":
                                 prob = ml_prediction.get("prob_up", 0.5)
@@ -490,8 +544,9 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                     # but the XGBoost model uses window closes (~1e-4 scale).
                     # Copy the real features from feature_calc to keep the event consistent.
                     try:
-                        if hasattr(bot, 'feature_calc') and bot.feature_calc.history_count >= 2:
-                            _real_fc = bot.feature_calc.compute()
+                        feature_calc = getattr(bot, "feature_calc", None)
+                        if feature_calc is not None and feature_calc.history_count >= 2:
+                            _real_fc = feature_calc.compute()
                             _pf = event_data.setdefault("ml_features", {}).setdefault("price_features", {})
                             _r1 = _real_fc.get("return_1")
                             if _r1 is not None:
@@ -544,7 +599,7 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
 
                     # [BUILD_COMPACT] Payload compacto direto do event_data
                     try:
-                        ai_payload = build_compact_payload(event_data)
+                        ai_payload = _get_ai_runner(bot).build_payload(event_data)
 
                         # Preencher quant model com ML prediction real
                         if ml_prediction.get("status") == "ok":
@@ -701,8 +756,9 @@ def run_ai_analysis_threaded(bot, event_data: Dict[str, Any]) -> None:
                                     "ai_payload": ai_payload,  # Usa o payload já otimizado
                                 }
 
-                                if hasattr(bot, "event_saver") and bot.event_saver:
-                                    bot.event_saver.save_event(ai_event)
+                                event_saver = getattr(bot, "event_saver", None)
+                                if event_saver:
+                                    event_saver.save_event(ai_event)
 
                             except Exception as e:
                                 logging.debug(

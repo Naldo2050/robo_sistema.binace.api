@@ -10,6 +10,7 @@ import threading
 from typing import Optional, Dict, Any
 from datetime import datetime
 import aiohttp
+from fetchers.macro_cache_validator import MacroCacheValidator
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,9 @@ class MacroDataProvider:
         self._yfinance_cache_timestamps: Dict[str, float] = {}
         self._last_yfinance_update: float = 0  # Timestamp do último update yfinance
         self._YFINANCE_CACHE_TTL: int = 900  # 15 minutos em segundos
+
+        # FIX #5: Cache validator para detecção de stale data
+        self._cache_validator = MacroCacheValidator()
 
         # ══════════════════════════════════════════════════════════════════════
         # CACHE INTELIGENTE BASEADO EM INTERVALOS DO CONFIG
@@ -389,6 +393,9 @@ class MacroDataProvider:
         Calcula dominância de forma ASSÍNCRONA usando aiohttp.
         Versão principal agora é async.
         """
+        if os.getenv("BOT_TEST_MODE") == "1":
+            return 51.5 if coin == "BTC" else 17.2
+
         try:
             await self._wait_for_rate_limit("binance")
             session = await self._get_session()
@@ -460,6 +467,9 @@ class MacroDataProvider:
         cached = self._get_yfinance_cached("vix")
         if cached is not None:
             return cached
+        
+        if os.getenv("BOT_TEST_MODE") == "1":
+            return 18.5
 
         try:
             loop = asyncio.get_running_loop()
@@ -529,13 +539,15 @@ class MacroDataProvider:
         else:
             logger.warning("⚠️ Chave da API Twelve Data não configurada para TNX")
         
-        # Fallback para Yahoo Finance
         # Verificação RÍGIDA de cache ANTES de qualquer conexão
         cached = self._get_yfinance_cached("treasury_10y")
         if cached is not None:
             logger.debug(f"📦 Treasury 10Y usando cache: {cached:.2f}%")
             return cached
         
+        if os.getenv("BOT_TEST_MODE") == "1":
+            return 4.2
+
         try:
             loop = asyncio.get_running_loop()
             
@@ -594,6 +606,9 @@ class MacroDataProvider:
         cached = self._get_yfinance_cached("dxy")
         if cached is not None:
             return cached
+        
+        if os.getenv("BOT_TEST_MODE") == "1":
+            return 104.5
 
         # Fonte de verdade absoluta para DXY no Yahoo Finance.
         # Nao usar UUP aqui porque o ETF distorce a escala do indice.
@@ -654,13 +669,16 @@ class MacroDataProvider:
 
     async def _fetch_sp500_impl(self) -> Optional[float]:
         """Implementação real de busca do SPX"""
+        if os.getenv("BOT_TEST_MODE") == "1":
+            return 5000.0
         # Usar Twelve Data como única fonte
         twelve_key = os.getenv("TWELVEDATA_API_KEY")
         if twelve_key:
             try:
                 await self._wait_for_rate_limit("twelve")
                 session = await self._get_session()
-                url = f"https://api.twelvedata.com/time_series?symbol=SPY&interval=1day&apikey={twelve_key}"
+                # 🔄 BUG #2: Trocar SPY (ETF ~500) por ^GSPC (Índice real ~5000)
+                url = f"https://api.twelvedata.com/time_series?symbol=^GSPC&interval=1day&apikey={twelve_key}"
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -691,6 +709,8 @@ class MacroDataProvider:
     
     async def _fetch_gold_impl(self) -> Optional[float]:
         """Implementação real de busca do Gold"""
+        if os.getenv("BOT_TEST_MODE") == "1":
+            return 2300.0
         # Usar Twelve Data como única fonte
         twelve_key = os.getenv("TWELVEDATA_API_KEY")
         if twelve_key:
@@ -733,6 +753,9 @@ class MacroDataProvider:
         if cached is not None:
             return cached
         
+        if os.getenv("BOT_TEST_MODE") == "1":
+            return 80.0
+
         try:
             loop = asyncio.get_running_loop()
             
@@ -756,7 +779,14 @@ class MacroDataProvider:
             value = await loop.run_in_executor(None, _fetch_oil_sync)
             
             if value is not None:
-                logger.debug(f"✅ Oil (Yahoo): ${value:.2f}")
+                # 🔄 BUG #3: Validação e Log Rígido de Petróleo (WTI)
+                raw_value = value
+                # Range razoável para WTI: $20 a $150
+                if value < 10 or value > 250:
+                    logger.warning(f"⚠️ Valor de Petróleo (WTI) suspeito: ${value:.2f}. Aplicando Clamping.")
+                    value = max(10.0, min(250.0, value))
+                
+                logger.info(f"✅ Oil (WTI): Bruto=${raw_value:.2f} -> Ajustado=${value:.2f}")
                 self._set_yfinance_cache("oil", value)
                 return value
         except Exception as e:

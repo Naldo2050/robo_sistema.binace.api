@@ -96,17 +96,17 @@ _CONSENSUS_LABEL: dict[str, str] = {
 }
 
 
-def build_regime_summary(compact_payload: dict[str, Any]) -> dict[str, Any]:
+def build_regime_summary(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Gera resumo interpretado do regime de mercado.
 
     Args:
-        compact_payload: payload já construído pelo build_compact_payload()
+        payload: payload já construído pelo build_compact_payload()
 
     Returns:
         dict com label, strategies, avoid, duration e note
     """
-    regime = compact_payload.get("regime", {})
+    regime = payload.get("regime", {})
 
     if not regime:
         return {

@@ -37,22 +37,22 @@ _COMPRESSION_THRESHOLD_PCT = 0.005
 _NEAR_THRESHOLD_PCT = 0.0015
 
 
-def build_sr_summary(compact_payload: dict[str, Any]) -> dict[str, Any]:
+def build_sr_summary(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Gera resumo interpretado de suporte/resistência.
 
     Args:
-        compact_payload: payload já construído pelo build_compact_payload()
+        payload: payload já construído pelo build_compact_payload()
 
     Returns:
         dict com nearest, compressed, conf_bias, distâncias em ATR e note
     """
-    sr = compact_payload.get("sr", {})
-    price_section = compact_payload.get("price", {})
-    regime = compact_payload.get("regime", {})
+    sr = payload.get("sr", {})
+    price_section = payload.get("price", {})
+    regime = payload.get("regime", {})
 
     close = price_section.get("c") or 0
-    atr_1h = _extract_atr(compact_payload, "1h")
+    atr_1h = _extract_atr(payload, "1h")
 
     if not sr or "_" in sr:
         return {

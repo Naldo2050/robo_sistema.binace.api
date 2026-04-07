@@ -30,6 +30,26 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
+# Compact payload shape helpers
+try:
+    from common.ai_payload_types import is_compact_ai_payload as _is_compact_ai_payload
+except ImportError:
+    def _is_compact_ai_payload(
+        payload: Any,
+        *,
+        require_identity: bool = False,
+        minimum_primary_sections: int = 3,
+    ) -> bool:
+        if not isinstance(payload, dict) or "price" not in payload:
+            return False
+        if require_identity:
+            has_epoch = isinstance(payload.get("epoch_ms"), (int, float))
+            has_symbol = isinstance(payload.get("symbol"), str)
+            if not (has_epoch and has_symbol):
+                return False
+        count = sum(1 for key in ("price", "flow", "ob", "tf", "sr") if key in payload)
+        return count >= minimum_primary_sections
+
 # Payload Compressor (deep compression)
 _optimize_deep_for_ai: Optional[Callable[..., Dict[str, Any]]] = None
 _SectionCache: Optional[type] = None
@@ -1106,7 +1126,7 @@ class AIAnalyzer:
         )
         if self._section_cache and self._compression_enabled:
             logging.info(
-                "AI payload compression ACTIVE (estimated ~70%% token savings)"
+                "AI payload compression ACTIVE (estimated ~35% token savings with cache hits)"
             )
 
         # Modelo padrÃ£o
@@ -1567,7 +1587,7 @@ class AIAnalyzer:
                     return {
                         "bid_depth_usd": float(bid or 0),
                         "ask_depth_usd": float(ask or 0),
-                        "imbalance": float(candidate.get("imbalance", 0)),
+                        "imbalance": float(candidate.get("flow_imbalance", 0)),
                         "depth_imbalance": float(
                             candidate.get("depth_metrics", {}).get("depth_imbalance",
                             candidate.get("depth_imbalance", 0))
@@ -1599,8 +1619,8 @@ class AIAnalyzer:
                         return {
                             "bid_depth_usd": float(bid),
                             "ask_depth_usd": float(ask),
-                            "imbalance": float(level.get("imbalance", 0)),
-                            "depth_imbalance": float(level.get("imbalance", 0)),
+                            "imbalance": float(level.get("flow_imbalance", 0)),
+                            "depth_imbalance": float(level.get("flow_imbalance", 0)),
                             "spread": float(spread_val),
                             "volume_ratio": float(obd.get("total_depth_ratio", 0)),
                             "pressure": 0.0,
@@ -1942,11 +1962,10 @@ class AIAnalyzer:
                 # V2: comprimido por build_ai_input() â†’ compress_payload() (_v=2)
                 # V3: comprimido por compress_payload_v3() (chaves compactas: price, ob, flow)
                 # COMPACT: build_compact_payload() â€” sempre tem "price" e "quant", ob/flow opcionais
-                _is_v3 = (
-                    isinstance(ai_p, dict)
-                    and "price" in ai_p
-                    and "quant" in ai_p
-                    and len(ai_p) > 3
+                _is_v3 = _is_compact_ai_payload(
+                    ai_p,
+                    require_identity=False,
+                    minimum_primary_sections=3,
                 )
                 _is_v2 = isinstance(ai_p, dict) and ai_p.get("_v") == 2 and len(ai_p) > 3 and not _is_v3
                 if _is_v3 or _is_v2:
@@ -2207,7 +2226,7 @@ class AIAnalyzer:
             rebuilt["orderbook_data"] = {
                 "bid_depth_usd": ob_ctx.get("bid_depth_usd"),
                 "ask_depth_usd": ob_ctx.get("ask_depth_usd"),
-                "imbalance": ob_ctx.get("imbalance"),
+                "imbalance": ob_ctx.get("flow_imbalance"),
                 "pressure": ob_ctx.get("market_impact_score"),
                 "depth_metrics": ob_ctx.get("depth_metrics"),
             }
@@ -2372,7 +2391,7 @@ class AIAnalyzer:
             compressed["ob"] = {
                 "bid": ob.get("bid_depth_usd"),
                 "ask": ob.get("ask_depth_usd"),
-                "imb": ob.get("imbalance"),
+                "imb": ob.get("flow_imbalance"),
                 "impact": ob.get("market_impact_score"),
                 "walls": ob.get("walls_detected"),
             }
@@ -2763,7 +2782,7 @@ class AIAnalyzer:
    - tick_rule_sum (upticks vs downticks)
 """
 
-        imbalance = ob_data.get("imbalance", 0)
+        imbalance = ob_data.get("flow_imbalance", 0)
         mid = ob_data.get("mid", 0)
         spread_pct = ob_data.get("spread_percent", 0)
 
@@ -2788,7 +2807,11 @@ class AIAnalyzer:
 
         # Se payload jÃ¡ veio comprimido pelo compress_payload_v3 (chaves compactas),
         # enviar direto como JSON minificado â€” jÃ¡ estÃ¡ otimizado para tokens.
-        if "price" in payload and "ob" in payload and "flow" in payload:
+        if _is_compact_ai_payload(
+            payload,
+            require_identity=False,
+            minimum_primary_sections=3,
+        ):
             payload_for_prompt = (
                 self._build_groq_payload_summary(payload)
                 if self.mode == "groq"
@@ -2878,7 +2901,7 @@ class AIAnalyzer:
             ob_bits.append(f"bid_depth_usd={format_large_number(ob.get('bid_depth_usd'))}")
         if ob.get("ask_depth_usd") is not None:
             ob_bits.append(f"ask_depth_usd={format_large_number(ob.get('ask_depth_usd'))}")
-        if ob.get("imbalance") is not None:
+        if ob.get("flow_imbalance") is not None:
             ob_bits.append(f"imbalance={format_scientific(ob.get('imbalance'), 4)}")
         if ob.get("pressure") is not None:
             ob_bits.append(f"pressure={format_scientific(ob.get('pressure'), 4)}")
@@ -2970,7 +2993,7 @@ class AIAnalyzer:
 
         bid_usd = ob.get("bid_depth_usd")
         ask_usd = ob.get("ask_depth_usd")
-        imbalance = ob.get("imbalance")
+        imbalance = ob.get("flow_imbalance")
         if bid_usd is not None or ask_usd is not None:
             lines.append("ORDERBOOK / LIQUIDEZ")
             lines.append(
@@ -3651,8 +3674,11 @@ class AIAnalyzer:
         if (
             isinstance(event_data, dict)
             and "ai_payload" not in event_data
-            and "price" in event_data
-            and any(k in event_data for k in ("ob", "flow", "quant"))
+            and _is_compact_ai_payload(
+                event_data,
+                require_identity=False,
+                minimum_primary_sections=2,
+            )
         ):
             if _guardrail_rewrap is not None:
                 event_data = _guardrail_rewrap(event_data)

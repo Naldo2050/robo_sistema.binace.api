@@ -3,8 +3,10 @@ import sqlite3
 import json
 import time
 import logging
+import asyncio
 from pathlib import Path
 from typing import List, Dict, Any
+
 # Otimização de eventos (auto-adicionado)
 from pathlib import Path
 import sys
@@ -20,6 +22,7 @@ class EventStore:
     - Modo WAL (Write-Ahead Logging) para alta concorrência.
     - Escrita em batch (executemany) para performance.
     - Índices otimizados para busca por tempo e tipo.
+    - Suporte nativo para chamadas assíncronas (via asyncio.to_thread).
     """
 
     def __init__(self, db_path: str = "dados/trading_bot.db"):
@@ -123,12 +126,16 @@ class EventStore:
             raise
 
     def save_event(self, event: Dict[str, Any]):
-        """Salva um único evento no banco."""
+        """Salva um único evento no banco (Síncrono)."""
         self.save_batch([event])
+
+    async def save_event_async(self, event: Dict[str, Any]):
+        """Salva um único evento no banco (Assíncrono)."""
+        return await asyncio.to_thread(self.save_event, event)
 
     def save_batch(self, events: List[Dict[str, Any]]):
         """
-        Salva uma lista de eventos de forma atômica (transação única).
+        Salva uma lista de eventos de forma atômica (transação única) - Síncrono.
 
         Args:
             events: Lista de dicionários contendo os dados dos eventos.
@@ -191,9 +198,13 @@ class EventStore:
         except Exception as e:
             self.logger.error(f"Erro ao gravar batch no SQLite ({len(data)} eventos): {e}")
 
+    async def save_batch_async(self, events: List[Dict[str, Any]]):
+        """Salva uma lista de eventos de forma atômica (Assíncrono)."""
+        return await asyncio.to_thread(self.save_batch, events)
+
     def get_recent_events(self, limit: int = 100) -> List[Dict[str, Any]]:
         """
-        Recupera os últimos N eventos ordenados cronologicamente.
+        Recupera os últimos N eventos ordenados cronologicamente (Síncrono).
         Substitui a leitura do arquivo snapshot JSON.
 
         Returns:
@@ -211,12 +222,17 @@ class EventStore:
             self.logger.error(f"Erro ao ler eventos recentes: {e}")
             return []
 
+    async def get_recent_events_async(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Recupera os últimos N eventos (Assíncrono)."""
+        return await asyncio.to_thread(self.get_recent_events, limit)
+
     def get_stats(self) -> Dict[str, Any]:
-        """Retorna estatísticas básicas do banco."""
+        """Retorna estatísticas básicas do banco (Síncrono)."""
         try:
             with self._get_conn() as conn:
                 count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-                last_ts = conn.execute("SELECT MAX(timestamp_ms) FROM events").fetchone()[0]
+                last_ts_row = conn.execute("SELECT MAX(timestamp_ms) FROM events").fetchone()
+                last_ts = last_ts_row[0] if last_ts_row else None
                 db_size = (
                     self.db_path.stat().st_size if self.db_path.exists() else 0
                 )
@@ -229,3 +245,7 @@ class EventStore:
                 }
         except Exception as e:
             return {"error": str(e)}
+
+    async def get_stats_async(self) -> Dict[str, Any]:
+        """Retorna estatísticas básicas do banco (Assíncrono)."""
+        return await asyncio.to_thread(self.get_stats)

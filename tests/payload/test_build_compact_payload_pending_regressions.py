@@ -135,7 +135,7 @@ def test_quality_should_be_built_from_institutional_analytics_quality():
 
     assert payload["qual"] == {
         "lat": "DEGR",
-        "liq": "RED",
+        "liq": "REDUCED",
         "ms": 3622,
     }
 

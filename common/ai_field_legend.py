@@ -15,7 +15,7 @@ t=trigger type (AT=analysis,ABS=absorption,EXH=exhaustion,BRK=breakout,WHL=whale
 p=price: c=close,o=open,h=high,l=low,vw=vwap,sh=profile_shape(B=bimodal,P=P-shape,b=b-shape,D=D-shape),auc=auction_type,ph=poor_high(1=yes),pl=poor_low(1=yes)
 r=regime: v=volatility(L=low,M=med,H=high),tr=trend(DN=down,UP=up,SW=sideways),st=sentiment(BEAR/BULL/NEUT)
 f=flow: d1/d5/d15=net_delta_USD_1m/5m/15m(+buy,-sell),cvd=cumulative_volume_delta_BTC,imb=flow_imbalance(-1=strong_sell,+1=strong_buy),ab=aggressive_buy_pct(0-100),bsr=buy_sell_ratio(>1=buyers_dominate,<1=sellers_dominate)
-ob=orderbook: b=bid_depth_USD,a=ask_depth_USD,imb=depth_imbalance(-1=ask_heavy,+1=bid_heavy),t5=top5_levels_imbalance
+ob=orderbook: b=bid_depth_USD,a=ask_depth_USD,t5=top5_flow_imbalance
 w=whale_score(-100=strong_distribution,+100=strong_accumulation,0=neutral)
 q=quant/ML: pu=probability_up(0-1),c=confidence(0-1)
 tf=timeframes: t=trend(DN/UP/SW),rsi(0-100),macd=[line,signal],adx(0-100),atr=avg_true_range,r=regime(RNG=range,ACC=accumulation,TRD=trending,MNP=manipulation)
@@ -26,5 +26,5 @@ When ctx is absent, use the last received context values.
 
 # Versão ultra-compacta para economizar tokens no prompt (~60 tokens)
 FIELD_LEGEND_COMPACT: str = """
-KEYS: t=trigger,p=price(c/o/h/l/vw/sh/auc/ph/pl),r=regime(v/tr/st),f=flow(d1/d5/d15=deltaUSD,cvd=BTC,imb[-1sell+1buy],ab=aggBuy%,bsr[>1=buyDom]),ob(b/a=depthUSD,imb,t5),w=whaleScore[-100dist+100accum],q(pu=probUp,c=conf),tf(t=trend,rsi,macd,adx,atr,r=regime),ctx(ses,dxy,tnx,spx,ndx,gold,wti,vix,fg,poc,val,vah,lsr,oi,eth7,dxy30).K=1000,M=1M.+buy/-sell.USD unless BTC noted.No ctx=use last.
+KEYS: t=trigger,p=price(c/o/h/l/vw/sh/auc/ph/pl),r=regime(v/tr/st),f=flow(d1/d5/d15=deltaUSD,cvd=BTC,imb[-1sell+1buy],ab=aggBuy%,bsr[>1=buyDom]),ob(b/a=depthUSD,t5),w=whaleScore[-100dist+100accum],q(pu=probUp,c=conf),tf(t=trend,rsi,macd,adx,atr,r=regime),ctx(ses,dxy,tnx,spx,ndx,gold,wti,vix,fg,poc,val,vah,lsr,oi,eth7,dxy30).K=1000,M=1M.+buy/-sell.USD unless BTC noted.No ctx=use last.
 """.strip()

@@ -17,31 +17,66 @@ Changelog v3.1 (2026-03-14):
   - Cache de contexto estático (5 min)
 """
 
+from __future__ import annotations
+
 import json
 import logging
+import os
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 # ============================================================
 # SUMMARY BUILDERS — interpretação pré-processada para a IA
 # ============================================================
-try:
+if TYPE_CHECKING:
+    from common.ai_protocols import SummaryBuilderMap
+
+_BUILDERS: "SummaryBuilderMap | None" = None
+_BUILDERS_IMPORT_FAILED = False
+
+
+def _load_summary_builders() -> "SummaryBuilderMap":
+    """
+    Carrega os summary builders sob demanda para evitar import circular.
+    """
     from market_orchestrator.ai.payload_sections import (
         build_flow_summary,
-        build_sr_summary,
-        build_regime_summary,
         build_institutional_summary,
         build_quality_summary,
+        build_regime_summary,
+        build_sr_summary,
     )
-    _SUMMARIES_AVAILABLE = True
-except ImportError:
-    _SUMMARIES_AVAILABLE = False
-    logger.warning(
-        "payload_sections não disponível — "
-        "payload será enviado sem seção summary"
-    )
+
+    return {
+        "flow": build_flow_summary,
+        "sr": build_sr_summary,
+        "regime": build_regime_summary,
+        "institutional": build_institutional_summary,
+        "quality": build_quality_summary,
+    }
+
+
+def _get_builders() -> "SummaryBuilderMap":
+    """Retorna builders cacheados; vazio se `payload_sections` falhar."""
+    global _BUILDERS, _BUILDERS_IMPORT_FAILED
+    if _BUILDERS is not None:
+        return _BUILDERS
+    if _BUILDERS_IMPORT_FAILED:
+        return {}
+
+    try:
+        _BUILDERS = _load_summary_builders()
+    except ImportError:
+        _BUILDERS_IMPORT_FAILED = True
+        logger.warning(
+            "payload_sections não disponível — "
+            "payload será enviado sem seção summary"
+        )
+        return {}
+
+    return _BUILDERS
 
 # ============================================================
 # CONSTANTES E MAPAS
@@ -528,7 +563,7 @@ def _build_orderbook(event_data: dict) -> dict:
     bid = ob_data.get("bid_depth_usd", 0)
     ask = ob_data.get("ask_depth_usd", 0)
 
-    imb_val = round(ob_data.get("imbalance", 0), 2)
+    imb_val = round(ob_data.get("flow_imbalance", 0), 2)
     ob: dict[str, Any] = {
         "b": compact_number(bid, force_sign=False),
         "a": compact_number(ask, force_sign=False),
@@ -536,9 +571,21 @@ def _build_orderbook(event_data: dict) -> dict:
         "bias": "BUY" if imb_val > 0.1 else "SELL" if imb_val < -0.1 else "NEUT",
     }
 
-    t5_imb = depth.get("L5", {}).get("imbalance")
+    t5_imb = depth.get("L5", {}).get("flow_imbalance")
     if t5_imb is not None:
         ob["t5"] = round(t5_imb, 2)
+
+    # FIX #8: Extrair spread_percent do orderbook_data
+    spread_percent = ob_data.get("spread_percent")
+    if spread_percent is None or spread_percent == 0:
+        # Tentar calcular se dados dispon?veis
+        mid = ob_data.get("mid")
+        spread = ob_data.get("spread")
+        if mid and mid > 0 and spread is not None and spread > 0:
+            spread_percent = (spread / mid) * 100.0
+
+    if spread_percent is not None and spread_percent > 0:
+        ob["spread_pct"] = round(spread_percent, 4)
 
     mi = event_data.get("market_impact", {}).get("slippage_matrix", {})
     s100 = mi.get("100k_usd", {})
@@ -725,22 +772,22 @@ def _build_ext_indicators(event_data: dict) -> dict:
     # GARCH forecast de volatilidade 1h
     garch = ext_ind.get("garch_forecast_1h")
     if garch is not None:
-        ext["garch"] = round(float(garch), 4)
+        ext["garch"] = round(float(garch), 2)
 
     # Hurst Exponent (#23): H>0.5=trending, H<0.5=mean-rev
     hurst = ext_ind.get("hurst_exponent")
     if hurst is not None:
-        ext["hurst"] = round(float(hurst), 3)
+        ext["hurst"] = round(float(hurst), 2)
 
     # Shannon Entropy (#25): alta=ruído, baixa=previsível
     entropy = ext_ind.get("shannon_entropy")
     if entropy is not None:
-        ext["entropy"] = round(float(entropy), 3)
+        ext["entropy"] = round(float(entropy), 2)
 
     # Fractal Dimension (#24): <1.5=trending, >1.5=ruído
     frac = ext_ind.get("fractal_dimension")
     if frac is not None:
-        ext["fd"] = round(float(frac), 3)
+        ext["fd"] = round(float(frac), 2)
 
     # Kalman Filter (#27): preço suavizado vs raw
     kalman = ext_ind.get("kalman_filter")
@@ -1280,10 +1327,10 @@ def _build_mean_reversion_score(event_data: dict) -> dict:
 # ============================================================
 
 _SUMMARY_THRESHOLDS = [
-    (4000, "full"),             # Era 2500, aumentado para 4KB para Qwen/Groq 70B
-    (5000, "truncate_notes"),    # Era 3500
-    (6000, "essentials_only"),   # Era 4500
-    (8192, "remove"),            # Era 6144
+    (3500, "full"),             # Limite auditado de qualidade (Prompt E)
+    (4500, "truncate_notes"),    # Compactação leve
+    (5500, "essentials_only"),   # Compactação agressiva
+    (6144, "remove"),            # Segurança do pipeline (Hard Limit)
 ]
 
 _SUMMARY_ESSENTIAL_KEYS: dict[str, set] = {
@@ -1347,25 +1394,21 @@ def _determine_compaction_level(size: int) -> str:
 # FUNÇÃO PRINCIPAL
 # ============================================================
 
-def _build_summary_section(payload: dict) -> dict:
+def _build_summary_section(
+    payload: dict,
+    builders: "SummaryBuilderMap | None" = None,
+) -> dict:
     """
     Constrói seção de resumos interpretativos.
     Cada builder é isolado — falha em um não afeta os outros.
     """
-    if not _SUMMARIES_AVAILABLE:
+    resolved = builders if builders is not None else _get_builders()
+    if not resolved:
         return {}
 
     summary: dict[str, Any] = {}
 
-    _builders = {
-        "flow":          build_flow_summary,
-        "sr":            build_sr_summary,
-        "regime":        build_regime_summary,
-        "institutional": build_institutional_summary,
-        "quality":       build_quality_summary,
-    }
-
-    for name, builder in _builders.items():
+    for name, builder in resolved.items():
         try:
             result = builder(payload)
             if result:
@@ -1380,7 +1423,10 @@ def _build_summary_section(payload: dict) -> dict:
     return summary
 
 
-def build_compact_payload(event_data: dict) -> dict:
+def build_compact_payload(
+    event_data: dict,
+    builders: "SummaryBuilderMap | None" = None,
+) -> Dict[str, Any]:
     """
     Construtor Principal de Payload Compactado.
  para envio à LLM.
@@ -1459,8 +1505,8 @@ def build_compact_payload(event_data: dict) -> dict:
     # IA sem flow/ob/tf/sr decide às cegas → pior que payload
     # um pouco maior com stubs indicando "no data".
     # ═══════════════════════════════════════════════════════════
-    payload["flow"] = flow if flow else {"d1": "0", "imb": 0.0}
-    payload["ob"] = ob if ob else {"imb": 0.0, "bias": "N/A"}
+    payload["flow"] = flow if flow else {}
+    payload["ob"] = ob if ob else {}
     payload["tf"] = tf_section if tf_section else {"_": "no_data"}
     payload["sr"] = sr if sr else {"_": "no_data"}
 
@@ -1552,7 +1598,12 @@ def build_compact_payload(event_data: dict) -> dict:
     # ═══════════════════════════════════════════════════════════
     # SUMMARY BUILDERS
     # ═══════════════════════════════════════════════════════════
-    summary = _build_summary_section(payload)
+    try:
+        summary = _build_summary_section(payload, builders=builders)
+    except TypeError:
+        # Retrocompatibilidade com mocks que não aceitam o argumento builders=
+        summary = _build_summary_section(payload)
+
     if summary:
         payload["summary"] = summary
 
@@ -1616,6 +1667,25 @@ def build_compact_payload(event_data: dict) -> dict:
 
     logger.debug("COMPACT_PAYLOAD_DEBUG: %s", payload_json)
 
+    # ═══════════════════════════════════════════════════════════
+    # DEBUG: Instrumentação de tamanho por seção (TEMPORÁRIA)
+    # ═══════════════════════════════════════════════════════════
+    if os.environ.get("PAYLOAD_DEBUG_SIZES") == "1":
+        section_sizes = {}
+        for key, value in payload.items():
+            section_json = json.dumps({key: value}, ensure_ascii=False, separators=(",", ":"))
+            section_sizes[key] = len(section_json)
+        
+        sorted_sections = sorted(section_sizes.items(), key=lambda x: x[1], reverse=True)
+        
+        print("\n" + "="*80)
+        print(f"PAYLOAD_DEBUG_SIZES: total={payload_size} bytes")
+        print(f"Sections by size (top 15 of {len(section_sizes)}):")
+        for i, (section, size) in enumerate(sorted_sections[:15], 1):
+            pct = (size / payload_size * 100) if payload_size > 0 else 0
+            print(f"  {i:2d}. {section:15s} {size:6d} bytes ({pct:5.1f}%)")
+        print("="*80)
+
     return payload
 
 
@@ -1628,11 +1698,12 @@ def build_compact_payload_for_llm(
     symbol: str = "BTCUSDT",
     window: int = 0,
     epoch_ms: int = 0,
-) -> dict:
+    builders: "SummaryBuilderMap | None" = None,
+) -> Dict[str, Any]:
     """
     Wrapper que adiciona metadados necessários para o pipeline LLM.
     """
-    compact = build_compact_payload(event_data)
+    compact = build_compact_payload(event_data, builders=builders)
 
     wrapped = {
         "symbol": compact.pop("symbol", symbol),

@@ -66,17 +66,17 @@ _TYPE_FROM_SIGNAL: dict[str, str] = {
 }
 
 
-def build_flow_summary(compact_payload: dict[str, Any]) -> dict[str, Any]:
+def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Gera resumo interpretado do fluxo a partir do payload compacto.
 
     Args:
-        compact_payload: payload já construído pelo build_compact_payload()
+        payload: payload já construído pelo build_compact_payload()
 
     Returns:
         dict com bias, type, actor, conf e note
     """
-    flow = compact_payload.get("flow", {})
+    flow = payload.get("flow", {})
     if not flow:
         return {
             "bias": "NEUTRAL",

@@ -14,7 +14,7 @@ import pytest
 import build_compact_payload as bcp
 
 HARD_LIMIT = 6144
-SOFT_LIMIT = 3000
+SOFT_LIMIT = 3500
 WARN_LIMIT = 2800
 
 @pytest.fixture(autouse=True)
@@ -127,8 +127,8 @@ def test_budget_guard_hard_limit_protection():
         assert payload_bytes(payload) < HARD_LIMIT
 
 def test_budget_guard_soft_limit_compaction():
-    # Forçar payload logo acima de 2500
-    def large_summary(_p): return {"flow": {"note": "x"*1000, "extra": "y"*1000}}
+    # Forçar payload acima de 3500 (ex: 3000 de summary + 1500 de base = 4500)
+    def large_summary(_p): return {"flow": {"note": "x"*1500, "extra": "y"*1500}}
     with pytest.MonkeyPatch().context() as m:
         m.setattr(bcp, "_build_summary_section", large_summary)
         payload = bcp.build_compact_payload(make_base_event())

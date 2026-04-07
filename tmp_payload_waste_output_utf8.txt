@@ -1,0 +1,22 @@
+﻿TOTAL_SIZE: 3428 bytes
+
+| SeþÒo | Bytes | % do Total | ObservaþÒo |
+| :--- | :--- | :--- | :--- |
+| summary | 1507 | 44.0% | Muito rico (interpretativo) |
+| ext | 367 | 10.7% |  |
+| tf | 297 | 8.7% |  |
+| flow | 259 | 7.6% |  |
+| ctx | 208 | 6.1% | Contexto macro |
+| sr | 195 | 5.7% |  |
+| price | 122 | 3.6% |  |
+| alerts | 107 | 3.1% |  |
+| ob | 92 | 2.7% |  |
+| regime | 87 | 2.5% |  |
+| vwap | 64 | 1.9% |  |
+| ofi | 53 | 1.5% |  |
+| epoch_ms | 26 | 0.8% |  |
+| w | 23 | 0.7% |  |
+| symbol | 20 | 0.6% |  |
+| trigger | 16 | 0.5% |  |
+
+ESTIMATIVA_REMOVIVEL_SEM_PERDA: ~150 bytes (ajuste de precisÒo e campos vazios)

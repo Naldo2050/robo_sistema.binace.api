@@ -9,7 +9,6 @@ Implementa agregação incremental O(1) com:
 - Sector e whale tracking
 """
 
-import logging
 from collections import deque, defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -19,7 +18,6 @@ from .constants import (
     DECIMAL_ZERO,
     MAX_AGGREGATE_TRADES,
 )
-from .utils import lazy_log
 
 
 @dataclass
@@ -558,10 +556,15 @@ def analyze_passive_aggressive_flow(
         ob_imbalance = orderbook_data.get("imbalance", 0)
 
         # Bid depth > ask depth = mais limit buys (passivo comprador)
-        if bid_depth + ask_depth > 0:
-            passive_ratio = bid_depth / (bid_depth + ask_depth)
+        total_depth = bid_depth + ask_depth
+        if total_depth > 0:
+            passive_ratio = bid_depth / total_depth
+            # 🔄 BUG #9: Se ob_imbalance veio zerado mas temos depth, calculamos na hora
+            if abs(ob_imbalance) < 1e-6:
+                ob_imbalance = (bid_depth - ask_depth) / total_depth
         else:
             passive_ratio = 0.5
+            ob_imbalance = 0.0
 
         passive_dominance = (
             "buyers" if passive_ratio > 0.55

@@ -1,30 +1,31 @@
-# institutional/__init__.py
 """
-Arsenal Institucional - Ferramentas de análise profissional.
+Arsenal Institucional - Ferramentas de analise profissional.
 
-Módulos implementados:
-- cvd: Cumulative Volume Delta
-- footprint: Footprint Charts
-- order_flow_imbalance: Desequilíbrio de fluxo
-- absorption_detector: Detecção de absorção
-- iceberg_detector: Detecção de ordens iceberg
-- volume_profile: Perfil de volume avançado
-- vwap_twap: VWAP e TWAP
-- whale_detector: Detecção de trades de baleias
-- kalman_filter: Filtro de Kalman para tendência
-- hurst_exponent: Expoente de Hurst (regime)
-- garch_volatility: Previsão de volatilidade GARCH
-- market_regime_hmm: Hidden Markov Model para regimes
-- smart_money: Smart Money Concepts (FVG, BOS, Order Blocks)
-- crypto_cot: COT equivalente para crypto
-- sentiment_analyzer: Análise de sentimento
-- multi_exchange_aggregator: Agregador multi-exchange
-- statistical_arbitrage: Arbitragem estatística
-- fourier_cycles: Análise de ciclos via Fourier
-- entropy_analyzer: Entropia de Shannon
-- mean_reversion: Modelos de reversão à média
-- monte_carlo: Simulações Monte Carlo
-- gamma_exposure: Gamma Exposure de opções
+Modulos atualmente presentes no pacote:
+- absorption_detector
+- base
+- confluence_engine
+- crypto_cot
+- cvd
+- entropy_analyzer
+- event_bridge
+- footprint
+- fourier_cycles
+- garch_volatility
+- hurst_exponent
+- iceberg_detector
+- kalman_filter
+- market_regime_hmm
+- mean_reversion
+- monte_carlo
+- order_flow_imbalance
+- smart_money
+- vwap_twap
+- whale_detector
+
+Notas:
+- `confluence_engine` agrega sinais de multiplas fontes.
+- `event_bridge` conecta eventos do sistema ao arsenal institucional.
 """
 
 __version__ = "1.0.0"

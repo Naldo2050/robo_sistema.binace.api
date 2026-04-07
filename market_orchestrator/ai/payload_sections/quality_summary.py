@@ -62,18 +62,18 @@ def _resolve_liquidity(liq_raw: str) -> tuple[float, str]:
     return (cap or 1.0), (label or key.lower())
 
 
-def build_quality_summary(compact_payload: dict[str, Any]) -> dict[str, Any]:
+def build_quality_summary(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Gera resumo interpretado da qualidade dos dados.
 
     Args:
-        compact_payload: payload já construído pelo build_compact_payload()
+        payload: payload já construído pelo build_compact_payload()
 
     Returns:
         dict com reliable, confidence_cap, issues e note
     """
-    qual = compact_payload.get("qual", {})
-    ctx = compact_payload.get("ctx", {})
+    qual = payload.get("qual", {})
+    ctx = payload.get("ctx", {})
 
     issues: list[str] = []
     caps: list[float] = [1.0]

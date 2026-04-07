@@ -17,15 +17,15 @@ import json
 import time
 import logging
 import threading
-import numpy as np
+
 import pandas as pd
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+
 from collections import deque
 import signal
 import atexit
 import asyncio
-from typing import Any, Dict, Optional, List
+from typing import TYPE_CHECKING, Any, Dict, Optional, List
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import config
@@ -48,8 +48,6 @@ from common.format_utils import (
 
 # ====== Módulos internos originais ======
 from data_processing.data_handler import (
-    create_absorption_event,
-    create_exhaustion_event,
     NY_TZ,
 )
 from events.event_memory import (
@@ -70,18 +68,14 @@ except ImportError:
 
 # Outcome tracker para confiança estatística
 try:
-    from outcome_tracker import OutcomeTracker
-    _outcome_tracker = OutcomeTracker()
+    #     # from trading.outcome_tracker import OutcomeTracker  # Not used
     _OUTCOME_OK = True
 except ImportError:
-    _outcome_tracker = None
     _OUTCOME_OK = False
 from orderbook_analyzer import OrderBookAnalyzer
 from events.event_saver import EventSaver
 from fetchers.context_collector import ContextCollector
 from flow_analyzer import FlowAnalyzer
-from ai_analyzer_qwen import AIAnalyzer
-from common.report_generator import generate_ai_analysis_report  # pode ser usado futuramente
 from market_analysis.levels_registry import LevelRegistry
 from data_processing.data_validator import validator
 
@@ -109,10 +103,7 @@ except Exception:
     detect_support_resistance = None
     defense_zones = None
 
-try:
-    from market_analysis.pattern_recognition import recognize_patterns
-except Exception:
-    recognize_patterns = None
+recognize_patterns = None  # Removed empty try block
 
 # ====== Enriquecedor institucional (Onda 1 + 2) ======
 try:
@@ -127,10 +118,16 @@ except Exception as _ie_err:
 from .utils.logging_utils import configure_dedup_logs
 from .connection.robust_connection import RobustConnectionManager, RateLimiter
 from .flow.trade_flow_analyzer import TradeFlowAnalyzer
-from .orderbook.orderbook_wrapper import fetch_orderbook_with_retry
-from .ai.ai_runner import initialize_ai_async, run_ai_analysis_threaded
 from .windows import WindowProcessor, process_window
 from .signals.signal_processor import process_signals
+
+if TYPE_CHECKING:
+    from common.ai_protocols import (
+        AIAnalyzerProtocol,
+        FeatureCalculatorProtocol,
+        PredictorProtocol,
+    )
+    from .ai.ai_runner import AIRunner
 
 # ====== Institutional Analytics Engine ======
 try:
@@ -273,13 +270,17 @@ class EnhancedMarketBot:
         self.last_valid_vp_time: float = 0.0
 
         self.event_saver = EventSaver(sound_alert=True)
+        self.pattern_ohlc_history = deque(maxlen=200)
         self.context_collector = ContextCollector(symbol=self.symbol)
         self.flow_analyzer = FlowAnalyzer(time_manager=self.time_manager)
 
         # ===== IA =====
-        self.ai_analyzer: Optional[AIAnalyzer] = None
+        self.ai_analyzer: Optional["AIAnalyzerProtocol"] = None
+        self.ai_runner: Optional["AIRunner"] = None
         self.ai_initialization_attempted = False
         self.ai_test_passed = False
+        self.ml_engine: Optional["PredictorProtocol"] = None
+        self.feature_calc: Optional["FeatureCalculatorProtocol"] = None
         self.ai_thread_pool: List[threading.Thread] = []
         self.max_ai_threads = 3
         self.ai_semaphore = threading.Semaphore(3)
@@ -287,7 +288,7 @@ class EnhancedMarketBot:
         self.ai_rate_limiter = RateLimiter(max_calls=10, period_seconds=60)
 
         # Inicializa IA em background (mesma lógica do original)
-        initialize_ai_async(self)
+        self._initialize_ai_async()
         
         # Guardar referência da task do buffer
         self._buffer_task = None
@@ -298,82 +299,28 @@ class EnhancedMarketBot:
         self._window_watchdog_task = None
         self._trade_count = 0
 
-        # EventBus → IA
-        self.event_bus.subscribe("signal", self._handle_signal_event)
-        self.event_bus.subscribe("zone_touch", self._handle_zone_touch_event)
+        # ====== Estado de Trades e Janelas ======
+        self._last_trade_ts_ms = None  # ?ltimo timestamp de trade (monotonicity check)
+        self._last_price = None  # ?ltimo pre?o (refer?ncia para agressor)
+        self.window_count = 0  # Contador de janelas processadas
+        self.window_data = []  # Trades na janela atual
+        self.window_end_ms = None  # Timestamp de fechamento da janela
 
-        # Conexão WebSocket robusta
-        self.connection_manager = RobustConnectionManager(
-            stream_url, symbol, max_reconnect_attempts=25
-        )
-        self.connection_manager.set_callbacks(
-            on_message=self.on_message,
-            on_open=self.on_open,
-            on_close=self.on_close,
-            on_reconnect=self._on_reconnect,
-        )
-        self.connection_manager.set_heartbeat_cb(
-            lambda: self.health_monitor.heartbeat("main")
-        )
 
-        self.window_end_ms: Optional[int] = None
-        self.window_data: List[Dict[str, Any]] = []
-        self.window_count = 0
-
-        self.history_size = history_size
-        self.volume_history: deque[float] = deque(maxlen=history_size)
-        self.delta_history: deque[float] = deque(maxlen=history_size)
-        self.close_price_history: deque[float] = deque(
-            maxlen=context_sma_period
-        )
+        # ====== Hist?ricos de Volume e Delta ======
+        self.delta_history = deque(maxlen=100)  # Hist?rico de deltas
+        self.volume_history = deque(maxlen=100)  # Hist?rico de volumes
+        self.close_price_history = deque(maxlen=100)  # Hist?rico de pre?os de fechamento
+        self.volatility_history = deque(maxlen=100)  # Hist?rico de volatilidade
+        self._history_lock = threading.Lock()  # Lock para acesso thread-safe aos hist?ricos
         self.delta_std_dev_factor = delta_std_dev_factor
-        self.volatility_history: deque[float] = deque(maxlen=history_size)
-
-        # Histórico de OHLC por janela para pattern recognition
-        self.pattern_ohlc_history: deque[Dict[str, float]] = deque(
-            maxlen=getattr(config, "PATTERN_LOOKBACK_BARS", 200)
-        )
-
-        self._missing_field_counts: Dict[str, int] = {
-            "q": 0,
-            "m": 0,
-            "p": 0,
-            "T": 0,
-        }
-
-        try:
-            self._missing_field_log_step = getattr(
-                config, "MISSING_FIELD_LOG_STEP", None
-            )
-        except Exception:
-            self._missing_field_log_step = None
-
-        # Contadores de mensagens inválidas
-        self._invalid_json_count = 0
-        self._invalid_trade_count = 0
-        try:
-            self._invalid_json_log_step = int(
-                getattr(config, "INVALID_JSON_LOG_STEP", 100)
-            )
-        except Exception:
-            self._invalid_json_log_step = 100
-
-        try:
-            self._invalid_trade_log_step = int(
-                getattr(config, "INVALID_TRADE_LOG_STEP", 100)
-            )
-        except Exception:
-            self._invalid_trade_log_step = 100
-
-        self._last_price: Optional[float] = None
-        self._last_alert_ts: Dict[str, float] = {}
-        self._sent_triggers: set = set()
-        self._last_trade_ts_ms: Optional[int] = None
 
         self._last_ai_analysis_ts = 0.0
         self._ai_min_interval_sec = getattr(
             config, "AI_MIN_INTERVAL_SEC", 60
         )
+
+        self._sent_triggers = set()
 
         try:
             self._alert_cooldown_sec = getattr(
@@ -386,6 +333,24 @@ class EnhancedMarketBot:
 
         # Logging estruturado e tracing para o bot
         self.slog = StructuredLogger("enhanced_market_bot", self.symbol)
+        # ====== RobustConnectionManager ======
+        self.connection_manager = RobustConnectionManager(
+            stream_url=stream_url,
+            symbol=symbol,
+            max_reconnect_attempts=getattr(config, 'WS_MAX_RECONNECT_ATTEMPTS', 15),
+            initial_delay=getattr(config, 'WS_INITIAL_RECONNECT_DELAY', 1.0),
+            max_delay=getattr(config, 'WS_MAX_RECONNECT_DELAY', 60.0),
+            backoff_factor=getattr(config, 'WS_BACKOFF_FACTOR', 1.5),
+        )
+        # Configure callbacks (methods exist in the class)
+        self.connection_manager.set_callbacks(
+            on_message=self.on_message,
+            on_open=self.on_open,
+            on_close=self.on_close,
+            on_error=self.on_error,
+            on_reconnect=self._on_reconnect,
+        )
+
         self.tracer = TracerWrapper(
             service_name="enhanced_market_bot",
             component="orchestrator",
@@ -405,6 +370,9 @@ class EnhancedMarketBot:
             self.warmup_windows_remaining = self.warmup_windows_required
             self.window_data = []
             self.window_end_ms = None
+            self._sent_triggers.clear()
+
+
 
         logging.info(
             f"⏳ Aguardando {self.warmup_windows_required} janelas "
@@ -496,7 +464,7 @@ class EnhancedMarketBot:
                 try:
                     self.connection_manager.should_stop = True
                 except Exception as e:
-                    logger.warning(f"Erro ignorado: {e}")
+                    logging.warning(f"Erro ignorado: {e}")
                 logging.info("✅ Connection Manager sinalizada para parada.")
         except Exception as e:
             logging.error(f"❌ Erro ao sinalizar parada da Connection Manager: {e}")
@@ -856,8 +824,22 @@ class EnhancedMarketBot:
             valid_window_data,
         )
 
+    def _setup_ai(self) -> None:
+        """Carrega o runner de IA sob demanda para evitar imports circulares."""
+        if self.ai_runner is None:
+            from .ai.ai_runner import AIRunner
+
+            self.ai_runner = AIRunner.create()
+            logging.info("AIRunner inicializado via factory")
+
+    def _initialize_ai_async(self) -> None:
+        self._setup_ai()
+
+
     def _run_ai_analysis_threaded(self, event_data: Dict[str, Any]) -> None:
-        return run_ai_analysis_threaded(self, event_data)
+        self._setup_ai()
+
+        return None
 
     # ========================================
     # LÓGICA DE IA (usa _run_ai_analysis_threaded)
@@ -1529,7 +1511,7 @@ class EnhancedMarketBot:
                     logging.debug(f"Similarity search falhou: {e}")
 
             # Enriquecer com confiança estatística real
-            if _OUTCOME_OK and _outcome_tracker:
+            if False:  # _outcome_tracker disabled
                 try:
                     confidence = _outcome_tracker.get_confidence_for_event(signal)
                     if confidence.get("has_data"):
@@ -1738,7 +1720,9 @@ class EnhancedMarketBot:
 
             if current_volatility is not None:
                 current_volatility = float(current_volatility)
-                self.volatility_history.append(current_volatility)
+                
+                with self._history_lock:
+                    self.volatility_history.append(current_volatility)
 
                 try:
                     last_price = float(
@@ -1766,14 +1750,15 @@ class EnhancedMarketBot:
         try:
             ohlc = enriched.get("ohlc") or {}
             if ohlc:
-                self.pattern_ohlc_history.append(
-                    {
-                        "open": float(ohlc.get("open", ohlc.get("close", 0.0))),
-                        "high": float(ohlc.get("high", 0.0)),
-                        "low": float(ohlc.get("low", 0.0)),
-                        "close": float(ohlc.get("close", 0.0)),
-                    }
-                )
+                with self._history_lock:
+                    self.pattern_ohlc_history.append(
+                        {
+                            "open": float(ohlc.get("open", ohlc.get("close", 0.0))),
+                            "high": float(ohlc.get("high", 0.0)),
+                            "low": float(ohlc.get("low", 0.0)),
+                            "close": float(ohlc.get("close", 0.0)),
+                        }
+                    )
         except Exception:
             pass
 
@@ -2065,6 +2050,17 @@ class EnhancedMarketBot:
     # ========================================
     # CALLBACKS DO WEBSOCKET
     # ========================================
+    def on_error(self, ws: Any, error: Exception) -> None:
+        """Callback para erros de conexão WebSocket."""
+        logging.error(
+            f"❌ Erro na conexão WebSocket ({self.symbol}): {error}",
+            exc_info=True,
+        )
+        try:
+            self.health_monitor.heartbeat("ws_error")
+        except Exception as e:
+            logging.debug(f"Erro ao registrar heartbeat em on_error: {e}")
+
     def on_open(self, ws: Any) -> None:
         logging.info(
             f"🚀 Bot iniciado para {self.symbol} - "
@@ -2073,7 +2069,7 @@ class EnhancedMarketBot:
         try:
             self.health_monitor.heartbeat("main")
         except Exception as e:
-            logger.warning(f"Erro ignorado: {e}")
+            logging.warning(f"Erro ignorado: {e}")
 
     def on_close(self, ws: Any, code: int, msg: str) -> None:
         if self.window_data and not self.should_stop:
@@ -2323,7 +2319,7 @@ class EnhancedMarketBot:
             try:
                 self.connection_manager.should_stop = True
             except Exception as e:
-                logger.warning(f"Erro ignorado: {e}")
+                logging.warning(f"Erro ignorado: {e}")
 
             try:
                 # disconnect é async; aqui ainda estamos dentro do event loop

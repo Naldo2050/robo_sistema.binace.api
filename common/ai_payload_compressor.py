@@ -534,7 +534,7 @@ class PayloadCompressor:
         if ask is not None:
             result["ask"] = self._r(ask, "volume_usd")
 
-        imb = ob.get("imbalance")
+        imb = ob.get("flow_imbalance")
         if imb is not None:
             result["imb"] = self._r(imb, "ratio")
 
@@ -552,7 +552,7 @@ class PayloadCompressor:
                     depth[level] = {
                         "b": self._r(lvl.get("bids"), "volume_usd"),
                         "a": self._r(lvl.get("asks"), "volume_usd"),
-                        "i": self._r(lvl.get("imbalance"), "ratio"),
+                        "i": self._r(lvl.get("flow_imbalance"), "ratio"),
                     }
             if depth:
                 result["dep"] = depth

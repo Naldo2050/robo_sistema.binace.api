@@ -9,7 +9,7 @@ except ImportError:
     pytest.skip("TestOrchestratorConfig not available in tests.fixtures", allow_module_level=True)
 
 # Import EnhancedMarketBot from the market_orchestrator module
-from market_orchestrator.market_orchestrator import EnhancedMarketBot
+from market_orchestrator import EnhancedMarketBot, adapt_orchestrator_runtime
 
 
 def test_orchestrator_initialization(orchestrator_config_test):
@@ -26,11 +26,15 @@ def test_orchestrator_initialization(orchestrator_config_test):
         liquidity_flow_alert_percentage=orchestrator_config_test.liquidity_flow_alert_percentage,
         wall_std_dev_factor=orchestrator_config_test.wall_std_dev_factor,
     )
+    runtime = adapt_orchestrator_runtime(bot)
+    snapshot = runtime.snapshot_state()
     assert bot.symbol == orchestrator_config_test.symbol
     assert bot.window_size_minutes == orchestrator_config_test.window_size_minutes
-    # Verifica se os componentes internos foram inicializados
-    assert bot.health_monitor is not None
-    assert bot.event_bus is not None
+    # Verifica via contrato comum os componentes internos expostos para consumidores.
+    assert snapshot["kind"] == "enhanced_market_bot"
+    assert snapshot["symbol"] == orchestrator_config_test.symbol
+    assert snapshot["health"]["health_monitor"] is True
+    assert snapshot["health"]["event_bus"] is True
     assert bot.orderbook_analyzer is not None
     assert bot.flow_analyzer is not None
 

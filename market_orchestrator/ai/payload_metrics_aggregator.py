@@ -68,15 +68,39 @@ def _percentile(values: List[float], pct: float) -> Optional[float]:
     return float(values[idx])
 
 
+# Cache em memória para evitar I/O repetitivo
+_CACHE_SUMMARY: Optional[Dict[str, object]] = None
+_CACHE_MTIME: float = 0.0
+_CACHE_SIZE: int = 0
+
+
 def summarize_metrics(path: str, last_n: int = 2000) -> Dict[str, object]:
     """
-    Resume m\u00e9tricas do payload a partir de um JSONL.
+    Resume métricas do payload a partir de um JSONL.
 
-    Ignora linhas inv\u00e1lidas e \u00e9 tolerante a arquivos ausentes.
+    Implementa Cache para evitar ler o disco se o arquivo não mudou.
+    Ignora linhas inválidas e é tolerante a arquivos ausentes.
     """
+    global _CACHE_SUMMARY, _CACHE_MTIME, _CACHE_SIZE
+    
     metrics_path = Path(path)
     if not metrics_path.exists():
         return {}
+
+    # Verificação de Cache por mtime e size
+    try:
+        stat = metrics_path.stat()
+        current_mtime = stat.st_mtime
+        current_size = stat.st_size
+        
+        if (
+            _CACHE_SUMMARY is not None 
+            and current_mtime == _CACHE_MTIME 
+            and current_size == _CACHE_SIZE
+        ):
+            return _CACHE_SUMMARY
+    except Exception:
+        pass # Se falhar o stat, procedemos com a leitura
 
     lines: deque = deque(maxlen=last_n)
     try:
@@ -135,5 +159,10 @@ def summarize_metrics(path: str, last_n: int = 2000) -> Dict[str, object]:
             cache_summary[sec] = data["hit"] / data["total"]
     if cache_summary:
         summary["cache_hit_rate"] = cache_summary
+
+    # Atualiza Cache
+    _CACHE_SUMMARY = summary
+    _CACHE_MTIME = current_mtime if 'current_mtime' in locals() else 0.0
+    _CACHE_SIZE = current_size if 'current_size' in locals() else 0
 
     return summary

@@ -215,16 +215,18 @@ class WindowProcessor:
 
             bot, window_data, close_ms = item
             try:
+                start_time = time.perf_counter()
+                
                 # FIX P2: Timeout de 45s por janela — proteção contra travamento
-                # Usar um executor longo na classe evitaria overhead, mas para timeout seguro síncrono 
-                # (evitando que o __exit__ do context manager bloqueie se a task congelar), 
-                # gerenciamos o loop aqui com um Thread genérico que não nos força a um join.
-                # Como future.result/cancel não para threads em execução e ThreadPool context trava,
-                # usamos um executor sem context manager puro para ignorar o travamento da thead se ocorrer OOM/hang:
                 executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                 future = executor.submit(process_window_snapshot, bot, window_data, close_ms)
                 try:
                     future.result(timeout=45.0)
+                    elapsed = time.perf_counter() - start_time
+                    logging.info(
+                        "✅ Janela #%d processada em %.2fs (close_ms=%d)",
+                        self.window_count + 1, elapsed, close_ms
+                    )
                 except concurrent.futures.TimeoutError:
                     self.logger.error(
                         "⏰ TIMEOUT: Janela demorou >45s para processar. Pulando. (Possível trava na IA)"
@@ -249,7 +251,7 @@ def _populate_window_state(
     total_sell_volume: float,
 ) -> None:
     """Popula WindowState com dados do pipeline enrich + context."""
-    from core.window_state import WindowState  # noqa: F811 - tipo apenas
+    # WindowState é apenas type hint, importado no TYPE_CHECKING
 
     # --- Price ---
     ohlc = enriched.get("ohlc", {})
@@ -501,8 +503,10 @@ def process_window_snapshot(
             dynamic_delta_threshold = 2.0 # Default warmup (BTC)
             if len(bot.delta_history) > 10:
                 try:
-                    mean_delta = float(np.mean(bot.delta_history))
-                    std_delta = float(np.std(bot.delta_history))
+                    # Protege a leitura e cálculo contra mutações no bot
+                    with getattr(bot, "_history_lock", threading.Lock()):
+                        mean_delta = float(np.mean(bot.delta_history))
+                        std_delta = float(np.std(bot.delta_history))
 
                     # Valida valores
                     if np.isnan(mean_delta) or np.isinf(mean_delta):
@@ -655,27 +659,54 @@ def process_window_snapshot(
 
             if final_features is not None and predict_up_probability is not None:
                 try:
-                    if not hasattr(bot, 'feature_calc'):
-                        from ml.feature_calculator import LiveFeatureCalculator
-                        bot.feature_calc = LiveFeatureCalculator()
+                    # FIX: Inicializar feature_calc com proteção contra None
+                    if not hasattr(bot, 'feature_calc') or bot.feature_calc is None:
+                        try:
+                            from ml.feature_calculator import LiveFeatureCalculator
+                            bot.feature_calc = LiveFeatureCalculator()
+                            logging.debug("✅ LiveFeatureCalculator inicializado com sucesso")
+                        except Exception as init_err:
+                            logging.error(
+                                f"❌ Erro ao inicializar LiveFeatureCalculator: {init_err}",
+                                exc_info=True,
+                            )
+                            bot.feature_calc = None
 
-                    if valid_window_data:
-                        # FIX: Feed ONE price per window (the close price), not ~60 ticks.
-                        # The model was trained on pct_change(1) between 1-min candle closes.
-                        # Feeding individual ticks produced returns ~1e-7 (5000x too small),
-                        # causing XGBoost to always predict prob_up ~96.7%.
-                        # With one close per window: return_1 ~ 0.0004, matching training scale.
-                        close_price = float(valid_window_data[-1].get("p", 0.0))
-                        total_vol = sum(
-                            float(t.get("q", 0.0)) for t in valid_window_data
-                        )
-                        bot.feature_calc.update(
-                            price=close_price, volume=total_vol
-                        )
+                    # FIX: Verificar se feature_calc foi inicializado com sucesso
+                    if bot.feature_calc is not None and valid_window_data:
+                        try:
+                            # FIX: Feed ONE price per window (the close price), not ~60 ticks.
+                            # The model was trained on pct_change(1) between 1-min candle closes.
+                            # Feeding individual ticks produced returns ~1e-7 (5000x too small),
+                            # causing XGBoost to always predict prob_up ~96.7%.
+                            # With one close per window: return_1 ~ 0.0004, matching training scale.
+                            close_price = float(valid_window_data[-1].get("p", 0.0))
+                            total_vol = sum(
+                                float(t.get("q", 0.0)) for t in valid_window_data
+                            )
+                            bot.feature_calc.update(
+                                price=close_price, volume=total_vol
+                            )
+                        except Exception as update_err:
+                            logging.error(
+                                f"❌ Erro ao atualizar feature_calc: {update_err}",
+                                exc_info=True,
+                            )
+                            bot.feature_calc = None
 
-                    computed_features = bot.feature_calc.compute(
-                        multi_tf=macro_context.get("mtf_trends")
-                    )
+                    # FIX: Só computar features se feature_calc existir e for válido
+                    computed_features = {}
+                    if bot.feature_calc is not None:
+                        try:
+                            computed_features = bot.feature_calc.compute(
+                                multi_tf=macro_context.get("mtf_trends")
+                            )
+                        except Exception as compute_err:
+                            logging.error(
+                                f"❌ Erro ao computar features: {compute_err}",
+                                exc_info=True,
+                            )
+                            computed_features = {}
 
                     # Bug 2 fix: separar metadados '_' antes de passar ao XGBoost.
                     # Antes: {**final_features, **computed_features} passava _warmup_ready etc. ao modelo.
@@ -692,12 +723,18 @@ def process_window_snapshot(
                     if mtf and isinstance(enriched_features, dict):
                         enriched_features.setdefault("multi_tf", mtf)
 
-                    ml_prob_up = predict_up_probability(enriched_features)
+                    # FIX: Verificar se enriched_features é válido antes de chamar predict
+                    if enriched_features and isinstance(enriched_features, dict):
+                        ml_prob_up = predict_up_probability(enriched_features)
+                    else:
+                        logging.warning("⚠️ enriched_features inválido, usando fallback para ML")
+                        ml_prob_up = None
                 except Exception as e:
                     logging.error(
-                        f"Erro ao executar predição do modelo de ML: {e}",
+                        f"❌ Erro ao executar predição do modelo de ML (fallback ativado): {e}",
                         exc_info=True,
                     )
+                    ml_prob_up = None
 
             if ml_prob_up is not None:
                 try:

@@ -211,7 +211,7 @@ async def test_analyze_valid_flow(analyzer, valid_snapshot):
     data = result["orderbook_data"]
     assert data["bid_depth_usd"] > 0
     assert data["ask_depth_usd"] > 0
-    assert "imbalance" in data
+    assert "flow_imbalance" in data
     
     # Verifica qualidade dos dados
     assert result["data_quality"]["validation_passed"] is True

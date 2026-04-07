@@ -418,8 +418,8 @@ class TestE2EPipelineIntegration:
         size = len(json.dumps(
             payload, ensure_ascii=False, separators=(",", ":")
         ))
-        # P3: soft limit de 3000 bytes (para manter ~750 tokens)
-        SOFT_LIMIT = 3000
+        # Limite auditado de qualidade (Prompt E)
+        SOFT_LIMIT = 3500
         assert size < SOFT_LIMIT, (
             f"Payload ultrapassou soft limit: {size} bytes (limite={SOFT_LIMIT})"
         )

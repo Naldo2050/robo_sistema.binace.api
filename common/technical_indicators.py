@@ -1,6 +1,7 @@
-import numpy as np
+﻿import numpy as np
 import pandas as pd
 from typing import Optional
+from common.twap_validator import TWAPValidator
 
 def rsi(series: pd.Series, window: int = 14) -> pd.Series:
     """
@@ -147,6 +148,32 @@ def twap(close_prices: pd.Series) -> float:
         return 0.0
     return float(close_prices.mean())
 
+
+
+def twap_validated(
+    closes: np.ndarray,
+    volumes: np.ndarray,
+    low: float,
+    high: float,
+    symbol: str = "UNKNOWN"
+) -> dict:
+    """
+    FIX #2: Calcula TWAP com validação de bounds e fallback para VWAP.
+    
+    Garante que low <= TWAP <= high (dentro de tolerância de 1%).
+    Se TWAP violar bounds, usa VWAP como fallback.
+    
+    Args:
+        closes: Array de preços de fechamento
+        volumes: Array de volumes
+        low: Baixa do período
+        high: Alta do período
+        symbol: Símbolo para logging
+        
+    Returns:
+        Dict com TWAP, VWAP, validação e valor final
+    """
+    return TWAPValidator.validate_twap_with_fallback(closes, volumes, low, high, symbol)
 
 def twap_vwap_analysis(
     close_prices: pd.Series,

@@ -48,19 +48,19 @@ _AUCTION_MAP: dict[str, str] = {
 }
 
 
-def build_institutional_summary(compact_payload: dict[str, Any]) -> dict[str, Any]:
+def build_institutional_summary(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Gera resumo interpretado da análise institucional.
 
     Args:
-        compact_payload: payload já construído pelo build_compact_payload()
+        payload: payload já construído pelo build_compact_payload()
 
     Returns:
         dict com auction_state, whale_bias, profile_bias, unfinished e note
     """
-    price = compact_payload.get("price", {})
-    whale = compact_payload.get("w", {})
-    flow = compact_payload.get("flow", {})
+    price = payload.get("price", {})
+    whale = payload.get("w", {})
+    flow = payload.get("flow", {})
 
     shape = price.get("sh", "")
     auction_raw = str(price.get("auc", "")).lower()

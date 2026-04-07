@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 import pandas as pd
 
 from .config import PipelineConfig
-from .logging_utils import PipelineLogger, setup_pipeline_logging
+from .logging_utils import PipelineLogger
 from .validation.validator import TradeValidator
 from .validation.adaptive import AdaptiveThresholds
 from .cache.lru_cache import LRUCache
 from .metrics.processor import MetricsProcessor
 from .fallback.registry import FallbackRegistry
-from data_processing.enrichment_integrator import enrich_analysis_trigger_event, build_analysis_trigger_event
+from data_processing.enrichment_integrator import build_analysis_trigger_event
 import config as global_config
 from data_processing.data_enricher import DataEnricher
 
@@ -416,8 +416,11 @@ class DataPipeline:
         if orderbook_data and 'orderbook_data' in orderbook_data:
             orderbook_data = orderbook_data['orderbook_data']
 
+        # Garantir que enriched_data é um dicionário
+        enriched_dict = self.enriched_data if isinstance(self.enriched_data, dict) else {}
+        
         contextual: Dict[str, Any] = {
-            **self.enriched_data,
+            **enriched_dict,
             "flow_metrics": flow_metrics or {},
             "historical_vp": historical_vp or {},
             "orderbook_data": orderbook_data or {},
@@ -676,18 +679,26 @@ class DataPipeline:
                 # 2. Consistência do Delta — recalcular e corrigir automaticamente
                 delta_calc = vol_buy - vol_sell
                 if abs(delta_calc - delta) > TOLERANCE_DELTA:
+                    delta_diff = delta_calc - delta
                     logging.warning(
                         f"⚠️ INVARIANTE VIOLADA (Delta): "
-                        f"Buy - Sell ({delta_calc:.4f}) != Delta Armazenado ({delta:.4f}) "
-                        f"em {self.symbol}"
+                        f"Buy ({vol_buy:.4f}) - Sell ({vol_sell:.4f}) = {delta_calc:.4f} != Delta Armazenado ({delta:.4f}) "
+                        f"[diff={delta_diff:+.4f}] em {self.symbol}"
                     )
-                    # Correção automática
-                    logging.info(
-                        f"Delta corrigido: {delta:.4f} -> {delta_calc:.4f}"
-                    )
-                    data["delta"] = delta_calc
-                    if hasattr(self, 'enriched_data') and self.enriched_data:
-                        self.enriched_data["delta_fechamento"] = delta_calc
+                    # Correção automática com validação
+                    if abs(delta_calc) > 0.0001:
+                        logging.warning(
+                            f"✅ Delta CORRIGIDO: {delta:.4f} -> {delta_calc:.4f} "
+                            f"(fonte: vol_buy - vol_sell)"
+                        )
+                        data["delta"] = delta_calc
+                        if hasattr(self, 'enriched_data') and self.enriched_data:
+                            self.enriched_data["delta_fechamento"] = delta_calc
+                    else:
+                        logging.warning(
+                            f"⚠️ Delta calculado muito próximo de zero ({delta_calc:.4f}), "
+                            f"mantendo valor armazenado: {delta:.4f}"
+                        )
         except Exception as e:
             logging.debug(f"Erro na validação de invariantes Pipeline ({context}): {e}", exc_info=True)
 

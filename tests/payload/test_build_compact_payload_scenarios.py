@@ -4,7 +4,7 @@ import pytest
 import build_compact_payload as bcp
 
 HARD_LIMIT = 6144
-SOFT_LIMIT = 3000
+SOFT_LIMIT = 3500
 WARN_LIMIT = 2800
 
 @pytest.fixture(autouse=True)

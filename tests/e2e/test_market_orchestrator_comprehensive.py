@@ -11,6 +11,7 @@ import numpy as np
 
 # Mock para dependências se não puderem ser importadas
 try:
+    from market_orchestrator import adapt_orchestrator_runtime
     from market_orchestrator.orchestrator import MarketOrchestrator, OrchestratorConfig, Position
     from market_orchestrator.flow.trade_executor import TradeExecutor
     from market_orchestrator.flow.signal_processor import SignalProcessor
@@ -1057,6 +1058,12 @@ class TestMarketOrchestratorComprehensive:
     def orchestrator(self, orchestrator_config):
         """Orchestrator configurado com mocks"""
         orchestrator = MarketOrchestrator(orchestrator_config)
+        runtime = adapt_orchestrator_runtime(orchestrator)
+        runtime = adapt_orchestrator_runtime(orchestrator)
+        runtime = adapt_orchestrator_runtime(orchestrator)
+        snapshot = runtime.snapshot_state()
+        runtime = adapt_orchestrator_runtime(orchestrator)
+        snapshot = runtime.snapshot_state()
         
         # Configura mocks para componentes
         orchestrator.orderbook_analyzer = Mock()
@@ -1158,7 +1165,9 @@ class TestMarketOrchestratorComprehensive:
     def test_initialization(self, orchestrator_config):
         """Testa inicialização do MarketOrchestrator"""
         orchestrator = MarketOrchestrator(orchestrator_config)
-        
+        runtime = adapt_orchestrator_runtime(orchestrator)
+        snapshot = runtime.snapshot_state()
+
         assert orchestrator.config.symbol == "BTCUSDT"
         assert orchestrator.config.max_position_size == 100000
         assert orchestrator.config.max_daily_loss == 0.05
@@ -1166,6 +1175,9 @@ class TestMarketOrchestratorComprehensive:
         assert orchestrator.config.enable_ai_analysis is True
         
         assert orchestrator.is_running is False
+        assert snapshot["kind"] == "market_orchestrator"
+        assert snapshot["symbol"] == "BTCUSDT"
+        assert snapshot["is_running"] is False
         assert orchestrator.positions == {}
         assert orchestrator.daily_pnl == 0.0
         assert orchestrator.last_trade_time is None
@@ -1180,10 +1192,14 @@ class TestMarketOrchestratorComprehensive:
     
     def test_start_and_stop(self, orchestrator):
         """Testa início e parada do orchestrator"""
+        runtime = adapt_orchestrator_runtime(orchestrator)
         # Testa start
         result = orchestrator.start()
+        snapshot = runtime.snapshot_state()
         assert result is True
         assert orchestrator.is_running is True
+        assert snapshot["is_running"] is True
+        assert snapshot["health"]["is_running"] is True
         
         # Componentes devem ter sido inicializados
         assert orchestrator.orderbook_analyzer is not None
@@ -1194,8 +1210,10 @@ class TestMarketOrchestratorComprehensive:
         
         # Testa stop
         result = orchestrator.stop()
+        snapshot = runtime.snapshot_state()
         assert result is True
         assert orchestrator.is_running is False
+        assert snapshot["is_running"] is False
         
         # Testa start quando já está rodando
         orchestrator.is_running = True
@@ -1212,8 +1230,12 @@ class TestMarketOrchestratorComprehensive:
     @pytest.mark.asyncio
     async def test_process_market_data_success(self, orchestrator, sample_market_data):
         """Testa processamento de dados de mercado bem-sucedido"""
+        runtime = adapt_orchestrator_runtime(orchestrator)
+        runtime = adapt_orchestrator_runtime(orchestrator)
+        runtime = adapt_orchestrator_runtime(orchestrator)
+        runtime = adapt_orchestrator_runtime(orchestrator)
         orchestrator.start()
-        
+
         result = await orchestrator.process_market_data(sample_market_data)
         
         assert result['success'] is True
@@ -2014,6 +2036,8 @@ class TestMarketOrchestratorComprehensive:
         orchestrator.start()
         
         health = orchestrator.health_check()
+        runtime = adapt_orchestrator_runtime(orchestrator)
+        snapshot = runtime.snapshot_state()
         
         assert 'status' in health
         assert 'components' in health
@@ -2026,6 +2050,8 @@ class TestMarketOrchestratorComprehensive:
         # Todos os componentes configurados, deve ser HEALTHY
         assert health['status'] == 'HEALTHY'
         assert health['is_running'] is True
+        assert snapshot["health"]["status"] == "HEALTHY"
+        assert snapshot["is_running"] is True
         
         # Verifica componentes individuais
         assert health['components']['orderbook_analyzer'] == 'HEALTHY'

@@ -25,7 +25,7 @@ class MockOrderBookAnalyzer:
 
 class MockMarketOrchestrator:
     async def process_market_data(self, data):
-        await asyncio.sleep(0.001)  # Simula processamento
+        await asyncio.sleep(0.001)  # Simula processamento realístico (1ms)
         return {'processed': True}
 
 
@@ -107,7 +107,6 @@ class TestPerformanceBenchmarks:
             await mock_orchestrator.process_market_data(msg)
         
         end_time = time.time()
-        
         throughput = len(messages) / (end_time - start_time)
         
         # Esperado: > 100 mensagens/segundo
