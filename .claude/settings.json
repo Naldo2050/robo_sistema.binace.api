@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import time; print\\(f'monotonic: {time.monotonic\\(\\):.0f}s'\\)\")",
+      "Bash(python -c \"import config; print\\(getattr\\(config, 'HYBRID_ENABLED', 'NOT_FOUND'\\)\\)\")",
+      "Bash(python -m pytest \"tests/integration/test_ai_llm_fallback_flow.py::test_ai_analyze_ok_emitted_only_for_valid_json\" --tb=short -q --no-cov)"
+    ]
+  }
+}

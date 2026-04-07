@@ -191,6 +191,35 @@ common/
 
 ---
 
+### `institutional/` - Analise Institucional
+
+```
+institutional/
+├── __init__.py
+├── absorption_detector.py
+├── base.py
+├── confluence_engine.py
+├── crypto_cot.py
+├── cvd.py
+├── entropy_analyzer.py
+├── event_bridge.py
+├── footprint.py
+├── fourier_cycles.py
+├── garch_volatility.py
+├── hurst_exponent.py
+├── iceberg_detector.py
+├── kalman_filter.py
+├── market_regime_hmm.py
+├── mean_reversion.py
+├── monte_carlo.py
+├── order_flow_imbalance.py
+├── smart_money.py
+├── vwap_twap.py
+├── whale_detector.py
+```
+
+---
+
 ## Modulos Principais (Pre-existentes)
 
 ### `ai_runner/` - Executor de IA
@@ -242,7 +271,15 @@ market_orchestrator/
 │   ├── payload_compressor_v3.py   # Compressor v3 (39KB)
 │   ├── payload_metrics_aggregator.py
 │   ├── payload_section_cache.py   # Cache de secoes
-│   └── raw_event_deduplicator.py  # Deduplicador de eventos
+│   ├── raw_event_deduplicator.py  # Deduplicador de eventos
+│   ├── payload_sections/
+│   │   ├── __init__.py
+│   │   ├── flow_summary.py
+│   │   ├── institutional_summary.py
+│   │   ├── quality_summary.py
+│   │   ├── regime_summary.py
+│   │   ├── skill_bridge.py
+│   │   └── sr_summary.py
 ├── analysis/
 │   ├── __init__.py
 │   └── institutional_analytics.py
@@ -495,7 +532,8 @@ tests/
 │   ├── test_simple_correlations.py
 │   ├── test_updated_correlations.py
 │   ├── test_ml_frozen_detector.py
-│   └── test_ai_analyzer_language_and_think_strip.py
+│   ├── test_ai_analyzer_language_and_think_strip.py
+└── test_simple_correlations.py
 ├── integration/                   # 50+ testes de integracao (multiplos modulos)
 │   ├── test_ai_runner.py
 │   ├── test_ai_runner_comprehensive.py
@@ -546,7 +584,23 @@ tests/
 │   ├── test_fix_optimization_storage.py
 │   ├── test_event_saver_jsonl_guardian.py
 │   ├── test_new_payload.py
-│   └── test_invariant_fix.py
+│   ├── test_invariant_fix.py
+├── test_ai_llm_fallback_flow.py
+├── test_ai_runner_comprehensive.py
+├── test_data_pipeline.py
+├── test_enhanced_cross_asset.py
+├── test_enrich_signal.py
+├── test_latency_fix_simple.py
+├── test_macro_data_provider.py
+├── test_orderbook_analyzer_coverage.py
+├── test_orderbook_analyzer_full_coverage.py
+├── test_orderbook_analyzer_missing.py
+├── test_orderbook_config_injection.py
+├── test_orderbook_core_comprehensive.py
+├── test_patch_2_fallback_controlado.py
+├── test_risk_manager_comprehensive.py
+├── test_trade_buffer_optimization.py
+└── test_window_processor.py
 ├── e2e/                           # 12 testes end-to-end (sistema completo)
 │   ├── test_system_health.py
 │   ├── test_performance_benchmarks.py
@@ -584,7 +638,16 @@ tests/
     ├── test_payload_optimizer.py
     ├── test_payload_metrics_aggregator.py
     ├── test_build_compact_v3.py
-    └── test_ai_throttler_v2.py
+    ├── test_ai_throttler_v2.py
+├── test_build_compact_payload_budget.py
+├── test_build_compact_payload_fixes.py
+├── test_build_compact_payload_pending_regressions.py
+├── test_build_compact_payload_scenarios.py
+├── test_build_compact_payload_smoke.py
+├── test_build_compact_payload_snapshot.py
+├── test_payload_integration_e2e.py
+├── test_payload_sections.py
+└── test_skill_bridge.py
 ```
 
 ---
@@ -702,7 +765,17 @@ docs/
 ├── RESUMO_EXPORT_SINAIS.md
 ├── auditoria_estrutura_json.md
 ├── orderbook_severity_analysis.md
-└── relatorio_auditoria_json.md
+├── relatorio_auditoria_json.md
+├── audit/
+│   ├── FASE1_IMPORTS_PROXIES.md
+│   ├── FASE2_ASYNC_WEBSOCKET.md
+│   ├── FASE3_ERROS_RESILIENCIA.md
+│   ├── FASE4_CONFIG_SEGURANCA.md
+│   ├── FASE5_AI_ML_PIPELINE.md
+│   ├── FASE6_TESTES.md
+│   ├── FASE7_8_PERFORMANCE_ESTADO.md
+│   ├── FASE9_10_DEPS_DOCKER_DADOS.md
+│   └── RELATORIO_FINAL.md
 ```
 
 ---
@@ -795,9 +868,9 @@ docs/
 ## Estatisticas do Projeto
 
 - **Arquivos .py na raiz**: ~25 (29 proxies + 4 modulos de producao + config/main)
-- **Pacotes organizados**: 7 novos + 12 pre-existentes
+- **Pacotes organizados**: 8 novos + 12 pre-existentes
 - **Total de arquivos Python**: ~250+
-- **Testes**: ~107 arquivos em tests/ (unit/28, integration/50, e2e/12, helpers/7, legacy/7, payload/5)
+- **Testes**: ~132 arquivos em tests/ (unit/31, integration/66, e2e/14, helpers/7, legacy/7, payload/14)
 - **Dados de features**: 34+ datas
 
 ---
@@ -894,4 +967,62 @@ docs/
 
 ---
 
-*Ultima atualizacao: 2026-04-03 (novos arquivos: flow_analyzer.py, testes adicionais, atualizacoes em pacotes)*
+## Atualizacoes Posteriores (2026-04-04)
+
+| Categoria | Arquivos Adicionados |
+|-----------|---------------------|
+| raiz | flow_analyzer.py |
+| tests/ | test_support_resistance_institutional.py, test_support_resistance_consolidated.py, test_support_resistance_modular.py, test_flow_analyzer.py, test_rolling_aggregate.py, test_out_of_order_pruning.py, verify_patch_2.py, verify_prune_logic_only.py |
+| flow_analyzer/ | errors.py, logging_config.py, profiling.py, prometheus_metrics.py, protocols.py, serialization.py, utils.py, validation.py |
+| support_resistance/ | config.py, constants.py, system.py |
+
+---
+
+*Ultima atualizacao: 2026-04-04 (novos arquivos: flow_analyzer.py completo, testes adicionais, atualizacoes support_resistance)*
+
+---
+
+## Atualizacoes Posteriores (2026-04-06)
+
+| Categoria | Arquivos Adicionados |
+|-----------|---------------------|
+| .claude/ | settings.json |
+| .github/ | AGENTES_CUSTOMIZADOS.md, AGENTES_INSTALACAO.md, AGENTES_REFERENCIA_RAPIDA.md, agents/ |
+| Regras/ | AGENTES DE IA.docx |
+| raiz | ARQUIVOS_ALTERADOS_DETALHADO.md, MENSAGEM_COMMIT_SUGERIDA.md, VALIDACAO_FINAL_RESUMO.md |
+| common/ | ai_payload_types.py, ai_protocols.py |
+| market_orchestrator/ | adapters.py, protocols.py |
+| tests/payload/ | test_ai_payload_types.py |
+| tests/unit/ | test_architecture_regressions.py, test_orchestrator_adapters.py |
+
+---
+
+*Ultima atualizacao: 2026-04-06 (novos arquivos: agentes IA, validacao final, tipos payload, adapters orchestrator)*
+
+---
+
+## Atualizacoes Posteriores (2026-03-24 até 2026-04-07)
+
+✅ **ATUALIZACAO CONFIRMADA VIA GIT LOG - TODOS ARQUIVOS CRIADOS/MODIFICADOS DEPOIS DE 23/03/2026**
+
+| Categoria | Arquivos Adicionados |
+|-----------|---------------------|
+| **NOVO PACOTE INSTITUCIONAL** | 20 arquivos completos: `institutional/__init__.py`, absorption_detector.py, base.py, confluence_engine.py, crypto_cot.py, cvd.py, entropy_analyzer.py, event_bridge.py, footprint.py, fourier_cycles.py, garch_volatility.py, hurst_exponent.py, iceberg_detector.py, kalman_filter.py, market_regime_hmm.py, mean_reversion.py, monte_carlo.py, order_flow_imbalance.py, smart_money.py, vwap_twap.py, whale_detector.py |
+| **market_orchestrator/ai** | payload_sections/ COMPLETO: __init__.py, flow_summary.py, institutional_summary.py, quality_summary.py, regime_summary.py, skill_bridge.py, sr_summary.py |
+| **flow_analyzer/** | errors.py, protocols.py, utils.py, validation.py, serialization.py, profiling.py, logging_config.py, prometheus_metrics.py, aggregates.py |
+| **support_resistance/** | system.py, constants.py, config.py |
+| **common/** | ml_features.py, technical_indicators.py, yfinance_cache.py, ai_throttler.py |
+| **fetchers/** | funding_aggregator.py, onchain_fetcher.py, macro_data_provider.py |
+| **monitoring/** | clock_sync.py, time_manager.py, health_monitor.py atualizado |
+| **ml/** | hybrid_decision.py, inference_engine.py, bias_monitor.py, dataset_collector.py |
+| **docs/audit/** | 10 documentos completos de auditoria: FASE1 a FASE10 + RELATORIO_FINAL.md |
+| **tests/payload/** | +11 novos arquivos de teste payload |
+| **tests/integration/** | +14 arquivos de integracao novos |
+| **tests/unit/** | +27 novos testes (institutional completo, time_manager, yfinance_cache, ai_throttler) |
+| **tests/raiz** | test_support_resistance_institutional.py, test_support_resistance_consolidated.py, test_flow_analyzer.py, test_rolling_aggregate.py, verify_patch_2.py, verify_prune_logic_only.py, test_out_of_order_pruning.py, test_support_resistance_modular.py |
+| **dados/** | fred_cache.json, indices_futures.csv, macro_data.json |
+| **config/** | model_config.yaml atualizado, settings.py |
+
+---
+
+*✅ Ultima atualizacao REAL: 2026-04-07 | Total de arquivos novos/alterados: 137*

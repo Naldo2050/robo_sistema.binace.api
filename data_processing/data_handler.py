@@ -1,4 +1,4 @@
-# data_handler.py - REFATORADO v2.0.0 - ELIMINAÇÃO DE DUPLICIDADES
+﻿# data_handler.py - REFATORADO v2.0.0 - ELIMINAÇÃO DE DUPLICIDADES
 """
 Data Handler com lógica unificada (NumPy como fonte da verdade).
 
@@ -50,6 +50,9 @@ import config
 
 # 🔹 TIME MANAGER (injeção recomendada)
 from monitoring.time_manager import TimeManager
+
+# 🔹 DELTA VALIDATOR (FIX #3)
+from data_processing.delta_validator import DeltaValidator
 
 # 🔹 VOLUME PROFILE DINÂMICO
 from market_analysis.dynamic_volume_profile import DynamicVolumeProfile
@@ -1135,6 +1138,16 @@ def create_absorption_event(
             volume_buy_btc,
             volume_sell_btc,
         )
+
+        # FIX #3: Delta Validator
+        delta_btc_validated, delta_is_valid, delta_reason = DeltaValidator.validate_delta_invariant(
+            volume_buy_btc, volume_sell_btc, delta_btc, symbol
+        )
+        delta_verified = delta_is_valid
+        delta_source = "calculated"
+        if not delta_is_valid and delta_reason == "ZERO_BUG":
+            delta_btc = delta_btc_validated
+            delta_verified = False
 
         # Rótulos (mesma semântica anterior)
         resultado = "Sem Absorção"

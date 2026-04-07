@@ -152,15 +152,19 @@ class SmartAIThrottler:
         if remaining_budget < self.tokens_per_call_estimate:
             return False, (
                 f"daily_budget_exhausted "
-                f"({self._tokens_used_today}/{self.daily_token_budget})"
+                f"({self._tokens_used_today}/{self.daily_token_budget} tokens, "
+                f"remaining={remaining_budget})"
             )
 
         # 3) Limite por hora?
         self._maybe_reset_hourly(now)
         if self._calls_this_hour >= self.max_calls_per_hour:
+            # Calcular tempo até próxima chamada
+            time_to_next_call = (self._hour_start_ts + 3600) - now
             return False, (
                 f"hourly_limit "
-                f"({self._calls_this_hour}/{self.max_calls_per_hour})"
+                f"({self._calls_this_hour}/{self.max_calls_per_hour} calls, "
+                f"retry_in={max(0, time_to_next_call):.0f}s)"
             )
 
         # 4) Hard min interval (NUNCA bypassed, exceto primeiros eventos)

@@ -11,6 +11,7 @@ Cache interno para respeitar rate limits (1 req/10s blockchain.info, 1 req/5s me
 Intervalo recomendado: chamar a cada 5 minutos (alinhado com janelas do sistema).
 """
 
+import os
 import asyncio
 import aiohttp
 import time
@@ -41,6 +42,10 @@ class OnchainFetcher:
         Retorna todas as métricas on-chain disponíveis.
         Usa cache se dentro do TTL.
         """
+        if os.getenv("BOT_TEST_MODE") == "1":
+            logger.debug("[TEST_MODE] Onchain: Ignorando busca real")
+            return self._last_valid or self._merge_metrics({}, {})
+
         now = time.time()
         if self._cache and (now - self._cache_ts) < self.cache_ttl:
             return self._cache

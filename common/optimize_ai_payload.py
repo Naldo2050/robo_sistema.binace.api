@@ -573,7 +573,7 @@ def build_optimized_ai_payload(event: Dict[str, Any]) -> Dict[str, Any]:
         "orderbook_context": {
             "bid_depth_usd": first_nested_value(event, [["orderbook_data", "bid_depth_usd"]]),
             "ask_depth_usd": first_nested_value(event, [["orderbook_data", "ask_depth_usd"]]),
-            "imbalance": first_nested_value(event, [["orderbook_data", "imbalance"]]),
+            "imbalance": first_nested_value(event, [["orderbook_data", "flow_imbalance"]]),
             "market_impact_score": first_nested_value(event, [["orderbook_data", "pressure"]]),
             "walls_detected": 1 if first_nested_value(event, [["orderbook_data", "depth_metrics"]]) else 0,
             "depth_metrics": first_nested_value(event, [["orderbook_data", "depth_metrics"]]),

@@ -109,6 +109,29 @@ def test_groq_payload_summary_is_reduced(monkeypatch):
     assert "extra" not in reduced["p"]
 
 
+def test_structured_prompt_accepts_compact_payload_without_quant(monkeypatch):
+    analyzer = _make_analyzer(monkeypatch)
+    payload = {
+        "symbol": "BTCUSDT",
+        "epoch_ms": 1,
+        "trigger": "ANALYSIS_TRIGGER",
+        "price": {"c": 100.0, "vw": 101.0},
+        "flow": {"d1": "+10K", "imb": 0.2},
+        "ob": {"b": 1000, "a": 900, "imb": 0.1},
+        "tf": {"1m": {"rsi": 50, "adx": 20}},
+        "sr": {"_": "no_data"},
+    }
+
+    prompt = analyzer._build_structured_prompt(payload)
+    parsed = json.loads(prompt)
+
+    assert parsed["t"] == "ANALYSIS_TRIGGER"
+    assert parsed["p"]["c"] == 100.0
+    assert parsed["f"]["d1"] == "+10K"
+    assert parsed["ob"]["imb"] == 0.1
+    assert "q" not in parsed
+
+
 def test_groq_openai_call_uses_response_format_when_supported(monkeypatch):
     analyzer = _make_analyzer(monkeypatch)
     # Use a model that supports JSON mode (not in _MODELS_WITHOUT_JSON_MODE)

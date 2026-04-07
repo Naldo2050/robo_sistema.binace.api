@@ -17,6 +17,12 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
+from common.ai_payload_types import (
+    COMPACT_AI_ALLOWED_ROOT_KEYS,
+    COMPACT_AI_COMPRESSED_MARKERS,
+    CompactAIPayload,
+    is_compact_ai_payload,
+)
 from market_orchestrator.ai.payload_compressor import compress_payload
 from market_orchestrator.ai.payload_metrics_aggregator import append_metric_line
 
@@ -43,13 +49,7 @@ FORBIDDEN_KEYS = {
 
 # ── Chaves que identificam payload JÁ comprimido ────────────────────
 # Usado para evitar dupla compressão
-_COMPRESSED_MARKERS = {
-    "_v",           # versão do compressor (v2)
-    "epoch_ms",     # payload builder sempre inclui
-    "price",        # compressor v1 usa "price"
-    "ob",           # compressor v1 usa "ob" (orderbook)
-    "flow",         # compressor v1 usa "flow"
-}
+_COMPRESSED_MARKERS = COMPACT_AI_COMPRESSED_MARKERS
 
 # ── Tamanho máximo permitido para envio ao LLM ──────────────────────
 _MAX_BYTES_LLM = 6144  # 6KB
@@ -64,48 +64,7 @@ _GUARDRAIL_THRESHOLD_BYTES = 8192  # 8KB
 # Atualizada para incluir todos os campos do build_compact_payload v3.1+
 # ============================================================
 
-_ALLOWED_FLAT_KEYS: frozenset[str] = frozenset({
-    # Identidade
-    "symbol",
-    "epoch_ms",
-    "trigger",
-    "tipo_evento",
-    "descricao",
-    "ativo",
-    "window",
-
-    # Seções principais — obrigatórias
-    "price",
-    "regime",
-    "flow",
-    "ob",
-    "tf",
-    "sr",
-
-    # Seções principais — opcionais
-    "qual",
-    "w",
-    "ctx",
-    "ext",
-    "alerts",
-    "quant",
-
-    # Gaps críticos — adicionados em v3.1
-    "ofi",
-    "vwap",
-    "liq",
-    "sm",
-    "cvd_div",
-    "mr",
-    "iceberg",
-
-    # Summary builders — adicionados em v3.2
-    "summary",
-
-    # Metadados internos
-    "_v",
-    "_compacted",
-})
+_ALLOWED_FLAT_KEYS: frozenset[str] = COMPACT_AI_ALLOWED_ROOT_KEYS
 
 
 def _is_allowed_key(key: str) -> bool:
@@ -120,7 +79,9 @@ def guardrail_rewrap(payload: dict) -> dict:
     IMPORTANTE: preserva TODAS as keys da whitelist.
     Keys fora da whitelist são logadas e descartadas.
     """
-    allowed = {k: v for k, v in payload.items() if _is_allowed_key(k)}
+    allowed: CompactAIPayload = {
+        k: v for k, v in payload.items() if _is_allowed_key(k)
+    }
     dropped = [k for k in payload if not _is_allowed_key(k)]
 
     if dropped:
@@ -157,16 +118,12 @@ def _is_already_compressed(payload: Dict[str, Any]) -> bool:
         return True
 
     # Payload do builder: tem epoch_ms como int + symbol
-    has_epoch = isinstance(payload.get("epoch_ms"), (int, float))
-    has_symbol = isinstance(payload.get("symbol"), str)
-    if has_epoch and has_symbol:
-        # Verifica se tem seções comprimidas típicas
-        compressed_sections = sum(
-            1 for key in ("price", "ob", "flow", "tf", "vp", "quant")
-            if key in payload
-        )
-        if compressed_sections >= 3:
-            return True
+    if is_compact_ai_payload(
+        payload,
+        require_identity=True,
+        minimum_primary_sections=3,
+    ):
+        return True
 
     # Payload compacto do compressor v1
     has_price = "price" in payload

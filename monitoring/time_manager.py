@@ -1,3 +1,4 @@
+import os
 import time
 import asyncio
 import requests
@@ -7,6 +8,17 @@ import numpy as np
 from threading import Lock
 from datetime import timezone, datetime, timedelta
 from typing import Optional, Dict, Any, Tuple, Union
+
+# 🆕 BUG #4: Import Circuit Breaker
+try:
+    from monitoring.clock_sync_circuit_breaker import ClockSyncCircuitBreaker, CircuitBreakerState
+except ImportError:
+    # Fallback para execução direta ou testes
+    try:
+        from clock_sync_circuit_breaker import ClockSyncCircuitBreaker, CircuitBreakerState
+    except ImportError:
+        ClockSyncCircuitBreaker = None
+        CircuitBreakerState = None
 
 # Fuso horários (com fallback caso ZoneInfo não esteja disponível)
 TZ_UTC: Union["ZoneInfo", timezone]
@@ -170,6 +182,16 @@ class TimeManager:
         self._sync_needed: bool = False
         self._sync_lock = asyncio.Lock()
 
+        # 🆕 BUG #4: Inicializar Circuit Breaker
+        if ClockSyncCircuitBreaker:
+            self.circuit_breaker = ClockSyncCircuitBreaker(
+                critical_offset_ms=1000,   # Limite técnico da Binance
+                recovery_offset_ms=600,    # Margem de segurança para fechar
+                logger=logging.getLogger("TimeManager.CircuitBreaker")
+            )
+        else:
+            self.circuit_breaker = None
+
         # Inicialização com retry
         self._initialize_sync()
 
@@ -179,6 +201,13 @@ class TimeManager:
     
     def _initialize_sync(self) -> None:
         """Executa sincronização inicial com múltiplas tentativas e validação."""
+        if os.getenv("BOT_TEST_MODE") == "1":
+            self.time_sync_status = "ok"
+            self.last_successful_sync_ms = int(time.time() * 1000)
+            self.last_sync_mono = time.monotonic()
+            logging.info("🕐 [TEST_MODE] TimeManager: Rede desabilitada, usando tempo local.")
+            return
+
         local_ms_before = int(time.time() * 1000)
         logging.info("=" * 80)
         logging.info("🕐 TIMEMANAGER v2.1.2 - INICIALIZANDO")
@@ -259,6 +288,16 @@ class TimeManager:
             
         Rejeita amostras com RTT > MAX_ACCEPTABLE_RTT_MS
         """
+        if os.getenv("BOT_TEST_MODE") == "1":
+            now_ms = int(time.time() * 1000)
+            return {
+                "server_ms": now_ms,
+                "send_ms": now_ms - 5,
+                "recv_ms": now_ms + 5,
+                "rtt_ms": 10,
+                "offset_ms": 0,
+            }
+
         try:
             send_ms = int(time.time() * 1000)
             resp = requests.get(self.BINANCE_TIME_URL, timeout=timeout)
@@ -381,6 +420,14 @@ class TimeManager:
                     f"{old_offset}ms → {self.server_time_offset_ms}ms "
                     f"(Δ={offset_change}ms)"
                 )
+            
+            # 🆕 BUG #4: Atualizar Circuit Breaker com o novo offset
+            if self.circuit_breaker:
+                self.circuit_breaker.update_offset(self.server_time_offset_ms)
+                if self.circuit_breaker.get_state() == CircuitBreakerState.OPEN:
+                    self.time_sync_status = "failed"
+                elif self.circuit_breaker.get_state() == CircuitBreakerState.HALF_OPEN:
+                    self.time_sync_status = "degraded"
 
         self._validate_offset()
 

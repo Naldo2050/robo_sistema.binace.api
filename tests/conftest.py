@@ -3,6 +3,10 @@ import asyncio
 import sys
 import os
 import time
+
+# Forçar modo de teste para desabilitar rede/sync real
+os.environ["BOT_TEST_MODE"] = "1"
+
 from datetime import timezone, timedelta
 
 # Adicionar raiz do projeto ao path

@@ -1858,8 +1858,28 @@ def _inject_ml_features(event: dict) -> None:
 
     # order_book_slope via order_book_depth (regressão linear simplificada)
     micro = ml.setdefault("microstructure", {})
-    if "order_book_slope" not in micro or micro.get("order_book_slope") == 0.0:
-        ob_depth = event.get("order_book_depth", {}) or {}
+    # FIX: Sempre recalcular order_book_slope a partir de dados atuais (não usar cache)
+    # ou validar que os dados de order_book_depth mudaram desde o último cálculo
+    ob_depth = event.get("order_book_depth", {}) or {}
+    ob_depth_changed = (
+        "order_book_slope" not in micro 
+        or micro.get("order_book_slope") == 0.0
+    )
+    
+    # Se temos dados de depth atuais, validar se mudaram
+    if ob_depth and ob_depth_changed is False:
+        # Verificar se depth atual é diferente do anterior (detectar cache obsoleto)
+        current_l1_asks = ob_depth.get("L1", {}).get("asks", 0) or 0
+        micro_cached_slope = micro.get("order_book_slope", 0.0)
+        # Se o slope está exatamente igual ao valor anterior, pode ser cache
+        if micro_cached_slope != 0.0 and current_l1_asks == 0:
+            # Dados de depth não foram atualizados, não recalcular
+            pass
+        elif ob_depth != {}:
+            # Há dados novos, recalcular mesmo que slope exista
+            ob_depth_changed = True
+    
+    if ob_depth and (ob_depth_changed or "order_book_slope" not in micro):
         # Extrair pontos (nível, volume cumulativo)
         levels = []
         for lvl_key in ("L1", "L5", "L10", "L25"):
@@ -1884,11 +1904,20 @@ def _inject_ml_features(event: dict) -> None:
                 or 0
             )
             if current_price > 0:
-                micro["order_book_slope"] = round(slope_raw / current_price, 6)
+                new_slope = round(slope_raw / current_price, 6)
             else:
-                micro["order_book_slope"] = slope_raw
+                new_slope = slope_raw
+            
+            # Detectar mudança gra and and log para auditoria
+            old_slope = micro.get("order_book_slope", None)
+            if old_slope is not None and old_slope != 0.0 and abs(new_slope - old_slope) > 0.01:
+                logging.debug(f"order_book_slope recalculado: {old_slope:.6f} -> {new_slope:.6f}")
+            
+            micro["order_book_slope"] = new_slope
         else:
             micro.setdefault("order_book_slope", 0.0)
+    else:
+        micro.setdefault("order_book_slope", 0.0)
 
 
 # ---------------------------------------------------------------------------

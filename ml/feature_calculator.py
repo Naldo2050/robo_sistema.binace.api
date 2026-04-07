@@ -18,6 +18,7 @@ import logging
 import numpy as np
 from collections import deque
 from typing import Optional
+from ml.returns_validator import ReturnsValidator
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ class LiveFeatureCalculator:
 
         Retorna as 9 features do XGBoost + metadados de warmup:
           _warmup_ready (bool): True se todas as features são reais
-          _ml_usable (bool): True se >=7 de 9 são reais
+          _ml_usable (bool): True se >=5 de 9 são reais
           _features_real_count (int): quantas são baseadas em dados reais
           _features_default_list (list): nomes das features em fallback
           _history_count (int): número de preços no histórico
@@ -126,26 +127,23 @@ class LiveFeatureCalculator:
         # price_close
         _mark('price_close', n >= 1)
 
-        # Returns
+        # Returns — usando ReturnsValidator com adaptive window
         if n >= 2:
-            return_1 = current / prices[-2] - 1
-            _mark('return_1', True)
+            # Passa prices[:-1] (histórico) e current (preço da janela atual) separadamente
+            returns_data = ReturnsValidator.validate_all_returns(current, np.asarray(prices[:-1]))
+            return_1 = returns_data["return_1"]["value"]
+            return_5 = returns_data["return_5"]["value"]
+            return_10 = returns_data["return_10"]["value"]
+            
+            _mark('return_1', returns_data["return_1"]["is_valid"])
+            _mark('return_5', returns_data["return_5"]["is_valid"])
+            _mark('return_10', returns_data["return_10"]["is_valid"])
         else:
             return_1 = 0.0
-            _mark('return_1', False)
-
-        if n >= 5:
-            return_5 = current / prices[-5] - 1
-            _mark('return_5', True)
-        else:
             return_5 = 0.0
-            _mark('return_5', False)
-
-        if n >= 10:
-            return_10 = current / prices[-10] - 1
-            _mark('return_10', True)
-        else:
             return_10 = 0.0
+            _mark('return_1', False)
+            _mark('return_5', False)
             _mark('return_10', False)
 
         # Bollinger Bands

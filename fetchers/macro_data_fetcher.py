@@ -11,6 +11,7 @@ Suporte adicional para:
 Fontes: yfinance, CoinGecko, APIs locais
 """
 
+import os
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Dict, Any, Optional, List
@@ -47,6 +48,10 @@ def _fetch_yfinance_data_with_fallbacks(name: str, period: str = "90d", interval
     """
     candidates = _FALLBACK_TICKERS.get(name, [name])
     
+    if os.getenv("BOT_TEST_MODE") == "1":
+        logger.debug(f"[TEST_MODE] Macro: Ignorando yfinance para {name}")
+        return pd.DataFrame()
+
     for ticker in candidates:
         try:
             import yfinance as yf
@@ -108,6 +113,15 @@ def fetch_crypto_dominance() -> Dict[str, Any]:
         "timestamp": datetime.utcnow().isoformat()
     }
     
+    if os.getenv("BOT_TEST_MODE") == "1":
+        result.update({
+            "status": "ok",
+            "btc_dominance": 51.5,
+            "eth_dominance": 17.2,
+            "usdt_dominance": 5.8
+        })
+        return result
+
     try:
         # CoinGecko API - dados globais
         url = "https://api.coingecko.com/api/v3/global"

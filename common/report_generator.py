@@ -253,7 +253,7 @@ def generate_ai_analysis_report(
         spread_metrics = orderbook_data.get("spread_metrics", {})
         bid_depth = spread_metrics.get("bid_depth_usd", 0)
         ask_depth = spread_metrics.get("ask_depth_usd", 0)
-        imbalance_ob = orderbook_data.get("imbalance", 0)
+        imbalance_ob = orderbook_data.get("flow_imbalance", 0)
         
         # 🆕 VALIDA ORDERBOOK
         is_orderbook_valid = (bid_depth > 0 and ask_depth > 0)

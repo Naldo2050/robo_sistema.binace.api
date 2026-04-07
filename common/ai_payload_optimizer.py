@@ -561,7 +561,7 @@ class AIPayloadOptimizer:
         if ask is not None:
             result["ask"] = _r(ask, "volume_usd")
 
-        imb = ob.get("imbalance")
+        imb = ob.get("flow_imbalance")
         if imb is not None:
             result["imb"] = _r(imb, "ratio")
 
@@ -579,7 +579,7 @@ class AIPayloadOptimizer:
                     depth[level] = {
                         "b": _r(lvl.get("bids"), "volume_usd"),
                         "a": _r(lvl.get("asks"), "volume_usd"),
-                        "i": _r(lvl.get("imbalance"), "ratio"),
+                        "i": _r(lvl.get("flow_imbalance"), "ratio"),
                     }
             if depth:
                 result["dep"] = depth
@@ -1523,7 +1523,7 @@ class AIPayloadOptimizer:
         )
         compact: Dict[str, Any] = {
             "spr": ob.get("spread") or ob.get("spread_percent"),
-            "imb": ob.get("imbalance"),
+            "imb": ob.get("flow_imbalance"),
             "bid": ob.get("bid_depth_usd"),
             "ask": ob.get("ask_depth_usd"),
             "dimb": (

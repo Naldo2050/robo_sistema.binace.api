@@ -1,0 +1,583 @@
+﻿=== PAYLOAD BRUTO (EVENT_DATA) ===
+{
+  "symbol": "BTCUSDT",
+  "epoch_ms": 1775173800000,
+  "tipo_evento": "ANALYSIS_TRIGGER",
+  "descricao": "Evento autom\u00e1tico para an\u00e1lise da IA",
+  "preco_fechamento": 66875,
+  "delta": 0.123,
+  "volume_total": 1.5,
+  "volume_compra": 0.9,
+  "contextual_snapshot": {
+    "ohlc": {
+      "open": 66884,
+      "high": 66890,
+      "low": 66856,
+      "close": 66875,
+      "vwap": 66879
+    }
+  },
+  "market_context": {
+    "trading_session": "NY",
+    "session_phase": "ACTIVE"
+  },
+  "market_environment": {
+    "volatility_regime": "HIGH",
+    "market_structure": "RANGE_BOUND"
+  },
+  "historical_vp": {
+    "daily": {
+      "status": "success",
+      "poc": 66444,
+      "val": 66388,
+      "vah": 67771
+    }
+  },
+  "external_markets": {
+    "VIX": {
+      "preco_atual": 23.9
+    },
+    "FEAR_GREED": {
+      "preco_atual": 50
+    },
+    "DXY": {
+      "preco_atual": 104.2
+    },
+    "SP500": {
+      "preco_atual": 669.1
+    }
+  },
+  "derivatives": {
+    "BTCUSDT": {
+      "long_short_ratio": 1.83,
+      "open_interest": 90101.906,
+      "funding_rate_percent": -0.01,
+      "longs_usd": 3893635557.19,
+      "shorts_usd": 2129881055.29
+    },
+    "ETHUSDT": {
+      "long_short_ratio": 1.66
+    }
+  },
+  "ml_features": {
+    "cross_asset": {
+      "btc_eth_corr_7d": 0.92,
+      "btc_dxy_corr_30d": -0.41
+    },
+    "microstructure": {
+      "trade_intensity_v2": 12.3,
+      "tick_rule_sum": 10,
+      "order_book_slope": -0.25
+    }
+  },
+  "multi_tf": {
+    "15m": {
+      "tendencia": "Baixa",
+      "rsi_short": 45,
+      "macd": 27,
+      "macd_signal": 41,
+      "adx": 11,
+      "atr": 127,
+      "regime": "Range"
+    },
+    "1h": {
+      "tendencia": "Baixa",
+      "rsi_short": 50,
+      "macd": -151,
+      "macd_signal": -241,
+      "adx": 21,
+      "atr": 384,
+      "regime": "Range"
+    },
+    "4h": {
+      "tendencia": "Baixa",
+      "rsi_short": 43,
+      "macd": -178,
+      "macd_signal": -64,
+      "adx": 27,
+      "atr": 968,
+      "regime": "Manipula\u00e7\u00e3o"
+    },
+    "1d": {
+      "tendencia": "Baixa",
+      "rsi_short": 40,
+      "macd": -829,
+      "macd_signal": -584,
+      "adx": 21,
+      "atr": 2525,
+      "regime": "Acumula\u00e7\u00e3o"
+    }
+  },
+  "volatility_metrics": {
+    "bbw": 0.18,
+    "atr_pct": 0.57
+  },
+  "fluxo_continuo": {
+    "cvd": 0.2,
+    "sector_flow": {
+      "whale": {
+        "delta": 0.4
+      },
+      "retail": {
+        "delta": -0.2
+      }
+    },
+    "order_flow": {
+      "net_flow_1m": 16000,
+      "net_flow_5m": 12000,
+      "net_flow_15m": 8000,
+      "flow_imbalance": 0.18,
+      "aggressive_buy_pct": 59,
+      "buy_sell_ratio": {
+        "buy_sell_ratio": 1.44
+      }
+    },
+    "absorption_analysis": {
+      "current_absorption": {
+        "buyer_strength": 5.9,
+        "seller_exhaustion": 1.8,
+        "continuation_probability": 0.22
+      }
+    }
+  },
+  "orderbook_data": {
+    "bid_depth_usd": 303000,
+    "ask_depth_usd": 1700000,
+    "imbalance": -0.7
+  },
+  "order_book_depth": {
+    "L5": {
+      "imbalance": -0.96
+    }
+  },
+  "market_impact": {
+    "slippage_matrix": {
+      "100k_usd": {
+        "buy": 0.05,
+        "sell": 0.06
+      }
+    }
+  },
+  "institutional_analytics": {
+    "profile_analysis": {
+      "profile_shape": {
+        "shape": "b"
+      },
+      "poor_extremes": {
+        "action_bias": "expect_retest_low",
+        "poor_high": {
+          "detected": 0
+        },
+        "poor_low": {
+          "detected": 1,
+          "volume_ratio": 5.145
+        }
+      },
+      "va_volume_pct": {
+        "breakout_risk": "VERY_HIGH",
+        "compression_signal": 1
+      }
+    },
+    "quality": {
+      "calendar": {
+        "expected_liquidity": "NORMAL"
+      },
+      "latency": {
+        "latency_ms": 820,
+        "latency_category": "OK"
+      }
+    },
+    "flow_analysis": {
+      "passive_aggressive": {
+        "composite": {
+          "signal": "buy_absorption",
+          "conviction": "MEDIUM"
+        }
+      },
+      "whale_accumulation": {
+        "score": 18,
+        "classification": "MILD_ACCUMULATION"
+      }
+    },
+    "sr_analysis": {
+      "defense_zones": {
+        "status": "success",
+        "sell_defense": [
+          {
+            "center": 66931,
+            "strength": 66,
+            "source_count": 5
+          },
+          {
+            "center": 67771,
+            "strength": 52,
+            "source_count": 3
+          }
+        ],
+        "buy_defense": [
+          {
+            "center": 66839,
+            "strength": 58,
+            "source_count": 4
+          },
+          {
+            "center": 66410,
+            "strength": 62,
+            "source_count": 4
+          }
+        ],
+        "defense_asymmetry": {
+          "bias": "neutral"
+        }
+      }
+    }
+  },
+  "technical_indicators_extended": {
+    "cci_signal": "NEUTRAL",
+    "stochastic": {
+      "k": 51
+    },
+    "williams_r": {
+      "value": -58
+    },
+    "garch_forecast_1h": 0.0055,
+    "hurst_exponent": 0.341,
+    "shannon_entropy": 3.461,
+    "fractal_dimension": 0.619,
+    "kalman_filter": {
+      "kalman_price": 66938.24,
+      "deviation_pct": -0.0815,
+      "trend_direction": "DOWN"
+    },
+    "regression_channel": {
+      "slope_per_bar": -2.8103,
+      "position_in_channel": 0.4995,
+      "deviation_from_trend": -0.06
+    },
+    "monte_carlo": {
+      "prob_up": 0.426,
+      "p10": 66756.3,
+      "p90": 66976.79
+    },
+    "dominant_cycles": {
+      "dominant_cycles": [
+        66.7,
+        100.0,
+        40.0
+      ]
+    }
+  },
+  "pattern_recognition": {
+    "fibonacci_levels": {
+      "high": 67100,
+      "low": 66731.08,
+      "38.2": 66872.0,
+      "61.8": 66959.07
+    },
+    "smart_money": {
+      "fair_value_gaps": [
+        {
+          "type": "BULLISH"
+        },
+        {
+          "type": "BEARISH"
+        }
+      ],
+      "market_structure": {
+        "structure": "BEARISH",
+        "bos_detected": 0
+      }
+    }
+  },
+  "alerts": {
+    "active_alerts": [
+      {
+        "type": "SUPPORT_TEST",
+        "severity": "HIGH",
+        "level": 66839
+      },
+      {
+        "type": "RESISTANCE_TEST",
+        "severity": "HIGH",
+        "level": 66931
+      }
+    ]
+  },
+  "data_reliability": {
+    "latency_acceptable": 1,
+    "onchain_coverage": "full"
+  }
+}
+
+=== PAYLOAD COMPACTADO (FINAL) ===
+{
+  "symbol": "BTCUSDT",
+  "epoch_ms": 1775173800000,
+  "trigger": "AT",
+  "price": {
+    "c": 66875,
+    "o": 66884,
+    "h": 66890,
+    "l": 66856,
+    "vw": 66879,
+    "sh": "b",
+    "auc": "expect_retest_low",
+    "pl": 1,
+    "brk_risk": "V_HI"
+  },
+  "regime": {
+    "cs": "BEAR",
+    "cf": 1.0,
+    "v": "H",
+    "mode": "RB",
+    "dom": "4h",
+    "bbw": 0.18,
+    "atr%": 0.57
+  },
+  "flow": {
+    "d1": "+16K",
+    "delta": 0.123,
+    "vol": 1.5,
+    "buy_pct": 60,
+    "ti": 12.3,
+    "trs": 10,
+    "obs": -0.25,
+    "sf_w": 0.4,
+    "sf_r": -0.2,
+    "d5": "+12K",
+    "d15": "+8K",
+    "cvd": 0.2,
+    "imb": 0.18,
+    "ab": 59,
+    "bsr": 1.44,
+    "pa": "buy_absorp",
+    "conv": "M",
+    "abs_buy_str": 5.9,
+    "abs_sell_exh": 1.8,
+    "abs_cont": 0.22
+  },
+  "ob": {
+    "b": "303K",
+    "a": "1.7M",
+    "imb": -0.7,
+    "bias": "SELL",
+    "t5": -0.96,
+    "slip_b": 5.0,
+    "slip_s": 6.0
+  },
+  "tf": {
+    "15m": {
+      "t": "DN",
+      "rsi": 45,
+      "macd": [
+        27,
+        41
+      ],
+      "adx": 11,
+      "atr": 127,
+      "r": "RNG"
+    },
+    "1h": {
+      "t": "DN",
+      "rsi": 50,
+      "macd": [
+        -151,
+        -241
+      ],
+      "adx": 21,
+      "atr": 384,
+      "r": "RNG"
+    },
+    "4h": {
+      "t": "DN",
+      "rsi": 43,
+      "macd": [
+        -178,
+        -64
+      ],
+      "adx": 27,
+      "atr": 968,
+      "r": "MNP"
+    },
+    "1d": {
+      "t": "DN",
+      "rsi": 40,
+      "macd": [
+        -829,
+        -584
+      ],
+      "adx": 21,
+      "atr": 2525,
+      "r": "ACC"
+    }
+  },
+  "sr": {
+    "r1": [
+      66931,
+      66
+    ],
+    "r1_dist": 56,
+    "r1_conf": 5,
+    "r2": [
+      67771,
+      52
+    ],
+    "r2_dist": 896,
+    "r2_conf": 3,
+    "s1": [
+      66839,
+      58
+    ],
+    "s1_dist": 36,
+    "s1_conf": 4,
+    "s2": [
+      66410,
+      62
+    ],
+    "s2_dist": 465,
+    "s2_conf": 4,
+    "def_bias": "neutral"
+  },
+  "w": {
+    "s": 18,
+    "c": "MA"
+  },
+  "ext": {
+    "cci": "N",
+    "stoch": 51,
+    "wr": -58,
+    "garch": 0.01,
+    "hurst": 0.34,
+    "entropy": 3.46,
+    "fd": 0.62,
+    "kalman": {
+      "kp": 66938.24,
+      "dev": -0.0815,
+      "dir": "DOWN"
+    },
+    "reg": {
+      "sl": -2.8103,
+      "pos": 0.4995,
+      "dev": -0.06
+    },
+    "mc": {
+      "pu": 0.426,
+      "p10": 66756.3,
+      "p90": 66976.79
+    },
+    "cycles": [
+      66.7,
+      100.0
+    ],
+    "smc": {
+      "fvg": 2,
+      "fvg_last": "BE",
+      "struct": "BEAR",
+      "bos": 0
+    },
+    "fib": {
+      "hi": 67100,
+      "lo": 66731,
+      "382": 66872,
+      "618": 66959
+    }
+  },
+  "alerts": [
+    {
+      "type": "SUPPORT_TEST",
+      "sev": "H",
+      "lvl": 66839
+    },
+    {
+      "type": "RESISTANCE_TEST",
+      "sev": "H",
+      "lvl": 66931
+    }
+  ],
+  "ctx": {
+    "ses": "NY",
+    "dxy": 104.2,
+    "spy": 669.1,
+    "vix": 23.9,
+    "fg": 50,
+    "poc": 66444,
+    "val": 66388,
+    "vah": 67771,
+    "lsr": 1.83,
+    "eth_lsr": 1.66,
+    "oi": 90,
+    "fr": -0.01,
+    "longs": "+3893.6M",
+    "shorts": "+2129.9M",
+    "eth7": 0.9,
+    "dxy30": -0.41
+  },
+  "ofi": {
+    "score": 0.18,
+    "dir": "BUY",
+    "src": "order_flow"
+  },
+  "vwap": {
+    "dev": -0.006,
+    "side": "below",
+    "sig": "fair",
+    "src": "ohlc"
+  },
+  "summary": {
+    "flow": {
+      "bias": "BUY",
+      "type": "absorption",
+      "actor": "whale",
+      "conf": "M",
+      "note": "Absor\u00e7\u00e3o compradora ativa. (whales comprando)"
+    },
+    "sr": {
+      "nearest": "support",
+      "compressed": true,
+      "conf_bias": "NEUTRAL",
+      "note": "Pre\u00e7o comprimido entre S:66839 e R:66931 (gap total 92 pts) \u2014 risco de breakout elevado. \u26a0\ufe0f Resist\u00eancia acima (66931) \u2014 teste iminente. \u26a0\ufe0f Suporte abaixo (66839) \u2014 teste iminente",
+      "r1_dist_atr": 0.15,
+      "s1_dist_atr": 0.09,
+      "r1_near": true,
+      "s1_near": true,
+      "gap_usd": 92
+    },
+    "regime": {
+      "label": "Range Bound",
+      "strategies": [
+        "operar no range",
+        "comprar VAL, vender VAH",
+        "reduzir exposi\u00e7\u00e3o fora do POC",
+        "aguardar catalisador para breakout"
+      ],
+      "avoid": [
+        "comprar topo do range",
+        "vender fundo do range",
+        "usar alvos distantes"
+      ],
+      "duration": "horas a dias",
+      "note": "Regime Range Bound com consenso de baixa (confian\u00e7a alta: 100%). dominado pelo 4h. Volatilidade alta \u2014 stops maiores necess\u00e1rios.",
+      "vol_note": "Volatilidade alta \u2014 stops maiores necess\u00e1rios"
+    },
+    "institutional": {
+      "auction_state": "Leil\u00e3o incompleto \u2014 m\u00ednima deve ser revisitada",
+      "whale_bias": "ACCUMULATING",
+      "profile_bias": "BULLISH",
+      "unfinished": [
+        "low"
+      ],
+      "alignment": "BULL_ALIGNED",
+      "note": "Leil\u00e3o incompleto \u2014 m\u00ednima deve ser revisitada. Profile com vi\u00e9s bullish. Whales acumulando (score 18). Extremo(s) incompleto(s): low \u2014 reteste esperado. Risco de breakout da Value Area muito alto. Sinais institucionais alinhados para alta."
+    },
+    "quality": {
+      "reliable": true,
+      "confidence_cap": 1.0,
+      "issues": [],
+      "note": "Dados em tempo real sem anomalias. An\u00e1lise com confian\u00e7a plena."
+    }
+  }
+}
+
+Raw size: 4363 bytes
+Compact size: 3568 bytes
+Reduction: 18.2%

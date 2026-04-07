@@ -1848,12 +1848,12 @@ class OrderBookAnalyzer:
                 depth_summary[f"L{lvl}"] = {
                     "bids": round(b_usd, 2),
                     "asks": round(a_usd, 2),
-                    "imbalance": round(imbalance_level, 4) if imbalance_level is not None else None,
+                    "flow_imbalance": round(imbalance_level, 4) if imbalance_level is not None else None,
                 }
                 total_bids_last = b_usd
                 total_asks_last = a_usd
             except Exception:
-                depth_summary[f"L{lvl}"] = {"bids": None, "asks": None, "imbalance": None}
+                depth_summary[f"L{lvl}"] = {"bids": None, "asks": None, "flow_imbalance": None}
 
         total_ratio = None
         try:
@@ -2520,9 +2520,31 @@ class OrderBookAnalyzer:
                 bid_usd=bid_usd,
                 ask_usd=ask_usd,
             )
+
+            # --- BUG #11: Alertas dedicados para Poor Extremes (Leilões Incompletos) ---
+            pe = self._profile_analysis.get("poor_extremes", {}) if hasattr(self, "_profile_analysis") else {}
+            if not pe and "profile_analysis" in (getattr(self, "prev_snapshot", {}) or {}):
+                 # Tenta pegar do processamento de profile se disponível nesta instância
+                 pass 
             
-            # Atualiza is_emergency com o valor retornado em critical_flags
-            is_emergency = critical_flags.get("is_emergency", False)
+            # Nota: O agente deve garantir que poor low/high gerem alertas se detectados
+            if isinstance(pe, dict):
+                if pe.get("poor_high", {}).get("detected"):
+                    alertas.append("POOR_HIGH_DETECTED")
+                if pe.get("poor_low", {}).get("detected"):
+                    alertas.append("POOR_LOW_DETECTED")
+            
+            # --- BUG #12: consolidated_bias_score (Score Unificado) ---
+            # Combina imbalance, ratio, flow e labels em um score de 0.0 a 1.0
+            # 0.5 = neutro, > 0.5 = bullish, < 0.5 = bearish
+            bias_score = 0.5 + (imbalance * 0.3) # Imbalance contribui com 30%
+            if ratio and ratio > 0:
+                # Ratio > 1 -> bullish, Ratio < 1 -> bearish
+                ratio_adj = min(1.0, max(-1.0, (ratio - 1.0) / 2.0))
+                bias_score += ratio_adj * 0.2
+            
+            # Clamping
+            bias_score = min(1.0, max(0.0, bias_score))
 
             # 8) Description
             descricao = self._build_description(
@@ -2556,7 +2578,7 @@ class OrderBookAnalyzer:
                 "descricao": descricao,
                 "resultado_da_batalha": resultado_da_batalha,
 
-                "imbalance": round(imbalance, 4),
+                "flow_imbalance": round(imbalance, 4),
                 "volume_ratio": round(ratio, 4) if ratio not in (None, float("inf")) else None,
                 "pressure": round(pressure, 4),
 
@@ -2599,12 +2621,14 @@ class OrderBookAnalyzer:
                 "orderbook_data": {
                     "mid": sm["mid"],
                     "spread": sm["spread"],
-                    "spread_percent": sm["spread_percent"],
+                    "spread_percent": round(sm["spread_percent"], 8) if sm["spread_percent"] is not None else None,
                     "bid_depth_usd": bid_usd,
                     "ask_depth_usd": ask_usd,
-                    "imbalance": round(imbalance, 4),
+                    "imbalance": round(imbalance, 4),  # 🔄 BUG #5: Chave restaurada para invariante
+                    "flow_imbalance": round(imbalance, 4),
                     "volume_ratio": round(ratio, 4) if ratio not in (None, float("inf")) else None,
                     "pressure": round(pressure, 4),
+                    "consolidated_bias_score": round(bias_score, 4), # 🆕 BUG #12
                 },
 
                 "depth_metrics": snap.get("depth_metrics", {}),
