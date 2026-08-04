@@ -4,6 +4,7 @@ Testes para o MacroDataProvider com foco no Treasury 10Y (TNX).
 import os
 import sys
 import asyncio
+import logging
 from unittest.mock import patch, MagicMock
 import pytest
 
@@ -12,13 +13,34 @@ sys.path.insert(0, 'src')
 
 from data.macro_data_provider import MacroDataProvider
 
+logger = logging.getLogger(__name__)
+
 
 @pytest.fixture
 def macro_provider():
     """Retorna uma instância do MacroDataProvider para testes."""
     # Resetar instância para garantir isolamento entre testes
     MacroDataProvider.reset_instance()
-    return MacroDataProvider.get_instance()
+    # BOT_TEST_MODE=1 (setado no conftest) faz _fetch_treasury_10y_impl e
+    # _fetch_dxy_impl retornarem constantes (4.2/104.5) antes de tocar nas
+    # APIs. Estes testes mockam as APIs e exercitam a cadeia real de fallback,
+    # entao forcam BOT_TEST_MODE=0 durante o teste.
+    old_test_mode = os.getenv("BOT_TEST_MODE")
+    os.environ["BOT_TEST_MODE"] = "0"
+    provider = MacroDataProvider.get_instance()
+    yield provider
+    # Evita "Unclosed client session": o Twelve Data usa session real do loop
+    # do pytest-asyncio (ja encerrado ao sair do teste). detach() e sincrono
+    # e desanexa o connector sem exigir await em outro loop.
+    for session in provider._sessions.values():
+        try:
+            session.detach()
+        except Exception:
+            pass
+    if old_test_mode is not None:
+        os.environ["BOT_TEST_MODE"] = old_test_mode
+    else:
+        os.environ.pop("BOT_TEST_MODE", None)
 
 
 def test_treasury_10y_fallback_hierarchy():

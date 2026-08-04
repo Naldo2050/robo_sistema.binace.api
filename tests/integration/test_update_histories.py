@@ -1,6 +1,7 @@
 # tests/test_update_histories.py
 from __future__ import annotations
 
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
@@ -35,6 +36,9 @@ class FakeBotHist:
     close_price_history: deque = field(default_factory=lambda: deque(maxlen=10))
     volatility_history: deque = field(default_factory=lambda: deque(maxlen=10))
     pattern_ohlc_history: deque = field(default_factory=lambda: deque(maxlen=10))
+    # Produção usa `with self._history_lock:` em volatilidade e OHLC;
+    # sem ele o fake sofre AttributeError engolido pelo except da produção.
+    _history_lock: Any = field(default_factory=threading.Lock)
 
     flow_analyzer: Any = field(default_factory=FlowAnalyzerStub)
 
