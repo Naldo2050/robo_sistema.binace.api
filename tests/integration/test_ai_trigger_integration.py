@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 """
-Teste de integração do gatilho de IA do EnhancedMarketBot.
+Teste de integracao do gatilho de IA do EnhancedMarketBot.
 
 Cadeia REAL exercitada:
     event_bus.publish("signal", event)
@@ -10,18 +11,25 @@ Cadeia REAL exercitada:
       -> ai_analyzer.analyze                 (ai_runner.py:659)
       -> event_saver.save_event(AI_ANALYSIS) (ai_runner.py:749-761)
 
-O que é substituído (permitido, é a "IA mockada" e a persistência):
+O que e substituido (permitido, e a "IA mockada" e a persistencia):
   - ai_analyzer (o modelo LLM real) -> FakeAnalyzer
-  - event_saver (persistência real) -> RecorderSaver
+  - event_saver (persistencia real) -> RecorderSaver
 
-O que NÃO é mockado:
+O que NAO e mockado:
   - EnhancedMarketBot.__init__ (inclui os subscribes do fix 6ed63cc)
-  - _handle_signal_event / _run_ai_analysis_threaded (métodos reais do bot)
-  - run_ai_analysis_threaded / build_compact_payload (funções reais)
+  - _handle_signal_event / _run_ai_analysis_threaded (metodos reais do bot)
+  - run_ai_analysis_threaded / build_compact_payload (funcoes reais)
 
-Se o fix 6ed63cc (event_bus.subscribe("signal"/"zone_touch")) for revertido,
-estes testes falham: sem subscriber o evento é descartado e AI_ANALYSIS nunca
-é salvo.
+Mensagens de assert em ASCII puro (sem acentos) para nao depender do
+encoding do terminal em CI.
+
+Tempo: nao ha sleep artificial - o poll retorna imediatamente quando o
+evento AI_ANALYSIS e salvo (a cadeia completa leva < 1s; o custo de ~40s
+da suite vem do --cov=. global do pytest.ini, comum a todos os testes).
+
+Threads: a fixture faz teardown via bot._cleanup_handler(), que aguarda
+as threads de IA, encerra o EventBus (thread da fila), o ThreadPoolExecutor
+e o loop asyncio do OrderBookAnalyzer - sem threads orfas entre testes.
 """
 import time
 
@@ -31,7 +39,7 @@ from market_orchestrator.market_orchestrator import EnhancedMarketBot
 
 
 class FakeAnalyzer:
-    """Substituto do AIAnalyzer real: registra a chamada e devolve resultado válido."""
+    """Substituto do AIAnalyzer real: registra a chamada e devolve resultado valido."""
 
     def __init__(self):
         self.calls = []
@@ -45,7 +53,7 @@ class FakeAnalyzer:
             "structured": {
                 "action": "BUY",
                 "confidence": 0.85,
-                "reasoning": "teste de integração",
+                "reasoning": "teste de integracao",
                 "direction": "COMPRA",
             },
         }
@@ -58,7 +66,7 @@ class FakeAnalyzer:
 
 
 class RecorderSaver:
-    """Substituto do EventSaver: captura eventos salvos em memória."""
+    """Substituto do EventSaver: captura eventos salvos em memoria."""
 
     def __init__(self):
         self.saved = []
@@ -68,7 +76,7 @@ class RecorderSaver:
 
 
 def _fast_ai_init(bot):
-    """Inicialização de IA rápida para o teste (sem API/ML reais)."""
+    """Inicializacao de IA rapida para o teste (sem API/ML reais)."""
     bot.ai_initialization_attempted = True
     bot.ai_analyzer = FakeAnalyzer()
     bot.ai_test_passed = True
@@ -77,10 +85,10 @@ def _fast_ai_init(bot):
 
 
 def _build_event():
-    """Evento 'signal' importante (ABSORÇÃO) com dados mínimos p/ payload real."""
+    """Evento 'signal' importante (ABSORCAO) com dados minimos p/ payload real."""
     return {
         "symbol": "BTCUSDT",
-        "tipo_evento": "ABSORÇÃO",
+        "tipo_evento": "ABSORCAO",
         "resultado_da_batalha": "COMPRA",
         "severity": "HIGH",
         "delta": 1.42,
@@ -112,12 +120,52 @@ def _build_event():
 
 @pytest.fixture
 def bot(monkeypatch, tmp_path):
-    """Bot REAL (inclui os subscribes do fix 6ed63cc), com IA/persistência mockadas."""
+    """Bot REAL (inclui os subscribes do fix 6ed63cc), com IA/persistencia mockadas."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         "market_orchestrator.ai.ai_runner.initialize_ai_async",
         _fast_ai_init,
     )
+
+    class _StubHealthMonitor:
+        """Sem thread de monitoramento (o real cria _monitor_loop)."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def heartbeat(self, module):
+            pass
+
+        def stop(self):
+            pass
+
+        def get_stats(self):
+            return {}
+
+    class _NoopClockSync:
+        """Sem thread de sync (o real cria _sync_loop e faz HTTP)."""
+
+        def get_server_time_ms(self):
+            return int(time.time() * 1000)
+
+        def wait_for_sync(self, timeout=5.0):
+            return True
+
+        def get_offset_seconds(self):
+            return 0.0
+
+        def stop(self):
+            pass
+
+    # Sem threads orfas: HealthMonitor real e ClockSync real (criado eager pelo
+    # EventSaver e pelo FlowAnalyzer) sao substituidos por stubs.
+    monkeypatch.setattr(
+        "market_orchestrator.market_orchestrator.HealthMonitor",
+        _StubHealthMonitor,
+    )
+    monkeypatch.setattr("flow_analyzer.core.get_clock_sync", lambda: _NoopClockSync())
+    monkeypatch.setattr("events.event_saver.get_clock_sync", lambda: _NoopClockSync())
+
     b = EnhancedMarketBot(
         stream_url="wss://test",
         symbol="BTCUSDT",
@@ -129,10 +177,18 @@ def bot(monkeypatch, tmp_path):
         liquidity_flow_alert_percentage=30.0,
         wall_std_dev_factor=2.0,
     )
+    real_saver = b.event_saver  # o EventSaver real iniciou threads flush/cleanup
     saver = RecorderSaver()
     b.event_saver = saver
     b._last_ai_analysis_ts = 0.0
     yield b, saver, b.ai_analyzer
+    # Teardown: threads de IA, EventBus, executor, loop asyncio + HealthMonitor
+    # (via _cleanup_handler) e threads flush/cleanup do EventSaver real (stop()).
+    try:
+        b._cleanup_handler()
+        real_saver.stop()
+    except Exception as e:  # pragma: no cover - melhor esforco
+        print(f"[teardown] cleanup falhou (nao-critico): {e}")
 
 
 def _subscribed_handler_names(bus, topic):
@@ -145,7 +201,7 @@ def test_bot_subscribes_ai_handlers_on_event_bus(bot):
     b, _, _ = bot
     names = _subscribed_handler_names(b.event_bus, "signal")
     assert "_handle_signal_event" in names, (
-        "subscriber 'signal' ausente — reverta o fix 6ed63cc em "
+        "subscriber 'signal' ausente - reverta o fix 6ed63cc em "
         "market_orchestrator.py:204-205"
     )
     zone_names = _subscribed_handler_names(b.event_bus, "zone_touch")
@@ -162,12 +218,13 @@ def test_signal_event_flows_to_ai_analysis_and_saves_event(bot):
 
     b.event_bus.publish("signal", _build_event())
 
-    deadline = time.time() + 15.0
+    # Polling curto (sem sleep fixo): retorna assim que AI_ANALYSIS e salvo.
+    deadline = time.time() + 10.0
     while time.time() < deadline and not saver.saved:
         time.sleep(0.05)
 
     assert saver.saved, (
-        "nenhum evento AI_ANALYSIS salvo — o fluxo de IA não foi disparado; "
+        "nenhum evento AI_ANALYSIS salvo - o fluxo de IA nao foi disparado; "
         "confira os subscribes 'signal'/'zone_touch' no __init__ (fix 6ed63cc)"
     )
 
@@ -176,7 +233,7 @@ def test_signal_event_flows_to_ai_analysis_and_saves_event(bot):
     # 1) analyze foi chamada de verdade (ai_runner.py:659)
     assert len(analyzer.calls) == 1
     analyzed = analyzer.calls[0]
-    assert analyzed.get("tipo_evento") == "ABSORÇÃO"
+    assert analyzed.get("tipo_evento") == "ABSORCAO"
     # 2) payload real foi anexado antes da chamada (ai_runner.py:602/611)
     assert analyzed.get("ai_payload"), "ai_payload ausente no evento analisado"
     assert not analyzed["ai_payload"].get("_emergency")
@@ -187,3 +244,9 @@ def test_signal_event_flows_to_ai_analysis_and_saves_event(bot):
     assert ai_event["ai_result"]["action"] == "BUY"
     assert ai_event["ai_payload"] and ai_event["ai_payload"].get("symbol") == "BTCUSDT"
     assert ai_event["timestamp_ms"] and ai_event["anchor_price"] == 66355.5
+
+    # 4) nenhuma thread de IA pendente apos a analise (ai_runner.py:788-815)
+    deadline = time.time() + 5.0
+    while time.time() < deadline and b.ai_thread_pool:
+        time.sleep(0.05)
+    assert b.ai_thread_pool == [], "threads de IA nao foram encerradas"
