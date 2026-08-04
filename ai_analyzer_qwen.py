@@ -525,6 +525,8 @@ _LARGE_GROQ_MODELS: set = {
     "llama-3.3-70b-specdec",
     "llama3-70b-8192",
     "llama-3.2-90b-vision-preview",
+    "openai/gpt-oss-120b",
+    "gpt-oss-120b",
 }
 
 
@@ -3795,7 +3797,7 @@ class AIAnalyzer:
                     list(leak_keys.intersection(payload_for_llm.keys())),
                 )
 
-            if os.getenv("DUMP_LLM_PAYLOAD", "1") == "1":
+            if os.getenv("DUMP_LLM_PAYLOAD", "0") == "1":
                 self._dump_llm_payload(event_data, payload_bytes)
 
         except Exception as e:

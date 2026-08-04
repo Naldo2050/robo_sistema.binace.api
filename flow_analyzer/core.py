@@ -39,6 +39,7 @@ from .constants import (
     DEFAULT_ABSORCAO_DELTA_EPS,
     DEFAULT_ABSORCAO_GUARD_MODE,
     TIMESTAMP_JITTER_TOLERANCE_MS,
+    MAX_BATCH_LATE_MS,
     MAX_AGGREGATE_TRADES,
 )
 from .errors import FlowAnalyzerError  # noqa: F401 (re-exported)
@@ -402,7 +403,7 @@ class FlowAnalyzer(IFlowAnalyzer):
         diff = trade_ts - effective_reference
         
         # Aceita atrasos até 30 segundos (tolerante para processamento em batch)
-        if -30000 <= diff <= TIMESTAMP_JITTER_TOLERANCE_MS:
+        if -MAX_BATCH_LATE_MS <= diff <= TIMESTAMP_JITTER_TOLERANCE_MS:
             if diff < 0:
                 if diff < -1000:
                     with self._counters_lock:

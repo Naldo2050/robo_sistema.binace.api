@@ -328,7 +328,7 @@ def _compress_orderbook(payload: dict) -> dict:
         result["mid"] = _r(ob.get("mid"), "price")
         result["bid"] = _r(ob.get("bid_depth_usd"), "volume_usd")
         result["ask"] = _r(ob.get("ask_depth_usd"), "volume_usd")
-        result["imb"] = _r(ob.get("imbalance"), "ratio")
+        result["imb"] = _r(ob.get("imbalance", ob.get("flow_imbalance")), "ratio")
         result["spread"] = _r(ob.get("spread"), "price")
 
         # Depth metrics (IMPORTANTE para análise)

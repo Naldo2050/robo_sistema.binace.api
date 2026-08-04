@@ -201,6 +201,8 @@ class EnhancedMarketBot:
 
         self.health_monitor = HealthMonitor()
         self.event_bus = EventBus()
+        self.event_bus.subscribe("signal", self._handle_signal_event)
+        self.event_bus.subscribe("zone_touch", self._handle_zone_touch_event)
         self.feature_store = FeatureStore(base_dir="features")
         self.levels = LevelRegistry(self.symbol)
 
@@ -321,6 +323,7 @@ class EnhancedMarketBot:
         )
 
         self._sent_triggers = set()
+        self._last_alert_ts = {}
 
         try:
             self._alert_cooldown_sec = getattr(
@@ -487,7 +490,7 @@ class EnhancedMarketBot:
 
         try:
             if hasattr(self, "_async_executor"):
-                self._async_executor.shutdown(wait=True)
+                self._async_executor.shutdown(wait=True, cancel_futures=True)
                 logging.info("✅ Async Executor encerrado.")
         except Exception as e:
             logging.error(f"❌ Erro ao encerrar Async Executor: {e}")
@@ -833,13 +836,16 @@ class EnhancedMarketBot:
             logging.info("AIRunner inicializado via factory")
 
     def _initialize_ai_async(self) -> None:
+        """Inicializa a IA em background thread via ai_runner."""
         self._setup_ai()
-
+        from .ai.ai_runner import initialize_ai_async
+        initialize_ai_async(self)
 
     def _run_ai_analysis_threaded(self, event_data: Dict[str, Any]) -> None:
+        """Executa análise da IA em thread separada via ai_runner."""
         self._setup_ai()
-
-        return None
+        from .ai.ai_runner import run_ai_analysis_threaded
+        run_ai_analysis_threaded(self, event_data)
 
     # ========================================
     # LÓGICA DE IA (usa _run_ai_analysis_threaded)
@@ -2260,7 +2266,7 @@ class EnhancedMarketBot:
 
         try:
             if hasattr(self, "_async_executor") and self._async_executor:
-                self._async_executor.shutdown(wait=True)
+                self._async_executor.shutdown(wait=True, cancel_futures=True)
         except Exception:
             pass
 

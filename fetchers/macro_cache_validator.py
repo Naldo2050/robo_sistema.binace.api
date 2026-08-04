@@ -1,4 +1,4 @@
-﻿# fetchers/macro_cache_validator.py
+# fetchers/macro_cache_validator.py
 """
 macro_cache_validator.py - FIX #5
 

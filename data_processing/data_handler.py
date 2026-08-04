@@ -1,4 +1,4 @@
-﻿# data_handler.py - REFATORADO v2.0.0 - ELIMINAÇÃO DE DUPLICIDADES
+# data_handler.py - REFATORADO v2.0.0 - ELIMINAÇÃO DE DUPLICIDADES
 """
 Data Handler com lógica unificada (NumPy como fonte da verdade).
 

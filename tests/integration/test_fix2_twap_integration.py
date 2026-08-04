@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Tests for FIX #2 integration with technical_indicators module"""
 
 import pytest

@@ -1,4 +1,4 @@
-﻿# tests/integration/test_fix5_macro_data_integration.py (FIXED)
+# tests/integration/test_fix5_macro_data_integration.py (FIXED)
 """Integration tests for MacroCacheValidator with MacroDataProvider - FIX #5"""
 
 import pytest

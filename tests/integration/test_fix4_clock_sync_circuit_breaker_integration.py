@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 tests/integration/test_fix4_clock_sync_circuit_breaker_integration.py
 

@@ -172,7 +172,7 @@ class TestRiskManagerComprehensive:
     def test_check_trade_request_daily_loss_limit(self, risk_manager, sample_trade_request):
         """Testa limite de perda diária"""
         # Configura perda diária significativa
-        risk_manager.daily_pnl = -0.06  # -6%, acima do limite de 5%
+        risk_manager.daily_pnl = -6000  # -$6k de $100k capital = -6% > 5% limite
         
         result = risk_manager.check_trade_request(sample_trade_request)
         

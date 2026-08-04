@@ -84,22 +84,23 @@ class TestEnhancedCrossAsset:
     
     def test_vix_data_structure(self):
         """Testa estrutura dos dados VIX."""
-        with patch('fetchers.macro_data_fetcher.requests.get') as mock_get:
-            # Mock da resposta da CoinGecko
-            mock_response = Mock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "data": {
-                    "market_cap_percentage": {
-                        "btc": 45.2,
-                        "eth": 18.7,
-                        "usdt": 7.1
+        with patch.dict('os.environ', {'BOT_TEST_MODE': '0'}):
+            with patch('fetchers.macro_data_fetcher.requests.get') as mock_get:
+                # Mock da resposta da CoinGecko
+                mock_response = Mock()
+                mock_response.status_code = 200
+                mock_response.json.return_value = {
+                    "data": {
+                        "market_cap_percentage": {
+                            "btc": 45.2,
+                            "eth": 18.7,
+                            "usdt": 7.1
+                        }
                     }
                 }
-            }
-            mock_get.return_value = mock_response
-            
-            result = fetch_crypto_dominance()
+                mock_get.return_value = mock_response
+                
+                result = fetch_crypto_dominance()
             
             assert result['status'] == 'ok'
             assert result['btc_dominance'] == 45.2

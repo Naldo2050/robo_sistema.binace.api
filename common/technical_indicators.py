@@ -1,4 +1,4 @@
-﻿import numpy as np
+import numpy as np
 import pandas as pd
 from typing import Optional
 from common.twap_validator import TWAPValidator

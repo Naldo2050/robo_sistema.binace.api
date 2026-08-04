@@ -221,6 +221,7 @@ class DataEnricher:
             price_targets = self._build_price_targets_enhanced(
                 outer_raw, price, current_volatility, historical_vp_src
             )
+            event["price_targets"] = price_targets
             # FIX 4.1: Filtrar options_metrics fake (is_real_data=False)
             _options = inner_raw.get("advanced_analysis", {}).get(
                 "options_metrics", self._build_options_metrics()

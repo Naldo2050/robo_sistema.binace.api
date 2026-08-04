@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 clock_sync_circuit_breaker.py - v1.0.0
 Clock Synchronization Circuit Breaker for Binance API Protection
@@ -63,7 +63,7 @@ class ClockSyncCircuitBreaker:
         self._half_open_attempts = 0
         self._failure_count = 0
         self._last_offset_ms = 0
-        self._state_change_time: Optional[float] = None
+        self._state_change_time: Optional[float] = time.time()
         
         self._lock = RLock()  # Reentrant lock allows same thread to acquire multiple times
         self.logger = logger or logging.getLogger(__name__)

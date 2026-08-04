@@ -1,4 +1,4 @@
-﻿# tests/unit/test_macro_cache_validator_fix.py
+# tests/unit/test_macro_cache_validator_fix.py
 """Unit tests for MacroCacheValidator - FIX #5"""
 
 import pytest

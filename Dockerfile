@@ -42,15 +42,12 @@ RUN mkdir -p dados logs features && \
 # Mudar para o usuário não-root
 USER trader
 
-# Expor portas se necessário (ex: dashboard web)
-# EXPOSE 8000
+# Expor porta do servidor Prometheus (/metrics)
+EXPOSE 8000
 
 # Healthcheck
-# Verifica se o arquivo de health escrito pelo health_monitor.py foi atualizado recentemente
-# (O script python deve escrever timestamp em /tmp/health_status)
-# Ajuste conforme implementação do health_monitor.py
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD test $(find /app/logs/health_status -mmin -1 2>/dev/null | wc -l) -gt 0 || exit 1
+  CMD curl -f http://localhost:8000/metrics || exit 1
 
 # Comando de entrada
 CMD ["python", "main.py"]

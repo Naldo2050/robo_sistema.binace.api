@@ -1,16 +1,17 @@
-version: '3.8'
-
 services:
   market-bot:
     build: .
     container_name: market_bot_prod
     restart: unless-stopped
+    ports:
+      - "8000:8000"
     env_file:
       - .env
     environment:
       - ENVIRONMENT=production
       - LOG_FORMAT=json
       - LOG_LEVEL=INFO
+      - PROMETHEUS_PORT=8000
     volumes:
       - ./dados:/app/dados
       - ./logs:/app/logs

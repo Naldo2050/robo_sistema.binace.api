@@ -25,7 +25,7 @@ class MockOrderBookAnalyzer:
 
 class MockMarketOrchestrator:
     async def process_market_data(self, data):
-        await asyncio.sleep(0.001)  # Simula processamento realístico (1ms)
+        await asyncio.sleep(0)  # Simula troca de contexto assíncrona
         return {'processed': True}
 
 

@@ -220,7 +220,6 @@ def make_production_event() -> dict:
                     "status": "success",
                     "sell_defense": [
                         {"center": 67014.39, "strength": 60, "source_count": 3},
-                        {"center": 66879.41, "strength": 54, "source_count": 4},
                     ],
                     "buy_defense": [
                         {"center": 66657.82, "strength": 50, "source_count": 3},

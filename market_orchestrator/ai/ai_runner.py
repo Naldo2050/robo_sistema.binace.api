@@ -39,8 +39,8 @@ if TYPE_CHECKING:
 try:
     from common.ai_throttler import get_throttler
     _ai_throttler = get_throttler(
-        min_interval=180,
-        hard_min_interval=60,
+        min_interval=60,
+        hard_min_interval=30,
         daily_token_budget=85_000,
         max_calls_per_hour=10,
     )

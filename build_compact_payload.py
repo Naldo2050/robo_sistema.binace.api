@@ -563,7 +563,7 @@ def _build_orderbook(event_data: dict) -> dict:
     bid = ob_data.get("bid_depth_usd", 0)
     ask = ob_data.get("ask_depth_usd", 0)
 
-    imb_val = round(ob_data.get("flow_imbalance", 0), 2)
+    imb_val = round(ob_data.get("flow_imbalance", ob_data.get("imbalance", 0)), 2)
     ob: dict[str, Any] = {
         "b": compact_number(bid, force_sign=False),
         "a": compact_number(ask, force_sign=False),
@@ -572,6 +572,8 @@ def _build_orderbook(event_data: dict) -> dict:
     }
 
     t5_imb = depth.get("L5", {}).get("flow_imbalance")
+    if t5_imb is None:
+        t5_imb = depth.get("L5", {}).get("imbalance")
     if t5_imb is not None:
         ob["t5"] = round(t5_imb, 2)
 

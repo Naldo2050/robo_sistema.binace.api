@@ -32,8 +32,9 @@ DEFAULT_CVD_RESET_INTERVAL_HOURS = 4
 # TIMESTAMPS E SINCRONIZAÇÃO
 # ==============================================================================
 TIMESTAMP_JITTER_TOLERANCE_MS = 2000
-LATE_TRADE_THRESHOLD_MS = 1000  # Trade atrasado > 1s
+LATE_TRADE_THRESHOLD_MS = 120000  # Trade atrasado > 120s
 MAX_LATE_TRADE_MS = 5000  # Trade muito atrasado > 5s
+MAX_BATCH_LATE_MS = 30000  # Tolerância de atraso para trades em batch (30s)
 
 # ==============================================================================
 # BURST DETECTION

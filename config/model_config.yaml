@@ -2,7 +2,7 @@
   provider: groq
   provider_fallbacks: []  # Lista de providers para fallback automatico (so usar se necessario)
   groq:
-    model: llama-3.3-70b-versatile   # Modelo principal — 70B para qualidade de analise
+    model: openai/gpt-oss-120b   # Modelo principal — 120B para qualidade de analise
     model_fallbacks:
       - llama-3.1-8b-instant         # Fallback 1: rapido/barato (se 70B falhar por rate limit)
       - mixtral-8x7b-32768           # Fallback 2: contexto longo (32K)

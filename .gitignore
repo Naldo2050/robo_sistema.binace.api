@@ -101,6 +101,7 @@ diagnostics/ai_performance_report.csv
 # ==============================
 logs/payload_metrics*.jsonl*
 logs/payload_section_cache.json
+logs/last_llm_payload.json
 logs/*.zip
 *.err.log
 *.out.log
@@ -156,6 +157,7 @@ htmlcov/
 
 # Config files with API keys/secrets
 config.json
+config/defaults.json
 credentials.json
 secrets.json
 *.secret

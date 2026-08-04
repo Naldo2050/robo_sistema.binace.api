@@ -316,9 +316,8 @@ async def main() -> int:
             heartbeat.health_monitor = bot.health_monitor
             logging.info("✅ HeartbeatManager integrado com HealthMonitor do bot")
 
-        # 2. ✅ ADICIONAR: Inicializar componentes assíncronos
-        await bot.initialize()
-        heartbeat.beat()  # Heartbeat após inicialização
+        # NOTA: bot.run() já chama self.initialize() internamente.
+        # Não chamar bot.initialize() aqui para evitar inicialização dupla.
 
         # 3. Iniciar task de heartbeat periódico durante execução do bot
         heartbeat_task = asyncio.create_task(_heartbeat_during_run(heartbeat))

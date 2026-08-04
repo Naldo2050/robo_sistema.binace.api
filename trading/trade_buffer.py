@@ -151,6 +151,7 @@ class AsyncTradeBuffer:
         # Estatísticas
         self._overflow_count = 0
         self._backpressure_count = 0
+        self._dropped_trades_count = 0
         self._total_trades_processed = 0
         self._total_processing_time_ms = 0.0
         
@@ -213,10 +214,18 @@ class AsyncTradeBuffer:
                 # Remover trades mais antigos se necessário (backpressure)
                 if current_size >= self.max_size * 0.95:
                     trades_to_remove = int(self.max_size * 0.1)
+                    removed = 0
                     for _ in range(trades_to_remove):
                         if self._buffer:
                             self._buffer.popleft()
-                    logging.debug(f"Backpressure: removidos {trades_to_remove} trades antigos")
+                            removed += 1
+                    if removed:
+                        self._backpressure_count += 1
+                        self._dropped_trades_count += removed
+                        logging.warning(
+                            f"🚨 Buffer overflow: removidos {removed} trades antigos "
+                            f"(total descartados: {self._dropped_trades_count})"
+                        )
                 current_size = len(self._buffer)
                 
             # Adiciona ao buffer
@@ -284,10 +293,18 @@ class AsyncTradeBuffer:
                 # Remover trades mais antigos se necessário (backpressure)
                 if current_size >= self.max_size * 0.95:
                     trades_to_remove = int(self.max_size * 0.1)
+                    removed = 0
                     for _ in range(trades_to_remove):
                         if self._buffer:
                             self._buffer.popleft()
-                    logging.debug(f"Backpressure: removidos {trades_to_remove} trades antigos")
+                            removed += 1
+                    if removed:
+                        self._backpressure_count += 1
+                        self._dropped_trades_count += removed
+                        logging.warning(
+                            f"🚨 Buffer overflow: removidos {removed} trades antigos "
+                            f"(total descartados: {self._dropped_trades_count})"
+                        )
                 current_size = len(self._buffer)
                 
             # Adiciona ao buffer
@@ -593,6 +610,7 @@ class AsyncTradeBuffer:
                 "status": metrics.status.value,
                 "overflow_count": self._overflow_count,
                 "backpressure_count": self._backpressure_count,
+                "dropped_trades_count": self._dropped_trades_count,
             },
             "processing": {
                 "total_trades": self._total_trades_processed,

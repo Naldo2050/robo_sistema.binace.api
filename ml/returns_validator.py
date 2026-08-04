@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 ReturnsValidator para FIX #1 - Returns ML Zerados
 
