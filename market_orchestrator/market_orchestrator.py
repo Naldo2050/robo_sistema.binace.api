@@ -1765,8 +1765,10 @@ class EnhancedMarketBot:
                             "close": float(ohlc.get("close", 0.0)),
                         }
                     )
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(
+                f"Falha ao registrar OHLC em pattern_ohlc_history: {e!r}"
+            )
 
     def _log_liquidity_heatmap(
         self, flow_metrics: Dict[str, Any]
