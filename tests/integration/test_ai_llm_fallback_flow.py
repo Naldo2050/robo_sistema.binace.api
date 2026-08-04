@@ -75,6 +75,10 @@ def test_invalid_parser_output_generates_structured_fallback(monkeypatch):
 
 def test_groq_uses_standard_prompt_instead_of_compressed(monkeypatch):
     analyzer = _make_analyzer(monkeypatch)
+    # Fixa modelo pequeno (sem json_object) para rotear ao prompt estrito,
+    # independente do GROQ_MODEL default (hoje openai/gpt-oss-120b, que e
+    # 70B+ e usa prompt rico).
+    analyzer.model_name = "llama3-8b-8192"
     prompt = analyzer._get_system_prompt()
 
     assert "Responda SOMENTE com JSON valido." in prompt

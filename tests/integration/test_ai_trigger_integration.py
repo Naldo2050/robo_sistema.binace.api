@@ -30,6 +30,9 @@ da suite vem do --cov=. global do pytest.ini, comum a todos os testes).
 Threads: a fixture faz teardown via bot._cleanup_handler(), que aguarda
 as threads de IA, encerra o EventBus (thread da fila), o ThreadPoolExecutor
 e o loop asyncio do OrderBookAnalyzer - sem threads orfas entre testes.
+HealthMonitor e ClockSync sao substituidos por stubs (nao sao parte do
+fluxo sob teste): o real faz HTTP de sync e mantem threads com sleeps
+longos, o que tornaria o teste lento e nao deterministico.
 """
 import time
 
@@ -128,7 +131,12 @@ def bot(monkeypatch, tmp_path):
     )
 
     class _StubHealthMonitor:
-        """Sem thread de monitoramento (o real cria _monitor_loop)."""
+        """Sem thread de monitoramento (o real cria _monitor_loop).
+
+        Substituido de proposito, NAO por atalho: o HealthMonitor real faz
+        heartbeat/OCI e mantem uma thread com sleep de ate 30s - irrelevante
+        para o fluxo de IA sob teste e fonte de timing nao deterministico.
+        """
 
         def __init__(self, *args, **kwargs):
             pass
@@ -143,7 +151,14 @@ def bot(monkeypatch, tmp_path):
             return {}
 
     class _NoopClockSync:
-        """Sem thread de sync (o real cria _sync_loop e faz HTTP)."""
+        """Sem thread de sync (o real cria _sync_loop e faz HTTP).
+
+        Substituido de proposito, NAO por atalho: o ClockSync real faz
+        sincronizacao de relogio via HTTP (wait_for_sync de ate 5s no
+        EventSaver eager) - uma dependencia externa que nao faz parte do
+        fluxo de IA sob teste. Restaurar o componente real reintroduz
+        chamadas de rede e flakiness em CI.
+        """
 
         def get_server_time_ms(self):
             return int(time.time() * 1000)
@@ -158,13 +173,24 @@ def bot(monkeypatch, tmp_path):
             pass
 
     # Sem threads orfas: HealthMonitor real e ClockSync real (criado eager pelo
-    # EventSaver e pelo FlowAnalyzer) sao substituidos por stubs.
+    # EventSaver e pelo FlowAnalyzer) sao substituidos por stubs (ver docstrings
+    # acima: isolamento de dependencias externas HTTP/timing, nao performance).
     monkeypatch.setattr(
         "market_orchestrator.market_orchestrator.HealthMonitor",
         _StubHealthMonitor,
     )
     monkeypatch.setattr("flow_analyzer.core.get_clock_sync", lambda: _NoopClockSync())
     monkeypatch.setattr("events.event_saver.get_clock_sync", lambda: _NoopClockSync())
+
+    # _ai_throttler e um singleton global em ai_runner.py: outros testes o usam
+    # e deixam estado (cooldown/calls_this_hour) que faria should_call_ai
+    # retornar False aqui - interferencia entre testes. Stub: ele e camada de
+    # controle de custo, nao parte do fluxo evento->analyze->AI_ANALYSIS testado.
+    monkeypatch.setattr(
+        "market_orchestrator.ai.ai_runner._ai_throttler",
+        type("_AlwaysAllowThrottler", (), {"should_call_ai": lambda *a, **k: True,
+                                           "get_status": lambda *a, **k: {}})(),
+    )
 
     b = EnhancedMarketBot(
         stream_url="wss://test",
