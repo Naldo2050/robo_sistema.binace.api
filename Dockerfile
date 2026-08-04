@@ -1,5 +1,5 @@
 # Usar imagem oficial Python leve
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Definir variáveis de ambiente para Python
 ENV PYTHONDONTWRITEBYTECODE=1 \
