@@ -140,9 +140,11 @@ def create_histogram(name: str, description: str, buckets: Optional[Sequence[flo
     return SimulatedHistogram(name, description, buckets=bucket_list)
 
 
-def create_gauge(name: str, description: str):
+def create_gauge(name: str, description: str, labelnames: Optional[Sequence[str]] = None):
     """Cria um gauge Prometheus ou simulado"""
     if PROMETHEUS_AVAILABLE:
+        if labelnames:
+            return Gauge(name, description, labelnames)
         return Gauge(name, description)
     return SimulatedGauge(name, description)
 

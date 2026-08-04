@@ -27,6 +27,36 @@ from common.format_utils import (
 
 from orderbook_core.structured_logging import StructuredLogger
 
+from monitoring.metrics_collector import create_counter, create_gauge
+
+# ──────────────────────────────────────────────────────────────────────
+# MÉTRICAS DO EVENTBUS (criadas UMA vez no nível do módulo)
+# Mesmo padrão de monitoring/metrics_collector.py: criação única no import
+# evita "Duplicated timeseries" no registry default; record_* apenas
+# incrementam. Labels limitados a event_type (universo estático em produção:
+# "signal" e "zone_touch" — sem símbolo de trading nem IDs dinâmicos).
+# ──────────────────────────────────────────────────────────────────────
+event_bus_handlers_registered = create_gauge(
+    "trading_event_bus_handlers_registered",
+    "Handlers registrados por tipo de evento no EventBus",
+    labelnames=["event_type"],
+)
+event_bus_events_delivered_total = create_counter(
+    "trading_event_bus_events_delivered_total",
+    "Eventos entregues com sucesso aos handlers do EventBus",
+    labelnames=["event_type"],
+)
+event_bus_events_without_handler_total = create_counter(
+    "trading_event_bus_events_without_handler_total",
+    "Eventos processados sem nenhum handler registrado (bug de init/config)",
+    labelnames=["event_type"],
+)
+event_bus_handler_errors_total = create_counter(
+    "trading_event_bus_handler_errors_total",
+    "Erros em handlers do EventBus (handler registrado, mas lancou excecao)",
+    labelnames=["event_type"],
+)
+
 
 class EventBus:
     """
@@ -496,6 +526,9 @@ class EventBus:
             if event_type not in self._handlers:
                 self._handlers[event_type] = []
             self._handlers[event_type].append(handler)
+            event_bus_handlers_registered.labels(event_type=event_type).set(
+                len(self._handlers[event_type])
+            )
             self._logger.debug(f"Handler registrado para {event_type}")
 
     def publish(self, event_type: str, event_data: Dict, normalize: bool = True, validate: bool = True):
@@ -568,10 +601,16 @@ class EventBus:
             for handler in self._handlers[event_type]:
                 try:
                     handler(event_data)
+                    event_bus_events_delivered_total.labels(event_type=event_type).inc()
                 except Exception as e:
+                    event_bus_handler_errors_total.labels(event_type=event_type).inc()
                     self._logger.error(f"❌ Erro no handler para {event_type}: {e}", exc_info=True)
         else:
-            self._logger.debug(f"⚠️ Nenhum handler para {event_type}")
+            # Evento publicado sem NENHUM handler: indica bug de init/config
+            # (ex.: subscribe esquecido, como o fix 6ed63cc). Metrica separada
+            # de event_bus_handler_errors_total para nao mascarar a causa.
+            event_bus_events_without_handler_total.labels(event_type=event_type).inc()
+            self._logger.warning(f"⚠️ Nenhum handler para {event_type}")
 
     def start(self):
         """Inicia thread de processamento."""
