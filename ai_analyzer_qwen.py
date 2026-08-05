@@ -1,18 +1,18 @@
-# ai_analyzer_qwen.py v2.5.1 - COM INTELIGÃŠNCIA QUANTITATIVA COMO BASE PRINCIPAL
+# ai_analyzer_qwen.py v2.5.1 - COM INTELIGÊNCIA QUANTITATIVA COMO BASE PRINCIPAL
 """
-AI Analyzer para eventos de mercado com validaÃ§Ã£o de dados.
+AI Analyzer para eventos de mercado com validação de dados.
 
-ðŸ”¹ NOVIDADES v2.5.1:
-  âœ… Todos os erros Pylance corrigidos
-  âœ… Type hints corrigidos e compatÃ­veis
-  âœ… Imports com fallbacks adequados
-  âœ… Tratamento correto de tipos opcionais
+🔹 NOVIDADES v2.5.1:
+  ✅ Todos os erros Pylance corrigidos
+  ✅ Type hints corrigidos e compatíveis
+  ✅ Imports com fallbacks adequados
+  ✅ Tratamento correto de tipos opcionais
 
-ðŸ”¹ NOVIDADES v2.5.0:
-  âœ… CorreÃ§Ãµes de bugs e melhorias de cÃ³digo
-  âœ… Imports reorganizados e limpos
-  âœ… InicializaÃ§Ã£o de variÃ¡veis corrigida
-  âœ… Tratamento de erros aprimorado
+🔹 NOVIDADES v2.5.0:
+  ✅ Correções de bugs e melhorias de código
+  ✅ Imports reorganizados e limpos
+  ✅ Inicialização de variáveis corrigida
+  ✅ Tratamento de erros aprimorado
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ try:
 except ImportError:
     logging.info("ai_payload_optimizer deep compression not available")
 
-# AI Response Validator (validaÃ§Ã£o rÃ­gida de respostas)
+# AI Response Validator (validação rígida de respostas)
 try:
     from common.ai_response_validator import (
         # AIResponseValidator,  # noqa: F401
@@ -300,7 +300,7 @@ except ImportError:
 
 
 class FallbackStructuredLogger:
-    """Fallback logger quando StructuredLogger nÃ£o disponÃ­vel."""
+    """Fallback logger quando StructuredLogger não disponível."""
     
     def __init__(self, name: str, prefix: str = "") -> None:
         self._logger = logging.getLogger(name)
@@ -366,21 +366,21 @@ except ImportError:
         return {}
 
 # ========================
-# VARIÃVEIS GLOBAIS
+# VARIÁVEIS GLOBAIS
 # ========================
 
 _PAYLOAD_METRICS_CALLS: int = 0
 _PAYLOAD_METRICS_LAST_TS: float = 0.0
 
 # ========================
-# FUNÃ‡Ã•ES AUXILIARES
+# FUNÇÕES AUXILIARES
 # ========================
 
 
 def _evaluate_payload_tripwires(
     summary: Dict[str, Any], tripwires: Dict[str, Any]
 ) -> List[str]:
-    """Avalia tripwires do payload e retorna lista de violaÃ§Ãµes."""
+    """Avalia tripwires do payload e retorna lista de violações."""
     violations: List[str] = []
     if not isinstance(summary, dict) or not isinstance(tripwires, dict):
         return violations
@@ -415,7 +415,7 @@ def _evaluate_payload_tripwires(
 
 
 def _log_payload_tripwires(summary: Dict[str, Any]) -> None:
-    """Loga violaÃ§Ãµes de tripwires do payload."""
+    """Loga violações de tripwires do payload."""
     cfg = _get_llm_payload_config()
     tripwires = cfg.get("tripwires") if isinstance(cfg, dict) else {}
     violations = _evaluate_payload_tripwires(summary, tripwires or {})
@@ -493,7 +493,7 @@ def _dedupe_keep_order(items: List[str]) -> List[str]:
 
 
 def _models_from_cfg(cfg: Dict[str, Any]) -> List[str]:
-    """Extrai lista de modelos da configuraÃ§Ã£o."""
+    """Extrai lista de modelos da configuração."""
     primary = cfg.get("model", "llama-3.1-8b-instant")
     fallbacks = cfg.get("model_fallbacks", [])
     if not isinstance(fallbacks, list):
@@ -531,7 +531,7 @@ _LARGE_GROQ_MODELS: set = {
 
 
 # ========================
-# CLASSE DE ANÃLISE
+# CLASSE DE ANÁLISE
 # ========================
 
 
@@ -548,7 +548,7 @@ class AITradeAnalysis:
         self.region_type: Optional[str] = kwargs.get("region_type")
 
     def model_dump(self) -> Dict[str, Any]:
-        """Retorna os dados como dicionÃ¡rio."""
+        """Retorna os dados como dicionário."""
         return {
             "sentiment": self.sentiment,
             "confidence": self.confidence,
@@ -564,52 +564,52 @@ class AITradeAnalysis:
 # SYSTEM PROMPTS
 # ========================
 
-SYSTEM_PROMPT_LEGACY = """VocÃª Ã© analista institucional de fluxo, suporte/resistÃªncia e regiÃµes de defesa.
+SYSTEM_PROMPT_LEGACY = """Você é analista institucional de fluxo, suporte/resistência e regiões de defesa.
 
-ðŸ”¹ HORIZONTE DE ANÃLISE: Focado em entradas rÃ¡pidas de 5-15 minutos (scalp), com validaÃ§Ã£o em horizontes maiores se disponÃ­vel.
+🔹 HORIZONTE DE ANÁLISE: Focado em entradas rápidas de 5-15 minutos (scalp), com validação em horizontes maiores se disponível.
 
-ðŸ”¹ OBJETIVO: Identificar regiÃµes de entrada claras para trades curtos, priorizando defesa institucional (absorÃ§Ã£o) e pontos de invalidaÃ§Ã£o tÃ©cnicos. NÃ£o force trades em ruÃ­do.
+🔹 OBJETIVO: Identificar regiões de entrada claras para trades curtos, priorizando defesa institucional (absorção) e pontos de invalidação técnicos. Não force trades em ruído.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-ðŸ§  REGRA FUNDAMENTAL: INTELIGÃŠNCIA QUANTITATIVA Ã‰ A BASE
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+═══════════════════════════════════════════════════════
+🧠 REGRA FUNDAMENTAL: INTELIGÊNCIA QUANTITATIVA É A BASE
+═══════════════════════════════════════════════════════
 
-O modelo XGBoost fornece probabilidades matemÃ¡ticas (prob_up, prob_down) e um action_bias (compra/venda/aguardar).
+O modelo XGBoost fornece probabilidades matemáticas (prob_up, prob_down) e um action_bias (compra/venda/aguardar).
 
-âœ… USE A INTELIGÃŠNCIA QUANTITATIVA COMO BASE PRINCIPAL:
-   - O action_bias deve guiar sua decisÃ£o inicial
-   - A confianÃ§a do modelo (confidence_score) indica forÃ§a da previsÃ£o
+✅ USE A INTELIGÊNCIA QUANTITATIVA COMO BASE PRINCIPAL:
+   - O action_bias deve guiar sua decisão inicial
+   - A confiança do modelo (confidence_score) indica força da previsão
 
-âš ï¸ SÃ“ VÃ CONTRA O VIÃ‰S MATEMÃTICO SE:
-   - Houver absorÃ§Ã£o MASSIVA no orderbook contrÃ¡ria ao viÃ©s
-   - Whale activity significativa na direÃ§Ã£o oposta
-   - CVD/Net Flow em forte divergÃªncia
-   - EvidÃªncia EXTREMA de exaustÃ£o/reversÃ£o no fluxo
+⚠️ SÓ VÁ CONTRA O VIÉS MATEMÁTICO SE:
+   - Houver absorção MASSIVA no orderbook contrária ao viés
+   - Whale activity significativa na direção oposta
+   - CVD/Net Flow em forte divergência
+   - Evidência EXTREMA de exaustão/reversão no fluxo
 
-Se nÃ£o houver evidÃªncia MUITO FORTE, SIGA o action_bias do modelo.
+Se não houver evidência MUITO FORTE, SIGA o action_bias do modelo.
 
-â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+═══════════════════════════════════════════════════════
 
 REGRAS GERAIS:
 1) Use SOMENTE dados fornecidos explicitamente.
-2) Se marcado 'IndisponÃ­vel' ou 'âš ï¸', NÃƒO use.
+2) Se marcado 'Indisponível' ou '⚠️', NÃO use.
 3) Orderbook zerado? Use fluxo (net_flow, flow_imbalance, tick_rule).
-4) ContradiÃ§Ãµes? Ignore dado contraditÃ³rio.
-5) Foque em identificar REGIÃ•ES IMPORTANTES:
-   - Suportes e resistÃªncias relevantes (use VP: POC/VAH/VAL)
-   - RegiÃµes de absorÃ§Ã£o (defesa) e exaustÃ£o (fraqueza) via fluxo/whales
+4) Contradições? Ignore dado contraditório.
+5) Foque em identificar REGIÕES IMPORTANTES:
+   - Suportes e resistências relevantes (use VP: POC/VAH/VAL)
+   - Regiões de absorção (defesa) e exaustão (fraqueza) via fluxo/whales
    - Falta de demanda/oferta (breaks, buracos de liquidez)
-6) SÃ³ sugira ENTRADA quando houver regiÃ£o CLARA e bem defendida,
-   descrevendo preÃ§o aproximado e zona de invalidaÃ§Ã£o.
-7) Em contexto de RUÃDO (range estreito, fluxo misto, confianÃ§a baixa):
+6) Só sugira ENTRADA quando houver região CLARA e bem defendida,
+   descrevendo preço aproximado e zona de invalidação.
+7) Em contexto de RUÍDO (range estreito, fluxo misto, confiança baixa):
    - Reduza sinais; prefira action='wait' ou 'avoid'.
-8) Incentive action='wait' se confianÃ§a do modelo < 50% ou edge nÃ£o claro.
-9) Se o cenÃ¡rio nÃ£o estiver claro, prefira recomendar 'aguardar'.
+8) Incentive action='wait' se confiança do modelo < 50% ou edge não claro.
+9) Se o cenário não estiver claro, prefira recomendar 'aguardar'.
 10) Seja sucinto, objetivo e profissional.
 
-Responda sempre e apenas em portuguÃªs do Brasil.
-NÃ£o utilize inglÃªs em nenhuma parte da resposta.
-NÃ£o use tags <think> nem mostre seu raciocÃ­nio passo a passo; entregue apenas a anÃ¡lise final em portuguÃªs.
+Responda sempre e apenas em português do Brasil.
+Não utilize inglês em nenhuma parte da resposta.
+Não use tags <think> nem mostre seu raciocínio passo a passo; entregue apenas a análise final em português.
 """
 
 SYSTEM_PROMPT = """Você é um analista institucional sênior especializado em leitura de fluxo de ordens (Order Flow) e análise de microestrutura de mercado para criptomoedas.
@@ -904,68 +904,68 @@ EXEMPLO RUIM:
 # ========================
 
 ORDERBOOK_TEMPLATE = """
-ðŸ§  **AnÃ¡lise Institucional â€“ {{ ativo }} | {{ tipo_evento }}**
+🧠 **Análise Institucional – {{ ativo }} | {{ tipo_evento }}**
 
-ðŸ“ DescriÃ§Ã£o: {{ descricao }}
+📝 Descrição: {{ descricao }}
 {{ ob_str }}{{ ml_str }}{{ vp_str }}{{ order_flow_str }}
 
-ðŸ“ˆ Multi-Timeframes
+📈 Multi-Timeframes
 {{ multi_tf_str }}
 
-â³ MemÃ³ria de eventos
+⏳ Memória de eventos
 {{ memoria_str }}
 
-ðŸ“‰ Probabilidade HistÃ³rica
+📉 Probabilidade Histórica
    Long={{ prob_long }} | Short={{ prob_short }} | Neutro={{ prob_neutral }}
 
-ðŸŽ¯ Tarefa
-CRÃTICO: Se dados estiverem marcados como "IndisponÃ­vel" ou "âš ï¸", NÃƒO os use.
+🎯 Tarefa
+CRÍTICO: Se dados estiverem marcados como "Indisponível" ou "⚠️", NÃO os use.
 
 {% if not is_orderbook_valid %}
-ðŸ”´ ORDERBOOK INDISPONÃVEL - Use APENAS mÃ©tricas de fluxo (net_flow, flow_imbalance, tick_rule)
+🔴 ORDERBOOK INDISPONÍVEL - Use APENAS métricas de fluxo (net_flow, flow_imbalance, tick_rule)
 {% endif %}
 
 Foque em:
-1) Identificar regiÃµes importantes:
-   - suportes/resistÃªncias relevantes
-   - Ã¡reas de absorÃ§Ã£o (defesa) e exaustÃ£o (fraqueza)
+1) Identificar regiões importantes:
+   - suportes/resistências relevantes
+   - áreas de absorção (defesa) e exaustão (fraqueza)
    - buracos de liquidez (falta de demanda/oferta)
-2) Sugerir, SE HOUVER clareza, uma regiÃ£o aproximada de entrada (entry_zone) e uma zona de invalidaÃ§Ã£o (invalidation_zone).
-3) Se o cenÃ¡rio nÃ£o estiver claro, recomende aguardar (sem forÃ§ar trade).
+2) Sugerir, SE HOUVER clareza, uma região aproximada de entrada (entry_zone) e uma zona de invalidação (invalidation_zone).
+3) Se o cenário não estiver claro, recomende aguardar (sem forçar trade).
 
-Se dados crÃ­ticos faltarem, seja explÃ­cito sobre limitaÃ§Ãµes.
+Se dados críticos faltarem, seja explícito sobre limitações.
 """
 
 DEFAULT_TEMPLATE = """
-ðŸ§  **AnÃ¡lise Institucional â€“ {{ ativo }} | {{ tipo_evento }}**
+🧠 **Análise Institucional – {{ ativo }} | {{ tipo_evento }}**
 
-ðŸ“ DescriÃ§Ã£o: {{ descricao }}
+📝 Descrição: {{ descricao }}
 
-   PreÃ§o: {{ preco_fmt }}
+   Preço: {{ preco_fmt }}
    Delta: {{ delta_line }}
    Volume: {{ vol_line }}
 {{ ml_str }}{{ vp_str }}{{ order_flow_str }}
 
-ðŸ“ˆ Multi-Timeframes
+📈 Multi-Timeframes
 {{ multi_tf_str }}
 
-â³ MemÃ³ria de eventos
+⏳ Memória de eventos
 {{ memoria_str }}
 
-ðŸ“‰ Probabilidade HistÃ³rica
+📉 Probabilidade Histórica
    Long={{ prob_long }} | Short={{ prob_short }} | Neutro={{ prob_neutral }}
 
-ðŸŽ¯ Tarefa
+🎯 Tarefa
 Use APENAS dados explicitamente fornecidos.
-Se marcado como "IndisponÃ­vel", NÃƒO use na anÃ¡lise.
+Se marcado como "Indisponível", NÃO use na análise.
 
 Foque em:
-1) ForÃ§a ou fraqueza do movimento (sentimento).
-2) PresenÃ§a de regiÃ£o de defesa (suporte/absorÃ§Ã£o) ou oferta (resistÃªncia/exaustÃ£o).
-3) Se houver cenÃ¡rios claros, descreva:
-   - regiÃ£o aproximada de entrada (entry_zone)
-   - zona de invalidaÃ§Ã£o (invalidation_zone)
-4) Se nÃ£o houver entrada clara, recomende aguardar (wait/avoid) e explique o porquÃª.
+1) Força ou fraqueza do movimento (sentimento).
+2) Presença de região de defesa (suporte/absorção) ou oferta (resistência/exaustão).
+3) Se houver cenários claros, descreva:
+   - região aproximada de entrada (entry_zone)
+   - zona de invalidação (invalidation_zone)
+4) Se não houver entrada clara, recomende aguardar (wait/avoid) e explique o porquê.
 """
 
 
@@ -1066,7 +1066,7 @@ def _build_market_summary(payload: Dict[str, Any]) -> str:
 
 class AIAnalyzer:
     """
-    Analisador de IA com validaÃ§Ã£o robusta de dados e suporte a mÃºltiplos provedores.
+    Analisador de IA com validação robusta de dados e suporte a múltiplos provedores.
     
     Suporta:
     - GroqCloud (prioridade)
@@ -1084,7 +1084,7 @@ class AIAnalyzer:
         Inicializa o AIAnalyzer.
 
         Args:
-            health_monitor: InstÃ¢ncia de HealthMonitor (opcional).
+            health_monitor: Instância de HealthMonitor (opcional).
             module_name: Nome usado para registrar heartbeat (default: 'ai').
         """
         # Clientes de API
@@ -1106,7 +1106,7 @@ class AIAnalyzer:
         # Logger estruturado
         self.slog: Any = _create_structured_logger("ai_analyzer", "AI")
 
-        # IntegraÃ§Ã£o com HealthMonitor
+        # Integração com HealthMonitor
         self.health_monitor = health_monitor
         self.module_name = module_name
         self._hb_stop = threading.Event()
@@ -1114,7 +1114,7 @@ class AIAnalyzer:
         self._close_lock = threading.Lock()
         self._closed = False
 
-        # ConfiguraÃ§Ã£o
+        # Configuração
         self.config: Dict[str, Any] = {}
         self._load_config()
 
@@ -1131,12 +1131,12 @@ class AIAnalyzer:
                 "AI payload compression ACTIVE (estimated ~35% token savings with cache hits)"
             )
 
-        # Modelo padrÃ£o
+        # Modelo padrão
         self.model_name = (
             getattr(app_config, "GROQ_MODEL", None) if app_config else None
         ) or os.getenv("GROQ_MODEL") or "llama-3.1-8b-instant"
 
-        # Controle de conexÃ£o
+        # Controle de conexão
         self.last_test_time: float = 0.0
         self.test_interval_seconds: int = 120
         self.connection_failed_count: int = 0
@@ -1154,7 +1154,7 @@ class AIAnalyzer:
             self.mode = None
             self.enabled = True
 
-        # Inicia heartbeat se HealthMonitor disponÃ­vel
+        # Inicia heartbeat se HealthMonitor disponível
         self._start_heartbeat()
 
     def _load_config(self) -> None:
@@ -1171,7 +1171,7 @@ class AIAnalyzer:
             self.config = {}
 
     def _start_heartbeat(self) -> None:
-        """Inicia thread de heartbeat se HealthMonitor disponÃ­vel."""
+        """Inicia thread de heartbeat se HealthMonitor disponível."""
         if self.health_monitor is not None:
             try:
                 self.health_monitor.heartbeat(self.module_name)
@@ -1189,7 +1189,7 @@ class AIAnalyzer:
             )
 
     def _heartbeat_loop(self) -> None:
-        """Envia heartbeat periÃ³dico para o HealthMonitor."""
+        """Envia heartbeat periódico para o HealthMonitor."""
         interval = 30
         if app_config is not None:
             interval = getattr(app_config, "HEALTH_CHECK_INTERVAL", 30)
@@ -1228,13 +1228,13 @@ class AIAnalyzer:
 
             if not provider_fallbacks:
                 logging.info(
-                    "ðŸ”§ Groq falhou e nenhum fallback configurado. Ativando modo MOCK."
+                    "🔧 Groq falhou e nenhum fallback configurado. Ativando modo MOCK."
                 )
                 self._activate_mock_mode()
                 return
             else:
                 logging.info(
-                    f"ðŸ”„ Groq falhou, tentando fallbacks configurados: {provider_fallbacks}"
+                    f"🔄 Groq falhou, tentando fallbacks configurados: {provider_fallbacks}"
                 )
 
         # FALLBACKS
@@ -1252,7 +1252,7 @@ class AIAnalyzer:
                 if self._try_initialize_dashscope():
                     return
 
-        # PROVIDER PADRÃƒO: OPENAI
+        # PROVIDER PADRÃO: OPENAI
         if provider != "groq" and "openai" not in providers_tested:
             if self._try_initialize_openai():
                 return
@@ -1267,7 +1267,7 @@ class AIAnalyzer:
             groq_key = getattr(app_config, "GROQ_API_KEY", None)
 
         if not OPENAI_AVAILABLE or not groq_key or _OpenAI is None:
-            logging.warning("Groq indisponÃ­vel: SDK ou chave nÃ£o encontrada")
+            logging.warning("Groq indisponível: SDK ou chave não encontrada")
             return False
 
         groq_cfg = ai_cfg.get("groq", {})
@@ -1278,24 +1278,24 @@ class AIAnalyzer:
 
         if not groq_key.startswith("gsk_"):
             logging.warning(
-                "âš ï¸ GROQ_API_KEY suspeita (nÃ£o comeÃ§a com 'gsk_'). Tentando mesmo assim..."
+                "⚠️ GROQ_API_KEY suspeita (não começa com 'gsk_'). Tentando mesmo assim..."
             )
 
         self.base_url = groq_base_url
 
-        # Cliente sÃ­ncrono
+        # Cliente síncrono
         try:
             self.client = _OpenAI(api_key=groq_key, base_url=self.base_url)
         except Exception as e:
-            logging.error(f"Erro ao criar cliente Groq sÃ­ncrono: {e}")
+            logging.error(f"Erro ao criar cliente Groq síncrono: {e}")
             return False
 
-        # Cliente assÃ­ncrono
+        # Cliente assíncrono
         if ASYNC_OPENAI_AVAILABLE and _AsyncOpenAI is not None:
             try:
                 self.client_async = _AsyncOpenAI(api_key=groq_key, base_url=self.base_url)
             except Exception as e:
-                logging.warning(f"Erro ao criar cliente Groq assÃ­ncrono: {e}")
+                logging.warning(f"Erro ao criar cliente Groq assíncrono: {e}")
 
         logging.info("Groq client configured | base_url=%s", self.base_url)
 
@@ -1328,12 +1328,12 @@ class AIAnalyzer:
             except Exception as e:
                 last_err = e
                 if _is_model_decommissioned_error(e):
-                    logging.warning(f"âš ï¸ Modelo Groq descontinuado: {m}")
+                    logging.warning(f"⚠️ Modelo Groq descontinuado: {m}")
                 else:
-                    logging.warning(f"âš ï¸ Ping falhou no modelo Groq {m}: {e}")
+                    logging.warning(f"⚠️ Ping falhou no modelo Groq {m}: {e}")
 
         if not selected:
-            logging.error(f"âŒ Groq sem modelo vÃ¡lido. Ãšltimo erro: {last_err}")
+            logging.error(f"❌ Groq sem modelo válido. Último erro: {last_err}")
             return False
 
         self.model_name = selected
@@ -1356,7 +1356,7 @@ class AIAnalyzer:
     def _try_initialize_openai(self) -> bool:
         """Tenta inicializar OpenAI. Retorna True se sucesso."""
         if not OPENAI_AVAILABLE or _OpenAI is None:
-            logging.warning("OpenAI SDK nÃ£o disponÃ­vel")
+            logging.warning("OpenAI SDK não disponível")
             return False
             
         try:
@@ -1378,13 +1378,13 @@ class AIAnalyzer:
                 
             return True
         except Exception as e:
-            logging.warning(f"OpenAI indisponÃ­vel: {e}")
+            logging.warning(f"OpenAI indisponível: {e}")
             return False
 
     def _try_initialize_dashscope(self) -> bool:
         """Tenta inicializar DashScope. Retorna True se sucesso."""
         if not DASHSCOPE_AVAILABLE or _dashscope is None:
-            logging.warning("DashScope SDK nÃ£o disponÃ­vel")
+            logging.warning("DashScope SDK não disponível")
             return False
             
         token = os.getenv("DASHSCOPE_API_KEY")
@@ -1392,7 +1392,7 @@ class AIAnalyzer:
             token = getattr(app_config, "DASHSCOPE_API_KEY", None)
 
         if not token:
-            logging.warning("DashScope: chave nÃ£o encontrada")
+            logging.warning("DashScope: chave não encontrada")
             return False
 
         try:
@@ -1412,7 +1412,7 @@ class AIAnalyzer:
                 
             return True
         except Exception as e:
-            logging.warning(f"DashScope indisponÃ­vel: {e}")
+            logging.warning(f"DashScope indisponível: {e}")
             return False
 
     def _activate_mock_mode(self) -> None:
@@ -1431,12 +1431,12 @@ class AIAnalyzer:
             pass
 
     def _should_test_connection(self) -> bool:
-        """Verifica se deve testar conexÃ£o."""
+        """Verifica se deve testar conexão."""
         now = time.time()
         return (now - self.last_test_time) >= self.test_interval_seconds
 
     def _test_connection(self) -> bool:
-        """Testa conexÃ£o com IA (ping curto)."""
+        """Testa conexão com IA (ping curto)."""
         if self.mode is None and not self.client:
             try:
                 self._initialize_api()
@@ -1473,7 +1473,7 @@ class AIAnalyzer:
                 content_clean = re.sub(r'<THINK>.*?</THINK>', '', content, flags=re.IGNORECASE | re.DOTALL).strip()
                 content_clean = content_clean.replace("<THINK>", "").replace("</THINK>", "").strip().upper()
                 
-                # Aceita variaÃ§Ãµes: "OK", "OK.", "OK!", etc.
+                # Aceita variações: "OK", "OK.", "OK!", etc.
                 ok = "OK" in content_clean and len(content_clean) < 20
 
                 if ok and self.mode == "groq":
@@ -1481,7 +1481,7 @@ class AIAnalyzer:
                 elif not ok:
                     if finish_reason == "length":
                         logging.warning("Groq ping truncated by max_tokens")
-                    # CORREÃ‡ÃƒO: Incrementar failures quando resposta invÃ¡lida
+                    # CORREÇÃO: Incrementar failures quando resposta inválida
                     self.connection_failed_count += 1
                     logging.warning(
                         "Groq ping returned unexpected content: '%s'",
@@ -1531,7 +1531,7 @@ class AIAnalyzer:
         return ok
 
     # ====================================================================
-    # EXTRAÃ‡ÃƒO DE DADOS
+    # EXTRAÇÃO DE DADOS
     # ====================================================================
 
     def _extract_orderbook_data(self, event_data: dict) -> dict:
@@ -1688,7 +1688,7 @@ class AIAnalyzer:
                 prompt = prompt.rstrip() + "\n\n" + _FIELD_LEGEND
             return prompt
 
-        # Se compressÃ£o profunda ativa, usar prompt compacto com dicionÃ¡rio de chaves
+        # Se compressão profunda ativa, usar prompt compacto com dicionário de chaves
         if (
             getattr(self, '_compression_enabled', False)
             and _COMPRESSED_SYSTEM_PROMPT is not None
@@ -1849,7 +1849,7 @@ class AIAnalyzer:
         }
 
     def _render_template(self, template_name: str, context: Dict[str, Any]) -> str:
-        """Renderiza template com Jinja2 se disponÃ­vel."""
+        """Renderiza template com Jinja2 se disponível."""
         tmpl_str = ORDERBOOK_TEMPLATE if template_name == "orderbook" else DEFAULT_TEMPLATE
 
         if JINJA_AVAILABLE and _jinja_env is not None:
@@ -1869,36 +1869,36 @@ class AIAnalyzer:
             orderbook_warning = ""
             if not context.get("is_orderbook_valid", True):
                 orderbook_warning = (
-                    "\nðŸ”´ ORDERBOOK INDISPONÃVEL - "
-                    "Use APENAS mÃ©tricas de fluxo (net_flow, flow_imbalance, tick_rule)\n"
+                    "\n🔴 ORDERBOOK INDISPONÍVEL - "
+                    "Use APENAS métricas de fluxo (net_flow, flow_imbalance, tick_rule)\n"
                 )
 
             return (
-                f"ðŸ§  **AnÃ¡lise Institucional â€“ {context['ativo']} | {context['tipo_evento']}**\n\n"
-                f"ðŸ“ DescriÃ§Ã£o: {context['descricao']}\n"
+                f"🧠 **Análise Institucional – {context['ativo']} | {context['tipo_evento']}**\n\n"
+                f"📝 Descrição: {context['descricao']}\n"
                 f"{context['ob_str']}{context['ml_str']}{context['vp_str']}{context['order_flow_str']}\n\n"
-                f"ðŸ“ˆ Multi-Timeframes\n{context['multi_tf_str']}\n\n"
-                f"â³ MemÃ³ria de eventos\n{context['memoria_str']}\n\n"
-                f"ðŸ“‰ Probabilidade HistÃ³rica\n"
+                f"📈 Multi-Timeframes\n{context['multi_tf_str']}\n\n"
+                f"⏳ Memória de eventos\n{context['memoria_str']}\n\n"
+                f"📉 Probabilidade Histórica\n"
                 f"   Long={context['prob_long']} | Short={context['prob_short']} | Neutro={context['prob_neutral']}\n\n"
-                "ðŸŽ¯ Tarefa\n"
-                'CRÃTICO: Se dados estiverem marcados como "IndisponÃ­vel" ou "âš ï¸", NÃƒO os use.\n'
+                "🎯 Tarefa\n"
+                'CRÍTICO: Se dados estiverem marcados como "Indisponível" ou "⚠️", NÃO os use.\n'
                 f"{orderbook_warning}"
-                "Foque em identificar regiÃµes importantes e sugerir entrada/invalidaÃ§Ã£o se houver clareza.\n"
+                "Foque em identificar regiões importantes e sugerir entrada/invalidação se houver clareza.\n"
             )
         else:
             return (
-                f"ðŸ§  **AnÃ¡lise Institucional â€“ {context['ativo']} | {context['tipo_evento']}**\n\n"
-                f"ðŸ“ DescriÃ§Ã£o: {context['descricao']}\n\n"
-                f"   PreÃ§o: {context['preco_fmt']}\n"
+                f"🧠 **Análise Institucional – {context['ativo']} | {context['tipo_evento']}**\n\n"
+                f"📝 Descrição: {context['descricao']}\n\n"
+                f"   Preço: {context['preco_fmt']}\n"
                 f"   Delta: {context['delta_line']}\n"
                 f"   Volume: {context['vol_line']}\n"
                 f"{context['ml_str']}{context['vp_str']}{context['order_flow_str']}\n\n"
-                f"ðŸ“ˆ Multi-Timeframes\n{context['multi_tf_str']}\n\n"
-                f"â³ MemÃ³ria de eventos\n{context['memoria_str']}\n\n"
-                f"ðŸ“‰ Probabilidade HistÃ³rica\n"
+                f"📈 Multi-Timeframes\n{context['multi_tf_str']}\n\n"
+                f"⏳ Memória de eventos\n{context['memoria_str']}\n\n"
+                f"📉 Probabilidade Histórica\n"
                 f"   Long={context['prob_long']} | Short={context['prob_short']} | Neutro={context['prob_neutral']}\n\n"
-                "ðŸŽ¯ Tarefa\nUse APENAS dados explicitamente fornecidos.\n"
+                "🎯 Tarefa\nUse APENAS dados explicitamente fornecidos.\n"
             )
 
     def _create_prompt(self, event_data: Dict[str, Any]) -> str:
@@ -1906,12 +1906,12 @@ class AIAnalyzer:
         Cria prompt para IA.
         
         Prioridade:
-        1. CompressÃ£o profunda (se habilitada) â€” reduz ~70% dos tokens
+        1. Compressão profunda (se habilitada) — reduz ~70% dos tokens
         2. Prompt estruturado (ai_payload do builder)
         3. Prompt legado (fallback)
         """
         # ========================================
-        # MODO 1: COMPRESSÃƒO PROFUNDA (prioridade)
+        # MODO 1: COMPRESSÃO PROFUNDA (prioridade)
         # ========================================
         if (
             getattr(self, '_compression_enabled', False)
@@ -1928,42 +1928,42 @@ class AIAnalyzer:
                 #   event_data = {
                 #     "tipo_evento": "...",
                 #     "symbol": "...",
-                #     "raw_event": {          â† ESTE contÃ©m TUDO (60KB+)
-                #       "raw_event": {...},   â† dados brutos aninhados
+                #     "raw_event": {          ← ESTE contém TUDO (60KB+)
+                #       "raw_event": {...},   ← dados brutos aninhados
                 #       "contextual_snapshot": {...},
                 #       "fluxo_continuo": {...},
                 #       "multi_tf": {...},
                 #       "orderbook_data": {...},
                 #       etc.
                 #     },
-                #     "ai_payload": {         â† ESTE Ã© filtrado (3KB) - NÃƒO USAR
+                #     "ai_payload": {         ← ESTE é filtrado (3KB) - NÃO USAR
                 #       "_v": 2,
                 #       "quant_model": {...},
                 #       etc.
                 #     }
                 #   }
                 #
-                # O compressor PRECISA do raw_event, NÃƒO do ai_payload.
+                # O compressor PRECISA do raw_event, NÃO do ai_payload.
                 
                 source_for_compression = None
                 compression_source_name = "unknown"
                 use_ai_payload_direct = False
                 
                 # ============================================================
-                # DECISÃƒO DE SOURCE PARA COMPRESSÃƒO
+                # DECISÃO DE SOURCE PARA COMPRESSÃO
                 # ============================================================
                 # Prioridade:
-                #   1. ai_payload v2 DIRETO (jÃ¡ otimizado, ~3KB â†’ skip rebuild)
-                #   2. raw_event (dados brutos ~60KB â†’ compressÃ£o completa)
+                #   1. ai_payload v2 DIRETO (já otimizado, ~3KB → skip rebuild)
+                #   2. raw_event (dados brutos ~60KB → compressão completa)
                 #   3. fallback (evento sem ai_payload)
                 # ============================================================
                 
                 ai_p = event_data.get("ai_payload")
                 
                 # Prioridade 1: Se ai_payload v2/v3 existe, usar DIRETO
-                # V2: comprimido por build_ai_input() â†’ compress_payload() (_v=2)
+                # V2: comprimido por build_ai_input() → compress_payload() (_v=2)
                 # V3: comprimido por compress_payload_v3() (chaves compactas: price, ob, flow)
-                # COMPACT: build_compact_payload() â€” sempre tem "price" e "quant", ob/flow opcionais
+                # COMPACT: build_compact_payload() — sempre tem "price" e "quant", ob/flow opcionais
                 _is_v3 = _is_compact_ai_payload(
                     ai_p,
                     require_identity=False,
@@ -1982,7 +1982,7 @@ class AIAnalyzer:
                         _ai_p_bytes,
                     )
                 else:
-                    # Prioridade 2: raw_event disponÃ­vel â†’ compressÃ£o completa
+                    # Prioridade 2: raw_event disponível → compressão completa
                     raw_evt = event_data.get("raw_event")
                     if isinstance(raw_evt, dict) and len(raw_evt) > 5:
                         source_for_compression = dict(raw_evt)
@@ -1998,7 +1998,7 @@ class AIAnalyzer:
                             "multi_tf" in source_for_compression,
                         )
                     else:
-                        # Prioridade 3: fallback â€” ai_payload nÃ£o-v2 com rebuild
+                        # Prioridade 3: fallback — ai_payload não-v2 com rebuild
                         if isinstance(ai_p, dict) and len(ai_p) > 3:
                             source_for_compression = self._rebuild_from_ai_payload(ai_p, event_data)
                             compression_source_name = "rebuilt_from_ai_payload"
@@ -2015,11 +2015,11 @@ class AIAnalyzer:
                         )
 
                 # ============================================================
-                # COMPRESSÃƒO ou USO DIRETO
+                # COMPRESSÃO ou USO DIRETO
                 # ============================================================
                 if use_ai_payload_direct and isinstance(ai_p, dict):
-                    # V3: payload jÃ¡ estÃ¡ 100% comprimido com chaves compactas
-                    # (price, ob, flow, tf, regime, etc.) â€” usar direto
+                    # V3: payload já está 100% comprimido com chaves compactas
+                    # (price, ob, flow, tf, regime, etc.) — usar direto
                     if _is_v3:
                         compressed = dict(ai_p)
                     else:
@@ -2027,8 +2027,8 @@ class AIAnalyzer:
                         compressed = self._v2_to_compressed_prompt(ai_p)
 
                     # Injetar multi-timeframe do event_data original
-                    # (nÃ£o estÃ¡ no ai_payload v2 mas Ã© crÃ­tico para anÃ¡lise)
-                    # Pular se jÃ¡ tem tf (compact payload jÃ¡ inclui tf processado)
+                    # (não está no ai_payload v2 mas é crítico para análise)
+                    # Pular se já tem tf (compact payload já inclui tf processado)
                     _raw_for_tf = None if compressed.get("tf") else event_data.get("raw_event")
                     if isinstance(_raw_for_tf, dict):
                         _mtf = _raw_for_tf.get("multi_tf")
@@ -2069,7 +2069,7 @@ class AIAnalyzer:
                         section_cache=getattr(self, '_section_cache', None),
                     )
 
-                # Verificar se compressÃ£o extraiu dados suficientes
+                # Verificar se compressão extraiu dados suficientes
                 essential_keys = {"price", "ob", "tf", "flow"}
                 found_keys = set(compressed.keys())
                 missing_essential = essential_keys - found_keys
@@ -2082,7 +2082,7 @@ class AIAnalyzer:
                         compression_source_name,
                     )
 
-                # Injetar quant_model do ai_payload se nÃ£o veio da compressÃ£o
+                # Injetar quant_model do ai_payload se não veio da compressão
                 if "quant" not in compressed:
                     ai_p = event_data.get("ai_payload")
                     if isinstance(ai_p, dict):
@@ -2184,8 +2184,8 @@ class AIAnalyzer:
         ai_payload: Dict[str, Any], event_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        ReconstrÃ³i um pseudo-evento a partir do ai_payload para o compressor.
-        Usado quando raw_event nÃ£o estÃ¡ disponÃ­vel no event_data.
+        Reconstrói um pseudo-evento a partir do ai_payload para o compressor.
+        Usado quando raw_event não está disponível no event_data.
         Mapeia as chaves do builder v2 para as chaves que o compressor espera.
         """
         rebuilt: Dict[str, Any] = {}
@@ -2197,7 +2197,7 @@ class AIAnalyzer:
         rebuilt["janela_numero"] = event_data.get("janela_numero")
         rebuilt["data_context"] = event_data.get("data_context", "real_time")
 
-        # Price â†’ contextual_snapshot.ohlc
+        # Price → contextual_snapshot.ohlc
         price_ctx = ai_payload.get("price_context") or {}
         ohlc = price_ctx.get("ohlc") or {}
         rebuilt["contextual_snapshot"] = {
@@ -2208,7 +2208,7 @@ class AIAnalyzer:
             "volume_venda": None,
         }
 
-        # Flow â†’ fluxo_continuo
+        # Flow → fluxo_continuo
         flow_ctx = ai_payload.get("flow_context") or {}
         if flow_ctx:
             rebuilt["fluxo_continuo"] = {
@@ -2233,7 +2233,7 @@ class AIAnalyzer:
                 "depth_metrics": ob_ctx.get("depth_metrics"),
             }
 
-        # Macro â†’ market_context + market_environment
+        # Macro → market_context + market_environment
         macro = ai_payload.get("macro_context") or {}
         if macro:
             regime = macro.get("regime") or {}
@@ -2247,13 +2247,13 @@ class AIAnalyzer:
                 "risk_sentiment": regime.get("sentiment"),
                 "volatility_regime": (price_ctx.get("volatility") or {}).get("volatility_regime"),
             }
-            # CorrelaÃ§Ãµes
+            # Correlações
             corr = macro.get("correlations") or {}
             if corr:
                 rebuilt["market_environment"]["correlation_spy"] = corr.get("sp500")
                 rebuilt["market_environment"]["correlation_dxy"] = corr.get("dxy")
 
-        # Technical indicators â†’ simular multi_tf (apenas 1h)
+        # Technical indicators → simular multi_tf (apenas 1h)
         tech = ai_payload.get("technical_indicators") or {}
         if tech:
             macd_data = tech.get("macd") or {}
@@ -2280,7 +2280,7 @@ class AIAnalyzer:
                 }
             }
 
-        # Cross asset â†’ ml_features.cross_asset
+        # Cross asset → ml_features.cross_asset
         cross = ai_payload.get("cross_asset_context") or {}
         if cross:
             rebuilt["ml_features"] = {
@@ -2316,9 +2316,9 @@ class AIAnalyzer:
     def _v2_to_compressed_prompt(self, ai_payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Converte ai_payload v2 diretamente para formato de prompt comprimido,
-        SEM passar pelo ciclo rebuild â†’ recompress.
+        SEM passar pelo ciclo rebuild → recompress.
         
-        O ai_payload v2 jÃ¡ contÃ©m todos os dados necessÃ¡rios organizados
+        O ai_payload v2 já contém todos os dados necessários organizados
         por build_ai_input() + compress_payload().
         """
         compressed: Dict[str, Any] = {}
@@ -2470,7 +2470,7 @@ class AIAnalyzer:
         # Multi-timeframe (fallback para tf compactado)
         mtf = ai_payload.get("multi_tf") or ai_payload.get("tf")
         if isinstance(mtf, dict) and mtf:
-            compressed["tf"] = mtf  # JÃ¡ vem compactado do builder
+            compressed["tf"] = mtf  # Já vem compactado do builder
 
         sm = ai_payload.get("signal_metadata")
         if isinstance(sm, dict):
@@ -2499,10 +2499,10 @@ class AIAnalyzer:
         return d
 
     def _create_legacy_prompt(self, event_data: Dict[str, Any]) -> str:
-        """Cria prompt usando lÃ³gica legada."""
+        """Cria prompt usando lógica legada."""
         tipo_evento = event_data.get("tipo_evento", "N/A")
         ativo = event_data.get("ativo") or event_data.get("symbol") or "N/A"
-        descricao = event_data.get("descricao", "Sem descriÃ§Ã£o.")
+        descricao = event_data.get("descricao", "Sem descrição.")
 
         ob_data = self._extract_orderbook_data(event_data)
         bid_usd_raw = float(ob_data.get("bid_depth_usd", 0) or 0)
@@ -2573,8 +2573,8 @@ class AIAnalyzer:
         if delta is not None and abs(delta) > 1.0:
             if (volume_compra == 0 and volume_venda == 0) or volume_total == 0:
                 logging.warning(
-                    f"âš ï¸ InconsistÃªncia: delta={delta:.2f} mas volumes zerados. "
-                    "Marcando volumes como indisponÃ­veis."
+                    f"⚠️ Inconsistência: delta={delta:.2f} mas volumes zerados. "
+                    "Marcando volumes como indisponíveis."
                 )
                 volume_total = None
 
@@ -2594,7 +2594,7 @@ class AIAnalyzer:
         multi_tf_str = (
             "\n".join(f"- {tf}: {v}" for tf, v in multi_tf.items())
             if multi_tf
-            else "IndisponÃ­vel."
+            else "Indisponível."
         )
 
         memoria = event_data.get("event_history", [])
@@ -2605,16 +2605,16 @@ class AIAnalyzer:
                 mem_vol = format_large_number(e.get("volume_total", 0))
                 mem_lines.append(
                     f"   - {e.get('timestamp')} | {e.get('tipo_evento')} "
-                    f"{e.get('resultado_da_batalha')} (Î”={mem_delta}, Vol={mem_vol})"
+                    f"{e.get('resultado_da_batalha')} (Δ={mem_delta}, Vol={mem_vol})"
                 )
             memoria_str = "\n".join(mem_lines)
         else:
             memoria_str = "   Nenhum evento recente."
 
         conf = event_data.get("historical_confidence", {})
-        prob_long = conf.get("long_prob", "IndisponÃ­vel")
-        prob_short = conf.get("short_prob", "IndisponÃ­vel")
-        prob_neutral = conf.get("neutral_prob", "IndisponÃ­vel")
+        prob_long = conf.get("long_prob", "Indisponível")
+        prob_short = conf.get("short_prob", "Indisponível")
+        prob_neutral = conf.get("neutral_prob", "Indisponível")
 
         vp = (
             (event_data.get("historical_vp") or {}).get("daily", {})
@@ -2629,7 +2629,7 @@ class AIAnalyzer:
             val_fmt = format_price(vp.get("val", 0))
             vah_fmt = format_price(vp.get("vah", 0))
             vp_str = f"""
-ðŸ“Š Volume Profile (DiÃ¡rio)
+📊 Volume Profile (Diário)
    POC: ${poc_fmt} | VAL: ${val_fmt} | VAH: ${vah_fmt}
 """
 
@@ -2667,11 +2667,11 @@ class AIAnalyzer:
             return self._render_template("orderbook", context)
 
         vol_line = (
-            "IndisponÃ­vel"
+            "Indisponível"
             if volume_total is None
             else f"{format_large_number(volume_total)}"
         )
-        delta_line = f"{format_delta(delta)}" if delta is not None else "IndisponÃ­vel"
+        delta_line = f"{format_delta(delta)}" if delta is not None else "Indisponível"
         preco_fmt = format_price(preco)
 
         context = {
@@ -2693,7 +2693,7 @@ class AIAnalyzer:
         return self._render_template("default", context)
 
     def _build_order_flow_string(self, flow: Dict[str, Any]) -> str:
-        """ConstrÃ³i string de order flow."""
+        """Constrói string de order flow."""
         if not isinstance(flow, dict) or not flow:
             return ""
 
@@ -2710,8 +2710,8 @@ class AIAnalyzer:
 
             if not has_volumes and bsr is not None and bsr > 0:
                 logging.warning(
-                    f"âš ï¸ CONTRADIÃ‡ÃƒO: buy/sell volumes zero mas ratio={bsr}. "
-                    "Marcando ratio como indisponÃ­vel."
+                    f"⚠️ CONTRADIÇÃO: buy/sell volumes zero mas ratio={bsr}. "
+                    "Marcando ratio como indisponível."
                 )
                 bsr = None
 
@@ -2729,7 +2729,7 @@ class AIAnalyzer:
                 flow_lines.append(f"   Buy/Sell Ratio: {format_scientific(bsr, 2)}")
 
             if flow_lines:
-                return "\nðŸš° Fluxo de Ordens\n" + "\n".join(flow_lines) + "\n"
+                return "\n🚰 Fluxo de Ordens\n" + "\n".join(flow_lines) + "\n"
 
         except Exception as e:
             logging.error(f"Erro ao processar order_flow: {e}")
@@ -2737,7 +2737,7 @@ class AIAnalyzer:
         return ""
 
     def _build_ml_string(self, event_data: Dict[str, Any]) -> str:
-        """ConstrÃ³i string de ML features."""
+        """Constrói string de ML features."""
         ml = event_data.get("ml_features") or event_data.get("ml") or {}
         if not isinstance(ml, dict) or not ml:
             return ""
@@ -2755,7 +2755,7 @@ class AIAnalyzer:
                 ml_lines.append(f"   Flow Imbalance: {format_scientific(flow_imb, 4)}")
 
             if ml_lines:
-                return "\nðŸ“ ML Features\n" + "\n".join(ml_lines) + "\n"
+                return "\n📐 ML Features\n" + "\n".join(ml_lines) + "\n"
         except Exception:
             pass
 
@@ -2768,19 +2768,19 @@ class AIAnalyzer:
         ask_usd_raw: float,
         is_valid: bool,
     ) -> str:
-        """ConstrÃ³i string do orderbook."""
+        """Constrói string do orderbook."""
         if not is_valid:
             return f"""
-ðŸ“Š Evento OrderBook - âš ï¸ DADOS INDISPONÃVEIS
+📊 Evento OrderBook - ⚠️ DADOS INDISPONÍVEIS
 
-ðŸ”´ ATENÃ‡ÃƒO: Orderbook zerado ou invÃ¡lido
+🔴 ATENÇÃO: Orderbook zerado ou inválido
    Bid Depth: ${bid_usd_raw:,.2f}
    Ask Depth: ${ask_usd_raw:,.2f}
 
-âš ï¸ AnÃ¡lise de livro INDISPONÃVEL
-   Use APENAS mÃ©tricas de fluxo se disponÃ­veis:
+⚠️ Análise de livro INDISPONÍVEL
+   Use APENAS métricas de fluxo se disponíveis:
    - net_flow (delta acumulado)
-   - flow_imbalance (proporÃ§Ã£o buy/sell)
+   - flow_imbalance (proporção buy/sell)
    - tick_rule_sum (upticks vs downticks)
 """
 
@@ -2789,14 +2789,14 @@ class AIAnalyzer:
         spread_pct = ob_data.get("spread_percent", 0)
 
         return f"""
-ðŸ“Š Evento OrderBook âœ…
+📊 Evento OrderBook ✅
 
-   PreÃ§o Mid: {format_price(mid)}
+   Preço Mid: {format_price(mid)}
    Spread: {format_percent(spread_pct)}
    
    Profundidade (USD):
-   â€¢ Bids: {format_large_number(bid_usd_raw)}
-   â€¢ Asks: {format_large_number(ask_usd_raw)}
+   • Bids: {format_large_number(bid_usd_raw)}
+   • Asks: {format_large_number(ask_usd_raw)}
    
    Imbalance: {format_scientific(imbalance, 4)}
 """
@@ -2807,8 +2807,8 @@ class AIAnalyzer:
         if isinstance(ai_cfg, dict) and ai_cfg.get("prompt_style") == "legacy":
             return self._build_structured_prompt_legacy(payload)
 
-        # Se payload jÃ¡ veio comprimido pelo compress_payload_v3 (chaves compactas),
-        # enviar direto como JSON minificado â€” jÃ¡ estÃ¡ otimizado para tokens.
+        # Se payload já veio comprimido pelo compress_payload_v3 (chaves compactas),
+        # enviar direto como JSON minificado — já está otimizado para tokens.
         if _is_compact_ai_payload(
             payload,
             require_identity=False,
@@ -2945,7 +2945,7 @@ class AIAnalyzer:
         return "\n".join(lines)
 
     def _build_structured_prompt_legacy(self, payload: Dict[str, Any]) -> str:
-        """ConstrÃ³i prompt legado usando payload estruturado."""
+        """Constrói prompt legado usando payload estruturado."""
         meta = payload.get("signal_metadata") or {}
         price = payload.get("price_context") or {}
         flow = payload.get("flow_context") or {}
@@ -2971,16 +2971,16 @@ class AIAnalyzer:
 
         lines: List[str] = []
 
-        lines.append(f"AnÃ¡lise Institucional â€“ {symbol}")
+        lines.append(f"Análise Institucional – {symbol}")
         lines.append(f"{timestamp} | Tipo: {meta.get('type', 'N/A')}")
-        lines.append(f"DescriÃ§Ã£o: {meta.get('description', 'Sem descriÃ§Ã£o')}")
+        lines.append(f"Descrição: {meta.get('description', 'Sem descrição')}")
         lines.append(f"Resultado da Batalha: {meta.get('battle_result', 'N/A')}")
         lines.append("")
 
-        lines.append("CONTEXTO DE PREÃ‡O")
-        lines.append(f"  â€¢ PreÃ§o Atual: {current_price}")
-        lines.append(f"  â€¢ OHLC: O:{open_p} H:{high_p} L:{low_p} C:{close_p}")
-        lines.append(f"  â€¢ VP DiÃ¡rio: POC {poc} | VAH {vah} | VAL {val}")
+        lines.append("CONTEXTO DE PREÇO")
+        lines.append(f"  • Preço Atual: {current_price}")
+        lines.append(f"  • OHLC: O:{open_p} H:{high_p} L:{low_p} C:{close_p}")
+        lines.append(f"  • VP Diário: POC {poc} | VAH {vah} | VAL {val}")
         lines.append("")
 
         net_flow = flow.get("net_flow")
@@ -2988,9 +2988,9 @@ class AIAnalyzer:
         if net_flow is not None or cvd_acc is not None:
             lines.append("CONTEXTO DE FLUXO")
             if net_flow is not None:
-                lines.append(f"  â€¢ Net Flow (janela): {format_delta(net_flow)}")
+                lines.append(f"  • Net Flow (janela): {format_delta(net_flow)}")
             if cvd_acc is not None:
-                lines.append(f"  â€¢ CVD acumulado: {format_delta(cvd_acc)}")
+                lines.append(f"  • CVD acumulado: {format_delta(cvd_acc)}")
             lines.append("")
 
         bid_usd = ob.get("bid_depth_usd")
@@ -2999,21 +2999,21 @@ class AIAnalyzer:
         if bid_usd is not None or ask_usd is not None:
             lines.append("ORDERBOOK / LIQUIDEZ")
             lines.append(
-                f"  â€¢ Bids: {format_large_number(bid_usd)} | "
+                f"  • Bids: {format_large_number(bid_usd)} | "
                 f"Asks: {format_large_number(ask_usd)}"
             )
             if imbalance is not None:
-                lines.append(f"  â€¢ Imbalance: {format_delta(imbalance)}")
+                lines.append(f"  • Imbalance: {format_delta(imbalance)}")
             lines.append("")
 
         if macro:
             lines.append("MACRO / REGIME")
             session = macro.get("session") or macro.get("session_name")
             if session:
-                lines.append(f"  â€¢ SessÃ£o: {session}")
+                lines.append(f"  • Sessão: {session}")
             trends = macro.get("multi_timeframe_trends") or {}
             if trends:
-                lines.append("  â€¢ TendÃªncias multi-timeframe:")
+                lines.append("  • Tendências multi-timeframe:")
                 for tf, tr in trends.items():
                     val_trend = tr.get("tendencia") if isinstance(tr, dict) else tr
                     lines.append(f"    - {tf}: {val_trend}")
@@ -3023,8 +3023,8 @@ class AIAnalyzer:
             lp = hist.get("long_prob")
             sp = hist.get("short_prob")
             np_ = hist.get("neutral_prob")
-            lines.append("ESTATÃSTICA HISTÃ“RICA")
-            lines.append(f"  â€¢ Probabilidades: Long={lp} | Short={sp} | Neutro={np_}")
+            lines.append("ESTATÍSTICA HISTÓRICA")
+            lines.append(f"  • Probabilidades: Long={lp} | Short={sp} | Neutro={np_}")
             lines.append("")
 
         if quant:
@@ -3036,36 +3036,36 @@ class AIAnalyzer:
             features_used = quant.get("features_used", 0)
             total_features = quant.get("total_features", 0)
 
-            lines.append("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•")
-            lines.append("ðŸ§  INTELIGÃŠNCIA QUANTITATIVA (XGBoost) â€“ USO OBRIGATÃ“RIO")
-            lines.append("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•")
+            lines.append("═══════════════════════════════════════════════════════")
+            lines.append("🧠 INTELIGÊNCIA QUANTITATIVA (XGBoost) – USO OBRIGATÓRIO")
+            lines.append("═══════════════════════════════════════════════════════")
             if prob_up is not None:
-                lines.append(f"  ðŸ“ˆ Probabilidade de Alta: {prob_up * 100:.1f}%")
+                lines.append(f"  📈 Probabilidade de Alta: {prob_up * 100:.1f}%")
             if prob_down is not None:
-                lines.append(f"  ðŸ“‰ Probabilidade de Baixa: {prob_down * 100:.1f}%")
-            lines.append(f"  ðŸŽ¯ ViÃ©s MatemÃ¡tico: {sentiment_model}")
-            lines.append(f"  ðŸ”’ Action Bias (viÃ©s sugerido): {action_bias.upper()}")
-            lines.append(f"  ðŸ“Š ConfianÃ§a do Modelo: {confidence_model * 100:.1f}%")
-            lines.append(f"  ðŸ” Features usadas: {features_used}/{total_features}")
+                lines.append(f"  📉 Probabilidade de Baixa: {prob_down * 100:.1f}%")
+            lines.append(f"  🎯 Viés Matemático: {sentiment_model}")
+            lines.append(f"  🔒 Action Bias (viés sugerido): {action_bias.upper()}")
+            lines.append(f"  📊 Confiança do Modelo: {confidence_model * 100:.1f}%")
+            lines.append(f"  🔍 Features usadas: {features_used}/{total_features}")
             lines.append("")
-            lines.append("âš ï¸ REGRA CRÃTICA:")
-            lines.append("   Esta inteligÃªncia quantitativa Ã© sua BASE PRINCIPAL de decisÃ£o.")
+            lines.append("⚠️ REGRA CRÍTICA:")
+            lines.append("   Esta inteligência quantitativa é sua BASE PRINCIPAL de decisão.")
             lines.append("")
 
-        lines.append("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•")
-        lines.append("ðŸ“‹ TAREFA DA IA")
-        lines.append("â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•")
+        lines.append("═══════════════════════════════════════════════════════")
+        lines.append("📋 TAREFA DA IA")
+        lines.append("═══════════════════════════════════════════════════════")
         lines.append("")
-        lines.append("1) USE A INTELIGÃŠNCIA QUANTITATIVA COMO BASE PRINCIPAL.")
+        lines.append("1) USE A INTELIGÊNCIA QUANTITATIVA COMO BASE PRINCIPAL.")
         lines.append("2) CONFIRME OU INVALIDE com dados de fluxo e orderbook.")
-        lines.append("3) SÃ“ CONTRARIE O VIÃ‰S QUANTITATIVO se houver evidÃªncia MUITO FORTE.")
-        lines.append("4) Defina regiÃ£o de entrada e zona de invalidaÃ§Ã£o (se houver setup).")
-        lines.append("5) Se dados conflitantes ou confianÃ§a baixa (<50%), recomende aguardar.")
+        lines.append("3) SÓ CONTRARIE O VIÉS QUANTITATIVO se houver evidência MUITO FORTE.")
+        lines.append("4) Defina região de entrada e zona de invalidação (se houver setup).")
+        lines.append("5) Se dados conflitantes ou confiança baixa (<50%), recomende aguardar.")
 
         return "\n".join(lines)
 
     # ====================================================================
-    # MÃ‰TRICAS E LOGS
+    # MÉTRICAS E LOGS
     # ====================================================================
 
     def _extract_list_counts(self, payload: Dict[str, Any]) -> Dict[str, int]:
@@ -3101,7 +3101,7 @@ class AIAnalyzer:
     def _log_payload_metrics(
         self, payload: Dict[str, Any], event_data: Dict[str, Any]
     ) -> None:
-        """Registra mÃ©tricas do payload antes de enviar para o modelo."""
+        """Registra métricas do payload antes de enviar para o modelo."""
         global _PAYLOAD_METRICS_CALLS, _PAYLOAD_METRICS_LAST_TS
 
         if not isinstance(payload, dict):
@@ -3152,7 +3152,7 @@ class AIAnalyzer:
             except Exception as file_err:
                 logging.error(f"Erro ao persistir payload metrics: {file_err}", exc_info=True)
         except Exception as e:
-            logging.error(f"Erro ao registrar mÃ©tricas do payload: {e}", exc_info=True)
+            logging.error(f"Erro ao registrar métricas do payload: {e}", exc_info=True)
 
     # ====================================================================
     # CHAMADAS AO MODELO
@@ -3160,7 +3160,7 @@ class AIAnalyzer:
 
     @staticmethod
     def _sanitize_llm_text(text: str) -> str:
-        """Remove blocos de raciocÃ­nio e lixo comum."""
+        """Remove blocos de raciocínio e lixo comum."""
         if not isinstance(text, str):
             return ""
 
@@ -3179,9 +3179,9 @@ class AIAnalyzer:
         s = s.replace("<think>", "").replace("</think>", "").strip()
         
         # =====================================
-        # NOVO: Remove raciocÃ­nio em texto livre
+        # NOVO: Remove raciocínio em texto livre
         # =====================================
-        # Detecta padrÃµes comuns de raciocÃ­nio
+        # Detecta padrões comuns de raciocínio
         reasoning_patterns = [
             r"^(Okay|Ok|Alright|Let me|Let's|First|I need to|I'll|Looking at|Analyzing|Based on).*?\n\n",
             r"^(Hmm|Well|So|Now).*?\n\n",
@@ -3196,13 +3196,13 @@ class AIAnalyzer:
             except Exception:
                 pass
         
-        # Se comeÃ§a com texto e tem JSON no meio, extrai o JSON
+        # Se começa com texto e tem JSON no meio, extrai o JSON
         if not s.startswith("{") and "{" in s:
             json_match = re.search(r'(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})', s)
             if json_match:
                 potential_json = json_match.group(1)
                 try:
-                    # Valida se Ã© JSON vÃ¡lido
+                    # Valida se é JSON válido
                     json.loads(potential_json)
                     s = potential_json
                 except json.JSONDecodeError:
@@ -3338,7 +3338,7 @@ class AIAnalyzer:
 
     @staticmethod
     def _json_line(data: Dict[str, Any]) -> str:
-        """Serializa um dict JSON em uma Ãºnica linha estÃ¡vel."""
+        """Serializa um dict JSON em uma única linha estável."""
         return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
     @staticmethod
@@ -3349,7 +3349,7 @@ class AIAnalyzer:
 
     @staticmethod
     def _classify_provider_error(exc: Exception) -> str:
-        """Mapeia exceÃ§Ãµes do provedor para motivos estÃ¡veis de fallback."""
+        """Mapeia exceções do provedor para motivos estáveis de fallback."""
         message = str(exc or "").lower()
         if "json_validate_failed" in message:
             return "json_validate_failed"
@@ -3366,7 +3366,7 @@ class AIAnalyzer:
         return "provider_exception"
 
     def _build_structured_fallback(self, reason: str) -> Dict[str, Any]:
-        """Retorna fallback estruturado Ãºnico para qualquer falha do LLM."""
+        """Retorna fallback estruturado único para qualquer falha do LLM."""
         if build_fallback_response is not None:
             fallback = build_fallback_response(reason, error_key="_fallback_reason")
             fallback["_validation_error"] = reason
@@ -3385,9 +3385,9 @@ class AIAnalyzer:
         return self._json_line(fallback), fallback
 
     async def _a_call_openai_text(self, prompt: str) -> str:
-        """VersÃ£o assÃ­ncrona para OpenAI/Groq com fallbacks."""
+        """Versão assíncrona para OpenAI/Groq com fallbacks."""
         if self.client_async is None:
-            raise RuntimeError("Cliente assÃ­ncrono nÃ£o inicializado")
+            raise RuntimeError("Cliente assíncrono não inicializado")
 
         models_to_try = (
             self._groq_model_candidates if self.mode == "groq" else [self.model_name]
@@ -3413,16 +3413,16 @@ class AIAnalyzer:
                     )
                     if model != self.model_name:
                         logging.info(
-                            f"ðŸ”„ Modelo trocado de {self.model_name} para {model}"
+                            f"🔄 Modelo trocado de {self.model_name} para {model}"
                         )
                         self.model_name = model
                     return content
             except Exception as e:
                 if _is_model_decommissioned_error(e):
-                    logging.warning(f"Modelo {model} decommissioned. Tentando prÃ³ximo...")
+                    logging.warning(f"Modelo {model} decommissioned. Tentando próximo...")
                     continue
                 else:
-                    logging.error(f"Erro com modelo {model}: {e}. Tentando prÃ³ximo...")
+                    logging.error(f"Erro com modelo {model}: {e}. Tentando próximo...")
                     continue
 
         logging.error("Todos os modelos falharam para texto.")
@@ -3431,9 +3431,9 @@ class AIAnalyzer:
     def _call_openai_compatible(
         self, prompt: str, max_retries: int = 3
     ) -> Tuple[str, Optional[str]]:
-        """Chama cliente OpenAI-compatÃ­vel de forma sÃ­ncrona."""
+        """Chama cliente OpenAI-compatível de forma síncrona."""
         if self.client is None:
-            raise RuntimeError("Cliente nÃ£o inicializado")
+            raise RuntimeError("Cliente não inicializado")
 
         params = self._get_model_params()
         base_delay = 1.0
@@ -3596,7 +3596,7 @@ class AIAnalyzer:
     def _call_model(
         self, prompt: str, event_data: Dict[str, Any]
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
-        """Chama o provedor atual e sempre retorna JSON vÃ¡lido ou fallback JSON."""
+        """Chama o provedor atual e sempre retorna JSON válido ou fallback JSON."""
         if self.mode in ("openai", "groq") and self.client is not None:
             text, error_reason = self._call_openai_compatible(prompt)
             if error_reason is not None:
@@ -3634,13 +3634,13 @@ class AIAnalyzer:
         return raw
 
     # ====================================================================
-    # NÃšCLEO DE ANÃLISE
+    # NÚCLEO DE ANÁLISE
     # ====================================================================
 
     def _analyze_internal(
         self, event_data: Dict[str, Any]
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
-        """NÃºcleo de anÃ¡lise: constrÃ³i prompt, chama modelo e retorna resultado."""
+        """Núcleo de análise: constrói prompt, chama modelo e retorna resultado."""
         if not self.enabled:
             try:
                 self._initialize_api()
@@ -3656,7 +3656,7 @@ class AIAnalyzer:
                 if self.connection_failed_count >= self.max_failures_before_mock:
                     return self._build_fallback_payload("connection_test_failed")
 
-        # Verificar _v ANTES do guardrail para preservar a info de payload jÃ¡ comprimido
+        # Verificar _v ANTES do guardrail para preservar a info de payload já comprimido
         _ai_payload_has_v2 = None
         _original_ai_payload = event_data.get("ai_payload")
         if isinstance(_original_ai_payload, dict):
@@ -3664,7 +3664,7 @@ class AIAnalyzer:
         
         event_data_safe = _ensure_safe_llm_payload(event_data)
         if event_data_safe is None:
-            logging.error("AnÃ¡lise abortada por leak de payload completo (guardrail).")
+            logging.error("Análise abortada por leak de payload completo (guardrail).")
             return self._build_fallback_payload("unsafe_payload")
         event_data = event_data_safe
 
@@ -3850,13 +3850,13 @@ class AIAnalyzer:
             logging.exception("DUMP_LLM_PAYLOAD failed")
 
     # ====================================================================
-    # INTERFACE PÃšBLICA
+    # INTERFACE PÚBLICA
     # ====================================================================
 
     def analyze_event(self, event_data: Dict[str, Any]) -> str:
         """
-        Analisa evento e retorna anÃ¡lise da IA (string).
-        Mantido para compatibilidade com cÃ³digo legado.
+        Analisa evento e retorna análise da IA (string).
+        Mantido para compatibilidade com código legado.
         """
         try:
             analysis_text, _ = self._analyze_internal(event_data)
@@ -3936,7 +3936,7 @@ class AIAnalyzer:
             analysis_text = self._json_line(structured_out)
 
             # ============================================================
-            # EMITE EVENTO DE SUCESSO APENAS APÃ“S VALIDAÃ‡ÃƒO
+            # EMITE EVENTO DE SUCESSO APENAS APÓS VALIDAÇÃO
             # ============================================================
             if is_valid and not is_fallback:
                 logging.debug("AI_ANALYSIS_VALIDATED: %s", analysis_text)
@@ -4011,7 +4011,7 @@ class AIAnalyzer:
             }
 
         except Exception as e:
-            logging.error(f"âŒ Erro em analyze(): {e}", exc_info=True)
+            logging.error(f"❌ Erro em analyze(): {e}", exc_info=True)
             try:
                 self.slog.error(
                     "ai_analyze_error",
@@ -4055,7 +4055,7 @@ class AIAnalyzer:
             return True
 
     def close(self) -> None:
-        """Fecha conexÃ£o com IA e encerra heartbeat."""
+        """Fecha conexão com IA e encerra heartbeat."""
         if not self._begin_close():
             return
 
@@ -4099,7 +4099,7 @@ class AIAnalyzer:
         self.client_async = None
 
     async def aclose(self) -> None:
-        """Fecha conexÃµes async."""
+        """Fecha conexões async."""
         if not self._begin_close():
             return
 
@@ -4151,12 +4151,12 @@ class AIAnalyzer:
 
 
 # ====================================================================
-# TESTE DE VALIDAÃ‡ÃƒO
+# TESTE DE VALIDAÇÃO
 # ====================================================================
 
 if __name__ == "__main__":
     print("\n" + "=" * 70)
-    print("ðŸ§ª TESTANDO AI_ANALYZER v2.5.1 (GroqCloud - JSON prompt mode)")
+    print("🧪 TESTANDO AI_ANALYZER v2.5.1 (GroqCloud - JSON prompt mode)")
     print("=" * 70)
 
     logging.basicConfig(
@@ -4165,20 +4165,20 @@ if __name__ == "__main__":
 
     analyzer = AIAnalyzer()
 
-    print(f"\nâœ… Modo ativo: {analyzer.mode or 'MOCK'}")
-    print(f"âœ… Modelo: {analyzer.model_name}")
-    print(f"âœ… Enabled: {analyzer.enabled}")
+    print(f"\n✅ Modo ativo: {analyzer.mode or 'MOCK'}")
+    print(f"✅ Modelo: {analyzer.model_name}")
+    print(f"✅ Enabled: {analyzer.enabled}")
 
     if analyzer.mode:
-        print("\nðŸ” Testando conexÃ£o...")
+        print("\n🔍 Testando conexão...")
         if analyzer._test_connection():
-            print("âœ… ConexÃ£o OK!")
+            print("✅ Conexão OK!")
         else:
-            print("âŒ Falha na conexÃ£o")
+            print("❌ Falha na conexão")
 
-    print("\nðŸ“ Testando anÃ¡lise...")
+    print("\n📝 Testando análise...")
     mock_event = {
-        "tipo_evento": "AbsorÃ§Ã£o",
+        "tipo_evento": "Absorção",
         "ativo": "BTCUSDT",
         "delta": -15.5,
         "volume_total": 125.3,
@@ -4188,7 +4188,7 @@ if __name__ == "__main__":
 
     result = analyzer.analyze(mock_event)
 
-    print("\nðŸ“Š Resultado:")
+    print("\n📊 Resultado:")
     print(f"  Success: {result['success']}")
     print(f"  Modo: {result.get('mode', 'N/A')}")
     print(f"  Modelo: {result.get('model', 'N/A')}")
@@ -4199,5 +4199,5 @@ if __name__ == "__main__":
     analyzer.close()
 
     print("\n" + "=" * 70)
-    print("âœ… TESTE CONCLUÃDO")
+    print("✅ TESTE CONCLUÍDO")
     print("=" * 70 + "\n")
