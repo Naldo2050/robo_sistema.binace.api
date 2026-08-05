@@ -27,6 +27,10 @@ Decisoes de arquitetura registradas:
     estruturado sempre. O AlertManager (trading/alert_manager.py) NAO foi
     usado: e um framework de agregacao de metricas via record_metric/check_metrics,
     sem canal de notificacao embutido; wire-lo adicionaria indirecao sem canal.
+  - LEMBRETE DE ESTADO PROLONGADO: enquanto o estado permanecer fora de healthy
+    (unhealthy OU degraded) por ALERT_UNHEALTHY_REMINDER_SECONDS, re-dispara
+    alerta do tipo "health_state_reminder" (mesmo canal/cooldown de webhook).
+    Cobre o gap de transicao unica (3h de unhealthy sem re-notificacao).
 """
 import json
 import logging
@@ -38,6 +42,7 @@ from typing import Callable, Optional
 
 from config import (
     ALERT_STATE_COOLDOWN_SECONDS,
+    ALERT_UNHEALTHY_REMINDER_SECONDS,
     ALERT_WEBHOOK_URL,
     HEALTH_CHECK_INTERVAL,
     PIPELINE_HEALTH_DEGRADED_WS_SILENCE_SECONDS,
@@ -114,7 +119,11 @@ _window_age_provider: Optional[Callable[[], Optional[float]]] = None
 # ---- Estado de transicoes de health (alerta ativo) ----
 _last_status: Optional[str] = None  # ultimo status observado no loop de refresh
 _last_alert_ts: dict = {}           # chave "from->to" -> timestamp do ultimo alerta
+_last_reminder_ts: dict = {}        # status ("unhealthy"/"degraded") -> ultimo reminder
+_status_entered_ts: dict = {}       # status -> quando o status atual comecou
 _last_unhealthy_components: list = []  # estagios criticos no ultimo unhealthy
+
+WEBHOOK_TIMEOUT_SECONDS = 10.0
 
 
 def reset_health_state():
@@ -122,6 +131,8 @@ def reset_health_state():
     global _last_status
     _last_status = None
     _last_alert_ts.clear()
+    _last_reminder_ts.clear()
+    _status_entered_ts.clear()
     _last_unhealthy_components.clear()
 
 
@@ -243,6 +254,35 @@ def _stage_detail(stage: str, heartbeats: dict) -> dict:
     }
 
 
+def _state_alert_fields(current: str, status: dict, heartbeats: dict) -> dict:
+    """Campos de estado comuns a transicoes e reminders (estagio/silence/threshold)."""
+    fields = {}
+    if current == "unhealthy":
+        components = status.get("unhealthy_components", [])
+        fields["unhealthy_components"] = [
+            _stage_detail(stage, heartbeats) for stage in components
+        ]
+        if components:
+            detail = _stage_detail(components[0], heartbeats)
+            fields["stage"] = detail["stage"]
+            fields["silence_seconds"] = detail["silence_seconds"]
+            fields["threshold_seconds"] = detail["threshold_seconds"]
+    elif current == "degraded":
+        fields["stage"] = "ws"
+        silence = float(
+            (heartbeats.get("ws") or {}).get("silence_seconds", 0.0)
+        )
+        fields["silence_seconds"] = round(silence, 1)
+        fields["threshold_seconds"] = round(DEGRADED_WS_SILENCE, 1)
+    elif current == "healthy" and _last_unhealthy_components:
+        fields["recovered_components"] = [
+            {"stage": item["stage"],
+             "last_silence_seconds": item["silence_seconds"]}
+            for item in _last_unhealthy_components
+        ]
+    return fields
+
+
 def _build_alert_payload(previous: str, current: str, status: dict,
                          heartbeats: dict) -> dict:
     payload = {
@@ -253,41 +293,37 @@ def _build_alert_payload(previous: str, current: str, status: dict,
         "monitored_components": status.get("monitored_components", []),
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    if current == "unhealthy":
-        components = status.get("unhealthy_components", [])
-        payload["unhealthy_components"] = [
-            _stage_detail(stage, heartbeats) for stage in components
-        ]
-        if components:
-            detail = _stage_detail(components[0], heartbeats)
-            payload["stage"] = detail["stage"]
-            payload["silence_seconds"] = detail["silence_seconds"]
-            payload["threshold_seconds"] = detail["threshold_seconds"]
-    elif current == "degraded":
-        payload["stage"] = "ws"
-        silence = float(
-            (heartbeats.get("ws") or {}).get("silence_seconds", 0.0)
-        )
-        payload["silence_seconds"] = round(silence, 1)
-        payload["threshold_seconds"] = round(DEGRADED_WS_SILENCE, 1)
-    elif current == "healthy" and _last_unhealthy_components:
-        payload["recovered_components"] = [
-            {"stage": item["stage"],
-             "last_silence_seconds": item["silence_seconds"]}
-            for item in _last_unhealthy_components
-        ]
+    payload.update(_state_alert_fields(current, status, heartbeats))
+    return payload
+
+
+def _build_reminder_payload(current: str, status: dict, heartbeats: dict,
+                            duration_in_state: float) -> dict:
+    """Payload do lembrete: mesmo canal da transicao, mas marcado como reminder."""
+    payload = {
+        "event": "health_state_reminder",
+        "state": current,
+        "duration_in_state_seconds": round(duration_in_state, 1),
+        "reminder_interval_seconds": float(ALERT_UNHEALTHY_REMINDER_SECONDS),
+        "reason": status.get("reason"),
+        "monitored_components": status.get("monitored_components", []),
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    payload.update(_state_alert_fields(current, status, heartbeats))
     return payload
 
 
 def evaluate_transition(status: dict, heartbeats: dict) -> Optional[dict]:
-    """Detecta mudanca de estado com cooldown por transicao.
+    """Detecta mudanca de estado (com cooldown) e lembrete de estado prolongado.
 
-    Retorna o payload do alerta se a transicao deve disparar, None caso
-    contrario (estado inalterado, primeira avaliacao ou cooldown ativo).
+    Retorna o payload do alerta se deve disparar, None caso contrario
+    (estado inalterado, primeira avaliacao, cooldown ativo ou reminder fora
+    do intervalo). Reminder aplica-se a unhealthy E degraded.
     """
     global _last_status
     current = status["status"]
     previous = _last_status
+    now = time.time()
     _last_status = current
 
     if current == "unhealthy":
@@ -296,31 +332,65 @@ def evaluate_transition(status: dict, heartbeats: dict) -> Optional[dict]:
             for stage in status.get("unhealthy_components", [])
         ]
 
-    if previous is None or previous == current:
-        return None
+    if current != previous:
+        _status_entered_ts[current] = now
+        if previous is None:
+            return None
+        key = f"{previous}->{current}"
+        if now - _last_alert_ts.get(key, 0.0) < ALERT_STATE_COOLDOWN_SECONDS:
+            return None
+        _last_alert_ts[key] = now
+        return _build_alert_payload(previous, current, status, heartbeats)
 
-    key = f"{previous}->{current}"
-    now = time.time()
-    if now - _last_alert_ts.get(key, 0.0) < ALERT_STATE_COOLDOWN_SECONDS:
-        return None
+    # mesmo estado: lembrete para unhealthy/degraded prolongados
+    if current in ("unhealthy", "degraded"):
+        entry = _status_entered_ts.get(current, now)
+        baseline = max(_last_reminder_ts.get(current, entry), entry)
+        if now - baseline >= ALERT_UNHEALTHY_REMINDER_SECONDS:
+            _last_reminder_ts[current] = now
+            return _build_reminder_payload(
+                current, status, heartbeats, now - entry
+            )
+    return None
 
-    _last_alert_ts[key] = now
-    return _build_alert_payload(previous, current, status, heartbeats)
 
-
-def _post_webhook(url: str, payload: dict) -> None:
-    """POST do alerta para o webhook (formato Slack-compativel)."""
-    import requests
-
-    body = {"text": payload["event"], "attachments": [{"fields": [
-        {"title": "de", "value": payload["from"], "short": True},
-        {"title": "para", "value": payload["to"], "short": True},
+def _build_webhook_body(payload: dict) -> dict:
+    """Corpo do webhook em formato Slack-compativel (text + attachments/fields)."""
+    if "state" in payload:
+        fields = [
+            {"title": "estado", "value": payload["state"], "short": True},
+            {
+                "title": "ha quanto tempo (s)",
+                "value": str(payload.get("duration_in_state_seconds", "-")),
+                "short": True,
+            },
+        ]
+    else:
+        fields = [
+            {"title": "de", "value": payload.get("from", "-"), "short": True},
+            {"title": "para", "value": payload.get("to", "-"), "short": True},
+        ]
+    fields += [
         {"title": "estagio", "value": payload.get("stage", "-"), "short": True},
         {"title": "silence (s)", "value": str(payload.get("silence_seconds", "-")), "short": True},
         {"title": "threshold (s)", "value": str(payload.get("threshold_seconds", "-")), "short": True},
         {"title": "reason", "value": payload.get("reason", "-"), "short": False},
-    ]}]}
-    resp = requests.post(url, json=body, timeout=10.0)
+    ]
+    return {"text": payload["event"], "attachments": [{"fields": fields}]}
+
+
+def _post_webhook(url: str, payload: dict,
+                  timeout: float = WEBHOOK_TIMEOUT_SECONDS) -> None:
+    """POST do alerta para o webhook (formato Slack-compativel).
+
+    Bloqueante (sincrono) com timeout definido; a chamada roda no thread do
+    loop de refresh, nunca no path do /health. Erros sao capturados pelo
+    chamador (_dispatch_alert), nao propagam.
+    """
+    import requests
+
+    body = _build_webhook_body(payload)
+    resp = requests.post(url, json=body, timeout=timeout)
     resp.raise_for_status()
 
 
@@ -329,7 +399,7 @@ def _dispatch_alert(payload: dict) -> None:
     logging.warning("ALERTA HEALTH: %s", json.dumps(payload, ensure_ascii=False))
     if ALERT_WEBHOOK_URL:
         try:
-            _post_webhook(ALERT_WEBHOOK_URL, payload)
+            _post_webhook(ALERT_WEBHOOK_URL, payload, WEBHOOK_TIMEOUT_SECONDS)
         except Exception as exc:
             logging.warning(f"Falha ao enviar webhook de health: {exc!r}")
 

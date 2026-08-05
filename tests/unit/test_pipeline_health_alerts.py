@@ -184,7 +184,9 @@ def test_cooldown_suprime_repeticao_da_mesma_transicao():
 
 def test_dispatch_chama_webhook_quando_configurado(monkeypatch):
     calls = []
-    monkeypatch.setattr(ph, "_post_webhook", lambda url, payload: calls.append(url))
+    monkeypatch.setattr(
+        ph, "_post_webhook", lambda url, payload, timeout=None: calls.append(url)
+    )
     monkeypatch.setattr(ph, "ALERT_WEBHOOK_URL", "http://exemplo/webhook")
 
     ph._dispatch_alert({"event": "health_state_transition", "from": "x", "to": "y"})
