@@ -45,9 +45,9 @@ USER trader
 # Expor porta do servidor Prometheus (/metrics)
 EXPOSE 8000
 
-# Healthcheck
+# Healthcheck: /health decide 200 (saudável) / 503 (pipeline travado)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD curl -f http://localhost:8000/metrics || exit 1
+  CMD curl -f http://localhost:8000/health || exit 1
 
 # Comando de entrada
 CMD ["python", "main.py"]

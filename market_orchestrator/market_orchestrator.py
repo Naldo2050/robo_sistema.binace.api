@@ -353,6 +353,11 @@ class EnhancedMarketBot:
             on_error=self.on_error,
             on_reconnect=self._on_reconnect,
         )
+        # PRODUÇÃO: conectar o callback de recebimento de WS (hook já existia,
+        # nunca conectado) ao HealthMonitor — sinal "ws" do health check do container.
+        self.connection_manager.set_heartbeat_cb(
+            lambda: self.health_monitor.heartbeat("ws")
+        )
 
         self.tracer = TracerWrapper(
             service_name="enhanced_market_bot",

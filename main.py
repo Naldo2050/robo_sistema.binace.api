@@ -275,18 +275,18 @@ async def main() -> int:
 
         logger.info(f"🚀 Iniciando bot para {config.SYMBOL}...")
 
-        # ✅ PATCH 2.6: Iniciar servidor Prometheus para métricas
+        # ✅ PATCH 2.6: Iniciar servidor HTTP (métricas Prometheus + /health)
         try:
-            from prometheus_client import start_http_server
+            from monitoring.pipeline_health import serve_metrics_and_health
 
             # Porta configurável via env var (default 8000)
             prometheus_port = int(os.getenv("PROMETHEUS_PORT", "8000"))
-            start_http_server(prometheus_port)
-            logging.info(f"📊 Servidor Prometheus iniciado na porta {prometheus_port} (/metrics)")
+            serve_metrics_and_health(prometheus_port)
+            logging.info(f"📊 Servidor HTTP iniciado na porta {prometheus_port} (/metrics e /health)")
         except ImportError:
             logging.warning("⚠️ prometheus_client não disponível - métricas não serão exportadas")
         except Exception as e:
-            logging.warning(f"⚠️ Erro ao iniciar servidor Prometheus: {e}")
+            logging.warning(f"⚠️ Erro ao iniciar servidor HTTP: {e}")
 
         # ✅ PATCH 2.7: Iniciar serviço de atualização de macro data
         try:
@@ -315,6 +315,14 @@ async def main() -> int:
         if hasattr(bot, 'health_monitor'):
             heartbeat.health_monitor = bot.health_monitor
             logging.info("✅ HeartbeatManager integrado com HealthMonitor do bot")
+
+        # ✅ Health check do container: expor o HealthMonitor via /health e /metrics
+        try:
+            from monitoring.pipeline_health import start_pipeline_health
+            start_pipeline_health(bot.health_monitor)
+            logging.info("✅ Pipeline health exporter iniciado (gauges + /health)")
+        except Exception as e:
+            logging.warning(f"⚠️ Erro ao iniciar pipeline health exporter: {e}")
 
         # NOTA: bot.run() já chama self.initialize() internamente.
         # Não chamar bot.initialize() aqui para evitar inicialização dupla.
