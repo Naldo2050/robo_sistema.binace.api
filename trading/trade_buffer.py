@@ -405,13 +405,6 @@ class AsyncTradeBuffer:
         """Loop de processamento background."""
         while not self._should_stop.is_set():
             try:
-                # Enviar heartbeat para o módulo buffer_critical
-                if self.heartbeat_callback:
-                    try:
-                        self.heartbeat_callback('buffer_critical')
-                    except Exception as e:
-                        logging.debug(f"Erro ao enviar heartbeat: {e}")
-                
                 # Processa batch de trades
                 batch = self._get_batch()
                 if batch:
@@ -440,6 +433,14 @@ class AsyncTradeBuffer:
                             f"for {len(batch)} trades "
                             f"(avg: {avg_time:.2f}ms/trade)"
                         )
+
+                    # Heartbeat de progresso: SÓ após processar um batch com
+                    # sucesso (loop vivo sozinho não é evidência de progresso)
+                    if self.heartbeat_callback:
+                        try:
+                            self.heartbeat_callback('trade_buffer')
+                        except Exception as e:
+                            logging.debug(f"Erro ao enviar heartbeat: {e}")
 
                     # Se ainda houver backlog, drena sem dormir
                     if len(self._buffer) > 0:

@@ -54,6 +54,11 @@ from orderbook_core.tracing_utils import TracerWrapper
 from core.state_manager import StateManager
 
 
+# Última janela processada com sucesso (epoch seconds) — usada pelo
+# health check do container via gauge trading_last_window_processed_age_seconds.
+last_window_processed_ts: float = 0.0
+
+
 class WindowProcessor:
     """
     Processador de janelas para o EnhancedMarketBot.
@@ -387,6 +392,8 @@ def process_window_snapshot(
     Processa uma janela a partir de um snapshot imutável.
     Usado pelo worker em background e pelo caminho síncrono de fallback.
     """
+    global last_window_processed_ts
+
     if not window_data or bot.should_stop or close_ms is None:
         return
 
@@ -493,11 +500,13 @@ def process_window_snapshot(
         },
     ):
         try:
-            # Heartbeat principal
+            # Heartbeat de progresso: janela processada (estágio dedicado,
+            # independente do auto-beat de "main" que só indica processo vivo)
             try:
-                bot.health_monitor.heartbeat("main")
+                bot.health_monitor.heartbeat("window_processor")
             except Exception:
                 pass
+            last_window_processed_ts = time.time()
 
             # PATCH 3: cálculo robusto de dynamic_delta_threshold (NaN/Inf-safe)
             dynamic_delta_threshold = 2.0 # Default warmup (BTC)

@@ -169,6 +169,11 @@ def fetch_orderbook_with_retry(bot: BotProtocol, close_ms: int) -> Dict[str, Any
                     bot.last_valid_orderbook = copy.deepcopy(ob_event)
                     bot.last_valid_orderbook_time = time.time()
                     bot.orderbook_fetch_failures = 0
+                    # Heartbeat de progresso do estágio orderbook
+                    try:
+                        getattr(bot, "health_monitor", None).heartbeat("orderbook")
+                    except Exception:
+                        pass
                 logging.debug(f"✅ Orderbook OK - Janela #{bot.window_count}")
 
                 # Logger estruturado
@@ -231,6 +236,11 @@ def refresh_orderbook_async(bot: BotProtocol, close_ms: int) -> None:
                         bot.last_valid_orderbook = copy.deepcopy(evt)
                         bot.last_valid_orderbook_time = time.time()
                         bot.orderbook_fetch_failures = 0
+                        # Heartbeat de progresso do estágio orderbook
+                        try:
+                            getattr(bot, "health_monitor", None).heartbeat("orderbook")
+                        except Exception:
+                            pass
                     logging.info("♻️ Orderbook cache atualizado em background")
             except Exception as e:
                 logging.debug(f"Falha na atualização assíncrona do orderbook: {e}")

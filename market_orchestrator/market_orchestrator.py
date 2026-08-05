@@ -186,7 +186,12 @@ class EnhancedMarketBot:
             max_processing_time_ms=getattr(
                 config, "TRADES_BUFFER_MAX_PROCESSING_MS", 500.0
             ),
-            warning_callback=self._on_buffer_warning
+            warning_callback=self._on_buffer_warning,
+            heartbeat_callback=lambda module: (
+                self.health_monitor.heartbeat(module)
+                if getattr(self, "health_monitor", None) is not None
+                else None
+            )
         )
         self.min_trades_for_pipeline = getattr(
             config, "MIN_TRADES_FOR_PIPELINE", 10
@@ -271,7 +276,9 @@ class EnhancedMarketBot:
         self.last_valid_vp: Optional[Dict[str, Any]] = None
         self.last_valid_vp_time: float = 0.0
 
-        self.event_saver = EventSaver(sound_alert=True)
+        self.event_saver = EventSaver(
+            sound_alert=True, health_monitor=self.health_monitor
+        )
         self.pattern_ohlc_history = deque(maxlen=200)
         self.context_collector = ContextCollector(symbol=self.symbol)
         self.flow_analyzer = FlowAnalyzer(time_manager=self.time_manager)
@@ -756,10 +763,11 @@ class EnhancedMarketBot:
             if not success:
                 logging.warning(f"⚠️ Trade descartado por buffer overflow")
 
-            try:
-                self.health_monitor.heartbeat("main")
-            except Exception:
-                pass
+            if success:
+                try:
+                    self.health_monitor.heartbeat("trade_ingestion")
+                except Exception:
+                    pass
 
             # 8) Controle de janelas
             if self.window_end_ms is None:

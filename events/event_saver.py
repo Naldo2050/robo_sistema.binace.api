@@ -342,8 +342,11 @@ class EventSaver:
     ✅ v4.5.5: Lock em _janelas_processadas + timezone mais robusto
     """
 
-    def __init__(self, sound_alert: bool = True):
+    def __init__(self, sound_alert: bool = True, health_monitor=None):
         self.sound_alert = sound_alert
+        # HealthMonitor opcional: heartbeat de progresso "event_saver"
+        # (apenas se injetado; None em testes/uso isolado)
+        self.health_monitor = health_monitor
         self.visual_log_file = DATA_DIR / "eventos_visuais.log"
         json_file_name = "eventos-fluxo.json"
         jsonl_file_name = "eventos_fluxo.jsonl"
@@ -1253,6 +1256,13 @@ class EventSaver:
                     self._flush_buffer(buffer_copy)
                 
                 self._write_buffer.append(event)
+
+                # Heartbeat de progresso: evento enfileirado com sucesso
+                if self.health_monitor is not None:
+                    try:
+                        self.health_monitor.heartbeat("event_saver")
+                    except Exception:
+                        pass
 
             # Alerta sonoro
             if self.sound_alert and event.get("is_signal", False):
