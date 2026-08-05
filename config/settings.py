@@ -62,6 +62,13 @@ PIPELINE_HEALTH_THRESHOLD_MULTIPLIER = 2.0
 # Silêncio do WebSocket para estado "degraded" (conexão viva sem mensagens)
 PIPELINE_HEALTH_DEGRADED_WS_SILENCE_SECONDS = 90
 
+# ===== ALERTAS DE TRANSIÇÃO DE HEALTH (pipeline_health) =====
+# Máximo de 1 alerta por transição de estado a cada X segundos
+ALERT_STATE_COOLDOWN_SECONDS = 600
+# Canal opcional: webhook HTTP (formato Slack-compatível). Se vazio, o alerta
+# é apenas logado (structured log) e exposto via métrica.
+ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL")
+
 # ===== CONFIGURAÇÕES OCI (DESABILITADO) =====
 OCI_COMPARTMENT_ID = None      # None = OCI desabilitado
 

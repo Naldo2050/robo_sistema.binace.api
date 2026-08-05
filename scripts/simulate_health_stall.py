@@ -1,23 +1,33 @@
 """
-Simula travamentos de estagios para validar o /health manualmente.
+Simula travamentos de estagios para validar o /health e os alertas de
+transicao (TICKET A) manualmente.
 
 Usa a MESMA logica de producao (monitoring.pipeline_health) com um
 HealthMonitor fake. O endpoint /health sobe na porta 8999.
 
+Sequencia (15s por cenario, ajustavel via SIM_STEP_SECONDS):
+   1. TUDO SAUDAVEL                     -> 200 healthy
+   2. WS SILENTE 120s + CONECTADO       -> 200 degraded   (alerta healthy->degraded)
+   3. WS SILENTE 300s                   -> 503 unhealthy  (alerta degraded->unhealthy)
+   4. WINDOW_PROCESSOR TRAVADO (700s)   -> 503 unhealthy  (sem alerta: mesmo estado)
+   5. ORDERBOOK TRAVADO (200s)          -> 503 unhealthy  (sem alerta: mesmo estado)
+   6. VOLTA AO NORMAL                   -> 200 healthy    (alerta unhealthy->healthy)
+
 Uso:
     python scripts/simulate_health_stall.py
-    # em outro terminal:
-    curl -s http://localhost:8999/health      # healthy (200)
-    # o script muda os cenario a cada 15s:
-    #   1. tudo saudavel                    -> 200 healthy
-    #   2. window_processor travado 700s    -> 503 unhealthy
-    #   3. orderbook travado 200s           -> 503 unhealthy
-    #   4. ws silente 120s + conectado      -> 200 degraded
-    #   5. ws silente 300s                  -> 503 unhealthy
-    #   6. volta ao normal                  -> 200 healthy
+    SIM_STEP_SECONDS=2 python scripts/simulate_health_stall.py  # demo rapida
+
+Sem ALERT_WEBHOOK_URL o alerta aparece como log estruturado
+("ALERTA HEALTH: ...") - e o comportamento de producao sem webhook.
 """
 import json
+import logging
+import os
+import sys
 import time
+import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from monitoring.pipeline_health import (
     attach_health_monitor,
@@ -37,6 +47,8 @@ STAGES = [
     "orderbook",
     "event_saver",
 ]
+
+SIM_STEP_SECONDS = float(os.getenv("SIM_STEP_SECONDS", "15"))
 
 
 class FakeHealthMonitor:
@@ -69,17 +81,32 @@ class FakeHealthMonitor:
         }
 
 
-def _scenario(monitor, name, changes=None, connected=True):
+def _health_via_http(port):
+    try:
+        with urllib.request.urlopen(
+            f"http://localhost:{port}/health", timeout=5
+        ) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def _scenario(monitor, port, name, changes=None, connected=True):
     monitor._heartbeats = {m: 5 for m in STAGES}
     for module, silence in (changes or {}).items():
         monitor.set_silence(module, silence)
     attach_ws_connected_provider(lambda: connected)
     refresh(monitor)
-    print(f"\n=== CENARIO: {name} ===")
-    print(f"  curl -s http://localhost:8999/health ->")
+    code, body = _health_via_http(port)
+    print(f"\n=== CENARIO {name} ===")
+    print(f"  /health -> HTTP {code} {json.dumps(body, ensure_ascii=False)}")
 
 
 def main():
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
     monitor = FakeHealthMonitor()
     attach_health_monitor(monitor)
     attach_message_age_provider(lambda: 5.0)
@@ -87,20 +114,20 @@ def main():
     server = serve_metrics_and_health(port=8999)
     port = server.server_address[1]
     print(f"Servidor /health em http://localhost:{port}/health")
-    print("Cenarios (15s cada, observe com curl):")
+    print(f"Cenarios ({SIM_STEP_SECONDS:g}s cada):")
 
     scenarios = [
         ("1. TUDO SAUDAVEL", {}, True),
-        ("2. WINDOW_PROCESSOR TRAVADO (700s)", {"window_processor": 700}, True),
-        ("3. ORDERBOOK TRAVADO (200s)", {"orderbook": 200}, True),
-        ("4. WS SILENTE 120s + CONECTADO (degraded)", {"ws": 120}, True),
-        ("5. WS SILENTE 300s (unhealthy)", {"ws": 300}, True),
+        ("2. WS SILENTE 120s + CONECTADO (degraded)", {"ws": 120}, True),
+        ("3. WS SILENTE 300s (unhealthy)", {"ws": 300}, True),
+        ("4. WINDOW_PROCESSOR TRAVADO 700s (unhealthy)", {"window_processor": 700}, True),
+        ("5. ORDERBOOK TRAVADO 200s (unhealthy)", {"orderbook": 200}, True),
         ("6. VOLTA AO NORMAL", {}, True),
     ]
     try:
         for name, changes, connected in scenarios:
-            _scenario(monitor, name, changes, connected)
-            time.sleep(15)
+            _scenario(monitor, port, name, changes, connected)
+            time.sleep(SIM_STEP_SECONDS)
     except KeyboardInterrupt:
         print("\nEncerrando...")
     finally:

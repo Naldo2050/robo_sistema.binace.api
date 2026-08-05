@@ -21,6 +21,12 @@ Decisoes de arquitetura registradas:
   - zumbi: nenhum estagio registrado -> unhealthy (evita falso "saudavel").
   - thresholds por estagio herdados do config
     (PIPELINE_HEALTH_STAGE_INTERVALS * PIPELINE_HEALTH_THRESHOLD_MULTIPLIER).
+  - ALERTAS DE TRANSIÇÃO: disparo ativo nas mudancas de estado
+    (healthy<->degraded<->unhealthy), com cooldown por transicao e canal
+    webhook opcional (ALERT_WEBHOOK_URL, formato Slack-compativel) + log
+    estruturado sempre. O AlertManager (trading/alert_manager.py) NAO foi
+    usado: e um framework de agregacao de metricas via record_metric/check_metrics,
+    sem canal de notificacao embutido; wire-lo adicionaria indirecao sem canal.
 """
 import json
 import logging
@@ -31,6 +37,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Optional
 
 from config import (
+    ALERT_STATE_COOLDOWN_SECONDS,
+    ALERT_WEBHOOK_URL,
     HEALTH_CHECK_INTERVAL,
     PIPELINE_HEALTH_DEGRADED_WS_SILENCE_SECONDS,
     PIPELINE_HEALTH_STAGE_INTERVALS,
@@ -102,6 +110,19 @@ _stop_event = threading.Event()
 _ws_connected_provider: Callable[[], bool] = lambda: False
 _message_age_provider: Optional[Callable[[], Optional[float]]] = None
 _window_age_provider: Optional[Callable[[], Optional[float]]] = None
+
+# ---- Estado de transicoes de health (alerta ativo) ----
+_last_status: Optional[str] = None  # ultimo status observado no loop de refresh
+_last_alert_ts: dict = {}           # chave "from->to" -> timestamp do ultimo alerta
+_last_unhealthy_components: list = []  # estagios criticos no ultimo unhealthy
+
+
+def reset_health_state():
+    """Zera o estado de transicoes (usado em testes)."""
+    global _last_status
+    _last_status = None
+    _last_alert_ts.clear()
+    _last_unhealthy_components.clear()
 
 
 def attach_health_monitor(monitor):
@@ -211,10 +232,115 @@ def compute_status(health_monitor) -> dict:
     )
 
 
+def _stage_detail(stage: str, heartbeats: dict) -> dict:
+    heartbeat = heartbeats.get(stage) or {}
+    return {
+        "stage": stage,
+        "silence_seconds": round(float(heartbeat.get("silence_seconds", 0.0)), 1),
+        "threshold_seconds": round(
+            STAGE_CRITICAL_THRESHOLDS.get(stage, 600.0), 1
+        ),
+    }
+
+
+def _build_alert_payload(previous: str, current: str, status: dict,
+                         heartbeats: dict) -> dict:
+    payload = {
+        "event": "health_state_transition",
+        "from": previous,
+        "to": current,
+        "reason": status.get("reason"),
+        "monitored_components": status.get("monitored_components", []),
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    if current == "unhealthy":
+        components = status.get("unhealthy_components", [])
+        payload["unhealthy_components"] = [
+            _stage_detail(stage, heartbeats) for stage in components
+        ]
+        if components:
+            detail = _stage_detail(components[0], heartbeats)
+            payload["stage"] = detail["stage"]
+            payload["silence_seconds"] = detail["silence_seconds"]
+            payload["threshold_seconds"] = detail["threshold_seconds"]
+    elif current == "degraded":
+        payload["stage"] = "ws"
+        silence = float(
+            (heartbeats.get("ws") or {}).get("silence_seconds", 0.0)
+        )
+        payload["silence_seconds"] = round(silence, 1)
+        payload["threshold_seconds"] = round(DEGRADED_WS_SILENCE, 1)
+    elif current == "healthy" and _last_unhealthy_components:
+        payload["recovered_components"] = [
+            {"stage": item["stage"],
+             "last_silence_seconds": item["silence_seconds"]}
+            for item in _last_unhealthy_components
+        ]
+    return payload
+
+
+def evaluate_transition(status: dict, heartbeats: dict) -> Optional[dict]:
+    """Detecta mudanca de estado com cooldown por transicao.
+
+    Retorna o payload do alerta se a transicao deve disparar, None caso
+    contrario (estado inalterado, primeira avaliacao ou cooldown ativo).
+    """
+    global _last_status
+    current = status["status"]
+    previous = _last_status
+    _last_status = current
+
+    if current == "unhealthy":
+        _last_unhealthy_components[:] = [
+            _stage_detail(stage, heartbeats)
+            for stage in status.get("unhealthy_components", [])
+        ]
+
+    if previous is None or previous == current:
+        return None
+
+    key = f"{previous}->{current}"
+    now = time.time()
+    if now - _last_alert_ts.get(key, 0.0) < ALERT_STATE_COOLDOWN_SECONDS:
+        return None
+
+    _last_alert_ts[key] = now
+    return _build_alert_payload(previous, current, status, heartbeats)
+
+
+def _post_webhook(url: str, payload: dict) -> None:
+    """POST do alerta para o webhook (formato Slack-compativel)."""
+    import requests
+
+    body = {"text": payload["event"], "attachments": [{"fields": [
+        {"title": "de", "value": payload["from"], "short": True},
+        {"title": "para", "value": payload["to"], "short": True},
+        {"title": "estagio", "value": payload.get("stage", "-"), "short": True},
+        {"title": "silence (s)", "value": str(payload.get("silence_seconds", "-")), "short": True},
+        {"title": "threshold (s)", "value": str(payload.get("threshold_seconds", "-")), "short": True},
+        {"title": "reason", "value": payload.get("reason", "-"), "short": False},
+    ]}]}
+    resp = requests.post(url, json=body, timeout=10.0)
+    resp.raise_for_status()
+
+
+def _dispatch_alert(payload: dict) -> None:
+    """Canal do alerta: log estruturado sempre + webhook se configurado."""
+    logging.warning("ALERTA HEALTH: %s", json.dumps(payload, ensure_ascii=False))
+    if ALERT_WEBHOOK_URL:
+        try:
+            _post_webhook(ALERT_WEBHOOK_URL, payload)
+        except Exception as exc:
+            logging.warning(f"Falha ao enviar webhook de health: {exc!r}")
+
+
 def refresh(health_monitor) -> dict:
     """Atualiza as gauges no /metrics a partir do HealthMonitor e providers."""
     stats = health_monitor.get_stats()
     status = _status_from_stats(stats, _ws_connected_provider())
+    payload = evaluate_transition(status, stats.get("heartbeats") or {})
+    if payload is not None:
+        _dispatch_alert(payload)
     if _PROMETHEUS_AVAILABLE:
         _healthy_gauge.set(1.0 if status["status"] == "healthy" else 0.0)
         for module, heartbeat in (stats.get("heartbeats") or {}).items():
