@@ -243,7 +243,11 @@ async def main() -> int:
 
     logger = logging.getLogger(__name__)
 
-    # Inicializar heartbeat manager
+    # HeartbeatManager "main": o auto-beat representa APENAS "processo vivo".
+    # NAO e usado nas decisoes de health/degraded do container
+    # (monitoring/pipeline_health ignora "main"); o progresso real e medido
+    # pelos heartbeats de estagio (ws, ai, trade_ingestion, trade_buffer,
+    # window_processor, orderbook, event_saver).
     heartbeat = HeartbeatManager(
         "main",
         warning_threshold=60,
@@ -318,8 +322,25 @@ async def main() -> int:
 
         # ✅ Health check do container: expor o HealthMonitor via /health e /metrics
         try:
-            from monitoring.pipeline_health import start_pipeline_health
+            from monitoring.pipeline_health import (
+                age_seconds,
+                attach_message_age_provider,
+                attach_window_age_provider,
+                attach_ws_connected_provider,
+                start_pipeline_health,
+            )
+            from market_orchestrator.windows import window_processor as _window_processor
+
             start_pipeline_health(bot.health_monitor)
+            attach_ws_connected_provider(
+                lambda: bool(bot.connection_manager.is_connected)
+            )
+            attach_message_age_provider(
+                lambda: age_seconds(bot.connection_manager.last_message_time)
+            )
+            attach_window_age_provider(
+                lambda: age_seconds(_window_processor.last_window_processed_ts)
+            )
             logging.info("✅ Pipeline health exporter iniciado (gauges + /health)")
         except Exception as e:
             logging.warning(f"⚠️ Erro ao iniciar pipeline health exporter: {e}")

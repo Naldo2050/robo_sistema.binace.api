@@ -45,6 +45,23 @@ HEALTH_CHECK_TIMEOUT = 90      # Warning após 90s de silêncio
 HEALTH_CHECK_CRITICAL = 180    # Critical após 180s de silêncio  
 HEALTH_CHECK_INTERVAL = 30     # Verificação a cada 30s
 
+# ===== CONFIGURAÇÕES DO HEALTH CHECK DO CONTAINER (pipeline_health) =====
+# Intervalo esperado de cada estágio (segundos). O /health falha (503) quando
+# um estágio fica sem bater por > intervalo * PIPELINE_HEALTH_THRESHOLD_MULTIPLIER.
+PIPELINE_HEALTH_STAGE_INTERVALS = {
+    "ws": 120,                    # mensagens do WebSocket (critical 240s)
+    "trade_ingestion": 30,        # trades aceitos no buffer
+    "trade_buffer": 30,           # batches processados
+    "orderbook": 60,              # snapshots analisados
+    "window_processor": 300,      # janelas (WINDOW_SIZE_MINUTES)
+    "ai": 600,                    # análises de IA
+    "event_saver": 600,           # eventos salvos
+}
+# Multiplicador: threshold crítico = intervalo esperado * multiplicador
+PIPELINE_HEALTH_THRESHOLD_MULTIPLIER = 2.0
+# Silêncio do WebSocket para estado "degraded" (conexão viva sem mensagens)
+PIPELINE_HEALTH_DEGRADED_WS_SILENCE_SECONDS = 90
+
 # ===== CONFIGURAÇÕES OCI (DESABILITADO) =====
 OCI_COMPARTMENT_ID = None      # None = OCI desabilitado
 
