@@ -15,7 +15,10 @@ xgboost>=2.0.0
 joblib>=1.3.0
 
 # AI & LLM
-openai>=1.0.0
+# openai/httpx pinados em 2026-08-05 para evitar quebra por
+# incompatibilidade (openai <2.x usa kwarg 'proxies' removido em httpx 0.28)
+openai==2.26.0
+httpx==0.28.1
 dashscope>=1.17.0
 jinja2>=3.1.0
 pydantic>=2.0.0
