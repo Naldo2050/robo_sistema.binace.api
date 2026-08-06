@@ -64,6 +64,20 @@ sudo ./scripts/disaster_recovery.sh
 
 ---
 
-## 📞 4. Contatos
+## 🔍 5. Troubleshooting / Inspeção de Arquivos
+
+### ⚠️ ENCODING NO WINDOWS TERMINAL
+
+Ao inspecionar arquivos .json em fallback_events/ via terminal Windows,
+rode `chcp 65001` antes (ou configure $OutputEncoding no PowerShell).
+
+Os arquivos são UTF-8 válido (confirmado via hexdump). O console
+padrão pt-BR (CP850) exibe caracteres acentuados corrompidos
+(ex: "Exaustǜo" em vez de "Exaustão"), mas isso é cosmético —
+não indica corrupção real do dado.
+
+---
+
+## 📞 6. Contatos
 *   **Dev Lead:** (Seu Nome/Email)
 *   **Cloud Admin:** (Painel OCI Tenancy)
