@@ -1,7 +1,7 @@
 # tests/test_ai_analyzer_mock.py
 from __future__ import annotations
 
-import ai_analyzer_qwen as mod
+from market_orchestrator.ai import analyzer_qwen as mod
 
 
 def test_ai_analyzer_mock_mode(monkeypatch):

@@ -694,7 +694,7 @@ class TestAIRunner:
     def test_ai_analyzer_system_prompt_quality(self):
         """Testa que o SYSTEM_PROMPT tem conteúdo profissional."""
         try:
-            from ai_analyzer_qwen import SYSTEM_PROMPT
+            from market_orchestrator.ai.analyzer_qwen import SYSTEM_PROMPT
 
             # Verificar que tem conteúdo mínimo
             assert len(SYSTEM_PROMPT) > 500, (
@@ -720,7 +720,7 @@ class TestAIRunner:
             )
 
         except ImportError:
-            pytest.skip("ai_analyzer_qwen não disponível")
+            pytest.skip("market_orchestrator.ai.analyzer_qwen não disponível")
 
     def test_payload_compressor_preserves_critical_data(
         self,

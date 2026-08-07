@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import ai_analyzer_qwen as mod
+from market_orchestrator.ai import analyzer_qwen as mod
 from src.utils.ai_payload_optimizer import AIPayloadOptimizer
 
 

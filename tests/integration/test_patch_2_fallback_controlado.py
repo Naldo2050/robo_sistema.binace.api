@@ -19,7 +19,7 @@ import logging
 # Adiciona o diretório raiz ao path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ai_analyzer_qwen import AIAnalyzer
+from market_orchestrator.ai.analyzer_qwen import AIAnalyzer
 
 
 def _make_failing_client():
@@ -84,7 +84,7 @@ class TestPatch2FallbackControlado(unittest.TestCase):
         print("\nTestando: Groq falha sem fallback configurado")
 
         with self._patch_config(provider="groq", provider_fallbacks=[]):
-            with patch('ai_analyzer_qwen._OpenAI', side_effect=_openai_factory_all_fail):
+            with patch('market_orchestrator.ai.analyzer_qwen._OpenAI', side_effect=_openai_factory_all_fail):
                 analyzer = AIAnalyzer()
 
         self.assertIsNone(analyzer.mode, "Modo deve ser None (mock)")
@@ -96,7 +96,7 @@ class TestPatch2FallbackControlado(unittest.TestCase):
         print("\nTestando: Groq falha com fallback configurado para OpenAI")
 
         with self._patch_config(provider="groq", provider_fallbacks=["openai"]):
-            with patch('ai_analyzer_qwen._OpenAI', side_effect=_openai_factory_fail_groq_succeed_openai):
+            with patch('market_orchestrator.ai.analyzer_qwen._OpenAI', side_effect=_openai_factory_fail_groq_succeed_openai):
                 analyzer = AIAnalyzer()
 
         # OpenAI path não faz ping — apenas cria cliente → mode = "openai"
@@ -109,7 +109,7 @@ class TestPatch2FallbackControlado(unittest.TestCase):
         print("\nTestando: Groq funciona normalmente")
 
         with self._patch_config(provider="groq", provider_fallbacks=[]):
-            with patch('ai_analyzer_qwen._OpenAI', side_effect=_openai_factory_all_succeed):
+            with patch('market_orchestrator.ai.analyzer_qwen._OpenAI', side_effect=_openai_factory_all_succeed):
                 analyzer = AIAnalyzer()
 
         self.assertEqual(analyzer.mode, "groq", "Modo deve ser 'groq'")
@@ -121,7 +121,7 @@ class TestPatch2FallbackControlado(unittest.TestCase):
         print("\nTestando: Provider não é Groq")
 
         with self._patch_config(provider="openai", provider_fallbacks=[]):
-            with patch('ai_analyzer_qwen._OpenAI', side_effect=_openai_factory_all_succeed):
+            with patch('market_orchestrator.ai.analyzer_qwen._OpenAI', side_effect=_openai_factory_all_succeed):
                 analyzer = AIAnalyzer()
 
         # Com provider="openai", vai direto para _try_initialize_openai → mode = "openai"
@@ -134,7 +134,7 @@ class TestPatch2FallbackControlado(unittest.TestCase):
         print("\nTestando: Múltiplos fallbacks configurados")
 
         with self._patch_config(provider="groq", provider_fallbacks=["openai", "dashscope"]):
-            with patch('ai_analyzer_qwen._OpenAI', side_effect=_openai_factory_fail_groq_succeed_openai):
+            with patch('market_orchestrator.ai.analyzer_qwen._OpenAI', side_effect=_openai_factory_fail_groq_succeed_openai):
                 analyzer = AIAnalyzer()
 
         # Groq falha → tenta OpenAI (primeiro fallback) → OpenAI succeeds → mode = "openai"

@@ -327,43 +327,19 @@ def _create_structured_logger(name: str, prefix: str) -> Any:
 
 
 # LLM Payload Guardrail
-_ensure_safe_llm_payload: Callable[[Any], Any]
-try:
-    from market_orchestrator.ai.llm_payload_guardrail import ensure_safe_llm_payload as _ensure_safe
-    from market_orchestrator.ai.llm_payload_guardrail import guardrail_rewrap as _guardrail_rewrap
-    _ensure_safe_llm_payload = _ensure_safe
-except ImportError:
-    def _fallback_ensure_safe(payload: Any) -> Any:
-        return payload
-    _ensure_safe_llm_payload = _fallback_ensure_safe
-    _guardrail_rewrap = None  # type: ignore[assignment]
+from .llm_payload_guardrail import (
+    ensure_safe_llm_payload as _ensure_safe_llm_payload,
+    guardrail_rewrap as _guardrail_rewrap,
+)
 
 # AI Payload Builder
-_get_llm_payload_config: Callable[[], Dict[str, Any]]
-try:
-    from market_orchestrator.ai.ai_payload_builder import get_llm_payload_config as _get_config
-    _get_llm_payload_config = _get_config
-except ImportError:
-    def _get_llm_payload_config() -> Dict[str, Any]:
-        return {}
+from .ai_payload_builder import get_llm_payload_config as _get_llm_payload_config
 
 # Payload Metrics Aggregator
-_append_metric_line: Callable[..., None]
-_summarize_metrics: Callable[..., Dict[str, Any]]
-
-try:
-    from market_orchestrator.ai.payload_metrics_aggregator import (
-        append_metric_line as _append_line,
-        summarize_metrics as _summarize,
-    )
-    _append_metric_line = _append_line
-    _summarize_metrics = _summarize
-except ImportError:
-    def _append_metric_line(*args: Any, **kwargs: Any) -> None:
-        pass
-
-    def _summarize_metrics(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-        return {}
+from .payload_metrics_aggregator import (
+    append_metric_line as _append_metric_line,
+    summarize_metrics as _summarize_metrics,
+)
 
 # ========================
 # VARIÁVEIS GLOBAIS

@@ -1,6 +1,6 @@
 import json
 
-from ai_analyzer_qwen import AIAnalyzer, SYSTEM_PROMPT
+from market_orchestrator.ai.analyzer_qwen import AIAnalyzer, SYSTEM_PROMPT
 
 
 def test_system_prompt_requires_ptbr_and_no_think():

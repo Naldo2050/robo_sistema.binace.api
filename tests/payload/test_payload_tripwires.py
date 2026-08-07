@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from ai_analyzer_qwen import _evaluate_payload_tripwires, _log_payload_tripwires
+from market_orchestrator.ai.analyzer_qwen import _evaluate_payload_tripwires, _log_payload_tripwires
 
 pytestmark = pytest.mark.payload
 
@@ -27,7 +27,7 @@ def test_tripwire_triggers_warning(caplog, monkeypatch):
     # Força thresholds customizados para este teste
     # função é _get_llm_payload_config (com underscore) em ai_analyzer_qwen
     monkeypatch.setattr(
-        "ai_analyzer_qwen._get_llm_payload_config",
+        "market_orchestrator.ai.analyzer_qwen._get_llm_payload_config",
         lambda: {"tripwires": tripwires},
     )
 
