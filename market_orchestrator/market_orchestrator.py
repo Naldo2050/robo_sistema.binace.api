@@ -952,7 +952,7 @@ class EnhancedMarketBot:
         regime_analysis = event_data.get("ai_payload", {}).get("regime_analysis", {})
         if regime_analysis:
             try:
-                from src.rules.regime_rules import RegimeBasedRules
+                from market_analysis.regime_rules import RegimeBasedRules
                 regime_rules = RegimeBasedRules()
                 
                 # Verificar se deve operar baseado no regime

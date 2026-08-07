@@ -8,10 +8,7 @@ import logging
 from unittest.mock import patch, MagicMock
 import pytest
 
-# Adicionar src ao path
-sys.path.insert(0, 'src')
-
-from data.macro_data_provider import MacroDataProvider
+from fetchers.macro_data_provider import MacroDataProvider
 
 logger = logging.getLogger(__name__)
 

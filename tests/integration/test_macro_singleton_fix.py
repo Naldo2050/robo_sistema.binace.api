@@ -23,7 +23,7 @@ async def test_singleton_behavior():
     
     # Importar o módulo
     try:
-        from src.data.macro_data_provider import MacroDataProvider, get_macro_provider
+        from fetchers.macro_data_provider import MacroDataProvider, get_macro_provider
         print("[OK] Import bem-sucedido")
     except Exception as e:
         print(f"[ERRO] Erro no import: {e}")
@@ -83,7 +83,7 @@ async def test_multiple_calls():
     print("\nTESTE: Múltiplas chamadas")
     print("=" * 60)
     
-    from src.data.macro_data_provider import MacroDataProvider
+    from fetchers.macro_data_provider import MacroDataProvider
     
     # Fazer 5 chamadas seguidas
     for i in range(5):

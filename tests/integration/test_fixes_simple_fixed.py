@@ -13,9 +13,9 @@ from pathlib import Path
 # ════════════════════════════════════════════════════════════════════════════════
 
 try:
-    from src.data.macro_data_provider import MacroDataProvider
-    from src.services.macro_service import MacroService
-    from src.bridges.async_bridge import AsyncBridge
+    from fetchers.macro_data_provider import MacroDataProvider
+    from fetchers.macro_service import MacroService
+    from common.async_bridge import AsyncBridge
 except ImportError as e:
     print(f"Erro ao importar módulos: {e}")
     sys.exit(1)

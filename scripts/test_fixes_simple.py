@@ -8,14 +8,13 @@ import os
 
 # Adicionar o diretório raiz ao path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src'))
 
 
 async def test_singleton():
     """Testa se MacroDataProvider é singleton"""
     try:
         # Testa import básico
-        from data.macro_data_provider import MacroDataProvider
+        from fetchers.macro_data_provider import MacroDataProvider
         
         print("\n[1/4] Testando Singleton...")
         
@@ -37,7 +36,7 @@ async def test_singleton():
 async def test_cache():
     """Testa se cache está funcionando"""
     try:
-        from data.macro_data_provider import get_macro_provider
+        from fetchers.macro_data_provider import get_macro_provider
         
         print("\n[2/4] Testando Cache...")
         
@@ -102,7 +101,7 @@ async def test_macro_in_thread():
     def thread_func():
         try:
             from common.async_helpers import run_async_in_thread
-            from data.macro_data_provider import get_macro_provider
+            from fetchers.macro_data_provider import get_macro_provider
             
             async def fetch_macro():
                 provider = get_macro_provider()

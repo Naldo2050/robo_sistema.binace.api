@@ -1,5 +1,5 @@
 # teste_rapido_corrigido.py
-from src.utils.ai_payload_optimizer import AIPayloadOptimizer
+from common.ai_payload_optimizer import AIPayloadOptimizer
 import json
 
 # Simular evento típico

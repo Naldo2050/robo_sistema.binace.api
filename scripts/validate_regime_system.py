@@ -4,11 +4,9 @@ Executa todos os componentes e verifica se estão funcionando.
 """
 import asyncio
 import sys
-sys.path.insert(0, 'src')
-
-from data.macro_data_provider import MacroDataProvider
-from analysis.regime_detector import EnhancedRegimeDetector
-from rules.regime_rules import RegimeBasedRules
+from fetchers.macro_data_provider import MacroDataProvider
+from market_analysis.regime_detector import EnhancedRegimeDetector
+from market_analysis.regime_rules import RegimeBasedRules
 
 # Configurar codificação para UTF-8 para evitar problemas com caracteres especiais
 import io

@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional, List, Union
 from datetime import datetime
 
 from .exceptions import AIAnalysisError, RateLimitError, ModelTimeoutError
-from src.utils.ai_payload_optimizer import AIPayloadOptimizer
+from common.ai_payload_optimizer import AIPayloadOptimizer
 
 
 @dataclass

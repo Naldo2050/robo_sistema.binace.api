@@ -55,7 +55,7 @@ _optimize_deep_for_ai: Optional[Callable[..., Dict[str, Any]]] = None
 _SectionCache: Optional[type] = None
 _COMPRESSED_SYSTEM_PROMPT: Optional[str] = None
 try:
-    from src.utils.ai_payload_optimizer import (
+    from common.ai_payload_optimizer import (
         optimize_deep_for_ai as _optimize_deep,
         SectionCache as _SectionCacheClass,
         SYSTEM_PROMPT_COMPRESSED as _COMPRESSED_PROMPT,
@@ -2065,7 +2065,7 @@ class AIAnalyzer:
                         quant = ai_p.get("quant_model")
                         if isinstance(quant, dict) and quant:
                             try:
-                                from src.utils.ai_payload_optimizer import PrecisionRounder
+                                from common.ai_payload_optimizer import PrecisionRounder
                                 _rr = PrecisionRounder.r
                                 quant_compressed = {
                                     k: v for k, v in {

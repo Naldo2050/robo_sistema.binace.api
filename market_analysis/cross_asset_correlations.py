@@ -23,7 +23,7 @@ import pandas as pd
 
 # Import para novas fontes de dados macro
 try:
-    from src.data.macro_data_provider import MacroDataProvider
+    from fetchers.macro_data_provider import MacroDataProvider
     _MACRO_DATA_OK = True
 except ImportError as e:
     _MACRO_DATA_OK = False

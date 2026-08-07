@@ -22,7 +22,7 @@ async def test_macro_provider_integration():
         # 1. Teste do MacroDataProvider isolado
         print("1. Testando MacroDataProvider isolado...")
         
-        from src.data.macro_data_provider import MacroDataProvider
+        from fetchers.macro_data_provider import MacroDataProvider
         
         provider = MacroDataProvider()
         macro_data = await provider.get_all_macro_data()

@@ -294,7 +294,7 @@ async def main() -> int:
 
         # ✅ PATCH 2.7: Iniciar serviço de atualização de macro data
         try:
-            from src.services.macro_update_service import start_macro_service
+            from fetchers.macro_update_service import start_macro_service
             await start_macro_service()
             logging.info("📊 MacroUpdateService iniciado (atualização em background)")
         except ImportError:
@@ -368,7 +368,7 @@ async def main() -> int:
             await bot.shutdown()
         await heartbeat.stop()
         try:
-            from src.services.macro_update_service import stop_macro_service
+            from fetchers.macro_update_service import stop_macro_service
             await stop_macro_service()
             logging.info("🛑 MacroUpdateService parado")
         except Exception as e:

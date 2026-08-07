@@ -7,7 +7,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # Importa o otimizador existente em src/utils/
-from src.utils.ai_payload_optimizer import AIPayloadOptimizer
+from common.ai_payload_optimizer import AIPayloadOptimizer
 
 
 def test_payload_compression_ratio():

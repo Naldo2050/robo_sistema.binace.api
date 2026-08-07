@@ -22,7 +22,7 @@ from functools import lru_cache
 import yaml
 
 # Import do otimizador de payload (localizado em src/utils/)
-from src.utils.ai_payload_optimizer import AIPayloadOptimizer, compact_historical_vp
+from common.ai_payload_optimizer import AIPayloadOptimizer, compact_historical_vp
 
 from market_orchestrator.ai.ai_enrichment_context import build_enriched_ai_context
 from market_orchestrator.ai.payload_compressor import compress_payload
@@ -425,8 +425,8 @@ def _append_payload_metric(metric: Dict[str, Any]) -> None:
 
 # Import para análise de regime
 try:
-    from src.data.macro_data_provider import MacroDataProvider
-    from src.analysis.regime_detector import EnhancedRegimeDetector
+    from fetchers.macro_data_provider import MacroDataProvider
+    from market_analysis.regime_detector import EnhancedRegimeDetector
 except ImportError as e:
     MacroDataProvider = None
     EnhancedRegimeDetector = None

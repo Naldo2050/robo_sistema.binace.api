@@ -2,7 +2,7 @@
 Testes unitários para a integração das RegimeBasedRules.
 """
 import pytest
-from src.rules.regime_rules import RegimeBasedRules, TradeRecommendation
+from market_analysis.regime_rules import RegimeBasedRules, TradeRecommendation
 
 
 def test_regime_rules_initialization():

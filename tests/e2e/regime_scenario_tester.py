@@ -11,9 +11,8 @@ logger = logging.getLogger(__name__)
 
 # Importar as classes que criamos
 import sys
-sys.path.insert(0, 'src')
-from rules.regime_rules import RegimeBasedRules, TradeRecommendation
-from analysis.regime_detector import EnhancedRegimeDetector, MarketRegime
+from market_analysis.regime_rules import RegimeBasedRules, TradeRecommendation
+from market_analysis.regime_detector import EnhancedRegimeDetector, MarketRegime
 
 
 @dataclass
