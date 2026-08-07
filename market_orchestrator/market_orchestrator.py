@@ -107,7 +107,7 @@ recognize_patterns = None  # Removed empty try block
 
 # ====== Enriquecedor institucional (Onda 1 + 2) ======
 try:
-    from institutional_enricher import enrich_signal as _institutional_enrich
+    from institutional.enricher import enrich_signal as _institutional_enrich
     _INSTITUTIONAL_ENRICHER_OK = True
 except Exception as _ie_err:
     _institutional_enrich = None
