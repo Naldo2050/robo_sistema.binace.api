@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-import ai_analyzer_qwen as ai_mod
-from build_compact_payload import build_compact_payload
+from market_orchestrator.ai import analyzer_qwen as ai_mod
+from market_orchestrator.ai.payload_builder_compact import build_compact_payload
 from events.event_bus import EventBus
 from monitoring.health_monitor import HealthMonitor
 from market_orchestrator.connection.robust_connection import RobustConnectionManager

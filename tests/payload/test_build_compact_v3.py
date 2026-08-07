@@ -17,7 +17,7 @@ import time
 # Adicionar raiz do projeto ao path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from build_compact_payload import (
+from market_orchestrator.ai.payload_builder_compact import (
     build_compact_payload,
     compact_number,
     _safe_price,
@@ -35,7 +35,7 @@ from build_compact_payload import (
 )
 
 # Reset static cache between tests
-import build_compact_payload as bcp
+from market_orchestrator.ai import payload_builder_compact as bcp
 
 
 def _reset_static_cache():

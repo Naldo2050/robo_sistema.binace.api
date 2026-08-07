@@ -1,7 +1,7 @@
 import copy
 import pytest
 
-import build_compact_payload as bcp
+from market_orchestrator.ai import payload_builder_compact as bcp
 
 
 @pytest.fixture(autouse=True)

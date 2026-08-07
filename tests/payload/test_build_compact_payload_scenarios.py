@@ -1,7 +1,7 @@
 import json
 import copy
 import pytest
-import build_compact_payload as bcp
+from market_orchestrator.ai import payload_builder_compact as bcp
 
 HARD_LIMIT = 6144
 SOFT_LIMIT = 3500

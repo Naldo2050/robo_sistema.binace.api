@@ -78,8 +78,8 @@ class AIRunner:
 
     @classmethod
     def create(cls) -> "AIRunner":
-        from ai_analyzer_qwen import AIAnalyzer
-        from build_compact_payload import build_compact_payload
+        from .analyzer_qwen import AIAnalyzer
+        from .payload_builder_compact import build_compact_payload
 
         return cls(
             analyzer_factory=AIAnalyzer,

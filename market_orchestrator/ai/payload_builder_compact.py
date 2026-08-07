@@ -41,7 +41,7 @@ def _load_summary_builders() -> "SummaryBuilderMap":
     """
     Carrega os summary builders sob demanda para evitar import circular.
     """
-    from market_orchestrator.ai.payload_sections import (
+    from .payload_sections import (
         build_flow_summary,
         build_institutional_summary,
         build_quality_summary,

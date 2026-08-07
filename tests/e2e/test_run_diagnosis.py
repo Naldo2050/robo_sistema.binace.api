@@ -14,7 +14,7 @@ sys.path.insert(0, ROOT)
 from ml.feature_calculator import LiveFeatureCalculator as MLFeatureGenerator
 from ml.inference_engine import MLInferenceEngine as MLEngine
 from ml.hybrid_decision import HybridDecisionMaker
-from build_compact_payload import build_compact_payload as build_compact
+from market_orchestrator.ai.payload_builder_compact import build_compact_payload as build_compact
 
 # Cores para terminal
 GREEN = '\033[92m'

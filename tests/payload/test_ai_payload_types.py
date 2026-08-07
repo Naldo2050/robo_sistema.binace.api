@@ -1,6 +1,6 @@
 import pytest
 
-from build_compact_payload import build_compact_payload
+from market_orchestrator.ai.payload_builder_compact import build_compact_payload
 from common.ai_payload_types import (
     COMPACT_AI_ALLOWED_ROOT_KEYS,
     compact_primary_section_count,

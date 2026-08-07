@@ -13,7 +13,7 @@ from copy import deepcopy
 from ml.feature_calculator import LiveFeatureCalculator as MLFeatureGenerator
 from ml.inference_engine import MLInferenceEngine as MLEngine
 from ml.hybrid_decision import HybridDecisionMaker
-from build_compact_payload import build_compact_payload as build_compact
+from market_orchestrator.ai.payload_builder_compact import build_compact_payload as build_compact
 from data_processing.data_enricher import DataEnricher
 
 # Mock para DynamicDeltaThreshold já que é calculado inline no window_processor

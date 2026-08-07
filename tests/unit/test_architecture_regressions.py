@@ -25,11 +25,11 @@ def test_build_compact_payload_import_does_not_eager_load_payload_sections() -> 
         """
 import json
 import sys
-import build_compact_payload
+import market_orchestrator.ai.payload_builder_compact
 
 print(json.dumps({
     "payload_sections_loaded": "market_orchestrator.ai.payload_sections" in sys.modules,
-    "module_loaded": "build_compact_payload" in sys.modules,
+    "module_loaded": "market_orchestrator.ai.payload_builder_compact" in sys.modules,
 }))
 """
     )
@@ -47,8 +47,8 @@ import market_orchestrator.ai.ai_runner
 
 print(json.dumps({
     "ai_runner_loaded": "market_orchestrator.ai.ai_runner" in sys.modules,
-    "ai_analyzer_qwen_loaded": "ai_analyzer_qwen" in sys.modules,
-    "build_compact_payload_loaded": "build_compact_payload" in sys.modules,
+    "ai_analyzer_qwen_loaded": "market_orchestrator.ai.analyzer_qwen" in sys.modules,
+    "build_compact_payload_loaded": "market_orchestrator.ai.payload_builder_compact" in sys.modules,
 }))
 """
     )

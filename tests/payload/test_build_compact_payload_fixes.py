@@ -12,7 +12,7 @@ Cobre:
 """
 
 import pytest
-import build_compact_payload as bcp
+from market_orchestrator.ai import payload_builder_compact as bcp
 from market_orchestrator.ai.payload_sections.quality_summary import (
     build_quality_summary,
     _resolve_liquidity,

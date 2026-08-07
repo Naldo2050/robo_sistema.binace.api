@@ -15,7 +15,7 @@ import copy
 import pytest
 from unittest.mock import patch
 
-import build_compact_payload as bcp
+from market_orchestrator.ai import payload_builder_compact as bcp
 from market_orchestrator.ai.payload_sections import (
     build_flow_summary,
     build_sr_summary,
@@ -468,7 +468,7 @@ class TestE2EBudgetGuard:
                 "quality": {"reliable": True, "confidence_cap": 1.0, "issues": [], "note": "Quality nota."},
             }
 
-        with caplog.at_level(logging.WARNING, logger="build_compact_payload"):
+        with caplog.at_level(logging.WARNING, logger="market_orchestrator.ai.payload_builder_compact"):
             with patch.object(bcp, "_build_summary_section", side_effect=large_summary):
                 payload = bcp.build_compact_payload(make_full_event())
 
