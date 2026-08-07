@@ -107,7 +107,7 @@ if sys.platform == "win32":
 
 import config
 from market_orchestrator import EnhancedMarketBot
-from utils import HeartbeatManager
+from monitoring.heartbeat_manager import HeartbeatManager
 
 
 def _validate_required_config() -> None:

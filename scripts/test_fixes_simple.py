@@ -67,7 +67,7 @@ def test_async_bridge():
     
     def thread_func():
         try:
-            from utils.async_helpers import run_async_in_thread
+            from common.async_helpers import run_async_in_thread
             
             async def sample_async():
                 await asyncio.sleep(0.1)
@@ -101,7 +101,7 @@ async def test_macro_in_thread():
     
     def thread_func():
         try:
-            from utils.async_helpers import run_async_in_thread
+            from common.async_helpers import run_async_in_thread
             from data.macro_data_provider import get_macro_provider
             
             async def fetch_macro():
