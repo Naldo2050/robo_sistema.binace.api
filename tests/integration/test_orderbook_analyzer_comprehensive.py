@@ -63,7 +63,7 @@ except ImportError:
 
 # Agora importamos o analyzer real
 try:
-    from orderbook_analyzer.analyzer import OrderBookAnalyzer
+    from orderbook_analyzer.legacy_simplified import SimplifiedOrderBookAnalyzer as OrderBookAnalyzer
     from orderbook_analyzer.config.settings import OrderBookConfig
 except ImportError:
     # Fallback para desenvolvimento

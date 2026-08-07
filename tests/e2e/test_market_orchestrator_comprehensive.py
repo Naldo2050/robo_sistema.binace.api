@@ -16,7 +16,7 @@ try:
     from market_orchestrator.flow.trade_executor import TradeExecutor
     from market_orchestrator.flow.signal_processor import SignalProcessor
     from market_orchestrator.flow.risk_manager import RiskManager
-    from orderbook_analyzer.analyzer import OrderBookAnalyzer
+    from orderbook_analyzer.legacy_simplified import SimplifiedOrderBookAnalyzer as OrderBookAnalyzer
     from ai_runner import AIRunner
     ORCHESTRATOR_AVAILABLE = True
 except ImportError:
