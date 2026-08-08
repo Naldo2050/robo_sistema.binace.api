@@ -231,6 +231,16 @@ class MacroUpdateService:
                         logger.error(f"❌ Erro atualizando Cross-Asset: {e}")
                         self._performance_metrics['failed_updates'] += 1
 
+                    # Alimentar all_macro em background (TTL 900s alinhado a este
+                    # intervalo) para evitar cache miss no caminho crítico das janelas
+                    # force=True: sem isso o HIT do boot (válido por ~16s ainda)
+                    # não renovaria o timestamp e o cache expiraria no meio do bloco
+                    try:
+                        await provider.get_all_macro_data(force=True)
+                        logger.debug("MacroUpdateService: all_macro cache aquecido")
+                    except Exception as e:
+                        logger.warning(f"MacroUpdateService: falha ao aquecer all_macro: {e}")
+
                 # Check Economic (4 hours)
                 if current_time - last_economic_update >= ECONOMIC_DATA_INTERVAL:
                     logger.info("🔄 Atualizando dados Econômicos...")

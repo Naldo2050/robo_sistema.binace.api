@@ -163,6 +163,8 @@ def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
         short_term_reversal=short_term_reversal,
         sf_w=sf_w,
         sf_r=sf_r,
+        buy_pct=float(flow.get("buy_pct", 50) or 50),
+        bsr=float(flow.get("bsr", 1) or 1),
     )
 
     result: dict[str, Any] = {
@@ -192,6 +194,8 @@ def _build_note(
     short_term_reversal: bool,
     sf_w: float,
     sf_r: float,
+    buy_pct: float = 50.0,
+    bsr: float = 1.0,
 ) -> str:
 
     parts: list[str] = []
@@ -223,8 +227,9 @@ def _build_note(
         parts.append("Fluxo misto sem dominância clara")
 
     # Actor
+    # sf_w é acumulado de sessão — usar buy_pct da janela corrente para direção real
     if actor == "whale":
-        direction_w = "comprando" if sf_w > 0 else "vendendo"
+        direction_w = "comprando" if buy_pct > 50 else "vendendo"
         parts.append(f"(whales {direction_w})")
     elif actor == "retail":
         direction_r = "comprador" if sf_r > 0 else "vendedor"

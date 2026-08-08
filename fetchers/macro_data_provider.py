@@ -110,7 +110,7 @@ class MacroDataProvider:
             "usdt_dominance": 120,
             "sp500": 600,           # SP500 a cada 10 minutos (Twelve Data)
             "nasdaq": 60,
-            "all_macro": 60,        # Cache agregado
+            "all_macro": 900,        # Cache agregado (alinhado ao refresh do MacroUpdateService, 15 min)
         }
         
         # Controle de rate limiting
@@ -934,10 +934,10 @@ class MacroDataProvider:
     # MÉTODO AGREGADOR PRINCIPAL COM LOCKS
     # ══════════════════════════════════════════════════════════════════════════
     
-    async def _safe_fetch(self, name: str, coro) -> Any:
+    async def _safe_fetch(self, name: str, coro, timeout: float = 25.0) -> Any:
         """Wrapper para fetch com timeout individual"""
         try:
-            return await asyncio.wait_for(coro, timeout=25)
+            return await asyncio.wait_for(coro, timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning(f"⚠️ Timeout buscando {name}")
             return None
@@ -954,88 +954,50 @@ class MacroDataProvider:
                 partial[key] = cached
         return partial
     
-    async def get_all_macro_data(self) -> Dict[str, Any]:
+    async def get_all_macro_data(self, force: bool = False) -> Dict[str, Any]:
         """
         Retorna todos os dados macro agregados com cache.
+
+        Args:
+            force: Se True, ignora cache HIT e refaz o fetch (usado pelo
+                MacroUpdateService para renovar o timestamp no bloco de 900s).
         """
         key = "all_macro"
 
         # 1. Verificar cache primeiro
-        cached = self._get_cached_thread_safe(key)
-        if cached is not None:
-            logger.debug(f"📦 Cache HIT: {key}")
-            return cached
+        if not force:
+            cached = self._get_cached_thread_safe(key)
+            if cached is not None:
+                logger.debug(f"📦 Cache HIT: {key}")
+                return cached
 
         logger.info("📊 Coletando dados macro (cache miss)...")
 
         # 2. Buscar dados com timeout individual e tratamento robusto de erros
-        results = []
+        # FIX latência: 8 fetches em PARALELO (antes sequenciais — pior caso
+        # 8 × timeout). return_exceptions garante que 1 falha não derruba
+        # os outros 7 (redundante com _safe_fetch, mas inofensivo).
+        fetched = await asyncio.gather(
+            self._safe_fetch("vix", self.get_vix(), timeout=8.0),
+            self._safe_fetch("treasury_10y", self.get_treasury_10y(), timeout=8.0),
+            self._safe_fetch("dxy", self.get_dxy(), timeout=8.0),
+            self._safe_fetch("sp500", self.get_sp500(), timeout=8.0),
+            self._safe_fetch("gold", self.get_gold_price(), timeout=8.0),
+            self._safe_fetch("oil", self.get_oil_price(), timeout=8.0),
+            self._safe_fetch("btc_dominance", self.calculate_btc_dominance(), timeout=8.0),
+            self._safe_fetch("eth_dominance", self.calculate_eth_dominance(), timeout=8.0),
+            return_exceptions=True,
+        )
 
-        # VIX
-        try:
-            vix_result = await self._safe_fetch("vix", self.get_vix())
-            results.append(vix_result)
-        except Exception as e:
-            logger.error(f"Erro ao calcular VIX: {e}")
-            results.append(None)
+        # Normalizar: exceção inesperada → None (mesmo contrato do try/except antigo)
+        results: list = []
+        for item in fetched:
+            if isinstance(item, Exception):
+                logger.warning(f"⚠️ Erro inesperado em fetch macro: {item}")
+                results.append(None)
+            else:
+                results.append(item)
 
-        # Treasury 10Y
-        try:
-            treasury_result = await self._safe_fetch("treasury_10y", self.get_treasury_10y())
-            results.append(treasury_result)
-        except Exception as e:
-            logger.error(f"Erro ao calcular Treasury 10Y: {e}")
-            results.append(None)
-
-        # DXY
-        try:
-            dxy_result = await self._safe_fetch("dxy", self.get_dxy())
-            results.append(dxy_result)
-        except Exception as e:
-            logger.error(f"Erro ao calcular DXY: {e}")
-            results.append(None)
-
-        # SPX
-        try:
-            spx_result = await self._safe_fetch("sp500", self.get_sp500())
-            results.append(spx_result)
-        except Exception as e:
-            logger.error(f"Erro ao calcular SPX: {e}")
-            results.append(None)
-
-        # Gold
-        try:
-            gold_result = await self._safe_fetch("gold", self.get_gold_price())
-            results.append(gold_result)
-        except Exception as e:
-            logger.error(f"Erro ao calcular Gold: {e}")
-            results.append(None)
-
-        # Oil
-        try:
-            oil_result = await self._safe_fetch("oil", self.get_oil_price())
-            results.append(oil_result)
-        except Exception as e:
-            logger.error(f"Erro ao calcular Oil: {e}")
-            results.append(None)
-
-        # BTC Dominance
-        try:
-            btc_dom_result = await self._safe_fetch("btc_dominance", self.calculate_btc_dominance())
-            results.append(btc_dom_result)
-        except Exception as e:
-            logger.error(f"Erro ao calcular BTC Dominance: {e}")
-            results.append(None)
-
-        # ETH Dominance
-        try:
-            eth_dom_result = await self._safe_fetch("eth_dominance", self.calculate_eth_dominance())
-            results.append(eth_dom_result)
-        except Exception as e:
-            logger.error(f"Erro ao calcular ETH Dominance: {e}")
-            results.append(None)
-
-        # Processar resultados
         vix, treasury_10y, dxy, spx, gold, oil, btc_dom, eth_dom = results
 
         # Tratar exceções

@@ -359,14 +359,14 @@ class EventSaver:
             )
         self.snapshot_file = DATA_DIR / json_file_name
         self.history_file = DATA_DIR / jsonl_file_name
-        self.write_json = True
+        self.write_json = False  # default: JSON snapshot desativado (SQLite é a fonte de verdade)
         self.write_jsonl = True
         self.max_json_events = 1000
         self.max_json_file_size = MAX_JSON_FILE_SIZE
         self.max_jsonl_bytes = MAX_JSONL_BYTES
         if config is not None:
             self.write_json = bool(
-                getattr(config, "EVENT_SAVER_WRITE_JSON", True)
+                getattr(config, "EVENT_SAVER_WRITE_JSON", False)
             )
             self.write_jsonl = bool(
                 getattr(config, "EVENT_SAVER_WRITE_JSONL", True)

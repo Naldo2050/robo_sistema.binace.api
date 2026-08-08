@@ -63,12 +63,18 @@ def process_signals(
 
     if not signals or not has_real_signal:
         # Evento de análise automática
+        # FIX achado 3: incluir dados contextuais no raw_event (mesmas chaves
+        # do pipeline.py:553-557) — sem eles enrich_event_with_advanced_analysis
+        # cai no fallback current_volatility=0.03 (94% das janelas sem sinal real).
         raw_event_data = {
             "delta": enriched.get("delta_fechamento", 0.0),
             "volume_total": enriched.get("volume_total", 0.0),
             "volume_compra": enriched.get("volume_compra", 0.0) or total_buy_volume,
             "volume_venda": enriched.get("volume_venda", 0.0) or total_sell_volume,
             "preco_fechamento": enriched.get("ohlc", {}).get("close", 0.0),
+            "multi_tf": macro_context.get("mtf_trends", {}),
+            "historical_vp": historical_profile,
+            "orderbook_data": ob_event,
         }
         trigger_signal = build_analysis_trigger_event(bot.symbol, raw_event_data)
         
