@@ -28,7 +28,6 @@ Sistema de trading automatizado para Binance com analise de fluxo de ordens, sup
 | Arquivo | Descricao |
 |---------|-----------|
 | `main.py` | Ponto de entrada principal |
-| `config.py` | Configuracoes globais |
 | `config.json` | Arquivo de configuracao JSON |
 
 ### Modulos de Producao (Raiz)
@@ -38,8 +37,6 @@ Modulos que permanecem na raiz por terem muitos importadores, risco de import ci
 | Arquivo | Descricao | Razao |
 |---------|-----------|-------|
 | `ai_analyzer_qwen.py` | Analisador IA principal (150KB) | 8 importadores + circular com market_orchestrator/ai/ |
-| `orderbook_analyzer.py` | Analisador de orderbook (123KB) | Carregado via importlib por orderbook_analyzer/ |
-| `institutional_enricher.py` | Enriquecedor institucional (85KB) | Import dinamico em market_orchestrator |
 | `build_compact_payload.py` | Construtor de payload compactado | 4 importadores + circular com market_orchestrator/ai/ |
 
 ### Proxies de Compatibilidade (Raiz)
@@ -77,6 +74,15 @@ Arquivos pequenos (3-4 linhas) que redirecionam imports para os novos pacotes:
 | `fix_optimization.py` | `data_processing/fix_optimization.py` |
 | `diagnose_optimization.py` | `scripts/diagnostics/diagnose_optimization.py` |
 | `orderbook_fallback.py` | `orderbook_core/orderbook_fallback.py` |
+
+### Shims Deprecated (Raiz)
+
+Arquivos que agora são apenas proxies com `DeprecationWarning`, apontando para o conteúdo real nos pacotes:
+
+| Shim | Redireciona para | Observacao |
+|------|------------------|------------|
+| `orderbook_analyzer.py` | `orderbook_analyzer/core.py` | Conteudo integral movido (v2.2.0); shim emite DeprecationWarning |
+| `institutional_enricher.py` | `institutional/enricher.py` | Conteudo integral movido; shim emite DeprecationWarning |
 
 ---
 
@@ -201,6 +207,7 @@ institutional/
 ├── confluence_engine.py
 ├── crypto_cot.py
 ├── cvd.py
+├── enricher.py              # Conteudo de institutional_enricher.py (raiz, migrado)
 ├── entropy_analyzer.py
 ├── event_bridge.py
 ├── footprint.py
@@ -395,8 +402,10 @@ orderbook_core/
 ### `orderbook_analyzer/` - Analisador de Orderbook (pacote)
 ```
 orderbook_analyzer/
-├── __init__.py
-├── analyzer.py
+├── __init__.py            # Re-export direto (zero importlib); SimplifiedOrderBookAnalyzer via __getattr__ lazy
+├── core.py                # OrderBookAnalyzer v2.2.0 (conteudo de orderbook_analyzer.py raiz, migrado)
+├── legacy_simplified.py   # Implementacao simplificada legada (SimplifiedOrderBookAnalyzer, DEPRECATED)
+├── analyzer.py            # Shim de compatibilidade (DeprecationWarning) -> legacy_simplified
 ├── spread_tracker.py
 └── config/
     ├── __init__.py
@@ -488,7 +497,6 @@ src/
 └── utils/
     ├── __init__.py
     ├── ai_payload_optimizer.py
-    ├── async_helpers.py
     └── types_fredapi.pyi
 ```
 
@@ -784,7 +792,7 @@ docs/
 
 | Diretorio | Descricao |
 |-----------|-----------|
-| `utils/` | Proxy — modulos movidos para common/, monitoring/, trading/ |
+| `utils/` | Proxy apenas — so `__init__.py` (reexporta de common/, monitoring/, trading/); duplicatas removidas |
 | `database/` | Banco de dados (event_store.py) |
 | `infrastructure/` | Docker, Terraform, OCI |
 | `tools/` | Ferramentas (inspect_db, ws_test, groq tests) |
@@ -950,7 +958,7 @@ docs/
 |-----------|---------------------|
 | common/ | yfinance_cache.py |
 | dados/ | fred_cache.json |
-| institutional/ | __init__.py, absorption_detector.py, base.py, confluence_engine.py, crypto_cot.py, cvd.py, entropy_analyzer.py, event_bridge.py, footprint.py, fourier_cycles.py, garch_volatility.py, hurst_exponent.py, iceberg_detector.py, kalman_filter.py, market_regime_hmm.py, mean_reversion.py, monte_carlo.py, order_flow_imbalance.py, smart_money.py, vwap_twap.py, whale_detector.py |
+| institutional/ | __init__.py, absorption_detector.py, base.py, confluence_engine.py, crypto_cot.py, cvd.py, enricher.py, entropy_analyzer.py, event_bridge.py, footprint.py, fourier_cycles.py, garch_volatility.py, hurst_exponent.py, iceberg_detector.py, kalman_filter.py, market_regime_hmm.py, mean_reversion.py, monte_carlo.py, order_flow_imbalance.py, smart_money.py, vwap_twap.py, whale_detector.py |
 | ml/ | bias_monitor.py, dataset_collector.py |
 | tests/unit/ | test_ai_throttler_v3.py, test_data_invariants.py, test_institutional_absorption.py, test_institutional_base.py, test_institutional_confluence.py, test_institutional_cot.py, test_institutional_cvd.py, test_institutional_entropy.py, test_institutional_footprint.py, test_institutional_fourier.py, test_institutional_garch.py, test_institutional_hmm.py, test_institutional_hurst.py, test_institutional_iceberg.py, test_institutional_kalman.py, test_institutional_mean_reversion.py, test_institutional_monte_carlo.py, test_institutional_ofi.py, test_institutional_smart_money.py, test_institutional_vwap.py, test_institutional_whale.py, test_ml_bias_monitor.py, test_time_manager_async.py, test_yfinance_cache.py |
 
@@ -1007,7 +1015,7 @@ docs/
 
 | Categoria | Arquivos Adicionados |
 |-----------|---------------------|
-| **NOVO PACOTE INSTITUCIONAL** | 20 arquivos completos: `institutional/__init__.py`, absorption_detector.py, base.py, confluence_engine.py, crypto_cot.py, cvd.py, entropy_analyzer.py, event_bridge.py, footprint.py, fourier_cycles.py, garch_volatility.py, hurst_exponent.py, iceberg_detector.py, kalman_filter.py, market_regime_hmm.py, mean_reversion.py, monte_carlo.py, order_flow_imbalance.py, smart_money.py, vwap_twap.py, whale_detector.py |
+| **NOVO PACOTE INSTITUCIONAL** | 21 arquivos completos: `institutional/__init__.py`, absorption_detector.py, base.py, confluence_engine.py, crypto_cot.py, cvd.py, enricher.py, entropy_analyzer.py, event_bridge.py, footprint.py, fourier_cycles.py, garch_volatility.py, hurst_exponent.py, iceberg_detector.py, kalman_filter.py, market_regime_hmm.py, mean_reversion.py, monte_carlo.py, order_flow_imbalance.py, smart_money.py, vwap_twap.py, whale_detector.py |
 | **market_orchestrator/ai** | payload_sections/ COMPLETO: __init__.py, flow_summary.py, institutional_summary.py, quality_summary.py, regime_summary.py, skill_bridge.py, sr_summary.py |
 | **flow_analyzer/** | errors.py, protocols.py, utils.py, validation.py, serialization.py, profiling.py, logging_config.py, prometheus_metrics.py, aggregates.py |
 | **support_resistance/** | system.py, constants.py, config.py |
@@ -1025,4 +1033,21 @@ docs/
 
 ---
 
-*✅ Ultima atualizacao REAL: 2026-04-07 | Total de arquivos novos/alterados: 137*
+## Atualizacoes (2026-08-06) — Fase 1: Consolidacao de modulos
+
+| Categoria | Mudanca |
+|-----------|---------|
+| raiz | `institutional_enricher.py` e `orderbook_analyzer.py` viram **shims deprecated** (DeprecationWarning) apontando para `institutional/enricher.py` e `orderbook_analyzer/core.py` (conteudo integral, MD5 identico) |
+| institutional/ | + `enricher.py` (conteudo migrado, 2202 linhas) |
+| orderbook_analyzer/ | + `core.py` (v2.2.0, 2985 linhas), + `legacy_simplified.py` (era analyzer.py, alias `SimplifiedOrderBookAnalyzer`); `analyzer.py` vira shim de compat; `__init__.py` re-export direto (zero importlib; export lazy via `__getattr__`) |
+| utils/ | Removidas duplicatas `trade_filter.py`, `heartbeat_manager.py`, `trade_timestamp_validator.py`, `async_helpers.py` (originais em common/, monitoring/, trading/); `__init__.py` proxy mantido |
+| src/utils/ | Removido `async_helpers.py` (proxy morto) |
+| raiz | Removidos `config.py` (proxy morto, `import config` resolve para `config/`), `ai_analyzer_qwen.py.bak`, artefato `coverage_html/flow_analyzer_py.html` |
+| main.py | `from utils import HeartbeatManager` -> `from monitoring.heartbeat_manager import HeartbeatManager` |
+| scripts/ | `test_fixes.py` e `test_fixes_simple.py`: `utils.async_helpers` -> `common.async_helpers` |
+| market_orchestrator/ | `market_orchestrator.py:110` passa a importar `institutional.enricher` |
+| tests/ | `test_market_orchestrator_comprehensive.py` e `test_orderbook_analyzer_comprehensive.py` usam `legacy_simplified.SimplifiedOrderBookAnalyzer` |
+
+---
+
+*✅ Ultima atualizacao REAL: 2026-08-06 | Fase 1 concluida — suites completas: 1557 passed, 0 failed*

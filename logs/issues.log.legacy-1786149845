@@ -1,0 +1,74 @@
+��2026-04-28 12:51:29,733 - WARNING - EventSimilarity - Nenhum evento encontrado para similarity search
+2026-04-28 20:01:45,422 - WARNING - root - ⚠️ Melhor amostra selecionada mas offset alto: RTT=797ms, Offset=635ms (limite: 600ms)
+2026-04-28 20:01:45,423 - WARNING - root - ⚠️ Offset 635ms > 600ms — modo degradado (drift < 10s, aceitável)
+2026-04-28 20:01:45,424 - WARNING - root - ⚠️ Sincronização com sucesso parcial na tentativa 1 (offset 635ms > limite 600ms)
+2026-04-28 20:01:46,774 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +879ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-04-28 20:01:59,833 - WARNING - root - ⏳ Janela com apenas 9 trades (mín: 10). Aguardando mais dados...
+2026-04-28 20:02:47,754 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +726ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-04-28 20:03:25,136 - WARNING - EventSimilarity - Nenhum evento encontrado para similarity search
+2026-04-28 20:05:51,031 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +856ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-04-28 21:07:03,177 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +665ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-04-28 21:09:05,486 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +798ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-04-28 21:10:06,441 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +668ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-04-28 21:11:49,401 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +642ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-04-28 21:12:15,425 - WARNING - EventSimilarity - Nenhum evento encontrado para similarity search
+2026-04-28 21:12:24,001 - ERROR - root - 🚨 LATÊNCIA CRÍTICA: process_trade took 439.70ms
+2026-04-28 21:15:04,886 - ERROR - root - Erro ao processar alerta: 'EnhancedMarketBot' object has no attribute '_last_alert_ts'
+2026-04-28 21:17:00,939 - WARNING - FREDFetcher - FRED status 500 para DXY
+2026-04-28 21:17:55,276 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +795ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-04-28 21:19:57,279 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +632ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-04-28 21:49:53,617 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +639ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-04-28 21:50:27,522 - WARNING - EventSimilarity - Nenhum evento encontrado para similarity search
+2026-04-28 21:55:08,586 - WARNING - root - ⚠️ INVARIANTE VIOLADA (Delta): Buy (94.3036) - Sell (29.3414) = 64.9622 != Delta Armazenado (0.0000) [diff=+64.9622] em BTCUSDT
+2026-04-28 21:55:08,586 - WARNING - root - ✅ Delta CORRIGIDO: 0.0000 -> 64.9622 (fonte: vol_buy - vol_sell)
+2026-04-28 21:55:13,996 - ERROR - root - Erro ao processar alerta: 'EnhancedMarketBot' object has no attribute '_last_alert_ts'
+2026-05-06 22:16:22,777 - WARNING - root - ⚠️ Melhor amostra selecionada mas offset alto: RTT=716ms, Offset=-1090ms (limite: 600ms)
+2026-05-06 22:16:22,778 - CRITICAL - TimeManager.CircuitBreaker - 🔴 ClockSync Circuit Breaker OPEN! Offset 1090ms > critical 1000ms. Orders blocked.
+2026-05-06 22:16:22,778 - WARNING - root - ⚠️ Offset 1090ms > 600ms — modo degradado (drift < 10s, aceitável)
+2026-05-06 22:16:22,778 - WARNING - root - ⚠️ Sincronização com sucesso parcial na tentativa 1 (offset 1090ms > limite 600ms)
+2026-05-06 22:16:23,605 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +1080ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-05-06 22:17:15,971 - WARNING - EventSimilarity - Nenhum evento encontrado para similarity search
+2026-05-06 22:20:26,941 - WARNING - monitoring.clock_sync - ⚠️ ClockSync DRIFT detectado: offset=-0.992s, trend=+0.088s (últimas 5 sincronizações)
+2026-05-06 22:22:10,785 - WARNING - root - ⚠️ INVARIANTE VIOLADA (Delta): Buy (2.7955) - Sell (8.6003) = -5.8047 != Delta Armazenado (0.0000) [diff=-5.8047] em BTCUSDT
+2026-05-06 22:22:10,785 - WARNING - root - ✅ Delta CORRIGIDO: 0.0000 -> -5.8047 (fonte: vol_buy - vol_sell)
+2026-05-06 22:24:30,486 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +889ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-05-06 22:25:31,299 - WARNING - monitoring.clock_sync - ⚠️ ClockSync OFFSET DEGRADADO: +1054ms (limite: 600ms) - Sistema operando em modo DEGRADADO
+2026-05-06 22:26:31,283 - WARNING - root - ⚠️ Melhor amostra selecionada mas offset alto: RTT=724ms, Offset=-1094ms (limite: 600ms)
+2026-05-06 22:26:31,283 - WARNING - root - ⚠️ Offset 1094ms > 600ms — modo degradado (drift < 10s, aceitável)
+2026-05-06 22:27:00,429 - WARNING - common.yfinance_cache - DXY: fetch timeout (15s)
+2026-08-04 16:54:33,953 - WARNING - root - ⚠️ ML Engine: hybrid mode DESABILITADO (usando LLM only) - XGBoost carregado mas retorno com status degradado
+2026-08-04 16:54:46,379 - WARNING - fetchers.macro_data_provider - ⚠️ Twelve Data retornou status 404 para TNX
+2026-08-04 16:55:10,834 - WARNING - EventSimilarity - Nenhum evento encontrado para similarity search
+2026-08-04 17:00:11,487 - WARNING - root - ⚠️ INVARIANTE VIOLADA (Delta): Buy (19.2405) - Sell (31.9879) = -12.7474 != Delta Armazenado (0.0000) [diff=-12.7474] em BTCUSDT
+2026-08-04 17:00:11,487 - WARNING - root - ✅ Delta CORRIGIDO: 0.0000 -> -12.7474 (fonte: vol_buy - vol_sell)
+2026-08-04 17:00:14,420 - WARNING - fetchers.macro_data_provider - ⚠️ Twelve Data retornou status 404 para TNX
+2026-08-04 17:22:32,901 - WARNING - root - ⚠️ ML Engine: hybrid mode DESABILITADO (usando LLM only) - XGBoost carregado mas retorno com status degradado
+2026-08-04 17:22:45,464 - WARNING - fetchers.macro_data_provider - ⚠️ Twelve Data retornou status 404 para TNX
+2026-08-04 17:23:12,975 - WARNING - EventSimilarity - Nenhum evento encontrado para similarity search
+2026-08-04 17:28:11,648 - WARNING - fetchers.macro_data_provider - ⚠️ Twelve Data retornou status 404 para TNX
+2026-08-04 17:29:05,397 - WARNING - root - ⚠️ INVARIANTE VIOLADA (Delta): Buy (9.5077) - Sell (1.7642) = 7.7435 != Delta Armazenado (0.0000) [diff=+7.7435] em BTCUSDT
+2026-08-04 17:29:05,397 - WARNING - root - ✅ Delta CORRIGIDO: 0.0000 -> 7.7435 (fonte: vol_buy - vol_sell)
+2026-08-04 17:32:05,373 - WARNING - root - ⚠️ INVARIANTE VIOLADA (Delta): Buy (17.1196) - Sell (7.4987) = 9.6209 != Delta Armazenado (0.0000) [diff=+9.6209] em BTCUSDT
+2026-08-04 17:32:05,373 - WARNING - root - ✅ Delta CORRIGIDO: 0.0000 -> 9.6209 (fonte: vol_buy - vol_sell)
+2026-08-04 17:34:10,626 - WARNING - fetchers.macro_data_provider - ⚠️ Twelve Data retornou status 404 para TNX
+2026-08-04 17:34:25,254 - WARNING - market_orchestrator.market_orchestrator - Timeout ao aguardar worker de janelas finalizar
+2026-08-06 19:06:47,358 - WARNING - root - ⚠️ ML Engine: hybrid mode DESABILITADO (usando LLM only) - XGBoost carregado mas retorno com status degradado
+2026-08-06 19:06:58,308 - WARNING - fetchers.macro_data_provider - ⚠️ Twelve Data retornou status 404 para TNX
+2026-08-06 19:07:12,187 - WARNING - fetchers.macro_data_provider - ⚠️ Erro ao calcular BTC Dominance: Cannot connect to host api.coingecko.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1000)')]
+2026-08-06 19:07:13,091 - WARNING - root - ALERTA HEALTH: {"event": "health_state_transition", "from": "unhealthy", "to": "healthy", "reason": "ok", "monitored_components": ["ai", "orderbook", "trade_buffer", "trade_ingestion", "window_processor", "ws"], "ts": "2026-08-06T22:07:13+00:00"}
+2026-08-06 19:07:15,415 - WARNING - EventSimilarity - Nenhum evento encontrado para similarity search
+2026-08-06 19:10:43,776 - WARNING - monitoring.clock_sync - ⚠️ ClockSync DRIFT detectado: offset=+0.306s, trend=+0.070s (últimas 5 sincronizações)
+2026-08-06 19:13:17,124 - WARNING - fetchers.macro_data_provider - ⚠️ Twelve Data retornou status 404 para TNX
+2026-08-06 19:13:24,694 - WARNING - fetchers.macro_data_provider - ⚠️ Erro ao calcular BTC Dominance: Cannot connect to host api.coingecko.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1000)')]
+2026-08-06 19:15:48,878 - WARNING - monitoring.clock_sync - ⚠️ ClockSync DRIFT detectado: offset=+0.375s, trend=+0.139s (últimas 10 sincronizações)
+2026-08-07 19:30:21,831 - WARNING - root - ⚠️ ML Engine: hybrid mode DESABILITADO (usando LLM only) - XGBoost carregado mas retorno com status degradado
+2026-08-07 19:30:33,163 - WARNING - fetchers.macro_data_provider - ⚠️ Twelve Data retornou status 404 para TNX
+2026-08-07 19:30:47,207 - WARNING - root - ALERTA HEALTH: {"event": "health_state_transition", "from": "unhealthy", "to": "healthy", "reason": "ok", "monitored_components": ["ai", "trade_buffer", "trade_ingestion", "ws"], "ts": "2026-08-07T22:30:47+00:00"}
+2026-08-07 19:31:11,399 - WARNING - fetchers.macro_data_provider - ⚠️ Erro ao calcular BTC Dominance: Cannot connect to host api.coingecko.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1000)')]
+2026-08-07 19:31:13,702 - WARNING - EventSimilarity - Nenhum evento encontrado para similarity search
+2026-08-07 19:34:17,211 - WARNING - monitoring.clock_sync - ⚠️ ClockSync DRIFT detectado: offset=+0.249s, trend=-0.092s (últimas 5 sincronizações)
+2026-08-07 19:36:13,873 - WARNING - fetchers.macro_data_provider - ⚠️ Twelve Data retornou status 404 para TNX
+2026-08-07 19:36:21,402 - WARNING - fetchers.macro_data_provider - ⚠️ Erro ao calcular BTC Dominance: Cannot connect to host api.coingecko.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1000)')]
+2026-08-07 19:41:20,196 - WARNING - fetchers.macro_data_provider - ⚠️ Erro ao calcular BTC Dominance: Cannot connect to host api.coingecko.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1000)')]
+2026-08-07 19:42:07,704 - WARNING - root - ⚠️ INVARIANTE VIOLADA (Delta): Buy (2.7462) - Sell (8.3588) = -5.6126 != Delta Armazenado (0.0000) [diff=-5.6126] em BTCUSDT
+2026-08-07 19:42:07,799 - WARNING - root - ✅ Delta CORRIGIDO: 0.0000 -> -5.6126 (fonte: vol_buy - vol_sell)
