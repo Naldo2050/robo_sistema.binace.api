@@ -14,6 +14,18 @@ Correções:
 import sys
 import os
 import io
+import time
+
+# [THROTTLE] Fonte única de verdade: main.py inicializa o singleton ANTES
+# de qualquer import de ai_runner/analyzer_qwen (que apenas consomem).
+from common.ai_throttler import init_throttler
+
+init_throttler(
+    min_interval=60,
+    hard_min_interval=30,
+    daily_token_budget=85_000,
+    max_calls_per_hour=10,
+)
 
 # ══════════════════════════════════════════════════════════════════
 # FIX DE ENCODING PARA WINDOWS - VERSÃO SEGURA
@@ -214,6 +226,24 @@ async def main() -> int:
 
     from logging.handlers import RotatingFileHandler
 
+    # Sanear issues.log legado com BOM UTF-16 (ff fe): o RotatingFileHandler
+    # anexa em utf-8, mas um arquivo que começa com BOM UTF-16 quebra a leitura.
+    # Renomeia para backup antes de abrir, para o handler recriar em utf-8 puro.
+    issues_log_path = os.path.join("logs", "issues.log")
+    if os.path.exists(issues_log_path):
+        try:
+            with open(issues_log_path, "rb") as _f:
+                _head = _f.read(2)
+            if _head == b"\xff\xfe":
+                _legacy_path = f"{issues_log_path}.legacy-{int(time.time())}"
+                os.replace(issues_log_path, _legacy_path)
+                logging.warning(
+                    "issues.log com BOM UTF-16 legado renomeado para %s",
+                    _legacy_path,
+                )
+        except OSError as _e:
+            logging.warning("Não foi possível sanear issues.log: %s", _e)
+
     # Arquivo de problemas: WARNING + ERROR + CRITICAL
     issues_handler = RotatingFileHandler(
         "logs/issues.log",
@@ -237,6 +267,21 @@ async def main() -> int:
 
     root_logger.addHandler(console_handler)
     root_logger.addHandler(issues_handler)
+
+    # Log completo de execução (INFO+): recebe a saída que run.log deveria ter.
+    run_handler = RotatingFileHandler(
+        "logs/run.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    run_handler.setLevel(log_level)
+    run_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+        )
+    )
+    root_logger.addHandler(run_handler)
 
     logging.info(f"📊 Nível de log configurado: {log_level_name}")
     logging.info("🚨 Logs de problemas em: logs/issues.log")

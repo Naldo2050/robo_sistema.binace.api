@@ -9,7 +9,9 @@ import pytest
 from common.ai_throttler import (
     SmartAIThrottler,
     get_throttler,
+    init_throttler,
     reset_throttler,
+    reset_throttler_for_tests,
 )
 
 
@@ -20,9 +22,9 @@ from common.ai_throttler import (
 @pytest.fixture(autouse=True)
 def clean_singleton():
     """Reseta singleton antes e depois de cada teste."""
-    reset_throttler()
+    reset_throttler_for_tests()
     yield
-    reset_throttler()
+    reset_throttler_for_tests()
 
 
 @pytest.fixture
@@ -332,6 +334,31 @@ class TestSingleton:
         assert t1.min_interval == 999
         t2 = get_throttler(min_interval=1)  # ignorado
         assert t2.min_interval == 999
+
+    def test_init_throttler_creates_with_kwargs_when_empty(self):
+        """init_throttler cria o singleton com a config desejada quando vazio."""
+        t1 = init_throttler(
+            min_interval=60, hard_min_interval=30,
+            daily_token_budget=85_000, max_calls_per_hour=10,
+        )
+        assert t1.min_interval == 60
+        assert t1.hard_min_interval == 30
+        assert t1.daily_token_budget == 85_000
+        assert t1.max_calls_per_hour == 10
+
+    def test_init_throttler_keeps_existing_instance(self):
+        """init_throttler nao reconfigura um singleton ja criado."""
+        t1 = get_throttler(min_interval=999)
+        t2 = init_throttler(min_interval=1)  # ignorado
+        assert t2 is t1
+        assert t2.min_interval == 999
+
+    def test_reset_throttler_for_tests_clears_instance(self):
+        """reset_throttler_for_tests deve limpar o singleton (alias)."""
+        t1 = get_throttler()
+        reset_throttler_for_tests()
+        t2 = get_throttler()
+        assert t1 is not t2
 
 
 # ──────────────────────────────────────────────

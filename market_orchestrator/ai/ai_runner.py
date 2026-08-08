@@ -36,14 +36,10 @@ if TYPE_CHECKING:
     )
 
 # [THROTTLE] Controle de frequencia de chamadas IA (v3 singleton)
+# main.py inicializa com a config; aqui apenas consome.
 try:
     from common.ai_throttler import get_throttler
-    _ai_throttler = get_throttler(
-        min_interval=60,
-        hard_min_interval=30,
-        daily_token_budget=85_000,
-        max_calls_per_hour=10,
-    )
+    _ai_throttler = get_throttler()
 except ImportError:
     _ai_throttler = None
 

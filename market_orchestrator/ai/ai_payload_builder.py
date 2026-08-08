@@ -1175,6 +1175,16 @@ def build_ai_input(
 
     if v2_enabled:
         try:
+            # ── CORREÇÃO: Capturar current_price ANTES da compressão ──
+            # O compressor pode descartar price_context durante otimização;
+            # aqui garantimos que o preço atual sempre seja preservado.
+            _v1_price_ctx = ai_payload.get("price_context") or {}
+            _current_price_safe = (
+                _v1_price_ctx.get("current_price")
+                if isinstance(_v1_price_ctx, dict)
+                else None
+            )
+
             payload_v2 = compress_payload(ai_payload, max_bytes=max_bytes)
             
             # ── CORREÇÃO: Restaurar epoch_ms se compressor descartou ──
@@ -1199,6 +1209,25 @@ def build_ai_input(
                 )
                 payload_v2["epoch_ms"] = _epoch_ms_safe
             
+            # Restaurar current_price se o compressor descartou o price_context
+            # (mesmo padrão do EPOCH_MS_RESTORED acima)
+            if _current_price_safe is not None:
+                _v2_price_ctx = payload_v2.get("price_context")
+                if (
+                    not isinstance(_v2_price_ctx, dict)
+                    or _v2_price_ctx.get("current_price") is None
+                ):
+                    if not isinstance(_v2_price_ctx, dict):
+                        _v2_price_ctx = {}
+                    _v2_price_ctx["current_price"] = _current_price_safe
+                    payload_v2["price_context"] = _v2_price_ctx
+                    logging.warning(
+                        "CURRENT_PRICE_RESTORED_AFTER_COMPRESSION "
+                        "restored_value=%s symbol=%s",
+                        _current_price_safe,
+                        symbol,
+                    )
+
             _validate_payload_v2(payload_v2)
             # Confirma limite de bytes
             size_bytes = len(json.dumps(payload_v2, ensure_ascii=False).encode("utf-8"))

@@ -352,6 +352,36 @@ def get_throttler(**kwargs) -> SmartAIThrottler:
     return _throttler_instance
 
 
+def init_throttler(**kwargs) -> SmartAIThrottler:
+    """
+    Garante o singleton inicializado com a configuração desejada.
+
+    Idempotente: se o singleton já existe (quem chamou primeiro vence),
+    os kwargs são ignorados e a instância existente é devolvida.
+    Use nos callers que não passam por ai_runner para garantir
+    os parâmetros pretendidos quando o throttler roda sozinho.
+    """
+    global _throttler_instance
+    if _throttler_instance is not None:
+        logger.warning(
+            "init_throttler() chamado novamente com %s — ignorado, "
+            "mantendo config original (interval=%.0fs, hard=%.0fs, "
+            "budget=%s, max/hour=%d)",
+            {k: v for k, v in kwargs.items()},
+            _throttler_instance.min_interval,
+            _throttler_instance.hard_min_interval,
+            f"{_throttler_instance.daily_token_budget:,}",
+            _throttler_instance.max_calls_per_hour,
+        )
+        return _throttler_instance
+    return get_throttler(**kwargs)
+
+
+def reset_throttler_for_tests() -> None:
+    """Alias explícito de reset_throttler para uso em fixtures de teste."""
+    reset_throttler()
+
+
 def reset_throttler():
     """Reset singleton (para testes)."""
     global _throttler_instance
