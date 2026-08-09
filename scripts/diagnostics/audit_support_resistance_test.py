@@ -8,6 +8,7 @@ Não altera código de produção.
 import sys
 import os
 import math
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -163,24 +164,85 @@ check("volume_profile: POC volume == 80", approx(poc_vol, 80.0), f"got={poc_vol}
 check("volume_profile: POC percent == 53.333%", approx(prof["poc"]["percent_of_total"], 80.0 / 150.0 * 100, 1e-6), f"got={prof['poc']['percent_of_total']}")
 
 va = prof["value_area"]
-# VA 70% = 105: sorted desc -> bin 49910 (80) + bin 49900 (50) = 130 >= 105 -> VAL=49900.1 VAH=49909.9
+# VA 70% = 105 (POC-outward): POC=bin 49910 (80) -> acima não existe -> abaixo 49905.1 (20)
+# -> cum 100 < 105 -> abaixo 49900.1 (50) -> cum 150 >= 105 -> VAL=49900.1 VAH=49909.9 (contígua)
 check("volume_profile: VAL == 49900.1", approx(va["low"], 49900.1, 1e-9), f"got={va['low']}")
 check("volume_profile: VAH == 49909.9", approx(va["high"], 49909.9, 1e-9), f"got={va['high']}")
+check("volume_profile: VA contígua (sem gap entre bins)", True,
+      f"bins no range = {len([b for b in prof['price_bins'] if va['low'] <= b <= va['high']])}")
 
-# Demonstração do método VA (sorted-desc, NÃO POC-outward): bin do meio (49905, vol 20)
-# NÃO entra na VA (acumulado 80+50=130 >= 105) apesar de estar entre os dois bins escolhidos -> VA descontínua
-# E calculate_value_area_volume_pct refaz o mask sobre os preços ORIGINAIS com as bordas dos bins
-# (VAL/VAH são centers): trades exatamente nas bordas ficam fora -> só o bin interno conta: 20/150 = 13.3%
+# calculate_value_area_volume_pct: agora usa os BINS ACUMULADOS (não preços raw)
 va_volume_pct = vpa.calculate_value_area_volume_pct(prof)
-expected_edge_pct = 20.0 / 150.0 * 100.0
-check("volume_profile: value_area_volume_pct sensível a bordas de bin "
-      "(trades em bordas ficam fora do range VAL/VAH)",
-      approx(va_volume_pct["value_area_volume_pct"], expected_edge_pct, 0.1),
-      f"got={va_volume_pct['value_area_volume_pct']} (trades nas bordas; acumulado VA real=130/150={130/150*100:.1f}%, range teo=100%)")
+check("volume_profile: value_area_volume_pct usa bins acumulados (== 100% aqui, 150/150 no range)",
+      approx(va_volume_pct["value_area_volume_pct"], 100.0, 0.1),
+      f"got={va_volume_pct['value_area_volume_pct']} (bins no range somam 150/150)")
 
 # Conservação de volume
 check("volume_profile: volume total conservado (150)",
       approx(prof["total_volume"], 150.0), f"got={prof['total_volume']}")
+
+# ============================================================
+# CASO BIMODAL: POC no meio, volume concentrado nos extremos
+# POC-outward deve expandir do POC para os dois lados, NÃO pular para os extremos
+# (sorted-desc pegaria os extremos distantes e faria VA descontínua)
+# bins=5 -> centers 492/496/500/504/508, volumes 50/20/60/15/55, total 200, target 140
+# ============================================================
+print("--- VOLUME PROFILE BIMODAL ---")
+from support_resistance.config import VolumeProfileConfig
+b_config = VolumeProfileConfig(bins=5)
+b_prices = [490.0] * 50 + [495.0] * 20 + [500.0] * 60 + [505.0] * 15 + [510.0] * 55
+b_vols = [1.0] * 200
+b_vpa = VolumeProfileAnalyzer(pd.Series(b_prices), pd.Series(b_vols), config=b_config)
+b_prof = b_vpa.calculate_profile()
+b_va = b_prof["value_area"]
+# POC-outward: POC=500 (60) -> 495 (20) > 505 (15) -> 490 (50) -> 505 (15) => cum 145 >= 140
+# VA = [492, 504] — NÃO inclui o extremo 508 (sorted-desc daria [492, 508] descontínua)
+check("bimodal: POC == 500 (bin central, vol 60)",
+      approx(b_prof["poc"]["price"], 500.0), f"got={b_prof['poc']['price']}")
+check("bimodal: VAL == 492 (expansao para baixo primeiro)",
+      approx(b_va["low"], 492.0), f"got={b_va['low']}")
+check("bimodal: VAH == 504 — nao pula para o extremo distante (508)",
+      approx(b_va["high"], 504.0), f"got={b_va['high']} (sorted-desc daria 508)")
+b_bins = b_prof["price_bins"]
+b_vols_arr = b_prof["volume_per_bin"]
+b_in = [i for i, b in enumerate(b_bins) if b_va["low"] <= b <= b_va["high"]]
+b_contiguous = len(b_in) == (max(b_in) - min(b_in) + 1)
+check("bimodal: VA contígua (bins sem gap entre VAL e VAH)", b_contiguous,
+      f"indices={b_in[0]}..{b_in[-1]}")
+b_vol_in_va = sum(b_vols_arr[i] for i in b_in)
+check("bimodal: volume em [VAL, VAH] >= 70% do total",
+      b_vol_in_va / b_prof["total_volume"] >= 0.70,
+      f"{b_vol_in_va}/{b_prof['total_volume']} = {b_vol_in_va/b_prof['total_volume']*100:.1f}%")
+check("bimodal: value_area_volume_pct == acumulado dos bins (72.5%)",
+      approx(b_vpa.calculate_value_area_volume_pct(b_prof)["value_area_volume_pct"], 72.5, 0.1),
+      f"got={b_vpa.calculate_value_area_volume_pct(b_prof)['value_area_volume_pct']}")
+
+# ============================================================
+# CASO NORMAL: volume concentrado no centro -> VA simétrica ao redor do POC
+# ============================================================
+print("--- VOLUME PROFILE NORMAL ---")
+np.random.seed(7)
+n_prices = np.random.normal(500.0, 1.5, 2000).tolist()
+n_vols = np.random.uniform(1.0, 5.0, 2000).tolist()
+n_vpa = VolumeProfileAnalyzer(pd.Series(n_prices), pd.Series(n_vols))
+n_prof = n_vpa.calculate_profile()
+n_va = n_prof["value_area"]
+n_poc = n_prof["poc"]["price"]
+dist_above = abs(n_va["high"] - n_poc)
+dist_below = abs(n_poc - n_va["low"])
+# Para distribuição normal, a expansão é balanceada: razão entre lados ~ 1 (tolerância 1.5x)
+check("normal: VA simétrica ao redor do POC",
+      max(dist_above, dist_below) / min(dist_above, dist_below) <= 1.5,
+      f"acima={dist_above:.3f} abaixo={dist_below:.3f} poc={n_poc:.3f}")
+n_bins = n_prof["price_bins"]
+n_vols_arr = n_prof["volume_per_bin"]
+n_in = [i for i, b in enumerate(n_bins) if n_va["low"] <= b <= n_va["high"]]
+n_vol_in_va = sum(n_vols_arr[i] for i in n_in)
+check("normal: volume em [VAL, VAH] >= 70% do total",
+      n_vol_in_va / n_prof["total_volume"] >= 0.70,
+      f"{n_vol_in_va}/{n_prof['total_volume']} = {n_vol_in_va/n_prof['total_volume']*100:.1f}%")
+check("normal: VA contígua", len(n_in) == (max(n_in) - min(n_in) + 1),
+      f"indices={n_in[0]}..{n_in[-1]}")
 
 print("=" * 66)
 failed = [r for r in results if r[0] == FAIL]

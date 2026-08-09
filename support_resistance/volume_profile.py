@@ -83,20 +83,34 @@ class VolumeProfileAnalyzer:
         poc_price = price_centers[poc_idx]
         poc_volume = volume_per_bin[poc_idx]
         
-        # Value Area (70% do volume)
-        sorted_indices = np.argsort(volume_per_bin)[::-1]
-        cumulative_volume = 0
-        value_area_indices = []
-        
-        for idx in sorted_indices:
-            cumulative_volume += volume_per_bin[idx]
-            value_area_indices.append(idx)
-            if cumulative_volume >= total_volume * self.config.value_area_percent:
+        # Value Area (padrão de mercado: POC-outward, região contígua)
+        # Expansão a partir do POC escolhendo, a cada passo, o lado
+        # (acima ou abaixo) que adiciona mais volume, até cobrir
+        # value_area_percent (70%) do volume total.
+        # Antes: sorted-desc selecionava os N bins de maior volume sem
+        # respeitar posição → VA descontínua (bins intermediários excluídos).
+        target_volume = total_volume * self.config.value_area_percent
+        lo = poc_idx
+        hi = poc_idx
+        accumulated = float(volume_per_bin[poc_idx])
+
+        while accumulated < target_volume and (lo > 0 or hi < len(volume_per_bin) - 1):
+            can_up = hi < len(volume_per_bin) - 1
+            can_down = lo > 0
+            vol_above = volume_per_bin[hi + 1] if can_up else 0.0
+            vol_below = volume_per_bin[lo - 1] if can_down else 0.0
+            if can_up and (not can_down or vol_above >= vol_below):  # empate vai para cima
+                hi += 1
+                accumulated += float(volume_per_bin[hi])
+            elif can_down:
+                lo -= 1
+                accumulated += float(volume_per_bin[lo])
+            else:
                 break
-        
-        value_area_prices = price_centers[value_area_indices]
-        value_area_low = np.min(value_area_prices)
-        value_area_high = np.max(value_area_prices)
+
+        value_area_low = float(price_centers[lo])
+        value_area_high = float(price_centers[hi])
+        value_area_volume = accumulated  # volume acumulado dos bins em [lo, hi]
         
         # HVN/LVN
         volume_mean = np.mean(volume_per_bin)
@@ -168,6 +182,10 @@ class VolumeProfileAnalyzer:
                 "width": float(value_area_high - value_area_low),
                 "percent_width": float(StatisticalUtils.safe_divide(
                     float(value_area_high - value_area_low), float(poc_price), 0.0
+                ) * 100),
+                "volume": float(value_area_volume),
+                "volume_pct": float(StatisticalUtils.safe_divide(
+                    float(value_area_volume), float(total_volume), 0.0
                 ) * 100)
             },
             "volume_nodes": {
@@ -333,18 +351,25 @@ class VolumeProfileAnalyzer:
                 "breakout_risk": "UNKNOWN",
             }
 
-        # Calcular volume dentro da VA vs total
+        # Usa os BINS ACUMULADOS (price_bins/volume_per_bin do profile), não os
+        # preços raw dos trades: soma do volume dos bins entre VAL e VAH.
+        # Antes: recontava por range sobre os preços originais → sensível a
+        # bordas de bin (trades na borda ficavam fora) e inconsistente com a VA.
+        price_bins = profile.get("price_bins") or []
+        volume_per_bin = profile.get("volume_per_bin") or []
+
         try:
-            if hasattr(self, 'price_data') and hasattr(self, 'volume_data'):
+            if len(price_bins) > 0 and len(price_bins) == len(volume_per_bin):
+                bins_arr = np.asarray(price_bins, dtype=np.float64)
+                vol_arr = np.asarray(volume_per_bin, dtype=np.float64)
+                mask = (bins_arr >= val) & (bins_arr <= vah)
+                vol_in_va = float(np.sum(vol_arr[mask]))
+                total_vol = float(np.sum(vol_arr))
+            else:
+                # Fallback: recontagem por range sobre preços originais
                 mask = (self.price_data >= val) & (self.price_data <= vah)
                 vol_in_va = float(self.volume_data[mask].sum())
                 total_vol = float(self.volume_data.sum())
-            else:
-                # Fallback: usar dados do profile
-                poc_vol_pct = profile.get("poc", {}).get("percent_of_total", 0)
-                # Estimativa baseada na configuração (default 70%)
-                vol_in_va = 70.0
-                total_vol = 100.0
         except Exception:
             vol_in_va = 70.0
             total_vol = 100.0
