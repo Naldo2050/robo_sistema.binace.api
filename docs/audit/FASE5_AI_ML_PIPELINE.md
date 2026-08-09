@@ -189,3 +189,36 @@ Observações:
   prévia) OU remover os 13 módulos
 
 Não bloqueante. Nenhuma correção aplicada.
+
+---
+
+## Backlog: ml/ — defeitos a corrigir ANTES de religar HYBRID_ENABLED
+
+### [BLOQUEANTE para HYBRID_ENABLED=True] BB Bollinger ddof mismatch
+- feature_calculator.py:153 usa np.std() = ddof=0
+- train_model.py:427 usa rolling(20).std() = ddof=1
+- inference_engine.py:238 usa ddof=1 (correto para consistência
+  com treino)
+- Impacto: bb_upper/lower/width divergem em ~0.2-2% das bandas
+  entre treino e inferência quando calculator é fonte prioritária
+- Correção: mudar feature_calculator.py:153 para usar
+  pd.Series.rolling(20).std() (ddof=1) em vez de np.std()
+- NÃO corrigir agora (HYBRID_ENABLED=False); corrigir junto com
+  o próximo ciclo de retreino
+
+### [BLOQUEANTE para HYBRID_ENABLED=True] NaN fill inconsistente
+- Treino faz X.fillna(X.median()) antes de fit
+- Inferência manda NaN para BB e confia no comportamento interno
+  do XGBoost com missing values
+- XGBoost aprendeu com mediana, não com missing → comportamento
+  diferente em produção para o mesmo input
+- Correção: alinhar estratégia de NaN (ou ambos usam median fill
+  com valores fixos do treino, ou ambos usam missing nativo)
+
+### [NÃO É BUG] Modelo com 9 amostras — HYBRID_ENABLED=False correto
+- Modelo atual treinado com 9 amostras (07/12/2025), AUC sem
+  significado estatístico
+- Desligado corretamente via HYBRID_ENABLED=False em settings.py
+- Pré-requisito para religar: dataset >= 500 amostras balanceadas
+- Dataset atual (30 linhas × 220 colunas) incompatível com esquema
+  do modelo (9 features) — retreino completo necessário
