@@ -31,7 +31,15 @@ def daily_pivot(df):
     """Calculate daily pivot points from OHLC DataFrame."""
     if df.empty:
         return {}
-    last = df.iloc[-1]
+    if len(df) < 2:
+        # Guard: dados insuficientes — iloc[-2] não existe (ex: primeira execução do dia)
+        raise ValueError(
+            "daily_pivot requer pelo menos 2 velas: a vela anterior completa "
+            "(iloc[-2]) não está disponível com apenas %d vela(s)" % len(df)
+        )
+    # iloc[-2]: período anterior completo (não o atual em andamento)
+    # Bug corrigido: iloc[-1] usava a vela do período atual (OHLC parcial)
+    last = df.iloc[-2]
     high = last['high']
     low = last['low']
     close = last['close']
