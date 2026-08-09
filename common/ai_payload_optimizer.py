@@ -24,6 +24,9 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Rate-limit do warning de divergência de rótulo de absorção (1 a cada 60s)
+_last_abs_divergence_warn_ms = [0.0]
+
 
 # ================================================================
 # SECTION CACHE — evita reenviar dados que não mudaram
@@ -713,6 +716,27 @@ class AIPayloadOptimizer:
         )
         if abs_label is not None:
             result["abs_lbl"] = abs_label
+
+        # Detector de divergência entre os dois caminhos de rótulo (regressão futura):
+        # caminho B (flow_analyzer, fluxo_continuo) vs caminho A (data_handler,
+        # resultado_da_batalha no evento). Ambos devem seguir a mesma convenção
+        # (rótulo = lado da agressão absorvida); se discordarem, algo voltou a divergir.
+        label_b = flow.get("tipo_absorcao") or absorb.get("label")
+        label_a = inner.get("resultado_da_batalha")
+        if (
+            label_a
+            and label_b
+            and label_a != label_b
+            and "Absorção" in str(label_a)
+            and "Absorção" in str(label_b)
+            and time.time() - _last_abs_divergence_warn_ms[0] >= 60.0
+        ):
+            _last_abs_divergence_warn_ms[0] = time.time()
+            logger.warning(
+                f"[ABSORCAO_DIVERGENCE] labels discordam: "
+                f"caminho B (fluxo_continuo)='{label_b}' vs "
+                f"caminho A (evento)='{label_a}'"
+            )
 
         if absorb:
             absr: Dict[str, Any] = {}

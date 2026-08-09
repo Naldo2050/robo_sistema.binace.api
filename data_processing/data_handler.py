@@ -1167,10 +1167,12 @@ def create_absorption_event(
             absorption_side = "sell"
             descricao = f"Agressão compradora absorvida. Δ={delta_btc:.2f}, índice={indice_absorcao:.2f}"
 
-            # ========================
-            # Revalidação de rótulo
-            # ========================
-            # Garante consistência entre delta_btc e o rótulo calculado.
+        # ========================
+        # Revalidação de rótulo (aplicada a AMBOS os casos)
+        # ========================
+        # Garante consistência entre delta_btc e o rótulo calculado,
+        # independente de qual flag de absorção foi ativada.
+        if absorcao_compra or absorcao_venda:
             try:
                 eps = float(getattr(config, "ABSORCAO_DELTA_EPS", 1.0))
             except Exception:

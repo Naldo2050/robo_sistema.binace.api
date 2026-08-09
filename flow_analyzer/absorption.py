@@ -7,9 +7,12 @@ Absorção ocorre quando:
 - Preço não se move significativamente
 - Indica que o outro lado (compradores) está absorvendo a pressão
 
+Convenção de rótulo (alinhada com data_handler.py): o rótulo nomeia o lado
+da AGRESSÃO absorvida (lado absorvido), não o lado que absorveu.
+
 Tipos:
-- Absorção de Compra: Vendedores agressivos, compradores absorvem
-- Absorção de Venda: Compradores agressivos, vendedores absorvem
+- Absorção de Venda: Vendedores agressivos, compradores absorvem (bullish)
+- Absorção de Compra: Compradores agressivos, vendedores absorvem (bearish)
 - Neutra: Sem absorção significativa
 """
 
@@ -63,7 +66,7 @@ class AbsorptionClassifier:
         ...     delta_btc=-10.0,
         ...     open_p=50000, high_p=50100, low_p=49900, close_p=50050
         ... )
-        >>> print(label)  # "Absorção de Compra"
+        >>> print(label)  # "Absorção de Venda" (venda foi absorvida)
     """
     
     def __init__(self, config: Optional[AbsorptionConfig] = None):
@@ -143,10 +146,10 @@ class AbsorptionClassifier:
         Classifica absorção baseado em delta e OHLC.
         
         Lógica:
-        - Delta negativo + preço não caiu muito = Absorção de Compra
-          (compradores absorveram pressão vendedora)
-        - Delta positivo + preço não subiu muito = Absorção de Venda
-          (vendedores absorveram pressão compradora)
+        - Delta negativo (venda agressiva) + preço não caiu = Absorção de Venda
+          (venda foi absorvida pelos compradores)
+        - Delta positivo (compra agressiva) + preço não subiu = Absorção de Compra
+          (compra foi absorvida pelos vendedores)
         
         Args:
             delta_btc: Delta de volume (compras - vendas)
@@ -190,24 +193,24 @@ class AbsorptionClassifier:
             lower_bound = open_p * (1.0 - pct_tolerance)
             upper_bound = open_p * (1.0 + pct_tolerance)
             
-            # Classificação
-            # Absorção de Compra:
+            # Classificação (convenção de mercado: rótulo = lado da agressão absorvida)
+            # Absorção de Venda:
             # - Delta negativo (mais vendas)
             # - Mas preço não caiu (fechou acima do lower bound)
             # - Fechamento na metade superior do candle
             if (delta_btc < -abs(eps) and 
                 close_p >= lower_bound and 
                 close_pos_compra > 0.5):
-                return "Absorção de Compra"
+                return "Absorção de Venda"
             
-            # Absorção de Venda:
+            # Absorção de Compra:
             # - Delta positivo (mais compras)
             # - Mas preço não subiu (fechou abaixo do upper bound)
             # - Fechamento na metade inferior do candle
             if (delta_btc > abs(eps) and 
                 close_p <= upper_bound and 
                 close_pos_venda > 0.5):
-                return "Absorção de Venda"
+                return "Absorção de Compra"
             
             return "Neutra"
             
@@ -238,9 +241,9 @@ class AbsorptionClassifier:
             return "Neutra"
         
         if d < -eps:
-            return "Absorção de Compra"
-        if d > eps:
             return "Absorção de Venda"
+        if d > eps:
+            return "Absorção de Compra"
         return "Neutra"
     
     @staticmethod
@@ -366,11 +369,13 @@ class AbsorptionAnalyzer:
             seller_strength = decimal_round((1 - buy_intensity) * 10, decimals=1)
             
             # Seller exhaustion baseado no tipo de absorção
-            if "Compra" in absorption_label:
-                # Absorção de compra = compradores absorvendo vendas
+            if "Venda" in absorption_label:
+                # Absorção de Venda = venda absorvida pelos compradores (bullish):
+                # vendedores agressivos exauridos -> exaustão alta = força compradora
                 seller_exhaustion = buyer_strength
-            elif "Venda" in absorption_label:
-                # Absorção de venda = vendedores absorvendo compras
+            elif "Compra" in absorption_label:
+                # Absorção de Compra = compra absorvida pelos vendedores (bearish):
+                # vendedores no controle -> exaustão baixa
                 seller_exhaustion = seller_strength
             else:
                 seller_exhaustion = decimal_round(abs_flow * 10, decimals=1)
@@ -432,9 +437,9 @@ class AbsorptionAnalyzer:
                 abs(flow_imbalance) >= self.config.imbalance_threshold):
                 
                 if delta_btc < -eps:
-                    return "Absorção de Compra"
-                elif delta_btc > eps:
                     return "Absorção de Venda"
+                elif delta_btc > eps:
+                    return "Absorção de Compra"
             
             return "Neutra"
             
@@ -453,7 +458,7 @@ class AbsorptionZoneMapper:
     
     Uso:
         mapper = AbsorptionZoneMapper()
-        mapper.record_event(price=64800, classification="Absorção de Compra",
+        mapper.record_event(price=64800, classification="Absorção de Venda",
                            index=0.65, timestamp_ms=1771888200000)
         zones = mapper.get_zones(current_price=64892)
     """
@@ -511,11 +516,14 @@ class AbsorptionZoneMapper:
         if timestamp_ms is None:
             timestamp_ms = int(time.time() * 1000)
 
-        # Normalizar classificação
+        # Normalizar classificação.
+        # Convenção de mercado (label = agressão absorvida, não o lado que absorveu):
+        # "Absorção de Venda" (venda absorvida) -> compradores defenderam (buy)
+        # "Absorção de Compra" (compra absorvida) -> vendedores defenderam (sell)
         classification_upper = classification.upper()
-        if "COMPRA" in classification_upper or "BUY" in classification_upper:
+        if "VENDA" in classification_upper or "SELL" in classification_upper:
             side = "buy"
-        elif "VENDA" in classification_upper or "SELL" in classification_upper:
+        elif "COMPRA" in classification_upper or "BUY" in classification_upper:
             side = "sell"
         else:
             side = "neutral"

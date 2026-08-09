@@ -152,6 +152,24 @@ except Exception:
 # Ativa filtro anti-eco global
 configure_dedup_logs()
 
+# ====== Resultados bullish de resultado_da_batalha (comparado em UPPERCASE) ======
+# Usado em _handle_signal_event para signal_direction (RegimeBasedRules).
+# Inclui os rótulos de absorção/exaustão bullish que antes caíam no "short" por
+# mismatch de string ("Absorção de Venda" = venda absorvida = compradores no
+# controle; "Exaustão de Venda" = vendedores exauridos; "Demanda no Livro" e
+# "SUPPLY_EXHAUSTION" = pressão compradora). Variantes sem acento por robustez.
+BULLISH_RESULTS = frozenset({
+    "COMPRA",
+    "BULLISH",
+    "ABSORÇÃO DE VENDA",
+    "ABSORCAO DE VENDA",
+    "EXAUSTÃO DE VENDA",
+    "EXAUSTAO DE VENDA",
+    "DEMANDA NO LIVRO (BID>ASK)",
+    "LEVE DEMANDA NO LIVRO",
+    "SUPPLY_EXHAUSTION",
+})
+
 
 class EnhancedMarketBot:
     """Bot de análise de mercado com IA integrada (v2.3.2)."""
@@ -992,8 +1010,16 @@ class EnhancedMarketBot:
                 from market_analysis.regime_rules import RegimeBasedRules
                 regime_rules = RegimeBasedRules()
                 
-                # Verificar se deve operar baseado no regime
-                signal_direction = "long" if event_data.get("resultado_da_batalha", "").upper() in ("COMPRA", "BULLISH") else "short"
+                # Verificar se deve operar baseado no regime.
+                # Rótulos bullish: COMPRA/BULLISH, "Absorção de Venda" (venda
+                # absorvida = compradores no controle), "Exaustão de Venda"
+                # (vendedores exauridos), "Demanda no Livro (Bid>Ask)"/leve
+                # demanda, "SUPPLY_EXHAUSTION" (exaustão de oferta).
+                signal_direction = (
+                    "long"
+                    if event_data.get("resultado_da_batalha", "").upper() in BULLISH_RESULTS
+                    else "short"
+                )
                 signal_confidence = event_data.get("historical_confidence", {}).get("long_prob", 0.5)
                 
                 should_trade, reason = regime_rules.should_trade(

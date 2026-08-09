@@ -262,8 +262,8 @@ def guard_absorcao(
     Validação de consistência para absorção.
     
     Verifica se o rótulo de absorção é consistente com o delta:
-    - Delta negativo → deveria ser "Absorção de Compra"
-    - Delta positivo → deveria ser "Absorção de Venda"
+    - Delta negativo → deveria ser "Absorção de Venda"
+    - Delta positivo → deveria ser "Absorção de Compra"
     
     Args:
         delta: Delta BTC
@@ -291,14 +291,14 @@ def guard_absorcao(
     if "Absorção" not in rotulo:
         return True
     
-    # Detecta mismatch
-    # Delta negativo significa mais vendas → absorção de COMPRA (compradores absorveram)
-    # Delta positivo significa mais compras → absorção de VENDA (vendedores absorveram)
+    # Detecta mismatch (convenção de mercado: rótulo = lado da agressão absorvida)
+    # Delta negativo (mais vendas) → "Absorção de Venda" (venda foi absorvida)
+    # Delta positivo (mais compras) → "Absorção de Compra" (compra foi absorvida)
     mismatch = False
     
-    if delta < -eps and "Compra" not in rotulo:
+    if delta < -eps and "Venda" not in rotulo:
         mismatch = True
-    elif delta > eps and "Venda" not in rotulo:
+    elif delta > eps and "Compra" not in rotulo:
         mismatch = True
     
     if mismatch:

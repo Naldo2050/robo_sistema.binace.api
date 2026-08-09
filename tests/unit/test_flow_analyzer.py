@@ -120,15 +120,15 @@ class TestAbsorptionClassification:
     """Testes para classificação de absorção."""
     
     @pytest.mark.parametrize("delta, eps, esperado", [
-        (-10.0, 1.0, "Absorção de Compra"),  # Agressão Venda absorvida
-        (10.0, 1.0, "Absorção de Venda"),    # Agressão Compra absorvida
+        (-10.0, 1.0, "Absorção de Venda"),   # Agressão vendedora absorvida
+        (10.0, 1.0, "Absorção de Compra"),   # Agressão compradora absorvida
         (0.5, 1.0, "Neutra"),                # Abaixo do threshold
         (-0.5, 1.0, "Neutra"),               # Abaixo do threshold (negativo)
         (0.0, 1.0, "Neutra"),                # Exatamente zero
         (-1.0, 1.0, "Neutra"),               # No limite (não passa)
         (1.0, 1.0, "Neutra"),                # No limite (não passa)
-        (-1.01, 1.0, "Absorção de Compra"),  # Logo acima do limite
-        (1.01, 1.0, "Absorção de Venda"),    # Logo acima do limite
+        (-1.01, 1.0, "Absorção de Venda"),   # Logo acima do limite
+        (1.01, 1.0, "Absorção de Compra"),   # Logo acima do limite
     ])
     def test_classificar_absorcao_por_delta(self, delta, eps, esperado):
         """Testa classificação simples por delta."""
@@ -137,7 +137,7 @@ class TestAbsorptionClassification:
     
     def test_classificar_absorcao_contextual_compra(self):
         """
-        Testa detecção de Absorção de Compra (Sell Absorption).
+        Testa detecção de Absorção de Venda (venda agressiva absorvida).
         Cenário: Muita venda (Delta Negativo), mas preço fecha no topo.
         """
         analyzer = FlowAnalyzer()
@@ -150,11 +150,11 @@ class TestAbsorptionClassification:
             close_p=100.4,     # Fechou perto da máxima (topo do candle)
             eps=1.0
         )
-        assert resultado == "Absorção de Compra"
+        assert resultado == "Absorção de Venda"
     
     def test_classificar_absorcao_contextual_venda(self):
         """
-        Testa detecção de Absorção de Venda (Buy Absorption).
+        Testa detecção de Absorção de Compra (compra agressiva absorvida).
         Cenário: Muita compra (Delta Positivo), mas preço fecha na mínima.
         """
         analyzer = FlowAnalyzer()
@@ -167,7 +167,7 @@ class TestAbsorptionClassification:
             close_p=99.6,      # Fechou perto da mínima
             eps=1.0
         )
-        assert resultado == "Absorção de Venda"
+        assert resultado == "Absorção de Compra"
     
     def test_classificar_absorcao_contextual_neutra_movimento_normal(self):
         """

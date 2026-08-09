@@ -25,7 +25,9 @@ def test_absorption_zone_mapper_record_event():
     """Testa o registro de eventos de absorção."""
     mapper = AbsorptionZoneMapper()
 
-    # Registro de evento básico
+    # Registro de evento básico.
+    # Convenção de mercado (label = agressão absorvida): "Absorção de Compra"
+    # (compra absorvida) = vendedores defenderam -> side="sell".
     mapper.record_event(
         price=64800,
         classification="Absorção de Compra",
@@ -40,8 +42,8 @@ def test_absorption_zone_mapper_record_event():
     summary = mapper.get_summary()
     assert summary["status"] == "ok"
     assert summary["total_events"] == 1
-    assert summary["buy_absorptions"] == 1
-    assert summary["sell_absorptions"] == 0
+    assert summary["buy_absorptions"] == 0
+    assert summary["sell_absorptions"] == 1
 
 
 def test_absorption_zone_mapper_get_zones_empty():
@@ -59,6 +61,7 @@ def test_absorption_zone_mapper_single_zone():
     """Testa a obtenção de zonas com um único evento."""
     mapper = AbsorptionZoneMapper()
     now = _now_ms()
+    # "Absorção de Compra" (compra absorvida) = vendedores defenderam -> side="sell"
     mapper.record_event(
         price=64800,
         classification="Absorção de Compra",
@@ -74,16 +77,16 @@ def test_absorption_zone_mapper_single_zone():
     assert len(zones["zones"]) == 1
     assert zones["total_zones"] == 1
     assert zones["total_events"] == 1
-    assert zones["buy_zone_count"] == 1
-    assert zones["sell_zone_count"] == 0
+    assert zones["buy_zone_count"] == 0
+    assert zones["sell_zone_count"] == 1
 
     # Verificar detalhes da zona
     zone = zones["zones"][0]
     assert zone["center"] == 64800.0
     assert zone["event_count"] == 1
-    assert zone["buy_events"] == 1
-    assert zone["sell_events"] == 0
-    assert zone["dominant_side"] == "buy_defense"
+    assert zone["buy_events"] == 0
+    assert zone["sell_events"] == 1
+    assert zone["dominant_side"] == "sell_defense"
     assert zone["total_strength"] == 0.65
     assert zone["avg_strength"] == 0.65
     assert zone["max_strength"] == 0.65
@@ -98,7 +101,7 @@ def test_absorption_zone_mapper_multiple_events_same_zone():
     """Testa a agregação de eventos na mesma zona."""
     mapper = AbsorptionZoneMapper(zone_tolerance_pct=0.2)
     now = _now_ms()
-    # Registra eventos próximos (muitos compras)
+    # Registra eventos próximos (muitas compras absorvidas = defesa vendedora)
     mapper.record_event(price=64800, classification="Absorção de Compra", index=0.65, timestamp_ms=now)
     mapper.record_event(price=64810, classification="Absorção de Compra", index=0.70, timestamp_ms=now + 60000)
     mapper.record_event(price=64805, classification="Absorção de Compra", index=0.68, timestamp_ms=now + 120000)
@@ -106,13 +109,13 @@ def test_absorption_zone_mapper_multiple_events_same_zone():
     zones = mapper.get_zones(current_price=64892)
     assert zones["total_zones"] == 1
     assert zones["total_events"] == 3
-    assert zones["buy_zone_count"] == 1
+    assert zones["sell_zone_count"] == 1
     
     zone = zones["zones"][0]
     assert zone["event_count"] == 3
-    assert zone["buy_events"] == 3
-    assert zone["sell_events"] == 0
-    assert zone["dominant_side"] == "buy_defense"
+    assert zone["buy_events"] == 0
+    assert zone["sell_events"] == 3
+    assert zone["dominant_side"] == "sell_defense"
     assert zone["total_strength"] > 0.65  # Deve ser soma dos índices
     assert zone["avg_strength"] > 0.65
     assert zone["max_strength"] == 0.70
@@ -173,7 +176,9 @@ def test_absorption_zone_mapper_get_summary():
     assert summary["status"] == "empty"
     assert summary["total_events"] == 0
     
-    # Com eventos mistos
+    # Com eventos mistos:
+    # "Absorção de Compra" (compra absorvida) = defesa vendedora (side="sell")
+    # "Absorção de Venda" (venda absorvida) = defesa compradora (side="buy")
     now = _now_ms()
     mapper.record_event(price=64800, classification="Absorção de Compra", index=0.65, timestamp_ms=now)
     mapper.record_event(price=64810, classification="Absorção de Compra", index=0.70, timestamp_ms=now + 60000)
@@ -182,10 +187,10 @@ def test_absorption_zone_mapper_get_summary():
     summary = mapper.get_summary()
     assert summary["status"] == "ok"
     assert summary["total_events"] == 3
-    assert summary["buy_absorptions"] == 2
-    assert summary["sell_absorptions"] == 1
+    assert summary["buy_absorptions"] == 1
+    assert summary["sell_absorptions"] == 2
     assert summary["avg_index"] > 0.65
-    assert summary["dominant_side"] == "buy"
+    assert summary["dominant_side"] == "sell"
 
 
 if __name__ == "__main__":
