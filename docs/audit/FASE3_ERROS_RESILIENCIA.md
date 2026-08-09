@@ -82,3 +82,13 @@ ORDERBOOK_REST_MAX_RETRIES = 5
 ### Fallback LLM
 
 `ai_runner/ai_runner.py` (legado) tenta `qwen_client → MockQwenClient` como fallback. O path principal (`market_orchestrator/ai/ai_runner.py`) usa throttler + guardrail mas não tem fallback para modelo menor explicitamente documentado.
+
+---
+
+## [2026-08-06] Bug: Timestamp OOO mascarado no on_message
+- Arquivo: `market_orchestrator/market_orchestrator.py` linha 741
+- Tipo: Observabilidade (Tipo A) + contaminação potencial (Tipo B latente)
+- Severidade: Média (0 ocorrências medidas em produção, risco real durante reconexões)
+- Correção: CASO A aplicado (T_raw preservado, métricas adicionadas)
+- Commit: `b93c714`
+- Validado por: medição live 901s + 16 testes passando
