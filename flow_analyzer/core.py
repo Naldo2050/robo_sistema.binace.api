@@ -262,6 +262,7 @@ class FlowAnalyzer(IFlowAnalyzer):
         self._invalid_trades = 0
         self._lock_contentions = 0
         self._last_price: Optional[float] = None
+        self._price_at_reset: Optional[float] = None
         
         self._whale_delta_corrections = 0
         self._is_buyer_maker_conversions = 0
@@ -741,6 +742,7 @@ class FlowAnalyzer(IFlowAnalyzer):
         }
 
         self.flow_trades.clear()
+        self._price_at_reset = self._last_price
         self._last_price = None
 
         # NOVO: Reseta contador de OOO
@@ -939,6 +941,8 @@ class FlowAnalyzer(IFlowAnalyzer):
             "sector_flow": {},
             "timestamp": time_index.get("timestamp_utc", ""),
             "time_index": time_index,
+            "last_reset_ms": snapshot['last_reset_ms'],
+            "price_at_reset": self._price_at_reset,
             "metadata": {
                 "burst_window_ms": self.burst_window_ms,
                 "in_burst": bool(snapshot['_in_burst']),

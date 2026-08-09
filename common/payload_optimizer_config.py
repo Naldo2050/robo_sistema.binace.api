@@ -33,7 +33,6 @@ FIELDS_TO_REMOVE: set[str] = {
     # ==========================================
     "metadata",
     "burst_window_ms",
-    "last_reset_ms",
     "config_version",
     # ==========================================
     # 4. FLAGS DE VALIDAÇÃO
@@ -57,6 +56,20 @@ FIELDS_TO_REMOVE: set[str] = {
     "timestamp_sp",
     "timestamp",  # Redundante com timestamp_utc
     "time_index",  # Já temos epoch_ms
+}
+
+# ==============================================================================
+# CAMPOS A PRESERVAR INTERNAMENTE (não vão para o payload final da IA)
+# ==============================================================================
+
+# Usados no cálculo interno da divergência CVD (camadas 1/2 do fix pós-reset):
+# - last_reset_ms: instante do último reset do FlowAnalyzer (CVD acumula desde ele)
+# - price_at_reset: preço no momento do reset (referência para comparar no mesmo período)
+# Ficam no event_data intermediário até o build_compact_payload consumi-los;
+# o payload compactado não os envia à IA (nenhum builder de seção os inclui).
+FIELDS_TO_KEEP_INTERNAL: set[str] = {
+    "last_reset_ms",
+    "price_at_reset",
 }
 
 # ==============================================================================

@@ -28,6 +28,17 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 # ============================================================
+# CVD DIVERGENCE — supressão pós-reset (configurável em settings.py)
+# ============================================================
+try:
+    from config import settings as _app_settings
+    _CVD_DIV_WARMUP_SECONDS = int(getattr(_app_settings, "CVD_DIV_WARMUP_SECONDS", 300))
+    _CVD_DIV_MIN_PERIOD_SECONDS = int(getattr(_app_settings, "CVD_DIV_MIN_PERIOD_SECONDS", 10))
+except Exception:
+    _CVD_DIV_WARMUP_SECONDS = 300
+    _CVD_DIV_MIN_PERIOD_SECONDS = 10
+
+# ============================================================
 # SUMMARY BUILDERS — interpretação pré-processada para a IA
 # ============================================================
 if TYPE_CHECKING:
@@ -1256,14 +1267,36 @@ def _build_cvd_divergence(event_data: dict) -> dict:
                 }
         return {}
 
-    # Fallback: usar CVD bruto + tendência de preço para inferir
+    # Fallback: usar CVD bruto + preço (mesmo período do reset) para inferir
     fluxo = event_data.get("fluxo_continuo", {})
     cvd_val = fluxo.get("cvd", 0) or 0
+    last_reset_ms = fluxo.get("last_reset_ms")
+    price_at_reset = fluxo.get("price_at_reset")
     multi_tf = event_data.get("multi_tf", {})
     trend_1h = multi_tf.get("1h", {}).get("tendencia", "")
 
+    # Camada 1/2.3: suprimir divergência logo após o reset (CVD ainda aquecendo
+    # e sem referência de preço confiável). Evita falso "bearish_div" na partida.
+    if last_reset_ms is not None:
+        epoch_ms = event_data.get("epoch_ms") or int(time.time() * 1000)
+        elapsed_ms = epoch_ms - last_reset_ms
+        if elapsed_ms < _CVD_DIV_WARMUP_SECONDS * 1000:
+            return {}
+        if elapsed_ms < _CVD_DIV_MIN_PERIOD_SECONDS * 1000:
+            return {}
+        if price_at_reset is None:
+            return {}
+
     if abs(cvd_val) > 0.5:
-        price_up = trend_1h in ("Alta",)
+        price_now = (
+            event_data.get("preco_fechamento")
+            or event_data.get("raw_event", {}).get("preco_fechamento")
+        )
+        if price_at_reset is not None and price_now:
+            # Camada 2: comparar CVD com o preço no MESMO período desde o reset
+            price_up = price_now > price_at_reset
+        else:
+            price_up = trend_1h in ("Alta",)
         cvd_up = cvd_val > 0
         diverging = price_up != cvd_up
 

@@ -215,6 +215,10 @@ AI_TEST_MIN_CHARS = 10         # Mínimo de chars para teste da IA ser considera
 MIN_TRADES_FOR_PIPELINE = 10   # Mínimo de trades por janela para processar pipeline
 WARMUP_WINDOWS = 3             # Janelas de aquecimento após reconexão
 
+# ===== CVD DIVERGENCE (correção pós-reset) =====
+CVD_DIV_WARMUP_SECONDS = 300      # Supressão da divergência CVD após reset do FlowAnalyzer (Camada 1)
+CVD_DIV_MIN_PERIOD_SECONDS = 10   # Período mínimo pós-reset p/ comparar preço vs CVD (Camada 2.3)
+
 # ===== CONFIGURAÇÕES DO PAYLOAD TRIPWIRE =====
 PAYLOAD_TRIPWIRE_GUARDRAIL_MAX = 0.30   # Max 30% de bloqueios (era sem config, default implícito)
 PAYLOAD_TRIPWIRE_ABORT_MAX = 0.02       # Max 2% de aborts

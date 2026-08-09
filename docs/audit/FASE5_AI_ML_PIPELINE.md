@@ -69,3 +69,41 @@ COMPRESS_V3_VALIDATION warnings=['price.c MISSING (RECOVERED)', 'flow MISSING', 
 Original keys: ['symbol', 'epoch_ms', 'preco_fechamento', 'multi_tf']
 ```
 Indica que alguns payloads chegam ao compressor sem seções obrigatórias (flow, whale, ob). O compressor recupera `price.c` mas não as demais seções.
+
+---
+
+## Backlog: institutional/cvd.py não integrado ao caminho live
+- Instanciado em `event_bridge.py:61`, nunca recebe update/process_trade
+- Possui testes unitários (`tests/unit/test_institutional_cvd.py`) mas não afeta produção
+- Decisão pendente: integrar ao event_bridge OU remover (dead weight)
+- Não bloqueante — CVD ativo real está em `flow_analyzer/core.py` (validado)
+
+---
+
+## Auditoria 2026-08-08: falso sinal de divergência CVD após reset do FlowAnalyzer
+
+### Problema
+O reset periódico do CVD (4h) zerava o `cvd` acumulado, mas o fallback de
+`_build_cvd_divergence` comparava esse CVD recém-zerado com a tendência de 1h
+inteira. Resultado: logo após o reset, vendas leves geravam "bearish_div"
+falso com `src=inferred` (confirmado no cenário FAIL do script de auditoria).
+
+### Correção (3 camadas)
+
+| Camada | O que faz | Onde |
+|---|---|---|
+| 1 | Supressão de `cvd_div` enquanto o CVD ainda aquece após o reset (`CVD_DIV_WARMUP_SECONDS`, default 300s) | `market_orchestrator/ai/payload_builder_compact.py` |
+| 2 | Comparação do CVD com a **variação de preço no mesmo período** desde o reset (`price_at_reset` capturado no reset), não com o trend_1h inteiro | `flow_analyzer/core.py` + `payload_builder_compact.py` |
+| 2.3 | Período pós-reset < `CVD_DIV_MIN_PERIOD_SECONDS` (10s) também suprime (referência de preço não confiável) | `payload_builder_compact.py` |
+
+### Mudanças
+- `flow_analyzer/core.py`: `_price_at_reset` capturado em `_reset_metrics()`; exposto na raiz de `get_flow_metrics()` como `last_reset_ms` e `price_at_reset`
+- `common/payload_optimizer_config.py`: `last_reset_ms`/`price_at_reset` movidos para `FIELDS_TO_KEEP_INTERNAL` (usados no cálculo interno antes da compressão; não vão ao payload final da IA)
+- `config/settings.py`: `CVD_DIV_WARMUP_SECONDS = 300`, `CVD_DIV_MIN_PERIOD_SECONDS = 10`
+
+### Validação
+- `scripts/diagnostics/audit_cvd_reset_divergence_test.py`: **PASS** (cenário que antes dava FAIL agora é suprimido; divergência real no mesmo período continua detectada como `bearish_div`)
+- `tests/payload/`: 265 passed
+- `tests/unit/test_institutional_cvd.py`: 16 passed
+- `tests/unit/test_flow_analyzer.py` + `tests/integration/test_optimization.py`: 40 passed
+- Consumidores de `cvd_div` (payload builder, `ai_payload_types`, `analyzer_qwen`) intactos — contrato `{det, type}` preservado
