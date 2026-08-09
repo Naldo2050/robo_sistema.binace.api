@@ -151,3 +151,41 @@ ORDER BY n DESC;
 ```
 
 Decisão de migração/descarte do histórico: **backlog**.
+
+---
+
+## Backlog: institutional/ — 13 módulos dead code (não integrados)
+
+Todos os módulos abaixo são instanciados APENAS dentro de
+`InstitutionalEventBridge` (institutional/event_bridge.py), que por
+sua vez nunca é instanciado no caminho de produção. O único
+consumidor real é `tests/unit/test_architecture_regressions.py:62`.
+
+Módulos afetados:
+- `garch_volatility.py` (`GARCHModel`)
+- `hurst_exponent.py` (`HurstCalculator`)
+- `kalman_filter.py` (`KalmanTrendFilter`)
+- `monte_carlo.py` (`MonteCarloSimulator`)
+- `fourier_cycles.py` (`FourierCycleAnalyzer`)
+- `market_regime_hmm.py` (`MarketRegimeHMM`)
+- `smart_money.py` (`SmartMoneyAnalyzer`)
+- `whale_detector.py` (`WhaleDetector`)
+- `iceberg_detector.py` (`IcebergDetector`)
+- `footprint.py` (`FootprintAnalyzer`) — duplamente morto (nem alimentado dentro do bridge)
+- `mean_reversion.py` (`MeanReversionAnalyzer`)
+- `entropy_analyzer.py` (`EntropyAnalyzer`)
+- `confluence_engine.py` (`ConfluenceEngine`)
+
+Observações:
+- Se `InstitutionalEventBridge` for plugado ao pipeline live
+  (ex: chamado em `_handle_signal_event`), os 13 módulos se tornam
+  ativos de uma vez — auditoria matemática seria necessária antes
+  disso
+- `enricher.py` (institutional/) é o ÚNICO módulo da pasta ativo
+  em produção (`market_orchestrator.py:124`), não depende do bridge
+- `footprint.py`: duplamente morto (não alimentado mesmo dentro do
+  bridge)
+- Decisão pendente: integrar bridge ao pipeline (com auditoria
+  prévia) OU remover os 13 módulos
+
+Não bloqueante. Nenhuma correção aplicada.
