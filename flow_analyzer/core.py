@@ -236,6 +236,9 @@ class FlowAnalyzer(IFlowAnalyzer):
         self._max_ts_seen = 0
         self._out_of_order_seen = False
         self._cache_degraded_until_ms = 0
+        self._flow_imbalance_min_trades = int(
+            _get_config("FLOW_IMBALANCE_MIN_TRADES", 5)
+        )
         
         # === CACHE DE AGREGAÇÃO ===
         self._cache_enabled = _get_config("FLOW_CACHE_ENABLED", DEFAULT_FLOW_CACHE_ENABLED)
@@ -1152,7 +1155,7 @@ class FlowAnalyzer(IFlowAnalyzer):
         
         # Flow imbalance
         total_vol = float(total_buy_usd + total_sell_usd)
-        if total_vol > 0:
+        if total_vol > 0 and len(relevant) >= self._flow_imbalance_min_trades:
             imbalance = float(total_buy_usd - total_sell_usd) / total_vol
             order_flow["flow_imbalance"] = decimal_round(imbalance, 4)
             
