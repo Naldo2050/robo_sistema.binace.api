@@ -107,3 +107,47 @@ falso com `src=inferred` (confirmado no cenário FAIL do script de auditoria).
 - `tests/unit/test_institutional_cvd.py`: 16 passed
 - `tests/unit/test_flow_analyzer.py` + `tests/integration/test_optimization.py`: 40 passed
 - Consumidores de `cvd_div` (payload builder, `ai_payload_types`, `analyzer_qwen`) intactos — contrato `{det, type}` preservado
+
+---
+
+## [data] Bug CRÍTICO corrigido: inversão de label de absorção e signal_direction
+
+Bugs corrigidos (commit `c3e5062a6450f780cd685f6d0407b6befa808a30`):
+1. `flow_analyzer/absorption.py`: labels invertidos (convenção de mercado: nomeia lado absorvido, não quem absorveu)
+2. `ai_payload_optimizer.py`: detector de divergência entre caminhos (warning rate-limited 1/60s)
+3. `data_handler.py`: revalidação aplicada a ambos os casos de absorção (não apenas `elif`)
+4. `market_orchestrator.py`: `BULLISH_RESULTS` frozenset corrigida, `signal_direction` captura absorção bullish como "long"
+
+### Contexto
+O caminho B (`flow_analyzer/absorption.py`) usava a convenção oposta à do
+`data_handler.py` (nomeava quem absorveu, não a agressão absorvida). O mesmo
+evento carregava os dois rótulos (ex: `resultado_da_batalha="Absorção de Venda"`
+vs `fluxo_continuo.absorption_analysis.label="Absorção de Compra"`), e a IA
+recebia por prioridade o label errado (`ai_payload_optimizer.py:709-715`).
+`signal_direction` (`market_orchestrator.py:996`) nunca capturava "Absorção de
+Venda" como "long" (mismatch de string → sempre "short").
+Válido também para `flow_analyzer/validation.py` (`guard_absorcao`) e para o
+`side` do `AbsorptionZoneMapper.record_event`.
+
+### Validação
+- `scripts/diagnostics/audit_absorption_duplo_disparo_test.py`: **SIM** (mesmo label nos dois caminhos; antes NAO)
+- `scripts/diagnostics/audit_absorption_prod_test.py`: A1-A6 e B1-B4 passam; **A4 ≠ A6** (assimetria corrigida)
+- `tests/unit/test_signal_direction_absorption.py` (novo): "Absorção de Venda" → long
+- Suítes: unit (absorption/zone-mapper/flow-analyzer) 60 passed; `tests/payload/` 265 passed; e2e comprehensive 59 passed
+
+### Impacto histórico
+Dados em `trading_bot.db` gravados desde `d181947` (out/2025) podem ter
+categorias de outcome invertidas para eventos de absorção (a coluna real da
+tabela `signal_outcomes` é `battle_result`). **Verificado em 2026-08-09**: o
+banco local (`dados/trading_bot.db`) está VAZIO — `signal_outcomes` tem 0
+registros (e `events` não armazena resultado). Nada a migrar localmente; se um
+banco de produção tiver histórico, a query de diagnóstico pendente é:
+
+```sql
+SELECT event_type, battle_result, COUNT(*) AS n
+FROM signal_outcomes
+GROUP BY event_type, battle_result
+ORDER BY n DESC;
+```
+
+Decisão de migração/descarte do histórico: **backlog**.
