@@ -274,6 +274,13 @@ class FlowAnalyzer(IFlowAnalyzer):
         # NOVO: Contador de out-of-order (nunca resetado automaticamente)
         self._out_of_order_count = 0
 
+        # Métricas Prometheus (noop-safe quando prometheus_client ausente)
+        try:
+            from .prometheus_metrics import PrometheusMetrics as _PromMetrics
+            self._prometheus: Any = _PromMetrics()
+        except Exception:
+            self._prometheus = None
+
         # Error tracking com limite
         self._error_counts = BoundedErrorCounter(max_keys=100)
         
@@ -513,17 +520,27 @@ class FlowAnalyzer(IFlowAnalyzer):
                 if conversion:
                     self._is_buyer_maker_conversions += 1
                 
-                # Out-of-order detection
-                if ts < self._max_ts_seen:
+                # Out-of-order detection.
+                # Usa T_raw (timestamp ORIGINAL do trade): o orquestrador
+                # clampeia T (T = last_T) ANTES de enviar aqui; comparar com o
+                # T já clampeado mascararia a detecção (ts == _max_ts_seen).
+                # Sem T_raw (ex: replay/backtest), usa o próprio ts.
+                ooo_ts_raw = int(trade.get("T_raw") or processed["ts"])
+                if ooo_ts_raw < self._max_ts_seen:
                     self._out_of_order_seen = True
                     self._out_of_order_count += 1  # NOVO: Incrementa contador
+                    if self._prometheus is not None:
+                        try:
+                            self._prometheus.record_ooo()
+                        except Exception:
+                            pass
                     max_window_ms = max(self.net_flow_windows_min) * 60_000 if self.net_flow_windows_min else 60_000
                     self._cache_degraded_until_ms = max(
                         self._cache_degraded_until_ms,
                         reference_ts + max_window_ms
                     )
                 else:
-                    self._max_ts_seen = ts
+                    self._max_ts_seen = ooo_ts_raw
                 
                 # CVD
                 self.cvd += delta_btc_dec

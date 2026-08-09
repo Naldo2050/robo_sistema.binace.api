@@ -31,6 +31,20 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import config
 from trading.trade_buffer import AsyncTradeBuffer, BufferStatus
 
+# ====== Contador Prometheus: trades com timestamp corrigido (clamp T<last_T) ======
+# Exposto no endpoint /metrics (porta 8000) via REGISTRY padrão do prometheus_client
+# (monitoring/pipeline_health.py usa generate_latest(REGISTRY)).
+try:
+    from prometheus_client import Counter as _PromCounter
+    TRADES_CORRECTED_TOTAL = _PromCounter(
+        "orchestrator_trades_timestamp_corrected_total",
+        "Total de trades com timestamp corrigido (clamp T<last_T) no on_message",
+    )
+    PROMETHEUS_OK = True
+except Exception:
+    TRADES_CORRECTED_TOTAL = None
+    PROMETHEUS_OK = False
+
 # ====== Clock Sync (opcional) ======
 # REMOVIDO: ClockSync duplicado - TimeManager já faz sincronização robusta com Binance
 # Isso evita conflitos entre dois sistemas de sincronização de tempo
@@ -314,6 +328,13 @@ class EnhancedMarketBot:
         self.window_count = 0  # Contador de janelas processadas
         self.window_data = []  # Trades na janela atual
         self.window_end_ms = None  # Timestamp de fechamento da janela
+
+        # ====== Trades fora de ordem (clamp T<last_T) ======
+        self._ooo_trades_count = 0
+        self._last_ooo_log_ts = 0.0
+        self._ooo_log_interval_sec = float(
+            getattr(config, "OOO_LOG_INTERVAL_SEC", 60)
+        )
 
 
         # ====== Hist?ricos de Volume e Delta ======
@@ -730,14 +751,30 @@ class EnhancedMarketBot:
                 return
 
             # 5.1) Normalização de T para garantir monotonicidade
+            # O timestamp ORIGINAL é preservado em T_raw (consumido por
+            # flow_analyzer/core.py para a detecção de out-of-order); o clamp
+            # vale apenas para ordenação de janela/agregação.
+            T_original = T
             last_T = self._last_trade_ts_ms
             if last_T is not None and T < last_T:
-                logging.debug(
-                    "Timestamp de trade fora de ordem detectado: T_atual=%d < T_ultimo=%d (normalizando para T=%d)",
-                    T,
-                    last_T,
-                    last_T,
-                )
+                self._ooo_trades_count += 1
+                if PROMETHEUS_OK and TRADES_CORRECTED_TOTAL is not None:
+                    try:
+                        TRADES_CORRECTED_TOTAL.inc()
+                    except Exception:
+                        pass
+                now = time.time()
+                if now - self._last_ooo_log_ts >= self._ooo_log_interval_sec:
+                    self._last_ooo_log_ts = now
+                    logging.warning(
+                        "Timestamp de trade fora de ordem: T_atual=%d < T_ultimo=%d "
+                        "(delta=%dms, total_corrigidos=%d). Clamp aplicado para "
+                        "ordenação de janela; T original preservado em T_raw.",
+                        T,
+                        last_T,
+                        last_T - T,
+                        self._ooo_trades_count,
+                    )
                 T = last_T
             else:
                 self._last_trade_ts_ms = T
@@ -750,7 +787,7 @@ class EnhancedMarketBot:
             # 7) Atualiza estados compartilhados
             self._last_price = p
 
-            norm = {"p": p, "q": q, "T": T, "m": bool(m)}
+            norm = {"p": p, "q": q, "T": T, "T_raw": T_original, "m": bool(m)}
 
             # Adiciona trade ao buffer assíncrono
             def process_trade_sync(trade):
