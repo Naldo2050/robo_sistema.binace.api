@@ -38,13 +38,18 @@ playwright_user_data/
 
 # ==============================
 # Local Data Folders (NÃO DEVEM SER COMMITADOS)
+# NOTA: comentários inline quebram os padrões; manter comentários em linha própria
 # ==============================
-dados/                  # DBs, logs locais etc.
+dados/
 firefox_data/
 gemini_data/
-features/               # FeatureStore em Parquet (produção)
-test_output/             # Saída de testes do FeatureStore
-ml/models/              # Modelos treinados (XGBoost, metadados, scalers)
+features/
+test_output/
+ml/models/
+
+# Caches de runtime e relatórios dentro de dados/
+dados/fred_cache.json
+dados/ooo_report*.json
 
 # ==============================
 # Arquivos de Dados Específicos
@@ -148,6 +153,8 @@ coverage_report.txt
 pytest_output.txt
 test_output.txt
 htmlcov/
+coverage.xml
+coverage_html/
 
 # ==============================
 # Keys and Secrets
