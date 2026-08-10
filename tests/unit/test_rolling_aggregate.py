@@ -277,13 +277,13 @@ class TestRollingAggregatePruning:
 
 
 class TestRollingAggregateEviction:
-    """Testes para eviction por max_trades."""
-    
-    def test_eviction_by_max_trades(self):
-        """Testa que max_trades força eviction (FIFO)."""
+    """Testes para eviction híbrida (Fix 4: tempo é o critério primário)."""
+
+    def test_no_count_eviction_within_window(self):
+        """Fix 4: trades dentro da janela temporal NÃO são evictados por contagem."""
         agg = RollingAggregate(window_min=1, max_trades=5)
-        
-        # Adiciona 10 trades
+
+        # Adiciona 10 trades na MESMA janela de 1m (antes do fix: ficavam 5)
         for i in range(10):
             agg.add_trade({
                 'ts': 1000 + i,
@@ -292,21 +292,38 @@ class TestRollingAggregateEviction:
                 'delta_btc': 1.0,
                 'side': 'buy'
             }, whale_threshold=999.0)
-        
-        # Deve ter apenas 5 trades
-        assert len(agg.trades) == 5
-        
-        # Evictions devem ter ocorrido
-        assert agg.capacity_evictions == 5
-        
-        # Trades devem ser os últimos 5
-        # Preços: 105, 106, 107, 108, 109
-        metrics = agg.get_metrics(100.0)
-        assert metrics['ohlc'][0] == 105.0  # Open (primeiro da fila)
-        assert metrics['ohlc'][3] == 109.0  # Close (último)
-        
-        # Soma deve ser 5.0 (5 trades de 1.0 cada)
-        assert agg.sum_buy_btc == Decimal('5.0')
+
+        # Todos os 10 devem permanecer (janela real cobre todos)
+        assert len(agg.trades) == 10
+
+        # Nenhuma eviction por contagem deve ter ocorrido
+        assert agg.capacity_evictions == 0
+
+        # Soma deve ser 10.0 (10 trades de 1.0 cada)
+        assert agg.sum_buy_btc == Decimal('10.0')
+
+    def test_time_eviction_outside_window(self):
+        """Fix 4: trades mais antigos que a janela são evictados por tempo."""
+        agg = RollingAggregate(window_min=1, max_trades=100)
+
+        base = 1_000_000
+        # 2 trades dentro da janela, 1 trade 70s antes (fora da janela de 1m)
+        agg.add_trade({
+            'ts': base - 70_000, 'qty': 1.0, 'price': 100.0,
+            'delta_btc': 1.0, 'side': 'buy'
+        }, whale_threshold=999.0)
+        agg.add_trade({
+            'ts': base, 'qty': 1.0, 'price': 101.0,
+            'delta_btc': 1.0, 'side': 'buy'
+        }, whale_threshold=999.0)
+        agg.add_trade({
+            'ts': base + 1_000, 'qty': 1.0, 'price': 102.0,
+            'delta_btc': 1.0, 'side': 'buy'
+        }, whale_threshold=999.0)
+
+        # Trade de base-70s foi removido por eviction temporal no add
+        assert len(agg.trades) == 2
+        assert agg.sum_buy_btc == Decimal('2.0')
 
 
 class TestRollingAggregateOHLCRecompute:

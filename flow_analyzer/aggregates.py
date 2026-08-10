@@ -12,12 +12,20 @@ Implementa agregação incremental O(1) com:
 from collections import deque, defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
+import logging
 from typing import Dict, Any, Optional, Tuple
 
 from .constants import (
     DECIMAL_ZERO,
     MAX_AGGREGATE_TRADES,
 )
+
+logger = logging.getLogger(__name__)
+
+# Cap duro de contagem (segurança contra flash crash com volume anormal).
+# O critério PRIMÁRIO de eviction é temporal (janela real); este cap só
+# protege a memória em cenários de volume absurdo (ex: >5000 trades/60s).
+MAX_TRADES_HARD_CAP = 5000
 
 
 @dataclass
@@ -114,12 +122,39 @@ class RollingAggregate:
         # Métricas
         self.last_update = 0
         self.capacity_evictions = 0
+        self._last_cap_log = 0
     
     def _evict_if_needed(self) -> None:
-        """Evict manual para respeitar max_trades mantendo somas consistentes."""
-        while len(self.trades) > self.max_trades:
+        """
+        Eviction HÍBRIDA:
+        - Critério primário: temporal (janela real, ex: 60000ms para 1m).
+          Garante que a janela cobre ~60s reais de dados mesmo em mercado
+          acelerado (>10 trades/s), em vez de truncar por contagem (~15s).
+        - Critério de segurança: cap duro de contagem (MAX_TRADES_HARD_CAP),
+          só para não estourar memória em flash crash com volume anormal.
+        Mantém somas consistentes (toda remoção passa por _remove_left).
+        """
+        # Critério primário: evictar por tempo (janela real)
+        if self.trades and self.last_update:
+            cutoff_ms = self.last_update - self.window_ms
+            while self.trades and self.trades[0][0] < cutoff_ms:
+                self.capacity_evictions += 1
+                self._remove_left()
+
+        # Critério de segurança: cap duro de contagem
+        count_cap = max(self.max_trades, MAX_TRADES_HARD_CAP)
+        while len(self.trades) > count_cap:
             self.capacity_evictions += 1
             self._remove_left()
+            # logar 1x por segundo para não spam
+            if not hasattr(self, '_last_cap_log') or \
+               self.last_update - self._last_cap_log > 1000:
+                logger.warning(
+                    "RollingAggregate(%dm): hard cap hit (%d trades), "
+                    "evicting oldest. Market volume abnormally high.",
+                    self.window_min, count_cap
+                )
+                self._last_cap_log = self.last_update
     
     def _remove_left(self) -> None:
         """Remove trade mais antigo e atualiza todas as somas."""
