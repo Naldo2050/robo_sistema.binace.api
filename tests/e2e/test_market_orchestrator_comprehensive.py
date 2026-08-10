@@ -2388,7 +2388,9 @@ class TestMarketOrchestratorComprehensive:
         orchestrator.start()
         
         num_updates = 100
-        start_time = time.time()
+        # Usamos perf_counter() para maior precisão em testes de performance.
+        # O guard evita ZeroDivisionError em execuções extremamente rápidas no Windows.
+        start_time = time.perf_counter()
         
         tasks = []
         for i in range(num_updates):
@@ -2404,8 +2406,10 @@ class TestMarketOrchestratorComprehensive:
         
         results = await asyncio.gather(*tasks)
         
-        end_time = time.time()
+        end_time = time.perf_counter()
         elapsed = end_time - start_time
+        if elapsed <= 0.0:  # proteção extra para casos extremos
+            elapsed = 1e-6
         
         successful = sum(1 for r in results if r['success'])
         failed = num_updates - successful
