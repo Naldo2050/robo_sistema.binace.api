@@ -10,6 +10,17 @@ class HistoricalVolumeProfiler:
     """
     Calcula Volume Profile histórico (daily/weekly/monthly) a partir de klines da Binance.
 
+    ⚠️ NOTA DE NOMENCLATURA (auditoria 2026-08-09): apesar do nome "historical",
+    este perfil é INTRADAY em tempo real, NÃO o dia anterior completo:
+      - daily   = klines 1m de 00:00Z de HOJE até agora (dia corrente PARCIAL)
+      - weekly  = janela rolante de 7 dias (5m)
+      - monthly = janela rolante de 30 dias (15m)
+    Os níveis POC/VAH/VAL mudam a cada atualização (~60s) — não são níveis
+    fixos de referência diária. Os PIVOTS CLÁSSICOS do período anterior
+    completo são calculados separadamente por context_collector._calculate_pivots
+    (daily_pivot iloc[-2]) e têm prioridade em event.pivot_points (source=classic);
+    este VP é o FALLBACK (source=vp_fallback).
+
     Para cada perfil retorna:
         {
           "poc": float,

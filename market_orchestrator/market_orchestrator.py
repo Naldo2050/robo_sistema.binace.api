@@ -1457,7 +1457,21 @@ class EnhancedMarketBot:
                     or {}
                 )
                 _derivatives = signal.get("derivatives", {})
-                _pivot_data = signal.get("contextual_snapshot", {}).get("pivots", {})
+                # FIX pivot_points (auditoria 2026-08-09): fonte canônica dos pivots
+                # clássicos é macro_context["pivots"] (calculado por
+                # context_collector._calculate_pivots via daily_pivot iloc[-2] =
+                # período anterior COMPLETO, fix 75bd3ec). contextual_snapshot.pivots
+                # NÃO existe em nenhum evento real — era um dead wire que causava
+                # fallback silencioso para VP intraday parcial no enricher.
+                _pivot_data = (
+                    macro_context.get("pivots")
+                    or signal.get("contextual_snapshot", {}).get("pivots")
+                    or {}
+                )
+                if _pivot_data:
+                    # Propaga para o sinal: fonte primária do institutional enricher
+                    # (_build_pivot_points) e rastreável no evento final.
+                    signal["pivots"] = _pivot_data
 
                 # Extrair EMAs dos dados multi-TF
                 _emas = {}

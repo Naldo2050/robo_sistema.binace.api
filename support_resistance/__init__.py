@@ -54,7 +54,11 @@ def daily_pivot(df):
         'pivot': float(pivot),
         'r1': float(r1), 's1': float(s1),
         'r2': float(r2), 's2': float(s2),
-        'r3': float(r3), 's3': float(s3)
+        'r3': float(r3), 's3': float(s3),
+        # OHLC do período anterior completo (iloc[-2]): usados diretamente
+        # pelo institutional enricher para evitar drift de arredondamento na
+        # reconstrução h=2p-s1, l=2p-r1 a partir do pivot já arredondado.
+        'high': float(high), 'low': float(low), 'close': float(close),
     }
 
 

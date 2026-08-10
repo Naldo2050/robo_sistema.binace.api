@@ -1050,7 +1050,14 @@ class ContextCollector:
     # ---------- Pivots (Calculados) ----------
 
     async def _calculate_pivots(self, session: aiohttp.ClientSession) -> dict:
-        """Calcula Pivot Points Clássicos (D/W/M) usando klines históricos."""
+        """Calcula Pivot Points Clássicos (D/W/M) usando klines históricos.
+
+        Nota (auditoria 2026-08-09): usa daily_pivot/weekly_pivot/monthly_pivot
+        do support_resistance (iloc[-2] = período anterior COMPLETO, fix
+        75bd3ec). O resultado é consumido por market_orchestrator
+        (macro_context["pivots"]) e pelo institutional enricher — é a fonte
+        PRIMÁRIA de event.pivot_points (source=classic).
+        """
         pivots: Dict[str, Any] = {"daily": {}, "weekly": {}, "monthly": {}}
         try:
             # Daily (últimos 5 dias para garantir)
@@ -1068,6 +1075,12 @@ class ContextCollector:
             df_m = await self._fetch_klines(session, self.symbol, '1M', limit=5)
             if not df_m.empty:
                pivots["monthly"] = monthly_pivot(df_m)
+            
+            # Rastreabilidade: macro_context é reconstruído a cada
+            # CONTEXT_UPDATE_INTERVAL_SECONDS (300s); eventos podem usar um
+            # valor com até 5 min de idade — fixo durante o dia, aceitável,
+            # mas registra quando foi calculado.
+            pivots["calculated_at_ms"] = int(time.time() * 1000)
                
         except Exception as e:
             logger.debug(f"Falha calculo pivots: {e}")

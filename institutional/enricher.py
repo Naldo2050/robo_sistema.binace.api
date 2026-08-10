@@ -371,6 +371,12 @@ def _build_pivot_points(event: dict) -> dict:
     historical_vp = event.get("historical_vp", {}) or {}
     multi_tf = event.get("multi_tf", {}) or {}
     current_price = float(event.get("preco_fechamento", 0) or 0)
+    # FIX pivot_points (auditoria 2026-08-09): pivots clássicos do período
+    # anterior COMPLETO (calculados por context_collector._calculate_pivots
+    # → daily_pivot iloc[-2], fix 75bd3ec) são a fonte PRIMÁRIA. O campo
+    # "pivots" é injetado no sinal pelo market_orchestrator a partir de
+    # macro_context["pivots"]. Fallback: VP intraday parcial (marcado).
+    classic_pivots = event.get("pivots") or {}
 
     pivots = {}
     support_levels = []
@@ -390,54 +396,115 @@ def _build_pivot_points(event: dict) -> dict:
         degenerate = _is_vp_degenerate(vp)
 
         h = l = c = 0.0
+        source_tag = "vp_fallback"
+        classic_levels: dict = {}
 
-        if not degenerate and vp.get("vah") and vp.get("val") and vp.get("poc"):
-            # VP válido — usar diretamente
-            h, l, c = float(vp["vah"]), float(vp["val"]), float(vp["poc"])
-        else:
-            # VP degenerado ou ausente — usar OHLC real do multi_tf
-            tf_data = multi_tf.get(tf_key, {}) or {}
-            preco_tf = float(tf_data.get("preco_atual", 0) or 0)
-            atr_tf = float(tf_data.get("atr", 0) or 0)
-            ema_tf = float(tf_data.get("mme_21", 0) or 0)
-
-            if preco_tf > 0 and atr_tf > 0:
-                # Estimar H/L/C a partir de ATR: H ≈ EMA + ATR, L ≈ EMA - ATR
-                ref = ema_tf if ema_tf > 0 else preco_tf
-                h = round(ref + atr_tf, 2)
-                l = round(ref - atr_tf, 2)
-                c = round(preco_tf, 2)
-            elif preco_tf > 0:
-                # Sem ATR — usar ±0.5% como estimativa
-                pct = {"daily": 0.005, "weekly": 0.015, "monthly": 0.04}.get(period, 0.01)
-                h = round(preco_tf * (1 + pct), 2)
-                l = round(preco_tf * (1 - pct), 2)
-                c = round(preco_tf, 2)
+        # 1) Fonte PRIMÁRIA: pivots clássicos (período anterior completo).
+        #    Validação: pivot > 0; reconstrução de H/L via inversão exata das
+        #    fórmulas clássicas (s1 = 2p - h → h = 2p - s1 ; r1 = 2p - l →
+        #    l = 2p - r1) para manter o formato vah/val/poc do campo.
+        classic_data = classic_pivots.get(period) or {}
+        classic_valid = (
+            isinstance(classic_data, dict)
+            and classic_data.get("pivot") is not None
+            and float(classic_data.get("pivot") or 0) > 0
+        )
+        if classic_valid:
+            p_c = float(classic_data["pivot"])
+            # OHLC originais do período completo (propagados por daily_pivot,
+            # fix pivot_points 2026-08-09) — sem drift de arredondamento.
+            h = classic_data.get("high")
+            l = classic_data.get("low")
+            c = classic_data.get("close")
+            if h is not None and l is not None and c is not None:
+                h, l, c = float(h), float(l), float(c)
             else:
-                continue  # Sem dados suficientes — pular este TF
+                # Compatibilidade: dados legados sem high/low/close —
+                # reconstruir via inversão exata das fórmulas clássicas.
+                s1_c = classic_data.get("s1")
+                r1_c = classic_data.get("r1")
+                h = float(2 * p_c - s1_c) if s1_c is not None else None
+                l = float(2 * p_c - r1_c) if r1_c is not None else None
+                c = float(3 * p_c - h - l) if (h is not None and l is not None) else p_c
+            if h and l and c and h > l:
+                source_tag = "classic"
+                classic_levels = {
+                    "r1": classic_data.get("r1"), "s1": classic_data.get("s1"),
+                    "r2": classic_data.get("r2"), "s2": classic_data.get("s2"),
+                    "r3": classic_data.get("r3"), "s3": classic_data.get("s3"),
+                }
+            else:
+                h = l = c = 0.0
+
+        if source_tag != "classic":
+            # 2) Fallback: VP intraday parcial (dia corrente 00:00Z→agora)
+            if not degenerate and vp.get("vah") and vp.get("val") and vp.get("poc"):
+                # VP válido — usar diretamente
+                h, l, c = float(vp["vah"]), float(vp["val"]), float(vp["poc"])
+            else:
+                # VP degenerado ou ausente — usar OHLC real do multi_tf
+                tf_data = multi_tf.get(tf_key, {}) or {}
+                preco_tf = float(tf_data.get("preco_atual", 0) or 0)
+                atr_tf = float(tf_data.get("atr", 0) or 0)
+                ema_tf = float(tf_data.get("mme_21", 0) or 0)
+
+                if preco_tf > 0 and atr_tf > 0:
+                    # Estimar H/L/C a partir de ATR: H ≈ EMA + ATR, L ≈ EMA - ATR
+                    ref = ema_tf if ema_tf > 0 else preco_tf
+                    h = round(ref + atr_tf, 2)
+                    l = round(ref - atr_tf, 2)
+                    c = round(preco_tf, 2)
+                elif preco_tf > 0:
+                    # Sem ATR — usar ±0.5% como estimativa
+                    pct = {"daily": 0.005, "weekly": 0.015, "monthly": 0.04}.get(period, 0.01)
+                    h = round(preco_tf * (1 + pct), 2)
+                    l = round(preco_tf * (1 - pct), 2)
+                    c = round(preco_tf, 2)
+                else:
+                    continue  # Sem dados suficientes — pular este TF
 
         if h <= 0 or l <= 0 or c <= 0 or h <= l:
             continue
 
-        pivot = round((h + l + c) / 3, 2)
-        rng = h - l
+        if source_tag == "classic":
+            pivot = round(float(classic_data["pivot"]), 2)
+            pivot_data: dict = {
+                "pivot": pivot,
+                "r1": classic_levels["r1"],
+                "r2": classic_levels["r2"],
+                "r3": classic_levels["r3"],
+                "s1": classic_levels["s1"],
+                "s2": classic_levels["s2"],
+                "s3": classic_levels["s3"],
+                "vah": round(h, 2),
+                "val": round(l, 2),
+                "poc": round(c, 2),
+                "source": "classic",
+            }
+            if classic_pivots.get("calculated_at_ms"):
+                pivot_data["calculated_at_ms"] = classic_pivots["calculated_at_ms"]
+        else:
+            pivot = round((h + l + c) / 3, 2)
+            rng = h - l
 
-        pivot_data: dict = {
-            "pivot": pivot,
-            "r1": round(2 * pivot - l, 2),
-            "r2": round(pivot + rng, 2),
-            "r3": round(pivot + 2 * rng, 2),
-            "s1": round(2 * pivot - h, 2),
-            "s2": round(pivot - rng, 2),
-            "s3": round(pivot - 2 * rng, 2),
-            "vah": round(h, 2),
-            "val": round(l, 2),
-            "poc": round(c, 2),
-        }
+            pivot_data = {
+                "pivot": pivot,
+                "r1": round(2 * pivot - l, 2),
+                "r2": round(pivot + rng, 2),
+                "r3": round(pivot + 2 * rng, 2),
+                "s1": round(2 * pivot - h, 2),
+                "s2": round(pivot - rng, 2),
+                "s3": round(l - 2 * (h - pivot), 2),
+                "vah": round(h, 2),
+                "val": round(l, 2),
+                "poc": round(c, 2),
+                # Rastreabilidade: fallback é VP intraday PARCIAL (não é
+                # pivot clássico fixo — muda a cada ciclo de atualização)
+                "source": "multi_tf_fallback" if degenerate else "vp_fallback",
+            }
 
-        if degenerate:
-            pivot_data["vp_status"] = "insufficient_data"
-            pivot_data["source"] = "multi_tf_fallback"
+            if degenerate:
+                pivot_data["vp_status"] = "insufficient_data"
 
         pivots[period] = pivot_data
 
