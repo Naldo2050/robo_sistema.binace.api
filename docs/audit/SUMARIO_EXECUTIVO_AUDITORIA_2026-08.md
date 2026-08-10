@@ -2,7 +2,7 @@
 
 > **Período**: 2026-08-06 a 2026-08-09
 > **Escopo**: módulos que extraem/calculam dados de mercado para análise da IA (flow_analyzer, market_orchestrator, institutional/enricher, support_resistance, market_analysis, payload)
-> **Resultado**: 8 bugs de produção corrigidos (6 de corrupção silenciosa de sinal), 3 itens validados como corretos com stream real, 1 bloco de dead code mapeado, 26 commits
+> **Resultado**: 9 bugs de produção corrigidos (6 de corrupção silenciosa de sinal + 1 de observabilidade), 3 itens validados como corretos com stream real, 1 bloco de dead code mapeado, 27 commits
 > **Status**: rodada encerrada — backlog remanescente priorizado em §4
 
 ---
@@ -48,9 +48,9 @@ Para cada item auditado, o mesmo fluxo de 5 etapas:
 
 ---
 
-## 3. TABELA CONSOLIDADA — 12 ITENS AUDITADOS
+## 3. TABELA CONSOLIDADA — 13 ITENS AUDITADOS
 
-### 3.1 Bugs corrigidos (8)
+### 3.1 Bugs corrigidos (9)
 
 | # | Item | Causa raiz | Fix | Commit |
 |---|---|---|---|---|
@@ -62,6 +62,7 @@ Para cada item auditado, o mesmo fluxo de 5 etapas:
 | 6 | **Value Area sem região contígua** | VA calculado por ordenação de nodes, não por contiguidade a partir do POC | Método POC-outward (região contígua) + scripts de auditoria | `b9a644d` + `5d92765` |
 | 7 | **Direção do whale e TTL do macro** | Direção derivada errada (não `buy_pct`); macro `all_macro` desalinhado ao bloco 900s | `buy_pct` para direção do whale; TTL alinhado ao bloco 900s com force; `multi_tf`/VP/orderbook preservados no trigger sem sinal | `7a1f7cf` |
 | 8 | **Dead wire do pivot classic + fallback VP parcial rotulado de clássico** (duplo bug) | `market_orchestrator.py:1460` lia `contextual_snapshot.pivots` (inexistente); `enricher._build_pivot_points` usava VP intraday parcial de `historical_profiler.py:229` (00:00Z→agora) como se fosse pivot clássico | Wiring `macro_context.get("pivots")` + `signal["pivots"]`; enricher com fonte clássica primária (`source: classic`), fallback VP marcado (`vp_fallback`/`multi_tf_fallback`); OHLC propagado de `daily_pivot` (0% drift); `calculated_at_ms` | `aa97cf1` |
+| 9 | **Métricas Prometheus do FlowAnalyzer nunca atualizadas** | Observabilidade: infra de exposição OK (REGISTRY correto, `/metrics` servido), mas dead-wire de ATUALIZAÇÃO — só `record_ooo()` era chamado em `flow_analyzer/core.py`; `set_cvd`/`set_whale_delta`/`set_flow_trades_count`/`record_trade` nunca invocados; 2ª instância de `PrometheusMetrics()` degrada para `_prometheus=None` (try/except do construtor engole `ValueError: Duplicated timeseries`) | Wiring mínimo em `process_trade` (guard `if self._prometheus is not None`): setters de CVD/whale/flow_trades_count + `record_trade` (válido/inválido); teste `test_flow_analyzer_metrics.py` com cleanup de REGISTRY; 39 unit + 4 integração + 24 REGISTRY PASS | `ab0ad8a` |
 
 ### 3.2 Itens validados como corretos (3)
 
@@ -77,7 +78,7 @@ Para cada item auditado, o mesmo fluxo de 5 etapas:
 |---|---|---|---|
 | 12 | **13 módulos `institutional/` + caminhos mortos da IA** | `InstitutionalEventBridge` nunca instanciado no live (só em `test_architecture_regressions.py:62`); 13 módulos (garch, hurst, kalman, monte_carlo, fourier, HMM, smart_money, whale, iceberg, footprint, mean_reversion, entropy, confluence) + `order_flow_imbalance.py` e `event_stats_model.py` (descrições trocadas, caminho morto). Auditoria de pivots revelou mais: `build_ai_input` NUNCA chamado em produção, `payload_compressor_v3` só em testes/fallback, `contextual_snapshot.pivots` inexistente, `features/multi_tf_feature_builder.py` NÃO EXISTE, `calculate_multi_timeframe_pivots` só roda em testes/health_check | `003a3e7` + seções FASE5 + auditoria pivots |
 
-**Total**: 8 bugs corrigidos + 3 validados + 1 bloco de dead code mapeado = **12 itens**.
+**Total**: 9 bugs corrigidos + 3 validados + 1 bloco de dead code mapeado = **13 itens**.
 
 ---
 
@@ -88,8 +89,18 @@ Para cada item auditado, o mesmo fluxo de 5 etapas:
 | 1 | 🔴 ALTA | **ML: BB `ddof` + NaN fill (bloqueante para `HYBRID_ENABLED=True`)** | `feature_calculator.py:153` usa `np.std()` (ddof=0) vs treino/inferência ddof=1 → bandas divergem 0,2-2%; treino faz `fillna(median)` e inferência manda NaN nativo ao XGBoost. Modelo atual tem 9 amostras (AUC sem significado) — religar exige dataset ≥ 500 + retreino | Documentado `ed85946`; corrigir junto do próximo ciclo de retreino |
 | 2 | 🟠 MÉDIA | **`institutional/`: 13 módulos + OFI institucional — integrar ou remover** | Dead code (item 12); se o bridge for plugado ao live, os 13 módulos exigem auditoria matemática prévia; `enricher.py` é o único ativo e fica | Decisão pendente (`003a3e7`) |
 | 3 | 🟠 MÉDIA | **`last_reset_ms` ausente em `ANALYSIS_TRIGGER`** | Presente em eventos de sinal (Absorção/Exaustão) mas não no `fluxo_continuo` dos triggers → supressão Camada-1 do `cvd_div` é pulada no caminho de trigger (Camada-2 compensou na observação) | Registrado no `RELATORIO_OBSERVACAO_2026-08-09` §3-B.3/§5.2 |
-| 4 | 🔴 ALTA | **Métricas Prometheus do FlowAnalyzer nunca atualizadas — INVESTIGAR** | `flow_analyzer_cvd`, `flow_analyzer_trades_total`, `flow_analyzer_trades_invalid_total` NUNCA atualizados em `flow_analyzer/core.py` (só `record_ooo` é chamado); `flow_analyzer_cvd` ficou 0.0 durante toda a observação. **Mesmo padrão do bug de pivot dead-wire** (métrica existe, ninguém alimenta) — investigar antes de confiar em qualquer dashboard | Registrado no `RELATORIO_OBSERVACAO_2026-08-09` §5.4 |
-| 5 | 🟡 BAIXA | **Contaminação histórica potencial em `signal_outcomes`** | Labels de absorção invertidos desde `d181947` (out/2025); banco local `signal_outcomes` VAZIO (0 registros) — nada a migrar localmente; produção externa pode ter dados afetados | Query de diagnóstico pendente (`SELECT event_type, battle_result, COUNT(*) FROM signal_outcomes GROUP BY 1,2 ORDER BY 3 DESC`); decisão de descarte em backlog (FASE5) |
+| 4 | 🟡 BAIXA | **Contaminação histórica potencial em `signal_outcomes`** | Labels de absorção invertidos desde `d181947` (out/2025); banco local `signal_outcomes` VAZIO (0 registros) — nada a migrar localmente; produção externa pode ter dados afetados | Query de diagnóstico pendente (`SELECT event_type, battle_result, COUNT(*) FROM signal_outcomes GROUP BY 1,2 ORDER BY 3 DESC`); decisão de descarte em backlog (FASE5) |
+
+### Backlog: verificar exclusividade de threshold em bucketing de qty
+
+- Observado durante debug do teste de métricas Prometheus
+  (`test_flow_analyzer_metrics.py`): qty 0.5 cai no bucket "mid"
+  por limite exclusivo (não inclusivo)
+- Verificar se essa é a classificação correta esperada
+  (ex: threshold de whale/retail) ou se há inconsistência de
+  borda semelhante à já corrigida no OFI institucional
+  (`_window_initialized`)
+- Não bloqueante — apenas confirmar intencionalidade
 
 **Não-bloqueante** (registrado, fora do escopo): `except Exception:` silenciosos
 (TECH_DEBT 2026-08-04), persistência de trades brutos por janela (limitação da
@@ -128,6 +139,7 @@ enricher (cosmético, sem impacto funcional).
 | `aa97cf1` | **fix** | dead wire do pivot classic + fallback VP rotulado (duplo bug de pivot_points) |
 | `3986822` | chore(housekeeping) | remove backup legado `eventos-fluxo.json.legacy`; ignora `logs/observation_*` |
 | `1431cf5` | docs(audit) | validação pós-fix de pivot_points em produção real |
+| `ab0ad8a` | **fix** | wiring das métricas Prometheus do FlowAnalyzer (CVD/whale/flow_trades_count/trades_total/invalid) + teste de regressão `test_flow_analyzer_metrics.py` |
 
 **Legenda**: `**fix**` = correção de bug de produção; demais = refactor/chore/docs de suporte à rodada.
 
@@ -142,6 +154,13 @@ enricher (cosmético, sem impacto funcional).
   `CONTEXT_UPDATE_INTERVAL_SECONDS`); divergência vs `(H+L+C)/3` da vela 1d
   anterior (API Binance) = **0,0%**; `validate_production_run.py` B.6 **PASS**
   (era WARN pré-fix).
+- **Métricas Prometheus do FlowAnalyzer** (`ab0ad8a`): CVD, whale_delta,
+  flow_trades_count, trades_total e trades_invalid_total agora são atualizados
+  a cada `process_trade` (antes só `record_ooo`); validado por
+  `test_flow_analyzer_metrics.py` (3 testes lendo o REGISTRY padrão) + suítes
+  unit/integração (39 + 4 + 24 PASS). Nota: 2ª instância de
+  `PrometheusMetrics()` no mesmo processo degrada para `_prometheus=None`
+  (try/except no construtor) — investigação futura se houver múltiplos bots.
 - **git status**: limpo ao final da rodada.
 
 **Documentos da rodada**: `AUDITORIA_PIVOT_POINTS_2026-08-09.md`,
