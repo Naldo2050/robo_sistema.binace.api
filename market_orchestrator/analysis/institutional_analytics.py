@@ -443,6 +443,8 @@ class InstitutionalAnalyticsEngine:
                         "lvn": vp_data.get("lvns", []),
                         "hvn_levels": vp_data.get("hvn_levels", []),
                     },
+                    "price_bins": vp_data.get("price_bins") or [],
+                    "volume_per_bin": vp_data.get("volume_per_bin") or [],
                     "current_position": {"price": current_price},
                 }
 

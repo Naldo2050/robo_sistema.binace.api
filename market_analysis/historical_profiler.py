@@ -93,6 +93,8 @@ class HistoricalVolumeProfiler:
             "hvns": [],
             "lvns": [],
             "single_prints": [],
+            "price_bins": [],
+            "volume_per_bin": [],
             "volume_nodes": {"hvn_nodes": [], "lvn_nodes": []},
             "status": "no_data",
         }
@@ -183,6 +185,8 @@ class HistoricalVolumeProfiler:
                 "hvns": hvn_prices,
                 "lvns": lvn_prices,
                 "single_prints": single_prints,
+                "price_bins": [float(p) for p in price_volume.index],
+                "volume_per_bin": [float(v) for v in price_volume.values],
                 "volume_nodes": {
                     "hvn_nodes": hvn_nodes,
                     "lvn_nodes": lvn_nodes,

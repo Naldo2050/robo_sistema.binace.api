@@ -1094,6 +1094,18 @@ class EventSaver:
             except Exception as e:
                 self.logger.exception("Falha ao otimizar evento (pré-processamento)")
 
+        # ETAPA 4 — bins internos do volume profile fora da representação persistida.
+        # price_bins/volume_per_bin são necessários apenas internamente
+        # (historical_profiler -> institutional_analytics -> value_area_volume_pct);
+        # persisti-los inflaria o payload em ~100 KB/evento sem uso downstream.
+        # strip_profile_bins opera sobre CÓPIA: o evento original (IA/consumidores)
+        # permanece com os bins intactos.
+        try:
+            from data_processing.fix_optimization import strip_profile_bins
+            event = strip_profile_bins(event)
+        except Exception:
+            self.logger.exception("Falha ao sanitizar historical_vp (bins) para persistência")
+
         if not isinstance(event, dict):
             self.logger.error("Evento inválido: não é um dicionário")
             return

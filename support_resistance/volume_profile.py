@@ -366,7 +366,19 @@ class VolumeProfileAnalyzer:
                 vol_in_va = float(np.sum(vol_arr[mask]))
                 total_vol = float(np.sum(vol_arr))
             else:
-                # Fallback: recontagem por range sobre preços originais
+                # Fallback: recontagem por range sobre preços originais.
+                # Guard: com < 2 pontos reais não há distribuição a medir
+                # (dados dummy [current_price]/[1.0] fabricavam 0% ou 100%
+                # conforme a posição do preço na VA — total_volume==1).
+                if len(self.price_data) < 2 or len(self.volume_data) < 2:
+                    return {
+                        "value_area_volume_pct": 0.0,
+                        "interpretation": "insufficient_data",
+                        "breakout_risk": "UNKNOWN",
+                        "volume_in_va": 0.0,
+                        "total_volume": 0.0,
+                        "compression_signal": False,
+                    }
                 mask = (self.price_data >= val) & (self.price_data <= vah)
                 vol_in_va = float(self.volume_data[mask].sum())
                 total_vol = float(self.volume_data.sum())

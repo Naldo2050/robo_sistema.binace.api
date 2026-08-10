@@ -45,24 +45,24 @@ def clean_event(evt):
         return evt
     return recursive_remove(evt)
 
+def get_in(d, path):
+    cur = d
+    for k in path:
+        if not isinstance(cur, dict) or k not in cur:
+            return None
+        cur = cur[k]
+    return cur
+
+def set_in(d, path, value):
+    cur = d
+    for k in path[:-1]:
+        if k not in cur or not isinstance(cur[k], dict):
+            cur[k] = {}
+        cur = cur[k]
+    cur[path[-1]] = value
+
 def simplify_historical_vp(evt):
     # tenta achar historical_vp em locais comuns
-    def get_in(d, path):
-        cur = d
-        for k in path:
-            if not isinstance(cur, dict) or k not in cur:
-                return None
-            cur = cur[k]
-        return cur
-
-    def set_in(d, path, value):
-        cur = d
-        for k in path[:-1]:
-            if k not in cur or not isinstance(cur[k], dict):
-                cur[k] = {}
-            cur = cur[k]
-        cur[path[-1]] = value
-
     locations = [
         ["historical_vp"],
         ["raw_event","historical_vp"],
@@ -105,6 +105,53 @@ def simplify_historical_vp(evt):
                 new_vp[tf] = slim
             set_in(evt, loc, new_vp)
     return evt
+
+def strip_profile_bins(evt):
+    """
+    ETAPA 4: remove price_bins/volume_per_bin do historical_vp
+    (daily/weekly/monthly) na representação PERSISTIDA do evento.
+
+    Os bins são necessários apenas internamente
+    (historical_profiler -> institutional_analytics -> value_area_volume_pct);
+    persisti-los inflaria o payload em ~100 KB/evento sem uso downstream.
+
+    Não muta o evento original: retorna cópia profunda SOMENTE quando há bins
+    a remover; caso contrário retorna o mesmo objeto (custo zero).
+    """
+    if not isinstance(evt, dict):
+        return evt
+
+    locations = [
+        ["historical_vp"],
+        ["raw_event", "historical_vp"],
+        ["contextual_snapshot", "historical_vp"],
+        ["raw_event", "raw_event", "historical_vp"],
+    ]
+
+    def _has_bins(vp):
+        if not isinstance(vp, dict):
+            return False
+        for tf in ("daily", "weekly", "monthly"):
+            tf_vp = vp.get(tf)
+            if isinstance(tf_vp, dict) and ("price_bins" in tf_vp or "volume_per_bin" in tf_vp):
+                return True
+        return False
+
+    if not any(_has_bins(get_in(evt, loc)) for loc in locations):
+        return evt
+
+    import copy
+    out = copy.deepcopy(evt)
+    for loc in locations:
+        vp = get_in(out, loc)
+        if not isinstance(vp, dict):
+            continue
+        for tf in ("daily", "weekly", "monthly"):
+            tf_vp = vp.get(tf)
+            if isinstance(tf_vp, dict):
+                tf_vp.pop("price_bins", None)
+                tf_vp.pop("volume_per_bin", None)
+    return out
 
 def remove_enriched_snapshot(evt):
     def pop_key(obj, key: str):
