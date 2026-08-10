@@ -115,6 +115,7 @@ def make_compact_payload() -> dict:
         },
         "qual": {
             "lat": "OK",
+            "liq": "NORMAL",
         },
         "alerts": [
             {"type": "SUPPORT_TEST",    "sev": "H", "lvl": 66839},

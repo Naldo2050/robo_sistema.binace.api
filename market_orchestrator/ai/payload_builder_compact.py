@@ -1522,21 +1522,31 @@ def build_compact_payload(
     # FIX 3a: capturar feriado
     is_holiday = calendar_data.get("is_us_holiday", 0)
     holiday_name = calendar_data.get("holiday_name", "")
+    # FIX (ETAPA 3): origem REAL do orderbook (orderbook_data.data_source é
+    # injetada em market_orchestrator a partir do data_quality do analyzer).
+    # live -> omitida; qualquer outra origem degradada (stale/cache/fallback/
+    # emergency/external/unknown) é propagada para o resumo da IA.
+    ob_src = (event_data.get("orderbook_data", {}) or {}).get("data_source")
 
     # Emitir qual SEMPRE que houver dado de latência/liquidez (mesmo OK),
     # para que o quality_summary não trate latência boa como "desconhecida".
-    if latency_data or calendar_data:
+    if latency_data or calendar_data or (ob_src and ob_src != "live"):
         qual: dict[str, Any] = {}
         if cat:
             qual["lat"] = cat[:4]
-        # FIX 3a: não truncar liq — preservar VERY_LOW intacto
-        if liq and liq != "NORMAL":
+        # FIX (ETAPA 3): emitir liq SEMPRE que houver dado (inclusive NORMAL).
+        # Antes o filtro `liq != "NORMAL"` tornava a ausência ambígua
+        # (NORMAL ou sem calendário) — e o quality_summary promovia a
+        # ausência a NORMAL (fail-open).
+        if liq:
             qual["liq"] = liq
         if lat and lat > 2000:
             qual["ms"] = round(lat)
         # FIX 3a: incluir feriado no payload
         if is_holiday and holiday_name:
             qual["holiday"] = holiday_name[:25]
+        if ob_src and ob_src != "live":
+            qual["src"] = ob_src
         if qual:
             payload["qual"] = qual
 

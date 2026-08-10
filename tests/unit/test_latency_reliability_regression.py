@@ -73,13 +73,23 @@ def _event_with_latency(
                 "data_freshness": freshness,
                 "is_acceptable": is_acceptable,
                 "is_stale": is_stale,
-            }
+            },
+            # FIX (ETAPA 3): calendar sempre emitido pelo produtor
+            # (institutional_analytics.py:668-672). Fixture espelha o
+            # contrato para não dar falso "liquidez desconhecida".
+            "calendar": {
+                "expected_liquidity": "NORMAL",
+            },
         }
     }
     return ev
 
 
 def _summary_for_qual(qual: dict) -> dict:
+    # FIX (ETAPA 3): liq é sempre emitido pelo builder quando há calendário
+    # (contrato do produtor). Helper espelha o contrato para isolar latência.
+    qual = dict(qual)
+    qual.setdefault("liq", "NORMAL")
     return build_quality_summary({"qual": qual, "ctx": {}})
 
 
@@ -246,6 +256,10 @@ def test_reliability_score_penalizes_stale_latency():
 
 def test_reliability_score_keeps_full_score_for_acceptable_latency():
     ev = _event_with_latency(3000, "ACCEPTABLE", True, freshness="NEAR_REAL_TIME")
+    # FIX (ETAPA 3): evento saudável tem orderbook_quality="live" injetado
+    # pelo market_orchestrator._enrich_signal (fonte "live" do analyzer).
+    # Ausência de orderbook_quality agora é fail-closed (degradado).
+    ev["orderbook_quality"] = "live"
     enrich_signal(ev)
     assert ev["reliability_score"] == 10.0
 

@@ -225,10 +225,18 @@ def _build_metadata_fields(
 
     # Reliability: penaliza dados stale / ausência de OB / ausência de fluxo
     reliability = 10.0
-    ob_quality = event.get("orderbook_quality", "live")
+    # FIX (ETAPA 3): default fail-closed com rótulo honesto. Antes
+    # `event.get("orderbook_quality", "live")` promovia ausência de
+    # informação de qualidade do orderbook a "live" (sem penalidade).
+    # "cache" foi o primeiro default escolhido, mas tem conotação de
+    # origem real; "unknown" comunica corretamente AUSÊNCIA de
+    # informação. Mesma penalidade do tier degradado (peso -1.5, sem
+    # peso novo): ausência não vira KNOWN_GOOD nem falsifica provenance
+    # (a IA só recebe qual["src"] quando a origem é conhecida).
+    ob_quality = event.get("orderbook_quality", "unknown")
     if ob_quality == "emergency":
         reliability -= 3.0
-    elif ob_quality == "cache":
+    elif ob_quality in ("cache", "unknown"):
         reliability -= 1.5
 
     # FIX (ETAPA 2): penalidade derivada dos flags canônicos de latência

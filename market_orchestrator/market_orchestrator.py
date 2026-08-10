@@ -1379,14 +1379,27 @@ class EnhancedMarketBot:
                 # FIX 3.4: Consolidar quality dentro de orderbook_data
                 if isinstance(signal.get("orderbook_data"), dict):
                     signal["orderbook_data"]["is_valid"] = dq.get("is_valid", True)
-                    signal["orderbook_data"]["data_source"] = dq.get("data_source", "live")
-                src = dq.get("data_source")
-                if src == "emergency":
-                    signal["orderbook_quality"] = "emergency"
-                elif src == "cache":
-                    signal["orderbook_quality"] = "cache"
-                else:
+                    signal["orderbook_data"]["data_source"] = dq.get("data_source", "unknown")
+                # FIX (ETAPA 3): origem NÃO-live não pode virar "live".
+                # O orderbook_analyzer sinaliza data_source="stale" (snapshot
+                # antigo via fallback), "fallback_rest", "circuit_open",
+                # "external" e "unknown" (estado inicial). Antes, o else
+                # colapsava TODAS para orderbook_quality="live" — dado stale
+                # renderia reliability_score plena e confiança plena na IA.
+                # FIX (AJUSTE FINAL): ordem estritamente fail-closed — SOMENTE
+                # match exato com "live" produz "live". Qualquer origem não
+                # mapeada explicitamente (inclusive valores futuros/novos)
+                # cai no else -> tier "unknown" (mesmo peso -1.5 do tier
+                # degradado no enricher). A origem real NUNCA é perdida:
+                # orderbook_data.data_source acima preserva o valor original,
+                # que o payload_builder_compact propaga como qual["src"].
+                src = dq.get("data_source") or "unknown"
+                if src == "live":
                     signal["orderbook_quality"] = "live"
+                elif src == "emergency":
+                    signal["orderbook_quality"] = "emergency"
+                else:
+                    signal["orderbook_quality"] = "unknown"
 
             try:
                 mi_buy = ob_event.get("market_impact_buy", {}) or {}
