@@ -92,3 +92,39 @@ Arquiteturas são **compatíveis** (ambas usam REST klines da Binance; `daily_pi
 Recomendação: fazer o **patch 1 + patch 2** (corrigir o campo para o que o nome promete) e, em paralelo, ajustar docstrings do profiler e da legenda para distinguir `volume_profile_intraday` (dinâmico) de `daily_pivot_closed` (clássico fixo).
 
 **Arquivos tocados (proposta):** `market_orchestrator/market_orchestrator.py:1460`, `institutional/enricher.py:363-442`, `common/ai_field_legend.py` — todos pendentes de prompt de autorização.
+
+---
+
+## PASSO 5 — VALIDAÇÃO PÓS-FIX EM PRODUÇÃO (2026-08-10, commit aa97cf1 + 3986822)
+
+**Fix aplicado** (`fix(pivots): corrigir dead wire do pivot classic (duplo bug de pivot_points)`): ativação do caminho clássico (patch 1 + patch 2 da proposta) + `calculated_at_ms` de rastreabilidade.
+
+**Observação real** (`scripts/diagnostics/run_production_observation.py`): 35.1 min conectado ao stream real, 00:41:17Z → 01:16:23Z, 47.431 trades, 0 OOO, 0 clamps, 0 invalid.
+
+### Resultados
+
+| Verificação | Resultado |
+|---|---|
+| Eventos pós-fix (ANALYSIS_TRIGGER) | 15 |
+| `source="classic"` | **15 / 15 (100%)** |
+| `source="vp_fallback"` | **0** |
+| Estabilidade do pivot (1º ev 112 vs último ev 129) | **SIM** — `65035.38` idêntico nos 15 |
+| `calculated_at_ms` presente | SIM — 3 valores únicos (01:01:55Z, 01:07:01Z, 01:12:08Z), intervalos **306s e 307s ≈ ciclo de 300s** do `CONTEXT_UPDATE_INTERVAL_SECONDS` |
+| Divergência vs cálculo manual `(H+L+C)/3` (vela 1d de 2026-08-09 via API: H=65474.46, L=64730.08, C=64901.59) | **0.0%** — gravado `65035.38` = manual `65035.38` exato |
+| `validate_production_run.py` B.6 | **PASS** (classic=16 dos 20 últimos eventos, 0 fallback) |
+
+### Notas
+
+- Os 3 eventos pós-fix **sem** `pivot_points` (ev 113, 118, 124) são `Alerta`/`AI_ANALYSIS` — tipos que não passam pelo institutional enricher (só `ANALYSIS_TRIGGER` carrega `pivot_points`). Não são fallback.
+- `r1`/`s1` gravados são flutuantes (`65340.673333…`): o enricher propaga os níveis clássicos com `round(pivot, 2)` no pivot mas sem arredondar `r1`/`s1` no ramo classic (mesmo padrão pré-fix do VP). Sem impacto funcional; pode ser polido depois.
+- Primeiro evento pós-fix (ev 112) já nasce com `source="classic"`: o ciclo de `_calculate_pivots` do 1º boot (01:01:55Z) foi consumido antes do primeiro ANALYSIS_TRIGGER.
+- **Conclusão**: duplo bug (dead wire + fallback VP parcial rotulado como clássico) **corrigido e validado em produção real** — pivot agora é o clássico do período anterior completo, fixo durante o dia, com rastreabilidade de cálculo.
+
+### Validação manual do cálculo (API Binance klines 1d, limit=3)
+
+```
+vela 2026-08-08: H=65192.54  L=64784.19  C=64962.60   (iloc[-3])
+vela 2026-08-09: H=65474.46  L=64730.08  C=64901.59   (iloc[-2] = anterior completa)
+vela 2026-08-10: H=65322.58  L=64826.78  C=65012.01   (dia corrente, em andamento)
+pivot = (65474.46 + 64730.08 + 64901.59) / 3 = 65035.38 ✓ (gravado em todos os 15 eventos)
+```
