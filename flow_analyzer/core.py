@@ -569,7 +569,9 @@ class FlowAnalyzer(IFlowAnalyzer):
                 # Sector
                 sector_name = None
                 for name, (minv, maxv) in self._order_buckets.items():
-                    if minv <= qty < maxv:
+                    if qty < minv:
+                        continue
+                    if maxv is None or qty < maxv:
                         sector_name = name
                         break
                 
@@ -810,14 +812,13 @@ class FlowAnalyzer(IFlowAnalyzer):
             if now_ms is None:
                 now_ms = self._get_synced_timestamp_ms()
             
-            # Otimização: copia apenas trades necessários
-            degraded = now_ms < self._cache_degraded_until_ms
-            
-            if self._cache_enabled and not degraded:
-                window_min = min(self.net_flow_windows_min) if self.net_flow_windows_min else 1
-            else:
-                window_min = max(self.net_flow_windows_min) if self.net_flow_windows_min else 60
-            
+            # Copia trades da MAIOR janela: todas as métricas de janela
+            # (1m/5m/15m) devem ser calculadas sobre a MESMA população,
+            # filtrada por [now_ms - w, now_ms] no momento da análise.
+            # (Antes: cópia de apenas 1m quando o cache estava ativo fazia
+            # net_flow_* e buy/sell_volume divergirem quando a análise roda
+            # com atraso em relação ao último trade.)
+            window_min = max(self.net_flow_windows_min) if self.net_flow_windows_min else 60
             cutoff = now_ms - window_min * 60 * 1000
             flow_trades_copy = [t for t in self.flow_trades if t['ts'] >= cutoff]
             
@@ -961,6 +962,15 @@ class FlowAnalyzer(IFlowAnalyzer):
         if abs(whale_delta - expected) > 0.001:
             whale_delta = expected
         
+        # num_trades segue a semântica da janela MENOR (1m) — usada por
+        # ml_features.trade_intensity_v2 (num_trades / window_sec).
+        min_window = min(self.net_flow_windows_min) if self.net_flow_windows_min else 1
+        now_ms = int(time_index.get("epoch_ms", 0))
+        min_cutoff = now_ms - min_window * 60 * 1000
+        num_trades = sum(
+            1 for t in snapshot.get('flow_trades', []) if t['ts'] >= min_cutoff
+        )
+        
         metrics = {
             "cvd": cvd,
             "whale_buy_volume": whale_buy,
@@ -977,8 +987,8 @@ class FlowAnalyzer(IFlowAnalyzer):
                 "in_burst": bool(snapshot['_in_burst']),
                 "last_reset_ms": snapshot['last_reset_ms'],
                 "config_version": self._config_version,
-                "num_trades": len(snapshot.get('flow_trades', [])),
-                "window_sec": float(min(self.net_flow_windows_min) * 60) if self.net_flow_windows_min else 60.0,
+                "num_trades": num_trades,
+                "window_sec": float(min_window * 60),
             },
         }
         
@@ -1017,23 +1027,15 @@ class FlowAnalyzer(IFlowAnalyzer):
              window_ms = window_min * 60 * 1000
              start_ms = now_ms - window_ms
              
-             # Cache ou cálculo
-             degraded = now_ms < self._cache_degraded_until_ms
-             
-             if self._cache_enabled and not degraded and 'window_aggregates' in snapshot:
-                 agg_data = snapshot['window_aggregates'].get(window_min)
-                 if agg_data:
-                     total_delta_usd = agg_data['sum_delta_usd']
-                     total_delta_btc = agg_data['sum_delta_btc']
-                     ohlc = agg_data['ohlc']
-                 else:
-                     total_delta_usd, total_delta_btc, ohlc = self._calc_from_trades(
-                         snapshot['flow_trades'], start_ms, now_ms
-                     )
-             else:
-                 total_delta_usd, total_delta_btc, ohlc = self._calc_from_trades(
-                     snapshot['flow_trades'], start_ms, now_ms
-                 )
+             # Cálculo sempre sobre a população filtrada [start_ms, now_ms],
+             # a MESMA usada por buy_volume/sell_volume/flow_imbalance.
+             # (O aggregate rolling é ancorado no último trade (last_update),
+             # não no reference da análise: quando novos trades chegam entre o
+             # fechamento da janela e o processamento (async), ele descreve
+             # outra janela — era a causa de net_flow_1m != buy - sell.)
+             total_delta_usd, total_delta_btc, ohlc = self._calc_from_trades(
+                 snapshot['flow_trades'], start_ms, now_ms
+             )
              
              w_open, w_high, w_low, w_close = ohlc
              

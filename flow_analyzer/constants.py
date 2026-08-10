@@ -7,7 +7,7 @@ de configuração para facilitar manutenção e testes.
 """
 
 from decimal import Decimal
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 # ==============================================================================
 # VERSÃO
@@ -85,10 +85,13 @@ MEMORY_USAGE_WARNING_RATIO = 0.9
 # ==============================================================================
 # PARTICIPANT ANALYSIS
 # ==============================================================================
-DEFAULT_ORDER_SIZE_BUCKETS: Dict[str, Tuple[float, float]] = {
+# Intervalos [min, max): max=None indica bucket superior ABERTO (sem teto).
+# A intenção de negócio é: whale = qty >= 1.0 BTC, sem limite superior.
+# (Antes: teto arbitrário de 9999.0 BTC deixava qty >= 9999 sem bucket.)
+DEFAULT_ORDER_SIZE_BUCKETS: Dict[str, Tuple[float, Optional[float]]] = {
     "retail": (0.0, 0.5),
     "mid": (0.5, 1.0),
-    "whale": (1.0, 9999.0),
+    "whale": (1.0, None),
 }
 
 # Pesos para composite score
