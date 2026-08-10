@@ -23,6 +23,7 @@ _LATENCY_CAPS: dict[str, float] = {
     "OK":   1.0,
     "NEAR": 0.9,
     "DEGR": 0.7,
+    "POOR": 0.4,
     "CRIT": 0.4,
 }
 
@@ -81,7 +82,7 @@ def build_quality_summary(payload: dict[str, Any]) -> dict[str, Any]:
     # --- Latência ---
     lat_cat = str(qual.get("lat", "OK")).upper()
     lat_ms = qual.get("ms")
-    lat_cap = _LATENCY_CAPS.get(lat_cat, 1.0)
+    lat_cap = _LATENCY_CAPS.get(lat_cat, 0.3)  # fallback conservador
     caps.append(lat_cap)
 
     if lat_cat == "DEGR":
