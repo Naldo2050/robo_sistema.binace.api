@@ -1717,11 +1717,11 @@ class AIAnalyzer:
             if r:
                 out["r"] = r
 
-        # FLOW: d1/d5/d15/cvd/imb/ab/bsr/pa/conv
+        # FLOW: d1/d5/d15/cvd_4h/imb/ab/bsr/pa/conv
         flow = payload.get("flow") or {}
         if flow:
             f = {}
-            for key in ("d1", "d5", "d15", "cvd", "imb", "ab", "bsr", "pa", "conv",
+            for key in ("d1", "d5", "d15", "cvd_4h", "imb", "ab", "bsr", "pa", "conv",
                          # Compat com v1/v2 keys
                          "n1", "n5", "n15", "net_1m", "net_5m", "net_15m", "agg_buy"):
                 if key in flow:
