@@ -1208,7 +1208,9 @@ class TestOrderBookComprehensive:
         import time
         
         num_updates = 1000
-        start_time = time.time()
+        # Usamos perf_counter() para maior precisão em testes de performance.
+        # O guard evita ZeroDivisionError em execuções extremamente rápidas no Windows.
+        start_time = time.perf_counter()
         
         for i in range(num_updates):
             update = OrderBookUpdate(
@@ -1219,8 +1221,10 @@ class TestOrderBookComprehensive:
             )
             orderbook.update(update)
         
-        end_time = time.time()
+        end_time = time.perf_counter()
         elapsed = end_time - start_time
+        if elapsed <= 0.0:  # proteção extra para casos extremos
+            elapsed = 1e-6
         
         # Verifica que é razoavelmente rápido
         updates_per_second = num_updates / elapsed
