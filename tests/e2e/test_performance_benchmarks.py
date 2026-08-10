@@ -47,8 +47,9 @@ class TestPerformanceBenchmarks:
     @pytest.mark.performance
     def test_orderbook_update_performance(self, mock_orderbook):
         """Benchmark de atualização de orderbook"""
-        # Mede tempo para 1000 atualizações
-        start_time = time.time()
+        # Usamos perf_counter() para maior precisão em testes de performance.
+        # O guard evita ZeroDivisionError em execuções extremamente rápidas no Windows.
+        start_time = time.perf_counter()
         
         for i in range(1000):
             update_data = {
@@ -57,8 +58,10 @@ class TestPerformanceBenchmarks:
             }
             mock_orderbook.update(update_data)
         
-        end_time = time.time()
+        end_time = time.perf_counter()
         elapsed = end_time - start_time
+        if elapsed <= 0.0:  # proteção extra para casos extremos
+            elapsed = 1e-6
         
         # Performance esperada: < 0.5 segundo para 1000 updates
         assert elapsed < 0.5, f"Muito lento: {elapsed:.3f}s para 1000 updates"
@@ -101,13 +104,18 @@ class TestPerformanceBenchmarks:
             for i in range(1000)
         ]
         
-        start_time = time.time()
+        # Usamos perf_counter() para maior precisão em testes de performance.
+        # O guard evita ZeroDivisionError em execuções extremamente rápidas no Windows.
+        start_time = time.perf_counter()
         
         for msg in messages:
             await mock_orchestrator.process_market_data(msg)
         
-        end_time = time.time()
-        throughput = len(messages) / (end_time - start_time)
+        end_time = time.perf_counter()
+        elapsed = end_time - start_time
+        if elapsed <= 0.0:  # proteção extra para casos extremos
+            elapsed = 1e-6
+        throughput = len(messages) / elapsed
         
         # Esperado: > 100 mensagens/segundo
         assert throughput > 100, f"Throughput baixo: {throughput:.0f} msg/sec"
@@ -171,7 +179,9 @@ class TestPerformanceBenchmarks:
         num_workers = 4
         messages_per_worker = 250
         
-        start_time = time.time()
+        # Usamos perf_counter() para maior precisão em testes de performance.
+        # O guard evita ZeroDivisionError em execuções extremamente rápidas no Windows.
+        start_time = time.perf_counter()
         
         tasks = [
             process_batch(i, messages_per_worker)
@@ -179,10 +189,12 @@ class TestPerformanceBenchmarks:
         ]
         await asyncio.gather(*tasks)
         
-        end_time = time.time()
+        end_time = time.perf_counter()
         
         total_messages = num_workers * messages_per_worker
         total_time = end_time - start_time
+        if total_time <= 0.0:  # proteção extra para casos extremos
+            total_time = 1e-6
         throughput = total_messages / total_time
         
         # Verifica scaling
