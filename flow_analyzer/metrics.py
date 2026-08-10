@@ -456,43 +456,24 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
             else:
                 sector_ratios[sector_name] = 1.0
 
-    # Detecção de tendência do fluxo
-    if net_flow_1m != 0 and net_flow_5m != 0 and net_flow_15m != 0:
-        # Todos na mesma direção = tendência forte
-        all_positive = net_flow_1m > 0 and net_flow_5m > 0 and net_flow_15m > 0
-        all_negative = net_flow_1m < 0 and net_flow_5m < 0 and net_flow_15m < 0
+    # Detecção de tendência do fluxo (imbalance normalizado por janela)
+    imbalance_1m = ratios.get("imbalance_1m", 0)
+    imbalance_5m = ratios.get("imbalance_5m", 0)
 
-        if all_positive:
-            # Verificar se está acelerando (1m > 5m/5 > 15m/15)
-            norm_1m = abs(net_flow_1m)
-            norm_5m = abs(net_flow_5m) / 5
-            norm_15m = abs(net_flow_15m) / 15
-            if norm_1m > norm_5m > norm_15m:
-                trend = "accelerating_buying"
-            elif norm_1m > norm_5m:
-                trend = "increasing_buying"
-            else:
-                trend = "consistent_buying"
-        elif all_negative:
-            norm_1m = abs(net_flow_1m)
-            norm_5m = abs(net_flow_5m) / 5
-            norm_15m = abs(net_flow_15m) / 15
-            if norm_1m > norm_5m > norm_15m:
-                trend = "accelerating_selling"
-            elif norm_1m > norm_5m:
-                trend = "increasing_selling"
-            else:
-                trend = "consistent_selling"
-        else:
-            # Direções mistas
-            if net_flow_1m > 0 and net_flow_5m < 0:
-                trend = "short_term_reversal_to_buy"
-            elif net_flow_1m < 0 and net_flow_5m > 0:
-                trend = "short_term_reversal_to_sell"
-            else:
-                trend = "mixed"
-    else:
+    if not imbalance_1m and not imbalance_5m:
         trend = "insufficient_data"
+    else:
+        recent = abs(imbalance_1m)
+        medium = abs(imbalance_5m)
+        THRESHOLD = 0.05
+        if recent > medium + THRESHOLD:
+            flow_trend = "accelerating"
+        elif recent < medium - THRESHOLD:
+            flow_trend = "decelerating"
+        else:
+            flow_trend = "stable"
+        direction = "selling" if imbalance_1m < 0 else "buying"
+        trend = f"{flow_trend}_{direction}"
 
     # Classificação do pressure (baseada em ratio + flow_trend para consistência)
     if main_ratio > 2.0:
@@ -503,9 +484,9 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
         pressure = "SLIGHT_BUY"
     elif main_ratio > 0.95:
         # Zona neutra: usar flow_trend para desambiguar
-        if trend in ("accelerating_buying", "increasing_buying"):
+        if trend in ("accelerating_buying",):
             pressure = "SLIGHT_BUY"
-        elif trend in ("accelerating_selling", "increasing_selling"):
+        elif trend in ("accelerating_selling",):
             pressure = "SLIGHT_SELL"
         else:
             pressure = "NEUTRAL"
