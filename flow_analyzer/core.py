@@ -497,6 +497,15 @@ class FlowAnalyzer(IFlowAnalyzer):
                     self._total_trades_processed += 1
                     self._invalid_trades += 1
                 self._error_counts.increment(reason)
+                if self._prometheus is not None:
+                    try:
+                        self._prometheus.record_trade(
+                            False,
+                            elapsed_ms(start_time),
+                            invalid_reason=reason,
+                        )
+                    except Exception:
+                        pass
                 return
             
             # processed é garantido não-None aqui pois valid=True
@@ -605,6 +614,23 @@ class FlowAnalyzer(IFlowAnalyzer):
                 
                 # Heatmap payload
                 heatmap_payload = (price, qty, side, ts)
+                
+                # Métricas Prometheus: espelham o estado agregado atual
+                # (guard de segurança: _prometheus é None se lib ausente)
+                if self._prometheus is not None:
+                    try:
+                        self._prometheus.set_cvd(float(self.cvd))
+                        self._prometheus.set_whale_delta(float(self.whale_delta))
+                        self._prometheus.set_flow_trades_count(len(self.flow_trades))
+                        self._prometheus.record_trade(
+                            True,
+                            elapsed_ms(start_time),
+                            side=side,
+                            sector=sector_name,
+                            size_btc=qty,
+                        )
+                    except Exception:
+                        pass
                 
         except Exception as e:
             self._error_counts.increment("process_exception")
