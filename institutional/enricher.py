@@ -231,11 +231,18 @@ def _build_metadata_fields(
     elif ob_quality == "cache":
         reliability -= 1.5
 
-    latency_ms = _get_nested(event, "institutional_analytics", "quality", "latency", "latency_ms", default=0)
-    if latency_ms and latency_ms > 15000:
-        reliability -= 1.0
-    elif latency_ms and latency_ms > 8000:
-        reliability -= 0.5
+    # FIX (ETAPA 2): penalidade derivada dos flags canônicos de latência
+    # (time_manager.track_data_latency: is_acceptable = ms < 5000,
+    # is_stale = ms > 15000). Antes usava thresholds próprios (8000/15000)
+    # que divergiam do canônico — latência POOR/inaceitável (5000-8000ms)
+    # renderia reliability_score=10.0 (JANELA 1). Mesmos pesos (0.5/1.0),
+    # mesma fonte de verdade, sem inventar thresholds novos.
+    latency_info = _get_nested(event, "institutional_analytics", "quality", "latency") or {}
+    if latency_info:
+        if latency_info.get("is_stale"):
+            reliability -= 1.0
+        elif not latency_info.get("is_acceptable"):
+            reliability -= 0.5
 
     anomaly_sev = _get_nested(event, "institutional_analytics", "quality", "anomalies", "max_severity", default="NONE")
     if anomaly_sev == "HIGH":
@@ -2276,14 +2283,22 @@ def enrich_signal(
 
         # ------------------------------------------------------------------
         # FIX 4.5: Data reliability flags
+        # FIX (ETAPA 2): data_reliability é RESUMO — deve derivar da fonte
+        # canônica de latência (institutional_analytics.quality.latency, que
+        # vem de time_manager.track_data_latency). Antes lia
+        # event["quality"] no TOP-LEVEL, que NUNCA é populado (a qualidade
+        # vive em institutional_analytics.quality), e com default fail-open
+        # `_latency.get("is_acceptable", 1)` — resultado: latency_acceptable
+        # SEMPRE true, mesmo com latency_ms=7312/POOR (JANELAS 1 e 4).
+        # Novo contrato: latência desconhecida -> False (fail-closed).
         # ------------------------------------------------------------------
         _aa = _get_nested(event, "raw_event", "advanced_analysis") or {}
-        _quality = event.get("quality", {})
-        _latency = _quality.get("latency", {}) if isinstance(_quality, dict) else {}
+        _latency = _get_nested(event, "institutional_analytics", "quality", "latency") or {}
+        _latency_known = bool(_latency) and _latency.get("latency_ms") is not None
         event["data_reliability"] = {
             "has_options_data": bool(_aa.get("options_metrics", {}).get("is_real_data")),
             "onchain_coverage": "full" if _aa.get("onchain_metrics", {}).get("is_real_data") else "partial",
-            "latency_acceptable": _latency.get("is_acceptable", 1) == 1,
+            "latency_acceptable": bool(_latency.get("is_acceptable")) if _latency_known else False,
             "price_targets_available": "price_targets" in event,
         }
 

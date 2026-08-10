@@ -477,8 +477,14 @@ class TestQualitySummary:
         result = build_quality_summary(make_compact_payload())
         assert "plena" in result["note"].lower() or "real" in result["note"].lower()
 
-    def test_fallback_when_no_qual(self):
+    def test_fallback_when_no_qual_is_fail_closed(self):
+        # ETAPA 2 (auditoria 2026-08-10): ausência de latência NÃO é
+        # promovida a "saudável". O contrato antigo (reliable=True,
+        # confidence_cap=1.0, issues=[]) transformava dado ausente em
+        # "Dados em tempo real... confiança plena" (JANELA 1). Novo
+        # contrato: informação de latência ausente -> fail-closed.
         result = build_quality_summary({})
-        assert result["reliable"] is True
-        assert result["confidence_cap"] == 1.0
-        assert result["issues"] == []
+        assert result["reliable"] is False
+        assert result["confidence_cap"] < 1.0
+        assert result["issues"]
+        assert "plena" not in result["note"].lower()

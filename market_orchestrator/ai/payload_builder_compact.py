@@ -1507,22 +1507,27 @@ def build_compact_payload(
         payload["regime"] = regime                       # ← ERA "r"
 
     ia_quality = event_data.get("institutional_analytics", {}).get("quality", {})
-    reliability = event_data.get("data_reliability", {})
 
     latency_data = (ia_quality.get("latency", {}) or {})
     calendar_data = (ia_quality.get("calendar", {}) or {})
 
-    lat = latency_data.get("latency_ms") or reliability.get("latency_ms")
-    cat = latency_data.get("latency_category") or reliability.get("latency_category", "OK")
-    # FIX 3a: preservar valor completo de liquidez (não truncar)
-    liq = calendar_data.get("expected_liquidity") or reliability.get("expected_liquidity", "NORMAL")
+    # FIX (ETAPA 2): fontes de latência/liquidez — NADA de defaults fail-open.
+    # Antes: `reliability.get("latency_category", "OK")` e
+    # `reliability.get("expected_liquidity", "NORMAL")` promoviam dado
+    # ausente a "saudável". data_reliability nunca carrega latency_ms/
+    # latency_category (só flags), então os fallbacks só mascaravam ausência.
+    lat = latency_data.get("latency_ms")
+    cat = latency_data.get("latency_category")
+    liq = calendar_data.get("expected_liquidity")
     # FIX 3a: capturar feriado
     is_holiday = calendar_data.get("is_us_holiday", 0)
     holiday_name = calendar_data.get("holiday_name", "")
 
-    if lat or cat != "OK" or liq != "NORMAL" or is_holiday:
+    # Emitir qual SEMPRE que houver dado de latência/liquidez (mesmo OK),
+    # para que o quality_summary não trate latência boa como "desconhecida".
+    if latency_data or calendar_data:
         qual: dict[str, Any] = {}
-        if cat and cat != "OK":
+        if cat:
             qual["lat"] = cat[:4]
         # FIX 3a: não truncar liq — preservar VERY_LOW intacto
         if liq and liq != "NORMAL":

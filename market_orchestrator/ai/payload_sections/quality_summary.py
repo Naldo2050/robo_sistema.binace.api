@@ -25,6 +25,19 @@ _LATENCY_CAPS: dict[str, float] = {
     "DEGR": 0.7,
     "POOR": 0.4,
     "CRIT": 0.4,
+    # FIX (ETAPA 2): categorias canônicas de time_manager.track_data_latency
+    # (EXCELLENT/GOOD/ACCEPTABLE/DEGRADED/POOR/CRITICAL) e seus truncamentos
+    # de 4 chars (payload_builder_compact envia cat[:4]).
+    # Antes: EXCE/GOOD/ACCE caíam no fallback 0.3 — latência boa/aceitável
+    # penalizada como desconhecida (falso negativo). Mapeamento usa os caps
+    # existentes (OK/NEAR/DEGR/POOR/CRIT) por equivalência de freshness.
+    "EXCELLENT": 1.0,
+    "GOOD":      1.0,
+    "ACCEPTABLE": 0.9,
+    "DEGRADED":  0.7,
+    "CRITICAL":  0.4,
+    "EXCE":      1.0,
+    "ACCE":      0.9,
 }
 
 _LIQUIDITY_CAPS: dict[str, float] = {
@@ -80,17 +93,29 @@ def build_quality_summary(payload: dict[str, Any]) -> dict[str, Any]:
     caps: list[float] = [1.0]
 
     # --- Latência ---
-    lat_cat = str(qual.get("lat", "OK")).upper()
-    lat_ms = qual.get("ms")
-    lat_cap = _LATENCY_CAPS.get(lat_cat, 0.3)  # fallback conservador
-    caps.append(lat_cap)
+    # FIX (ETAPA 2): ausência de `lat` NÃO é "OK". O default
+    # `str(qual.get("lat", "OK"))` promovia dado ausente a
+    # "Dados em tempo real sem anomalias... confiança plena" (JANELA 1).
+    # Novo contrato: latência desconhecida -> cap conservador (0.3, o mesmo
+    # fallback já documentado para categoria desconhecida) + issue explícito.
+    lat_raw = qual.get("lat") if isinstance(qual, dict) else None
+    if lat_raw:
+        lat_cat = str(lat_raw).upper()
+        lat_ms = qual.get("ms")
+        lat_cap = _LATENCY_CAPS.get(lat_cat, 0.3)  # fallback conservador
+        caps.append(lat_cap)
 
-    if lat_cat == "DEGR":
-        msg = f"Latência degradada ({lat_ms}ms)" if lat_ms else "Latência degradada"
-        issues.append(msg)
-    elif lat_cat == "CRIT":
-        msg = f"Latência crítica ({lat_ms}ms)" if lat_ms else "Latência crítica"
-        issues.append(msg)
+        if lat_cat == "DEGR":
+            msg = f"Latência degradada ({lat_ms}ms)" if lat_ms else "Latência degradada"
+            issues.append(msg)
+        elif lat_cat == "CRIT":
+            msg = f"Latência crítica ({lat_ms}ms)" if lat_ms else "Latência crítica"
+            issues.append(msg)
+    else:
+        lat_cat = None
+        lat_ms = None
+        caps.append(0.3)  # fallback conservador para dados ausentes
+        issues.append("Latência desconhecida (freshness não confirmada)")
 
     # --- Liquidez ---
     liq_raw = str(qual.get("liq", "NORMAL"))
@@ -152,6 +177,8 @@ def _build_note(
     if lat_cat in ("DEGR", "CRIT"):
         severity = "crítica" if lat_cat == "CRIT" else "degradada"
         parts.append(f"Latência {severity} compromete freshness dos dados")
+    elif lat_cat is None:
+        parts.append("Latência desconhecida compromete freshness dos dados")
 
     if holiday:
         parts.append(f"Feriado ({holiday}) reduz liquidez severamente")
