@@ -110,6 +110,8 @@ logs/last_llm_payload.json
 logs/*.zip
 *.err.log
 *.out.log
+# Artefatos das observações em produção (run_production_observation.py)
+logs/observation_*
 
 # ==============================
 # Auto-Fixer System - Output Files
