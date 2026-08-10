@@ -63,8 +63,8 @@ def make_compact_payload() -> dict:
             "abs_buy_str": 5.9,
             "abs_sell_exh": 1.8,
             "abs_cont": 0.22,
-            "sf_w": 0.4,
-            "sf_r": -0.2,
+            "sf_w_4h": 0.4,
+            "sf_r_4h": -0.2,
             "ti": 12.3,
             "trs": 10,
             "delta": 0.123,
@@ -190,15 +190,15 @@ class TestFlowSummary:
 
     def test_retail_actor_when_only_retail_active(self):
         payload = make_compact_payload()
-        payload["flow"]["sf_w"] = 0.0
-        payload["flow"]["sf_r"] = -0.45
+        payload["flow"]["sf_w_4h"] = 0.0
+        payload["flow"]["sf_r_4h"] = -0.45
         result = build_flow_summary(payload)
         assert result["actor"] == "retail"
 
     def test_unknown_actor_when_both_inactive(self):
         payload = make_compact_payload()
-        payload["flow"]["sf_w"] = 0.0
-        payload["flow"]["sf_r"] = 0.0
+        payload["flow"]["sf_w_4h"] = 0.0
+        payload["flow"]["sf_r_4h"] = 0.0
         result = build_flow_summary(payload)
         assert result["actor"] == "unknown"
 

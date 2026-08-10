@@ -102,9 +102,9 @@ def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
     raw_conv = str(flow.get("conv", "M")).upper()
     conf = _CONVICTION_MAP.get(raw_conv, "M")
 
-    # --- Actor: whale vs retail ---
-    sf_w = flow.get("sf_w") or 0.0
-    sf_r = flow.get("sf_r") or 0.0
+    # --- Actor: whale vs retail (acumulado 4h, ver legend cvd_4h/sf_*_4h) ---
+    sf_w = flow.get("sf_w_4h") or 0.0
+    sf_r = flow.get("sf_r_4h") or 0.0
 
     whale_active = abs(sf_w) > 0.1
     retail_active = abs(sf_r) > 0.1

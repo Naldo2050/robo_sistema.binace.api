@@ -314,9 +314,9 @@ REQUIRED_CTX_KEYS       = {"ses", "poc", "val", "vah", "lsr"}
 REQUIRED_SR_KEYS        = {"r1", "s1"}
 
 # Chaves opcionais que quando presentes devem ter o formato certo
-OPTIONAL_FLOW_KEYS      = {"d5", "d15", "cvd", "ab", "bsr", "pa", "conv",
+OPTIONAL_FLOW_KEYS      = {"d5", "d15", "cvd_4h", "ab", "bsr", "pa", "conv",
                            "abs_buy_str", "abs_sell_exh", "abs_cont",
-                           "sf_w", "sf_r", "ti", "trs", "obs",
+                           "sf_w_4h", "sf_r_4h", "ti", "trs", "obs",
                            "delta", "vol", "buy_pct"}
 OPTIONAL_PRICE_KEYS     = {"o", "h", "l", "vw", "sh", "auc",
                            "ph", "pl", "brk_risk"}

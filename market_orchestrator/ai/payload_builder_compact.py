@@ -508,7 +508,7 @@ def _build_flow(event_data: dict) -> dict:
         for cat in ("whale", "retail"):
             d = sf.get(cat, {}).get("delta")
             if d is not None and abs(d) > 0.001:
-                flow[f"sf_{cat[0]}"] = round(d, 3)
+                flow[f"sf_{cat[0]}_4h"] = round(d, 3)
 
     d5 = of.get("net_flow_5m")
     d15 = of.get("net_flow_15m")
@@ -519,7 +519,7 @@ def _build_flow(event_data: dict) -> dict:
 
     cvd = fluxo.get("cvd", 0)
     if cvd:
-        flow["cvd"] = round(cvd, 1)
+        flow["cvd_4h"] = round(cvd, 1)
 
     imb = of.get("flow_imbalance", 0)
     flow["imb"] = round(imb, 2)
