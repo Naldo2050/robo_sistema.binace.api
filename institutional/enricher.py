@@ -700,8 +700,26 @@ def _build_btc_funding(event: dict) -> Optional[float]:
     """
     deriv = event.get("derivatives", {}) or {}
     btc_d = deriv.get("BTCUSDT", {}) or {}
-    funding = btc_d.get("funding_rate_percent") or btc_d.get("funding_rate")
-    return funding
+    val_pct = btc_d.get("funding_rate_percent")
+    if val_pct is not None:
+        val = val_pct  # já é percentual, usar direto
+    else:
+        val_raw = btc_d.get("funding_rate")
+        if val_raw is not None:
+            # funding_rate é fração decimal (ex: 0.000079),
+            # converter para percentual (×100 → 0.0079)
+            if abs(val_raw) < 1:
+                logging.getLogger(__name__).warning(
+                    "funding_rate fallback: converting raw fraction %.6f "
+                    "to percent (×100) = %.4f", val_raw, val_raw * 100
+                )
+                val = val_raw * 100
+            else:
+                # já parece estar em percentual (valor >= 1), usar direto
+                val = val_raw
+        else:
+            val = None  # sem dado disponível, não inventar valor
+    return val
 
 
 # ---------------------------------------------------------------------------
@@ -2123,7 +2141,17 @@ def enrich_signal(
         if funding_btc is not None:
             deriv = event.setdefault("derivatives", {})
             btc_d = deriv.setdefault("BTCUSDT", {})
-            btc_d.setdefault("funding_rate_percent", funding_btc)
+            # só fazer setdefault se funding_btc for um valor percentual válido
+            # (já convertido acima); nunca gravar fração bruta no campo _percent
+            if abs(funding_btc) < 1:
+                # é fração bruta chegando aqui — converter antes de gravar
+                logger.warning(
+                    "enricher line 2126: funding_btc parece fração bruta "
+                    "(%.6f), convertendo ×100 antes de setdefault", funding_btc
+                )
+                btc_d.setdefault("funding_rate_percent", funding_btc * 100)
+            else:
+                btc_d.setdefault("funding_rate_percent", funding_btc)
 
         # ------------------------------------------------------------------
         # ONDA 2: Volume Profile avançado
