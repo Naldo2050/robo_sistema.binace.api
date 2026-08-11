@@ -100,6 +100,22 @@ class TestVaPctBugDummyRegHist(unittest.TestCase):
         self.assertNotEqual(r_in["value_area_volume_pct"], 100.0)  # antes fabricava 100
         self.assertEqual(r_out["total_volume"], 0.0)  # antes fabricava 1.0
 
+    def test_error_em_calculo_de_bins_retorna_status_error(self):
+        profile = {
+            "value_area": {"low": 100.0, "high": 102.0},
+            "price_bins": ["100.0", "abc", "102.0"],
+            "volume_per_bin": [10.0, 10.0, 10.0],
+        }
+        vpa = VolumeProfileAnalyzer(pd.Series([100.0, 101.0]), pd.Series([1.0, 1.0]))
+        r = vpa.calculate_value_area_volume_pct(profile)
+        self.assertEqual(r["status"], "error")
+        self.assertEqual(r["interpretation"], "UNKNOWN")
+        self.assertEqual(r["breakout_risk"], "UNKNOWN")
+        self.assertEqual(r["value_area_volume_pct"], 0.0)
+        self.assertFalse(r["compression_signal"])
+        self.assertEqual(r["volume_in_va"], 0.0)
+        self.assertEqual(r["total_volume"], 0.0)
+
     def test_fallback_legitimo_com_dados_reais(self):
         # Fallback continua válido quando a instância tem dados reais (>=2 pontos)
         vpa = VolumeProfileAnalyzer(pd.Series([100.0, 101.0, 102.0]), pd.Series([1.0, 2.0, 3.0]))

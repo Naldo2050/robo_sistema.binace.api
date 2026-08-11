@@ -2,6 +2,8 @@
 Análise de Volume Profile Institucional
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -10,6 +12,8 @@ from typing import Dict, Optional
 from .utils import StatisticalUtils
 from .config import VolumeProfileConfig
 from .constants import MarketBias
+
+logger = logging.getLogger(__name__)
 
 
 class VolumeProfileAnalyzer:
@@ -334,11 +338,19 @@ class VolumeProfileAnalyzer:
         if profile is None:
             try:
                 profile = self.calculate_profile()
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "volume_profile: calculate_profile falhou em "
+                    "calculate_value_area_volume_pct: %s", e
+                )
                 return {
+                    "status": "error",
                     "value_area_volume_pct": 0.0,
-                    "interpretation": "error",
+                    "interpretation": "UNKNOWN",
                     "breakout_risk": "UNKNOWN",
+                    "volume_in_va": 0.0,
+                    "total_volume": 0.0,
+                    "compression_signal": False,
                 }
 
         val = profile.get("value_area", {}).get("low", 0)
@@ -346,9 +358,13 @@ class VolumeProfileAnalyzer:
         
         if val == 0 or vah == 0 or val >= vah:
             return {
+                "status": "insufficient_data",
                 "value_area_volume_pct": 0.0,
                 "interpretation": "insufficient_data",
                 "breakout_risk": "UNKNOWN",
+                "volume_in_va": 0.0,
+                "total_volume": 0.0,
+                "compression_signal": False,
             }
 
         # Usa os BINS ACUMULADOS (price_bins/volume_per_bin do profile), não os
@@ -372,6 +388,7 @@ class VolumeProfileAnalyzer:
                 # conforme a posição do preço na VA — total_volume==1).
                 if len(self.price_data) < 2 or len(self.volume_data) < 2:
                     return {
+                        "status": "insufficient_data",
                         "value_area_volume_pct": 0.0,
                         "interpretation": "insufficient_data",
                         "breakout_risk": "UNKNOWN",
@@ -382,14 +399,56 @@ class VolumeProfileAnalyzer:
                 mask = (self.price_data >= val) & (self.price_data <= vah)
                 vol_in_va = float(self.volume_data[mask].sum())
                 total_vol = float(self.volume_data.sum())
-        except Exception:
-            vol_in_va = 70.0
-            total_vol = 100.0
+        except Exception as e:
+            logger.warning(
+                "volume_profile: falha ao somar volume na value area: val=%s vah=%s bins=%d vols=%d err=%s",
+                val,
+                vah,
+                len(price_bins),
+                len(volume_per_bin),
+                type(e).__name__,
+            )
+            return {
+                "status": "error",
+                "value_area_volume_pct": 0.0,
+                "interpretation": "UNKNOWN",
+                "breakout_risk": "UNKNOWN",
+                "volume_in_va": 0.0,
+                "total_volume": 0.0,
+                "compression_signal": False,
+            }
 
         if total_vol <= 0:
-            va_pct = 0.0
-        else:
-            va_pct = round((vol_in_va / total_vol) * 100, 1)
+            # Volume zero (bins vazios/zerados) não é distribuição válida:
+            # declarar insuficiência, nunca success com 0% fabricado.
+            return {
+                "status": "insufficient_data",
+                "value_area_volume_pct": 0.0,
+                "interpretation": "insufficient_data",
+                "breakout_risk": "UNKNOWN",
+                "volume_in_va": 0.0,
+                "total_volume": 0.0,
+                "compression_signal": False,
+            }
+
+        va_pct = (vol_in_va / total_vol) * 100
+        if not np.isfinite(va_pct):
+            logger.warning(
+                "volume_profile: resultado nao finito na value area: "
+                "val=%s vah=%s bins=%d vols=%d",
+                val, vah, len(price_bins), len(volume_per_bin),
+            )
+            return {
+                "status": "error",
+                "value_area_volume_pct": 0.0,
+                "interpretation": "UNKNOWN",
+                "breakout_risk": "UNKNOWN",
+                "volume_in_va": 0.0,
+                "total_volume": 0.0,
+                "compression_signal": False,
+            }
+
+        va_pct = round(va_pct, 1)
 
         # Classificar
         if va_pct > 85:
@@ -412,6 +471,7 @@ class VolumeProfileAnalyzer:
             breakout_risk = "LOW"
 
         return {
+            "status": "success",
             "value_area_volume_pct": va_pct,
             "interpretation": interpretation,
             "breakout_risk": breakout_risk,
