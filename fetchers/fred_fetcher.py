@@ -12,7 +12,7 @@ import os
 import pandas as pd
 from pathlib import Path
 from typing import Optional, Dict, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # ============================================================================
 # ⚠️ IMPORTANTE: CARREGAR .env ANTES DE TUDO
@@ -101,10 +101,11 @@ class FREDFetcher:
 
     def _set_disk_cache(self, symbol: str, value: float) -> None:
         """Salva valor no cache em disco."""
+        now = datetime.now(timezone.utc)
         self._disk_cache[symbol] = {
             "value": value,
-            "ts": datetime.now().timestamp(),
-            "updated": datetime.now().isoformat(),
+            "ts": now.timestamp(),
+            "updated": now.isoformat(),
         }
         self._save_disk_cache()
 

@@ -38,6 +38,14 @@ except ImportError:
     HAS_SQLITE_STORE = False
     logging.warning("⚠️ Módulo database.event_store não encontrado. Escrita no SQLite desabilitada.")
 
+# ETAPA 6: NaN/±Inf -> None antes de serializar (JSON RFC 8259)
+try:
+    from common.json_safe import sanitize_json_safe
+    HAS_JSON_SAFE = True
+except ImportError:
+    HAS_JSON_SAFE = False
+    sanitize_json_safe = None
+
 # ===== FILE LOCKING MULTIPLATAFORMA =====
 LOCK_METHOD = None
 fcntl_module = None
@@ -913,6 +921,8 @@ class EventSaver:
             try:
                 with open(self.history_file, "a", encoding="utf-8") as f:
                     event_to_save = self._optimize_event_for_storage(event)
+                    if sanitize_json_safe is not None:
+                        event_to_save = sanitize_json_safe(event_to_save)
                     json_line = json.dumps(
                         event_to_save, ensure_ascii=False, default=str, separators=(",", ":")
                     )
@@ -981,6 +991,8 @@ class EventSaver:
             with open(fallback_file, "a", encoding="utf-8") as f:
                 if format_type == "jsonl":
                     event_to_save = self._optimize_event_for_storage(event)
+                    if sanitize_json_safe is not None:
+                        event_to_save = sanitize_json_safe(event_to_save)
                     json_line = json.dumps(
                         event_to_save, ensure_ascii=False, default=str, separators=(",", ":")
                     )
@@ -1025,9 +1037,12 @@ class EventSaver:
 
                     f.write(json_line + "\n")
                 else:
+                    event_json = event
+                    if sanitize_json_safe is not None:
+                        event_json = sanitize_json_safe(event_json)
                     f.write(
                         json.dumps(
-                            event, ensure_ascii=False, default=str
+                            event_json, ensure_ascii=False, default=str
                         )
                         + "\n"
                     )

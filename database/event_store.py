@@ -12,6 +12,9 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# ETAPA 6: NaN/±Inf -> None antes de serializar (JSON RFC 8259)
+from common.json_safe import sanitize_json_safe
+
 
 class EventStore:
     """
@@ -154,7 +157,7 @@ class EventStore:
                 is_sig_val = e.get("is_signal")
                 is_sig = 1 if (is_sig_val is True or str(is_sig_val).lower() == "true") else 0
 
-                payload = json.dumps(e, default=str)
+                payload = json.dumps(sanitize_json_safe(e), default=str)
                 data.append((ts, etype, sym, wid, is_sig, payload))
             except Exception as err:
                 self.logger.error(

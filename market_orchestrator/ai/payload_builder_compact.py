@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -231,11 +232,13 @@ def _safe_round(value: Any, decimals: int = 0) -> Optional[float]:
         return None
     try:
         v = float(value)
-        if decimals == 0:
-            return int(round(v))
-        return round(v, decimals)
     except (ValueError, TypeError):
         return None
+    if not math.isfinite(v):
+        return None
+    if decimals == 0:
+        return int(round(v))
+    return round(v, decimals)
 
 
 def _safe_price(ext: dict, key: str, decimals: int = 2) -> Optional[float]:
@@ -251,7 +254,14 @@ def _safe_price(ext: dict, key: str, decimals: int = 2) -> Optional[float]:
     if val is None or val == 0:
         return None
 
-    return round(float(val), decimals)
+    try:
+        val_f = float(val)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(val_f):
+        return None
+
+    return round(val_f, decimals)
 
 
 def _safe_int(ext: dict, key: str) -> Optional[int]:
@@ -266,7 +276,13 @@ def _safe_int(ext: dict, key: str) -> Optional[int]:
 
     if val is None:
         return None
-    return int(val)
+    try:
+        val_f = float(val)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(val_f):
+        return None
+    return int(val_f)
 
 
 # ============================================================
@@ -1062,12 +1078,22 @@ def _build_static_context(event_data: dict) -> dict:
 
     # --- Correlações ---
     eth7 = ml_cross.get("btc_eth_corr_7d")
-    if eth7:
-        ctx["eth7"] = round(eth7, 1)
+    if eth7 is not None:
+        try:
+            eth7_f = float(eth7)
+        except (TypeError, ValueError):
+            eth7_f = 0.0
+        if eth7_f and math.isfinite(eth7_f):
+            ctx["eth7"] = round(eth7_f, 1)
 
     dxy30 = ml_cross.get("btc_dxy_corr_30d")
-    if dxy30:
-        ctx["dxy30"] = round(dxy30, 2)
+    if dxy30 is not None:
+        try:
+            dxy30_f = float(dxy30)
+        except (TypeError, ValueError):
+            dxy30_f = 0.0
+        if dxy30_f and math.isfinite(dxy30_f):
+            ctx["dxy30"] = round(dxy30_f, 2)
 
     return ctx
 

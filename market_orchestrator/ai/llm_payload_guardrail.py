@@ -23,6 +23,7 @@ from common.ai_payload_types import (
     CompactAIPayload,
     is_compact_ai_payload,
 )
+from common.json_safe import sanitize_json_safe
 from market_orchestrator.ai.payload_compressor import compress_payload
 from market_orchestrator.ai.payload_metrics_aggregator import append_metric_line
 
@@ -284,6 +285,12 @@ def ensure_safe_llm_payload(
     if not isinstance(payload, dict):
         _log_guardrail(True, 0, 0, "invalid_payload", "payload_not_dict")
         return None
+
+    # ── ETAPA 6: NaN/±Inf nunca chegam ao LLM ────────────────────────
+    # Converte recursivamente non-finite em None (ausência semântica).
+    # NÃO inventa número substituto; NÃO altera schema do payload.
+    payload = sanitize_json_safe(payload)
+    logging.debug("GUARDRAIL_NON_FINITE_SANITIZED")
 
     bytes_before = len(
         json.dumps(payload, ensure_ascii=False).encode("utf-8")
