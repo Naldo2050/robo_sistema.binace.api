@@ -115,6 +115,12 @@ class DefenseZoneDetector:
         if not signals:
             return self._empty_result()
 
+        # 1b. Deduplicar sinais pela fonte canônica (rotas duplas = 1 observação)
+        signals = self._dedupe_signals(signals, current_price)
+
+        if not signals:
+            return self._empty_result()
+
         # 2. Agrupar sinais próximos em zonas
         zones = self._cluster_signals(signals, current_price)
 
@@ -319,18 +325,24 @@ class DefenseZoneDetector:
         if not isinstance(pivot_data, dict):
             return signals
 
+        pivot_keys = ("pivot", "pp", "r1", "r2", "r3", "s1", "s2", "s3")
         for method_name, levels in pivot_data.items():
             if not isinstance(levels, dict):
                 continue
             for level_name, price in levels.items():
                 if not isinstance(price, (int, float)) or price <= 0:
                     continue
-                # S levels = suporte, R levels = resistência
-                if level_name.startswith("S") or level_name == "PP":
+                # Ignorar chaves auxiliares (high/low/close/quality/etc.)
+                lname = str(level_name).lower()
+                if lname not in pivot_keys:
+                    continue
+                # S levels = suporte, PP/pivot = neutro (convenção buy),
+                # R levels = resistência
+                if lname.startswith("s") or lname in ("pivot", "pp"):
                     side = "buy"
                 else:
                     side = "sell"
-                weight = 30 if level_name == "PP" else 20
+                weight = 30 if lname in ("pivot", "pp") else 20
                 signals.append({
                     "price": price,
                     "source": f"pivot_{method_name}_{level_name}",
@@ -357,13 +369,64 @@ class DefenseZoneDetector:
                     w = tw
                     break
             side = "buy" if price < current_price else "sell"
+            # Prefixo ema_ preservado para o formato legado ("1d", "4h");
+            # a rota real já traz o prefixo ("ema_21_1h") — sem duplicação.
+            source = name if str(name).startswith("ema") else f"ema_{name}"
             signals.append({
                 "price": price,
-                "source": f"ema_{name}",
+                "source": source,
                 "strength": w,
                 "side": side,
             })
         return signals
+
+    @staticmethod
+    def _canonical_source(source: str) -> str:
+        """Identidade canônica de uma fonte: remove o prefixo de rota
+        (sr_level_*) e normaliza aliases que representam a MESMA observação
+        econômica (ex: vp_val vs val_daily vs sr_level_val_daily)."""
+        s = source
+        if s.startswith("sr_level_"):
+            s = s[len("sr_level_"):]
+        return {
+            "poc_daily": "vp_poc",
+            "vah_daily": "vp_vah",
+            "val_daily": "vp_val",
+            "hvn_daily": "vp_hvn",
+        }.get(s, s)
+
+    def _dedupe_signals(self, signals: list, current_price: float) -> list:
+        """Remove sinais que representam a MESMA observação econômica.
+
+        Identidade = (fonte canônica, tick do preço):
+          - Renomeia TODOS os sinais para a fonte canônica, para que rotas
+            duplas de ingestão (direta + sr_level_*) contem como 1 fonte na
+            confluência do clustering.
+          - Colapsa apenas sinais da mesma fonte canônica com o preço no
+            MESMO tick (round 2 casas) — ex: vp_poc + sr_level_poc_daily
+            derivados do mesmo valor.
+          - NÃO colapsa por proximidade: bins distintos do produtor (o
+            historical_profiler emite um node por bin de $1 — ver
+            historical_profiler._compute_volume_profile) permanecem
+            observações separadas. Agrupamento por proximidade é
+            responsabilidade exclusiva do _cluster_signals.
+        """
+        if not signals:
+            return signals
+        buckets: dict = {}
+        for sig in signals:
+            key = self._canonical_source(sig.get("source", "unknown"))
+            buckets.setdefault(key, []).append(sig)
+        deduped = []
+        for key, bucket in buckets.items():
+            ticks: dict = {}
+            for sig in bucket:
+                ticks.setdefault(round(sig["price"], 2), []).append(sig)
+            for group in ticks.values():
+                best = dict(max(group, key=lambda s: (s.get("strength", 0), s["price"])))
+                best["source"] = key
+                deduped.append(best)
+        return deduped
 
     def _cluster_signals(self, signals: list, current_price: float) -> list:
         """Agrupa sinais próximos em zonas de defesa."""
@@ -399,10 +462,15 @@ class DefenseZoneDetector:
             total_strength = sum(g["strength"] for g in group)
             avg_strength = total_strength / len(group)
 
-            # Side dominante
+            # Side dominante (empate → posição em relação ao preço atual)
             buy_count = sum(1 for g in group if g["side"] == "buy")
             sell_count = sum(1 for g in group if g["side"] == "sell")
-            dominant_side = "buy" if buy_count >= sell_count else "sell"
+            if buy_count > sell_count:
+                dominant_side = "buy"
+            elif sell_count > buy_count:
+                dominant_side = "sell"
+            else:
+                dominant_side = "buy" if center < current_price else "sell"
 
             # Score composto: força média × confluência
             composite_score = min(100, avg_strength * (1 + len(sources) * 0.3))

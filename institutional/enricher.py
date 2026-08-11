@@ -547,14 +547,20 @@ def _build_pivot_points(event: dict) -> dict:
     for zone in buy_def[:3]:
         center = zone.get("center")
         strength = zone.get("strength", 0)  # Já em escala 0-100
-        if center:
+        # Guarda de lado: defesa buy só vira suporte imediato se o centro
+        # estiver abaixo/igual ao preço (consistente com o filtro h/pivot/l
+        # acima). Zona buy acima do preço (voto majoritário) não contamina
+        # immediate_support.
+        if center and center <= current_price:
             support_levels.append(round(center, 2))
             support_strength.append(min(100.0, round(strength, 1)))
 
     for zone in sell_def[:3]:
         center = zone.get("center")
         strength = zone.get("strength", 0)  # Já em escala 0-100
-        if center:
+        # Guarda de lado: defesa sell só vira resistência imediata se o
+        # centro estiver acima do preço (consistente com h/pivot/l).
+        if center and center > current_price:
             resistance_levels.append(round(center, 2))
             resistance_strength.append(min(100.0, round(strength, 1)))
 
