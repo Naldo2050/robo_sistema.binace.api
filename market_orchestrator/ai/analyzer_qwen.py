@@ -640,10 +640,14 @@ DADOS DISPONÍVEIS NO PAYLOAD (use TODOS para sua análise):
 - defense.sell_str/buy_str = força da defesa (0-100)
 - defense.bias = viés da defesa (strong_sell_defense, strong_buy_defense)
 
-📐 NÍVEIS TÉCNICOS:
-- Fibonacci levels (23.6%, 38.2%, 50%, 61.8%, 78.6%)
-- immediate_resistance/support = níveis imediatos
-- resistance_strength/support_strength = força dos níveis
+📐 NÍVEIS TÉCNICOS (sr):
+- sr.r1/r2 = [preço, força] — resistências institucionais (defense zones)
+- sr.s1/s2 = [preço, força] — suportes institucionais (defense zones)
+- força (0-100) reflete CONFLUÊNCIA de fontes de defesa (orderbook, volume profile, pivots) — NÃO é proximidade
+- sr.r1_dist/r2_dist/s1_dist/s2_dist = distância do preço atual ao nível
+- sr.r1_conf/s2_conf... = fontes que formaram o nível
+- sr.def_bias = viés da defesa (strong_sell_defense / strong_buy_defense)
+- ctx.poc/val/vah = Volume Profile diário REAL (poc=point of control, val/vah=value area low/high)
 
 🔗 CROSS-ASSET (Correlações):
 - cross.eth_7d/30d = correlação BTC/ETH
@@ -697,12 +701,12 @@ Quando: Movimento perde força progressivamente.
   → NÃO VENDER, buscar COMPRA em suporte
 
 🔵 SUPORTE E RESISTÊNCIA:
-- defense.sell_zone = resistência institucional (ordens de venda grandes)
-- defense.buy_zone = suporte institucional (ordens de compra grandes)
-- Quando preço se aproxima (distance_pct < 0.3%):
-  → Se defesa for forte (strength > 50): esperar rejeição
-  → Se defesa for fraca: possível rompimento
-- immediate_resistance/support = níveis técnicos imediatos
+- sr.r1/r2 = [preço, força] resistências institucionais (defense zones)
+- sr.s1/s2 = [preço, força] suportes institucionais (defense zones)
+- sr.def_bias = viés da defesa (strong_sell_defense / strong_buy_defense)
+- Quando preço se aproxima (sr.r1_dist/s1_dist pequena):
+  → Se força > 50: esperar rejeição
+  → Se força fraca: possível rompimento
 
 🟢 FIBONACCI:
 - Use os níveis para identificar zonas de retração/extensão

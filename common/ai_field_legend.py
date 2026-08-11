@@ -20,7 +20,8 @@ w=whale_score(-100=strong_distribution,+100=strong_accumulation,0=neutral)
 q=quant/ML: pu=probability_up(0-1),c=confidence(0-1)
 tf=timeframes: t=trend(DN/UP/SW),rsi(0-100),macd=[line,signal],adx(0-100),atr=avg_true_range,r=regime(RNG=range,ACC=accumulation,TRD=trending,MNP=manipulation)
 ctx=context(sent every 5min): ses=session,dxy/tnx/spx/ndx/gold/wti/vix=market_prices,fg=fear_greed(0-100),poc/val/vah=volume_profile_daily,lsr=btc_long_short_ratio,eth_lsr=eth_long_short_ratio,oi=btc_open_interest_thousands,eth7=btc_eth_corr_7d,dxy30=btc_dxy_corr_30d
-pivot_points (evento completo, quando presente): Pivot clássico (H+L+C)/3 do período anterior COMPLETO (iloc[-2]); FIXO durante o dia quando source=classic. Quando source=vp_fallback (dados insuficientes p/ clássico), reflete volume profile INTRADAY PARCIAL (dia atual 00:00Z→agora, muda a cada atualização) — não é pivot clássico fixo.
+pivot_points (evento completo, quando presente): Pivot clássico (H+L+C)/3 do período anterior COMPLETO (iloc[-2]); FIXO durante o dia quando source=classic. Quando source=vp_fallback (dados insuficientes p/ clássico), reflete volume profile INTRADAY PARCIAL (dia atual 00:00Z→agora, muda a cada atualização) — não é pivot clássico fixo. pivot_points NÃO é enviado no payload compacto (ver sr.* e ctx.poc/val/vah).
+sr=defense_zones: r1/r2/s1/s2=[preco,forca], forca(0-100)=CONFLUENCIA de fontes de defesa (orderbook+VP+pivots), NAO proximidade; r*_dist/s*_dist=distancia ao preco; r*_conf/s*_conf=fontes do nivel; def_bias=viés da defesa. ctx.poc/val/vah = Volume Profile diario REAL.
 Number suffixes: K=thousands,M=millions. Always in USD unless noted as BTC. Signs: +=buy/positive,-=sell/negative.
 When ctx is absent, use the last received context values.
 """.strip()
