@@ -244,7 +244,7 @@ def detect_volatility_squeeze(
         probability = min(0.95, max(0.4, probability))
         
         alert = {
-            "type": "VOLATILITY_SQUEEZE",
+            "type": "VOLATILITY_EXPANSION",
             "volatility_state": "EXPANDED",
             "severity": severity,
             "intensity": round(intensity, 3),
@@ -294,7 +294,7 @@ def format_alert_message(alert: Dict[str, Any]) -> str:
             f"Intensidade: {intensity:.0f}%"
         )
     
-    elif alert_type == 'VOLATILITY_SQUEEZE':
+    elif alert_type in ('VOLATILITY_SQUEEZE', 'VOLATILITY_EXPANSION'):
         state = alert.get('volatility_state', 'UNKNOWN')
         current = format_scientific(alert.get('volatility_current', 0), decimals=5)
         threshold = format_scientific(alert.get('volatility_threshold', 0), decimals=5)
@@ -366,7 +366,7 @@ def _validate_alert_consistency(alert: Dict[str, Any]) -> None:
         intensity = alert.get('intensity', 0)
         probability = alert.get('probability', 0)
         
-        if alert_type == 'VOLATILITY_SQUEEZE':
+        if alert_type in ('VOLATILITY_SQUEEZE', 'VOLATILITY_EXPANSION'):
             state = alert.get('volatility_state', '')
             
             if intensity <= 0.3 and severity in ['HIGH', 'CRITICAL']:

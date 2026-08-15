@@ -215,3 +215,137 @@ def test_process_institutional_alerts_respects_cooldown(monkeypatch, enriched_ba
     )
 
     assert len(bot.event_saver.saved_events) == 1  # ainda apenas 1 evento
+
+
+# =======================
+# TESTES COM DETECTOR REAL (alert_engine sem fake)
+# =======================
+
+EXPANSION_RECENT_VOLS = [1e-5] * 9 + [1.0, 2.0]  # current = 2.0 -> EXPANSION
+SQUEEZE_RECENT_VOLS = [1.0] * 9 + [1e-5]  # current = 1e-5 -> SQUEEZE
+
+
+def _bot_com_volatilidade(history_vols, history_volumes=None):
+    """FakeBotAlerts com histórico de volatilidade e volume controlados."""
+    bot = FakeBotAlerts()
+    bot.volatility_history = deque(list(history_vols), maxlen=100)
+    if history_volumes is not None:
+        bot.volume_history = deque(list(history_volumes), maxlen=100)
+    return bot
+
+
+def _stub_alert_deps(monkeypatch, real_generate_alerts=None):
+    """Stubs de dependências de _process_institutional_alerts."""
+    if real_generate_alerts is not None:
+        # DETECTOR REAL (caminho real de trading/alert_engine)
+        monkeypatch.setattr(mo, "generate_alerts", real_generate_alerts)
+    else:
+        monkeypatch.setattr(mo, "generate_alerts", lambda **_: [])
+    monkeypatch.setattr(
+        mo, "detect_support_resistance",
+        lambda price_series, num_levels=3: {
+            "immediate_support": [],
+            "immediate_resistance": [],
+        },
+    )
+    monkeypatch.setattr(mo, "defense_zones", None)
+
+
+def test_process_institutional_alerts_expansion_real_detector(
+    monkeypatch, enriched_base
+):
+    """
+    Caminho REAL: generate_alerts/trading.alert_engine com volatilidade alta
+    deve produzir alerta EXPANDED -> VOLATILITY_EXPANSION salvo no evento.
+    """
+    from trading.alert_engine import generate_alerts as real_generate_alerts
+
+    bot = _bot_com_volatilidade(
+        EXPANSION_RECENT_VOLS, history_volumes=[5000.0, 6000.0]
+    )
+    _stub_alert_deps(monkeypatch, real_generate_alerts=real_generate_alerts)
+
+    mo.EnhancedMarketBot._process_institutional_alerts(
+        bot, enriched_base, PipelineStub()
+    )
+
+    assert len(bot.event_saver.saved_events) == 1
+    alert = bot.event_saver.saved_events[0]["wrapped"]
+    assert alert["tipo_evento"] == "Alerta"
+    assert alert["resultado_da_batalha"] == "VOLATILITY_EXPANSION"
+    assert alert["context"]["volatility"] == pytest.approx(2.0)
+
+    # cooldown registrado com a chave correta e separada do squeeze
+    assert "VOLATILITY_EXPANSION" in bot._last_alert_ts
+    assert "VOLATILITY_SQUEEZE" not in bot._last_alert_ts
+
+
+def test_process_institutional_alerts_squeeze_real_detector(
+    monkeypatch, enriched_base
+):
+    """
+    Caminho REAL com volatilidade comprimida -> VOLATILITY_SQUEEZE.
+    """
+    from trading.alert_engine import generate_alerts as real_generate_alerts
+
+    bot = _bot_com_volatilidade(
+        SQUEEZE_RECENT_VOLS, history_volumes=[5000.0, 6000.0]
+    )
+    _stub_alert_deps(monkeypatch, real_generate_alerts=real_generate_alerts)
+
+    mo.EnhancedMarketBot._process_institutional_alerts(
+        bot, enriched_base, PipelineStub()
+    )
+
+    assert len(bot.event_saver.saved_events) == 1
+    alert = bot.event_saver.saved_events[0]["wrapped"]
+    assert alert["resultado_da_batalha"] == "VOLATILITY_SQUEEZE"
+
+    assert "VOLATILITY_SQUEEZE" in bot._last_alert_ts
+    assert "VOLATILITY_EXPANSION" not in bot._last_alert_ts
+
+
+def test_process_institutional_alerts_expansion_and_squeeze_cooldowns_separate(
+    monkeypatch, enriched_base
+):
+    """
+    Cooldown separado por tipo: squeeze não bloqueia expansion subsequente
+    e vice-versa (chave = alert.get("type") no orquestrador).
+    """
+    from trading.alert_engine import generate_alerts as real_generate_alerts
+
+    bot = _bot_com_volatilidade(
+        EXPANSION_RECENT_VOLS, history_volumes=[5000.0, 6000.0]
+    )
+    bot._alert_cooldown_sec = 999.0
+    _stub_alert_deps(monkeypatch, real_generate_alerts=real_generate_alerts)
+
+    # 1) Squeeze primeiro (grava chave VOLATILITY_SQUEEZE)
+    bot.volatility_history = deque(list(SQUEEZE_RECENT_VOLS), maxlen=100)
+    mo.EnhancedMarketBot._process_institutional_alerts(
+        bot, enriched_base, PipelineStub()
+    )
+    assert len(bot.event_saver.saved_events) == 1
+
+    # 2) Expansion logo em seguida: chave DIFERENTE -> não é bloqueado
+    bot.volatility_history = deque(list(EXPANSION_RECENT_VOLS), maxlen=100)
+    mo.EnhancedMarketBot._process_institutional_alerts(
+        bot, enriched_base, PipelineStub()
+    )
+    assert len(bot.event_saver.saved_events) == 2
+
+    # 3) Expansion repetido dentro do cooldown: bloqueado pela própria chave
+    mo.EnhancedMarketBot._process_institutional_alerts(
+        bot, enriched_base, PipelineStub()
+    )
+    assert len(bot.event_saver.saved_events) == 2
+
+    results = [
+        e["wrapped"]["resultado_da_batalha"]
+        for e in bot.event_saver.saved_events
+    ]
+    assert results == ["VOLATILITY_SQUEEZE", "VOLATILITY_EXPANSION"]
+    assert set(bot._last_alert_ts.keys()) == {
+        "VOLATILITY_SQUEEZE",
+        "VOLATILITY_EXPANSION",
+    }
