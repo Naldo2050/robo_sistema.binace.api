@@ -36,8 +36,8 @@ Modulos que permanecem na raiz por terem muitos importadores, risco de import ci
 
 | Arquivo | Descricao | Razao |
 |---------|-----------|-------|
-| `ai_analyzer_qwen.py` | Analisador IA principal (150KB) | 8 importadores + circular com market_orchestrator/ai/ |
-| `build_compact_payload.py` | Construtor de payload compactado | 4 importadores + circular com market_orchestrator/ai/ |
+| `ai_analyzer_qwen.py` | **REMOVIDO (2026-08-06)** — movido para `market_orchestrator/ai/analyzer_qwen.py` (commit `d92c02f`) | ~8 importadores |
+| `build_compact_payload.py` | **REMOVIDO (2026-08-06)** — movido para `market_orchestrator/ai/payload_builder_compact.py` (commit `106b4b7`) | ~4 importadores |
 
 ### Proxies de Compatibilidade (Raiz)
 
@@ -272,8 +272,10 @@ market_orchestrator/
 │   ├── ai_enrichment_context.py   # Contexto de enriquecimento
 │   ├── ai_payload_builder.py       # Construtor de payload (50KB)
 │   ├── ai_runner.py                # Executor de IA (31KB)
+│   ├── analyzer_qwen.py            # Analisador IA principal (ex-ai_analyzer_qwen.py raiz, movido 2026-08-06)
 │   ├── llm_payload_guardrail.py   # Guardrails de payload
 │   ├── llm_response_validator.py  # Validador de respostas LLM
+│   ├── payload_builder_compact.py # Construtor de payload compactado (ex-build_compact_payload.py raiz)
 │   ├── payload_compressor.py      # Compressor v1
 │   ├── payload_compressor_v3.py   # Compressor v3 (39KB)
 │   ├── payload_metrics_aggregator.py
@@ -473,7 +475,9 @@ auto_fixer/
 
 ---
 
-### `src/` - Codigo Fonte (Regime, Macro, Bridges)
+### `src_old/` - Codigo Fonte (Regime, Macro, Bridges) — ARQUIVADO
+
+> Renomeado de `src/` em 2026-08-06 (commit `e8858c5`) — camada de proxy eliminada, imports corrigidos para importar diretamente dos pacotes reais. Mantido apenas como referencia historica; NAO e importado em producao.
 ```
 src/
 ├── analysis/
@@ -698,26 +702,46 @@ scripts/
 │   ├── debug_keyerror.py
 │   ├── debug_payload.py
 │   └── debug_validator.py
-├── diagnostics/                    # Scripts de diagnostico
+├── diagnostics/                    # Scripts de diagnostico (40)
 │   ├── analyze_ai_results.py
+│   ├── audit_absorption_duplo_disparo_test.py
+│   ├── audit_absorption_prod_test.py
+│   ├── audit_cvd_numeric_test.py
+│   ├── audit_cvd_reset_divergence_test.py
+│   ├── audit_flow_imbalance_prod_test.py
+│   ├── audit_live_data_invariants.py   # SEM commit (working tree)
+│   ├── audit_market_data.py
+│   ├── audit_ofi_numeric_test.py
+│   ├── audit_support_resistance_test.py
+│   ├── audit_va_poc_outward.py
 │   ├── auto_fix.py
+│   ├── capture_compact_sr.py           # SEM commit (working tree)
+│   ├── data_health_check.py
 │   ├── diagnose_crash.py
 │   ├── diagnose_optimization.py
 │   ├── evaluate_ai_performance.py
 │   ├── final_replace.py
 │   ├── final_validation.py
+│   ├── map_pbc_keys.py                 # SEM commit (working tree)
+│   ├── measure_dedup_effect.py
+│   ├── measure_out_of_order_trades.py
 │   ├── performance_metrics.py
+│   ├── replay_etapa6_j1j4.py           # SEM commit (working tree)
+│   ├── replay_j4_scorer.py             # SEM commit (working tree)
 │   ├── replay_validator.py
 │   ├── reproduce_issue.py
+│   ├── run_production_observation.py
+│   ├── run_shadow_observation.py       # SEM commit (working tree)
 │   ├── show_problem_lines.py
 │   ├── test_decision_system.py
 │   ├── test_integrated.py
 │   ├── test_latency.py
 │   ├── test_ml_model.py
 │   ├── validate_event.py
-│   ├── verify_optimization.py
+│   ├── validate_production_run.py
 │   ├── verify_implementations.py
 │   ├── verify_ml_integration.py
+│   ├── verify_optimization.py
 │   └── verify_patch.py
 ├── demos/                          # Demonstracoes
 │   ├── demo_circuit_breaker.py
@@ -783,7 +807,15 @@ docs/
 │   ├── FASE6_TESTES.md
 │   ├── FASE7_8_PERFORMANCE_ESTADO.md
 │   ├── FASE9_10_DEPS_DOCKER_DADOS.md
-│   └── RELATORIO_FINAL.md
+│   ├── RELATORIO_FINAL.md
+│   ├── SUMARIO_EXECUTIVO_AUDITORIA_2026-08.md
+│   ├── AUDITORIA_PIVOT_POINTS_2026-08-09.md
+│   ├── RELATORIO_OBSERVACAO_2026-08-09.md
+│   ├── RELATORIO_FLOW_INVARIANTS_2026-08-10.md
+│   ├── COMMIT_FLOW_INVARIANTS_2026-08-10.md
+│   ├── EVENT_BUS_METRICS_FLAKE_2026-08-10.md
+│   ├── ETAPA_5B_HLC_VP_SEMANTICA_2026-08-11.md
+│   └── ETAPA_6_MACRO_NAN_FRED_CACHE_2026-08-11.md
 ```
 
 ---
@@ -878,7 +910,7 @@ docs/
 - **Arquivos .py na raiz**: ~25 (29 proxies + 4 modulos de producao + config/main)
 - **Pacotes organizados**: 8 novos + 12 pre-existentes
 - **Total de arquivos Python**: ~250+
-- **Testes**: ~132 arquivos em tests/ (unit/31, integration/66, e2e/14, helpers/7, legacy/7, payload/14)
+- **Testes**: ~161 arquivos em tests/ (unit/79, integration/55, e2e/10, payload/17)
 - **Dados de features**: 34+ datas
 
 ---
@@ -1051,3 +1083,34 @@ docs/
 ---
 
 *✅ Ultima atualizacao REAL: 2026-08-06 | Fase 1 concluida — suites completas: 1557 passed, 0 failed*
+
+---
+
+## Atualizacoes (2026-08-08 a 2026-08-14) — Auditoria de Corrupcao Silenciosa + Fixes
+
+| Categoria | Arquivos Adicionados/Modificados |
+|-----------|---------------------------------|
+| **common/** | `json_safe.py` (NOVO — sanitizador canonico NaN/±Inf→null, RFC 8259; commit `d448221`), `ai_field_legend.py`, `ai_payload_optimizer.py`, `payload_optimizer_config.py` |
+| **database/** | `event_store.py` (sanitizacao RFC 8259 em save_event/save_batch) |
+| **events/** | `event_saver.py` (sanitizacao jsonl/fallback + clean_event sem redondo) |
+| **fetchers/** | `fred_fetcher.py` (timestamps UTC timezone-aware), `context_collector.py`, `macro_data_provider.py`, `macro_update_service.py` |
+| **flow_analyzer/** | `core.py` (flow_imbalance min trades, T_raw OOO, CVD reset, metricas), `constants.py`, `metrics.py`, `aggregates.py` (eviction time-based + cap 5000), `absorption.py`, `validation.py` |
+| **support_resistance/** | `volume_profile.py` (value area POC-outward contigua + fail-closed), `defense_zones.py`, `__init__.py` (pivots iloc[-2] periodo anterior) |
+| **institutional/** | `enricher.py` (funding_rate_percent is-not-None + x100; dedup fonte canonica) |
+| **market_orchestrator/** | `market_orchestrator.py` (T_raw/obs OOO, source tiering), `ai/payload_builder_compact.py` (cvd_4h, guardrails non-finite), `ai/analyzer_qwen.py`, `ai/llm_payload_guardrail.py` (sanitiza entrada), `ai/payload_sections/flow_summary.py`, `ai/payload_sections/quality_summary.py` (latency POOR→0.4, unknown→0.3), `analysis/institutional_analytics.py`, `signals/signal_processor.py` |
+| **trading/** | `alert_engine.py` (distingue volatilidade vs squeeze) |
+| **data_processing/** | `fix_optimization.py`, `data_handler.py` |
+| **market_analysis/** | `historical_profiler.py` (value area de distribuicao real) |
+| **config/** | `settings.py` (FLOW_IMBALANCE_MIN_TRADES, TTLs macro, ENABLE_ALPHAVANTAGE) |
+| **raiz** | `check_integrity.py` (NOVO, commit `e8858c5`), `AUDIT_REPORT.md` (NOVO), `ai_analyzer_qwen.py`→`market_orchestrator/ai/analyzer_qwen.py`, `build_compact_payload.py`→`market_orchestrator/ai/payload_builder_compact.py`, `src/`→`src_old/` (proxy layer eliminada) |
+| **scripts/diagnostics/** | `data_health_check.py`, `measure_out_of_order_trades.py`, `audit_cvd_numeric_test.py`, `audit_cvd_reset_divergence_test.py`, `audit_flow_imbalance_prod_test.py`, `audit_absorption_duplo_disparo_test.py`, `audit_absorption_prod_test.py`, `audit_support_resistance_test.py`, `audit_va_poc_outward.py`, `audit_ofi_numeric_test.py`, `run_production_observation.py`, `validate_production_run.py`, `measure_dedup_effect.py`, `audit_market_data.py` |
+| **tests/unit/** | `test_signal_direction_absorption.py`, `test_flow_analyzer_metrics.py`, `test_quality_summary_latency.py`, `test_rolling_aggregate_eviction.py`, `test_buy_sell_ratio_flow_trend.py`, `test_flow_consistency_regression.py`, `test_latency_reliability_regression.py`, `test_quality_liquidity_freshness_regression.py`, `test_volume_profile_etapa4_regression.py`, `test_volume_profile_etapa4b_fail_closed.py`, `test_sr_etapa5_audit.py`, `test_sr_etapa5b_contract.py`, `test_etapa6_forense_contract.py`, `test_audit_market_data.py`, `test_volatility_alert_type.py` |
+| **docs/audit/** | `SUMARIO_EXECUTIVO_AUDITORIA_2026-08.md`, `AUDITORIA_PIVOT_POINTS_2026-08-09.md`, `RELATORIO_OBSERVACAO_2026-08-09.md`, `RELATORIO_FLOW_INVARIANTS_2026-08-10.md`, `COMMIT_FLOW_INVARIANTS_2026-08-10.md`, `EVENT_BUS_METRICS_FLAKE_2026-08-10.md`, `ETAPA_5B_HLC_VP_SEMANTICA_2026-08-11.md`, `ETAPA_6_MACRO_NAN_FRED_CACHE_2026-08-11.md` (+ atualizacoes em FASE3/FASE5) |
+| **outros** | `dados/eventos-fluxo.json.legacy` (removido 2026-08-09), `logs/issues.log.legacy-*`, `.gitignore` (fred_cache, ooo_report, observation_*) |
+
+**Scripts de diagnostico criados apos 2026-08-11 (em working tree, SEM commit):**
+`audit_live_data_invariants.py`, `capture_compact_sr.py`, `map_pbc_keys.py`, `replay_etapa6_j1j4.py`, `replay_j4_scorer.py`, `run_shadow_observation.py` (todos em `scripts/diagnostics/`) e `tests/unit/test_funding_rate_fallback.py`.
+
+**Arquivos modificados pendentes (working tree):** `docs/audit/ETAPA_6_MACRO_NAN_FRED_CACHE_2026-08-11.md`
+
+*Ultima atualizacao: 2026-08-16 (novos arquivos: common/json_safe.py, check_integrity.py, AUDIT_REPORT.md, 14 scripts de diagnostico, 15 testes unitarios, 8 docs de auditoria; HEAD `72951ca`)*
