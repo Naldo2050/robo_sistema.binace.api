@@ -17,13 +17,13 @@ _event_memory: deque = deque(maxlen=1000)  # Mantém os últimos 1000 eventos
 
 # Outcome tracker para probabilidades reais
 try:
-    from outcome_tracker import OutcomeTracker
+    from trading.outcome_tracker import OutcomeTracker
     _outcome_tracker: Optional[Any] = OutcomeTracker()
     _TRACKER_OK = True
-except ImportError:
+except ImportError as e:
     _outcome_tracker = None
     _TRACKER_OK = False
-    logger.warning("OutcomeTracker indisponível, usando probabilidades base")
+    logger.warning(f"OutcomeTracker indisponível, usando probabilidades base | erro={type(e).__name__}: {e}")
 
 
 def obter_memoria_eventos(n: int = 5) -> List[Dict]:
