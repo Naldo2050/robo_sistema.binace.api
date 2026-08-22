@@ -233,7 +233,14 @@ class FlowAnalyzer(IFlowAnalyzer):
             _get_config("NET_FLOW_WINDOWS_MIN", DEFAULT_NET_FLOW_WINDOWS_MIN)
         )
         self.flow_trades_maxlen = _get_config("FLOW_TRADES_MAXLEN", DEFAULT_FLOW_TRADES_MAXLEN)
-        self.flow_trades: deque = deque(maxlen=self.flow_trades_maxlen)
+        if self.flow_trades_maxlen <= 0:
+            raise ValueError("FLOW_TRADES_MAXLEN must be greater than 0")
+        self.flow_trades: deque = deque()
+        self._flow_trades_capacity_evictions_total = 0
+        self._flow_trades_last_capacity_eviction_ts = 0
+        self._last_flow_trades_capacity_log_ms = 0
+        # 0 is the sentinel for no observed trade; production epoch_ms is positive.
+        self._flow_first_trade_ts = 0
         self._max_ts_seen = 0
         self._out_of_order_seen = False
         self._cache_degraded_until_ms = 0
@@ -474,6 +481,46 @@ class FlowAnalyzer(IFlowAnalyzer):
         Deve ser chamado após processar um batch.
         """
         self._batch_start_time_ms = None
+
+    def _append_flow_trade(self, trade_record: Dict[str, Any], reference_ts: int) -> None:
+        """Adiciona trade ao histórico cru, observando eviction por capacidade."""
+        capacity_evicted = False
+        if len(self.flow_trades) >= self.flow_trades_maxlen:
+            self.flow_trades.popleft()
+            capacity_evicted = True
+            self._flow_trades_capacity_evictions_total += 1
+            self._flow_trades_last_capacity_eviction_ts = reference_ts
+            if self._prometheus is not None:
+                try:
+                    self._prometheus.record_flow_trades_capacity_eviction()
+                except Exception:
+                    pass
+
+        if not self._flow_first_trade_ts:
+            self._flow_first_trade_ts = trade_record['ts']
+        self.flow_trades.append(trade_record)
+
+        if (
+            capacity_evicted
+            and reference_ts - self._last_flow_trades_capacity_log_ms >= 30_000
+        ):
+            current_timestamps = [t['ts'] for t in self.flow_trades]
+            oldest_ts = min(current_timestamps)
+            newest_ts = max(current_timestamps)
+            effective_duration_sec = (newest_ts - oldest_ts) / 1000.0
+            logging.warning(
+                "event=flow_trades_capacity_truncated | "
+                "capacity=%d | current_size=%d | "
+                "capacity_evictions_total=%d | oldest_ts=%d | "
+                "newest_ts=%d | effective_duration_sec=%.3f",
+                self.flow_trades_maxlen,
+                len(self.flow_trades),
+                self._flow_trades_capacity_evictions_total,
+                oldest_ts,
+                newest_ts,
+                effective_duration_sec,
+            )
+            self._last_flow_trades_capacity_log_ms = reference_ts
     
     def process_trade(self, trade: Dict[str, Any]) -> None:
         """
@@ -599,7 +646,7 @@ class FlowAnalyzer(IFlowAnalyzer):
                     "sector": sector_name,
                 }
                 
-                self.flow_trades.append(trade_record)
+                self._append_flow_trade(trade_record, reference_ts)
                 self._last_price = price
                 
                 # Prune
@@ -715,8 +762,7 @@ class FlowAnalyzer(IFlowAnalyzer):
                 self.flow_trades.popleft()
         else:
             self.flow_trades = deque(
-                (t for t in self.flow_trades if t['ts'] >= cutoff_ms),
-                maxlen=self.flow_trades_maxlen
+                (t for t in self.flow_trades if t['ts'] >= cutoff_ms)
             )
             self._out_of_order_seen = False
     
@@ -776,6 +822,10 @@ class FlowAnalyzer(IFlowAnalyzer):
         }
 
         self.flow_trades.clear()
+        self._flow_trades_capacity_evictions_total = 0
+        self._flow_trades_last_capacity_eviction_ts = 0
+        self._last_flow_trades_capacity_log_ms = 0
+        self._flow_first_trade_ts = 0
         self._price_at_reset = self._last_price
         self._last_price = None
 
@@ -846,6 +896,9 @@ class FlowAnalyzer(IFlowAnalyzer):
                 '_is_buyer_maker_conversions': self._is_buyer_maker_conversions,
                 '_volume_discrepancies': self._volume_discrepancies,
                 '_out_of_order_count': self._out_of_order_count,  # NOVO
+                '_flow_first_trade_ts': self._flow_first_trade_ts,
+                '_flow_trades_capacity_evictions_total': self._flow_trades_capacity_evictions_total,
+                '_flow_trades_last_capacity_eviction_ts': self._flow_trades_last_capacity_eviction_ts,
             }
             
             # Contadores thread-safe
@@ -899,6 +952,7 @@ class FlowAnalyzer(IFlowAnalyzer):
             
             # Métricas acumuladas
             metrics = self._compute_accumulated_metrics(snapshot, time_index)
+            metrics["flow_window_integrity"] = self._get_flow_window_integrity(snapshot, now_ms)
             
             # Order flow
             if self._check_time_budget(start_time, "accumulated"):
@@ -938,6 +992,54 @@ class FlowAnalyzer(IFlowAnalyzer):
         except Exception as e:
             logging.error(f"❌ Erro em get_flow_metrics: {e}", exc_info=True)
             return self._get_fallback_metrics(reference_epoch_ms, str(e))
+
+    def _get_flow_window_integrity(
+        self,
+        snapshot: Dict[str, Any],
+        now_ms: int,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Classifica cobertura temporal do histórico cru por janela."""
+        result: Dict[str, Dict[str, Any]] = {}
+        trades = snapshot.get("flow_trades", [])
+        first_trade_ts = snapshot.get("_flow_first_trade_ts", 0)
+        capacity_evictions = snapshot.get("_flow_trades_capacity_evictions_total", 0)
+        last_capacity_eviction_ts = snapshot.get("_flow_trades_last_capacity_eviction_ts", 0)
+
+        for window_min in self.net_flow_windows_min:
+            window_ms = window_min * 60 * 1000
+            start_ms = now_ms - window_ms
+            relevant = [t for t in trades if start_ms <= t["ts"] <= now_ms]
+
+            if not relevant:
+                status = "WARMING_UP"
+                effective_duration_ms = 0
+            else:
+                oldest_ts = min(t["ts"] for t in relevant)
+                newest_ts = max(t["ts"] for t in relevant)
+                effective_duration_ms = newest_ts - oldest_ts
+                coverage_ratio = effective_duration_ms / window_ms
+                observed_age_ms = max(0, now_ms - first_trade_ts) if first_trade_ts else 0
+
+                if coverage_ratio >= 0.99:
+                    status = "FULL"
+                elif (
+                    capacity_evictions > 0
+                    and last_capacity_eviction_ts >= start_ms
+                    and observed_age_ms >= window_ms
+                ):
+                    status = "CAPACITY_TRUNCATED"
+                else:
+                    status = "WARMING_UP"
+
+            result[f"{window_min}m"] = {
+                "status": status,
+                "effective_coverage_pct": round(
+                    min(100.0, effective_duration_ms / window_ms * 100.0), 1
+                ),
+                "is_temporal_coverage_valid": status == "FULL",
+            }
+
+        return result
     
     def _get_fallback_metrics(self, ts_ms: Optional[int], error: str) -> Dict[str, Any]:
         """Métricas de fallback em caso de erro."""

@@ -64,6 +64,7 @@ class PrometheusMetrics:
             self.trades_invalid = None
             self.ooo_total = None
             self.bursts_total = None
+            self.flow_trades_capacity_evictions_total = None
             self.cvd = None
             self.whale_delta = None
             self.flow_trades_count = None
@@ -94,6 +95,11 @@ class PrometheusMetrics:
         self.bursts_total = Counter(
             f'{prefix}_bursts_total',
             'Volume bursts detected'
+        )
+
+        self.flow_trades_capacity_evictions_total = Counter(
+            f'{prefix}_flow_trades_capacity_evictions_total',
+            'Trades evicted from the raw flow history due to capacity'
         )
         
         # Gauges
@@ -212,6 +218,11 @@ class PrometheusMetrics:
         """Registra burst detectado."""
         if self._enabled and self.bursts_total is not None:
             self.bursts_total.inc()
+
+    def record_flow_trades_capacity_eviction(self) -> None:
+        """Registra descarte por capacidade do histórico cru de trades."""
+        if self._enabled and self.flow_trades_capacity_evictions_total is not None:
+            self.flow_trades_capacity_evictions_total.inc()
     
     def set_info(self, version: str, config_version: int) -> None:
         """Define informações do analyzer."""
