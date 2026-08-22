@@ -25,6 +25,24 @@ from flow_analyzer.constants import DECIMAL_ZERO
 
 class TestRollingAggregateInitialization:
     """Testes de inicialização."""
+
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("window_min", 0, "window_min"),
+            ("window_min", -1, "window_min"),
+            ("target_tps", 0, "target_tps"),
+            ("target_tps", -1, "target_tps"),
+            ("absolute_max_trades", 0, "absolute_max_trades"),
+            ("absolute_max_trades", -1, "absolute_max_trades"),
+            ("max_trades", 0, "max_trades"),
+            ("max_trades", -1, "max_trades"),
+        ],
+    )
+    def test_rejects_non_positive_capacity_parameters(self, field, value, message):
+        params = {field: value}
+        with pytest.raises(ValueError, match=message):
+            RollingAggregate(window_min=params.pop("window_min", 1), **params)
     
     def test_default_initialization(self):
         """Testa estado inicial padrão."""
@@ -280,10 +298,10 @@ class TestRollingAggregateEviction:
     """Testes para eviction híbrida (Fix 4: tempo é o critério primário)."""
 
     def test_no_count_eviction_within_window(self):
-        """Fix 4: trades dentro da janela temporal NÃO são evictados por contagem."""
-        agg = RollingAggregate(window_min=1, max_trades=5)
+        """Fix 4: trades dentro da janela temporal NÃO são evictados por contagem se estiverem abaixo do limite."""
+        agg = RollingAggregate(window_min=1)
 
-        # Adiciona 10 trades na MESMA janela de 1m (antes do fix: ficavam 5)
+        # Adiciona 10 trades na MESMA janela de 1m
         for i in range(10):
             agg.add_trade({
                 'ts': 1000 + i,

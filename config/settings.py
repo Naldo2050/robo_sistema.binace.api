@@ -139,12 +139,14 @@ CONTEXT_SMA_PERIOD = 20
 LIQUIDITY_FLOW_ALERT_PERCENTAGE = 0.15
 WALL_STD_DEV_FACTOR = 3.0
 
-# ===== CONFIGURACOES DO TRADE BUFFER =====
+# ===== CONFIGURACOES DO TRADE BUFFER E AGGREGATES =====
 TRADES_BUFFER_SIZE = 10000          # Aumentado de 5000 para evitar overflow
 TRADES_BUFFER_BACKPRESSURE = 0.8    # Aumentado de 0.6 para 0.8 (alerta mais tarde)
 TRADES_BUFFER_BATCH_SIZE = 500      # Aumentado de 200 para drenar mais rapido
 TRADES_BUFFER_PROCESSING_INTERVAL_MS = 5
 TRADES_BUFFER_MAX_PROCESSING_MS = 500.0
+ROLLING_AGGREGATE_TARGET_TPS = 100
+ROLLING_AGGREGATE_ABSOLUTE_MAX_TRADES = 150_000
 
 # EventSaver json outputs
 # SQLite é a fonte de verdade (v5); snapshot JSON desativado por default.

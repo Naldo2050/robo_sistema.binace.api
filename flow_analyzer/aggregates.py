@@ -17,15 +17,11 @@ from typing import Dict, Any, Optional, Tuple
 
 from .constants import (
     DECIMAL_ZERO,
-    MAX_AGGREGATE_TRADES,
+    DEFAULT_ROLLING_AGGREGATE_TARGET_TPS,
+    DEFAULT_ROLLING_AGGREGATE_ABSOLUTE_MAX_TRADES,
 )
 
 logger = logging.getLogger(__name__)
-
-# Cap duro de contagem (segurança contra flash crash com volume anormal).
-# O critério PRIMÁRIO de eviction é temporal (janela real); este cap só
-# protege a memória em cenários de volume absurdo (ex: >5000 trades/60s).
-MAX_TRADES_HARD_CAP = 5000
 
 
 @dataclass
@@ -37,24 +33,18 @@ class RollingAggregate:
     - O(1) amortizado para add e prune
     - OHLC lazy: recomputa high/low apenas quando necessário
     - Tracking separado de whales e sectors
-    - Limite de capacidade com eviction
-    
-    Args:
-        window_min: Tamanho da janela em minutos
-        max_trades: Limite máximo de trades (eviction se exceder)
-    
-    Example:
-        >>> agg = RollingAggregate(window_min=1, max_trades=1000)
-        >>> agg.add_trade({'ts': 1234, 'qty': 0.5, 'price': 50000, ...}, whale_threshold=5.0)
-        >>> agg.prune(cutoff_ms=1000)
-        >>> metrics = agg.get_metrics(last_price=50100)
+    - Limite de capacidade derivado de TARGET_TPS com Safety Cap absoluto
+    - Telemetria e estados explícitos: WARMING_UP, FULL, CAPACITY_TRUNCATED
     """
     
     window_min: int
-    max_trades: int = MAX_AGGREGATE_TRADES
+    max_trades: Optional[int] = None
+    target_tps: int = DEFAULT_ROLLING_AGGREGATE_TARGET_TPS
+    absolute_max_trades: int = DEFAULT_ROLLING_AGGREGATE_ABSOLUTE_MAX_TRADES
     
     # Estado interno (inicializado em __post_init__)
     window_ms: int = field(init=False)
+    capacity_limit: int = field(init=False)
     trades: deque = field(init=False)
     
     # Somas incrementais
@@ -82,14 +72,31 @@ class RollingAggregate:
     # Métricas
     last_update: int = field(init=False)
     capacity_evictions: int = field(init=False)
+    _first_trade_ts: int = field(init=False)
+    _recent_capacity_eviction_ts: int = field(init=False)
+    _last_cap_log: int = field(init=False)
     
     def __post_init__(self):
+        if self.window_min <= 0:
+            raise ValueError("window_min must be greater than 0")
+        if self.target_tps <= 0:
+            raise ValueError("target_tps must be greater than 0")
+        if self.absolute_max_trades <= 0:
+            raise ValueError("absolute_max_trades must be greater than 0")
+        if self.max_trades is not None and self.max_trades <= 0:
+            raise ValueError("max_trades must be greater than 0")
+
         self.window_ms = int(self.window_min * 60 * 1000)
+        if self.max_trades is None:
+            calculated_cap = int(self.window_min * 60 * self.target_tps)
+            self.max_trades = min(calculated_cap, self.absolute_max_trades)
+        else:
+            self.max_trades = min(int(self.max_trades), self.absolute_max_trades)
+        self.capacity_limit = self.max_trades
         self.reset()
     
     def reset(self) -> None:
         """Reseta todo o estado do aggregate."""
-        # Deque sem maxlen para controle manual
         self.trades = deque()
         
         # Somas
@@ -119,43 +126,53 @@ class RollingAggregate:
         self._low = None
         self._dirty_hilo = False
         
-        # Métricas
+        # Métricas de tempo e capacidade
         self.last_update = 0
         self.capacity_evictions = 0
+        self._first_trade_ts = 0
+        self._recent_capacity_eviction_ts = 0
         self._last_cap_log = 0
     
     def _evict_if_needed(self) -> None:
         """
-        Eviction HÍBRIDA:
-        - Critério primário: temporal (janela real, ex: 60000ms para 1m).
-          Garante que a janela cobre ~60s reais de dados mesmo em mercado
-          acelerado (>10 trades/s), em vez de truncar por contagem (~15s).
-        - Critério de segurança: cap duro de contagem (MAX_TRADES_HARD_CAP),
-          só para não estourar memória em flash crash com volume anormal.
-        Mantém somas consistentes (toda remoção passa por _remove_left).
+        Eviction com semântica temporal primária:
+        - Primário: evictar trades com ts < (last_update - window_ms)
+        - Segurança: evictar trades se len(trades) > capacity_limit
         """
         # Critério primário: evictar por tempo (janela real)
         if self.trades and self.last_update:
             cutoff_ms = self.last_update - self.window_ms
             while self.trades and self.trades[0][0] < cutoff_ms:
-                self.capacity_evictions += 1
                 self._remove_left()
 
-        # Critério de segurança: cap duro de contagem
-        count_cap = max(self.max_trades, MAX_TRADES_HARD_CAP)
-        while len(self.trades) > count_cap:
+        # Critério de segurança: cap por capacidade
+        hit_cap = False
+        while len(self.trades) > self.capacity_limit:
             self.capacity_evictions += 1
+            self._recent_capacity_eviction_ts = self.last_update
             self._remove_left()
-            # logar 1x por segundo para não spam
-            if not hasattr(self, '_last_cap_log') or \
-               self.last_update - self._last_cap_log > 1000:
+            hit_cap = True
+
+        if hit_cap:
+            if not hasattr(self, '_last_cap_log'):
+                self._last_cap_log = 0
+            if self.last_update - self._last_cap_log >= 30000:
+                oldest_ts = self.trades[0][0] if self.trades else 0
+                newest_ts = self.last_update
+                duration_sec = (newest_ts - oldest_ts) / 1000.0 if (self.trades and newest_ts > oldest_ts) else 0.0
+                trade_count = len(self.trades)
+                coverage_pct = round(min(100.0, (duration_sec / (self.window_min * 60)) * 100.0), 1)
+                status_str, _ = self.get_window_integrity_status()
                 logger.warning(
-                    "RollingAggregate(%dm): hard cap hit (%d trades), "
-                    "evicting oldest. Market volume abnormally high.",
-                    self.window_min, count_cap
+                    f"RollingAggregate({self.window_min}m): capacity limit hit ({self.capacity_limit} trades), evicting oldest. | "
+                    f"event=rolling_aggregate_capacity_truncated | window_min={self.window_min} | trade_count={trade_count} | "
+                    f"capacity_limit={self.capacity_limit} | effective_duration_sec={duration_sec:.2f}s | "
+                    f"effective_coverage_pct={coverage_pct:.1f}% | capacity_evictions_total={self.capacity_evictions} | "
+                    f"window_status={status_str}"
                 )
                 self._last_cap_log = self.last_update
-    
+
+
     def _remove_left(self) -> None:
         """Remove trade mais antigo e atualiza todas as somas."""
         if not self.trades:
@@ -247,6 +264,8 @@ class RollingAggregate:
         is_whale = float(qty) >= whale_threshold
         
         # Append (ts, qty, price, delta_btc, side, sector, is_whale)
+        if not self._first_trade_ts:
+            self._first_trade_ts = ts
         self.trades.append((ts, qty, price, delta_btc, side, sector, is_whale))
         self.last_update = ts
         
@@ -318,10 +337,42 @@ class RollingAggregate:
             if last_price > 0:
                 return (last_price, last_price, last_price, last_price)
             return (0.0, 0.0, 0.0, 0.0)
-        
+
         self._recompute_hilo_if_dirty()
         return (self._open, self._high, self._low, self._close)
     
+    def get_window_integrity_status(self) -> Tuple[str, bool]:
+        """
+        Retorna (window_status, is_integrity_guaranteed).
+
+        Estados:
+        - WARMING_UP: a instância ainda não acumulou a duração completa da janela.
+        - FULL: a janela cobre >= 99% do tempo nominal sem truncamento ativo.
+        - CAPACITY_TRUNCATED: ocorreu eviction por capacidade que encurtou a cobertura temporal.
+        """
+        if not self.trades or not self.last_update:
+            return "WARMING_UP", False
+
+        oldest_ts = self.trades[0][0]
+        newest_ts = self.last_update
+        effective_duration_ms = newest_ts - oldest_ts
+        coverage_ratio = effective_duration_ms / self.window_ms
+
+        # Se a janela atual cobre >= 99% do tempo nominal, está FULL (mesmo com evictions passadas)
+        if coverage_ratio >= 0.99:
+            return "FULL", True
+
+        # Se atingiu a capacidade máxima OU se sofreu eviction recente sem cobrir 99% da duração
+        if len(self.trades) >= self.capacity_limit or (self._recent_capacity_eviction_ts > 0 and self._recent_capacity_eviction_ts >= oldest_ts):
+            return "CAPACITY_TRUNCATED", False
+
+        # Se a idade da instância desde o 1º trade for menor que a janela nominal -> WARMING_UP
+        observed_age_ms = (newest_ts - self._first_trade_ts) if self._first_trade_ts > 0 else effective_duration_ms
+        if observed_age_ms < self.window_ms:
+            return "WARMING_UP", False
+
+        return "WARMING_UP", False
+
     def get_metrics(self, last_price: float = 0.0) -> Dict[str, Any]:
         """
         Retorna métricas rolling completas.
@@ -333,6 +384,12 @@ class RollingAggregate:
             Dict com todas as métricas da janela
         """
         ohlc = self.get_ohlc(last_price)
+
+        oldest_ts = self.trades[0][0] if self.trades else 0
+        newest_ts = self.last_update if self.trades else 0
+        effective_duration_sec = round((newest_ts - oldest_ts) / 1000.0, 2) if (self.trades and newest_ts > oldest_ts) else 0.0
+        effective_coverage_pct = round(min(100.0, (effective_duration_sec / (self.window_min * 60)) * 100.0), 1)
+        window_status, is_integrity_guaranteed = self.get_window_integrity_status()
         
         return {
             'sum_delta_btc': float(self.sum_delta_btc),
@@ -358,7 +415,11 @@ class RollingAggregate:
                 }
                 for k, v in self.sector_agg.items()
                 if any(v[x] != DECIMAL_ZERO for x in ['buy_btc', 'sell_btc'])
-            }
+            },
+            'window_status': window_status,
+            'effective_duration_sec': effective_duration_sec,
+            'effective_coverage_pct': effective_coverage_pct,
+            'is_integrity_guaranteed': is_integrity_guaranteed,
         }
     
     def __len__(self) -> int:

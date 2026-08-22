@@ -40,7 +40,8 @@ from .constants import (
     DEFAULT_ABSORCAO_GUARD_MODE,
     TIMESTAMP_JITTER_TOLERANCE_MS,
     MAX_BATCH_LATE_MS,
-    MAX_AGGREGATE_TRADES,
+    DEFAULT_ROLLING_AGGREGATE_TARGET_TPS,
+    DEFAULT_ROLLING_AGGREGATE_ABSOLUTE_MAX_TRADES,
 )
 from .errors import FlowAnalyzerError  # noqa: F401 (re-exported)
 from .protocols import IFlowAnalyzer, ITimeProvider
@@ -242,12 +243,14 @@ class FlowAnalyzer(IFlowAnalyzer):
         
         # === CACHE DE AGREGAÇÃO ===
         self._cache_enabled = _get_config("FLOW_CACHE_ENABLED", DEFAULT_FLOW_CACHE_ENABLED)
+        target_tps = int(_get_config("ROLLING_AGGREGATE_TARGET_TPS", DEFAULT_ROLLING_AGGREGATE_TARGET_TPS))
+        abs_max_trades = int(_get_config("ROLLING_AGGREGATE_ABSOLUTE_MAX_TRADES", DEFAULT_ROLLING_AGGREGATE_ABSOLUTE_MAX_TRADES))
         self._window_aggregates: Dict[int, RollingAggregate] = {}
         for window in self.net_flow_windows_min:
-            max_trades = min(window * 60 * 10, MAX_AGGREGATE_TRADES)
             self._window_aggregates[window] = RollingAggregate(
                 window_min=window,
-                max_trades=max_trades
+                target_tps=target_tps,
+                absolute_max_trades=abs_max_trades
             )
         
         # === ABSORÇÃO ===

@@ -114,5 +114,7 @@ MAX_ERROR_KEYS = 100  # Limite de tipos de erro rastreados
 # ==============================================================================
 # ROLLING AGGREGATES
 # ==============================================================================
+DEFAULT_ROLLING_AGGREGATE_TARGET_TPS = 100
+DEFAULT_ROLLING_AGGREGATE_ABSOLUTE_MAX_TRADES = 150_000
 MAX_TRADES_PER_MINUTE_ESTIMATE = 600  # ~10 trades/segundo
-MAX_AGGREGATE_TRADES = 10_000  # Limite absoluto por janela
+MAX_AGGREGATE_TRADES = 10_000  # Limite absoluto por janela (deprecated)
