@@ -317,7 +317,8 @@ REQUIRED_SR_KEYS        = {"r1", "s1"}
 OPTIONAL_FLOW_KEYS      = {"d5", "d15", "cvd_4h", "ab", "bsr", "pa", "conv",
                            "abs_buy_str", "abs_sell_exh", "abs_cont",
                            "sf_w_4h", "sf_r_4h", "ti", "trs", "obs",
-                           "delta", "vol", "buy_pct"}
+                           "delta", "vol", "buy_pct",
+                           "q"}  # q = integridade temporal por janela (opcional; legado não emite)
 OPTIONAL_PRICE_KEYS     = {"o", "h", "l", "vw", "sh", "auc",
                            "ph", "pl", "brk_risk"}
 OPTIONAL_EXT_KEYS       = {"cci", "stoch", "wr", "garch", "hurst",

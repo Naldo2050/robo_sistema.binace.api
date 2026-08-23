@@ -144,9 +144,18 @@ def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
     d5_positive = d5_str.startswith("+") and d5_str != "+0"
     d5_negative = d5_str.startswith("-")
 
+    # Janelas degradadas (trunc/warm) não podem sustentar comparação
+    # temporal entre timeframes — tratar valor parcial como completo
+    # seria inferência sobre dado incompleto.
+    degraded_windows = _degraded_flow_windows(flow.get("q"))
+    temporal_comparison_valid = not ({"1m", "5m"} & set(degraded_windows))
+
     short_term_reversal = (
-        (d1_positive and d5_negative)
-        or (d1_negative and d5_positive)
+        temporal_comparison_valid
+        and (
+            (d1_positive and d5_negative)
+            or (d1_negative and d5_positive)
+        )
     )
 
     # --- Montar nota interpretada ---
@@ -178,7 +187,41 @@ def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
     if short_term_reversal:
         result["reversal_signal"] = True
 
+    if degraded_windows:
+        result["note"] = f"{result['note']}. {_flow_quality_note(flow.get('q'), degraded_windows)}"
+
     return result
+
+
+def _degraded_flow_windows(quality: Any) -> list:
+    """Janelas com cobertura temporal degradada, na ordem 1m/5m/15m."""
+    if not isinstance(quality, dict):
+        return []
+    ordered = ("1m", "5m", "15m")
+    return [
+        window for window in ordered
+        if isinstance(quality.get(window), dict)
+        and quality[window].get("s") in ("trunc", "warm")
+    ]
+
+
+def _flow_quality_note(quality: dict, windows: list) -> str:
+    fragments: list[str] = []
+    for window in windows:
+        info = quality.get(window) or {}
+        status = info.get("s")
+        if status == "trunc":
+            label = "parcial"
+        elif status == "warm":
+            label = "em aquecimento"
+        else:
+            label = "degradada"
+        coverage = info.get("c")
+        if isinstance(coverage, (int, float)) and not isinstance(coverage, bool):
+            fragments.append(f"{window} {label} ({round(float(coverage), 1)}% cobertura)")
+        else:
+            fragments.append(f"{window} {label}")
+    return "Cobertura temporal parcial do fluxo: " + ", ".join(fragments)
 
 
 def _build_note(

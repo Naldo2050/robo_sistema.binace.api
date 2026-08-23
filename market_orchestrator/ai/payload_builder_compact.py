@@ -487,6 +487,51 @@ def _build_regime(event_data: dict) -> dict:
     return _calculate_regime_consensus(event_data)
 
 
+_FLOW_QUALITY_STATUS_MAP: dict[str, str] = {
+    "FULL": "full",
+    "WARMING_UP": "warm",
+    "CAPACITY_TRUNCATED": "trunc",
+}
+
+_FLOW_QUALITY_WINDOWS: tuple[str, ...] = ("1m", "5m", "15m")
+
+
+def _sanitize_coverage_pct(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    cov = float(value)
+    if not math.isfinite(cov):
+        return None
+    return round(min(100.0, max(0.0, cov)), 1)
+
+
+def _build_flow_quality(fluxo: dict) -> Optional[dict[str, Any]]:
+    """
+    Propaga flow_window_integrity como flow.q (aditivo, fail-closed estrito).
+
+    Uma janela entra em flow.q SOMENTE se status reconhecido E coverage
+    numérica finita válida. Metadata ausente/ilegível NUNCA vira FULL;
+    janela com qualquer componente inválido é omitida por inteiro.
+    Coverage válida é clamped em [0, 100] com 1 decimal.
+    """
+    integrity = fluxo.get("flow_window_integrity")
+    if not isinstance(integrity, dict):
+        return None
+
+    quality: dict[str, Any] = {}
+    for window_key in _FLOW_QUALITY_WINDOWS:
+        entry = integrity.get(window_key)
+        if not isinstance(entry, dict):
+            continue
+        status = _FLOW_QUALITY_STATUS_MAP.get(str(entry.get("status", "")).upper())
+        coverage = _sanitize_coverage_pct(entry.get("effective_coverage_pct"))
+        if status is None or coverage is None:
+            continue
+        quality[window_key] = {"s": status, "c": coverage}
+
+    return quality or None
+
+
 def _build_flow(event_data: dict) -> dict:
     """Constrói seção de fluxo (sem pressure/pa_signal/pa_conv redundantes)."""
     fluxo = event_data.get("fluxo_continuo", {})
@@ -578,6 +623,10 @@ def _build_flow(event_data: dict) -> dict:
             flow["abs_sell_exh"] = round(seller_exh, 1)
         if cont_prob is not None and cont_prob > 0.1:
             flow["abs_cont"] = round(cont_prob, 2)
+
+    flow_quality = _build_flow_quality(fluxo)
+    if flow_quality:
+        flow["q"] = flow_quality
 
     return flow
 
