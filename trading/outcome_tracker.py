@@ -25,6 +25,17 @@ logger = logging.getLogger("OutcomeTracker")
 # Janelas de avaliação em minutos
 EVAL_WINDOWS_MIN = [5, 15, 30, 60]
 
+# Política boundary-only fail-closed:
+# um horizonte só é preenchido quando
+#   0 <= current_epoch_ms - (signal_epoch_ms + horizon*60_000) <= OUTCOME_BOUNDARY_TOLERANCE_MS
+# Ou seja: o preço recebido precisa ser o fechamento da janela que fechou
+# EXATAMENTE no boundary do horizonte. O candle seguinte (+60_000ms) NUNCA
+# preenche o horizonte anterior; boundary perdido permanece NULL.
+OUTCOME_BOUNDARY_TOLERANCE_MS = 1000
+
+# (horizonte_min, sufixo_da_coluna)
+_OUTCOME_HORIZONS = ((5, "5m"), (15, "15m"), (30, "30m"), (60, "60m"))
+
 
 class OutcomeTracker:
     """
@@ -93,6 +104,17 @@ class OutcomeTracker:
             if entry_price <= 0:
                 return
 
+            if epoch_ms % 60_000 != 0:
+                logger.warning(
+                    "register_signal: signal_epoch_ms=%s nao esta alinhado ao "
+                    "boundary de 1m (resto %s ms). Com a politica boundary-only, "
+                    "este sinal pode nunca encontrar drift dentro da tolerancia "
+                    "e seus outcomes permanecerao NULL. Nenhuma normalizacao "
+                    "foi aplicada ao timestamp.",
+                    epoch_ms,
+                    epoch_ms % 60_000,
+                )
+
             # Contexto compacto para análise posterior
             context = {
                 "delta": event.get("delta", 0),
@@ -119,25 +141,49 @@ class OutcomeTracker:
 
     def evaluate_pending_outcomes(self, current_price: float, current_epoch_ms: int):
         """
-        Avalia outcomes pendentes comparando preço atual com preço de entrada.
-        Chamado periodicamente (a cada janela de 5 min).
+        Avalia outcomes pendentes sob política boundary-only fail-closed.
+
+        Contrato por horizonte (5m/15m/30m/60m):
+            target_epoch_ms = signal_epoch_ms + horizon_min * 60_000
+            drift_ms        = current_epoch_ms - target_epoch_ms
+            grava SOMENTE se 0 <= drift_ms <= OUTCOME_BOUNDARY_TOLERANCE_MS
+
+        O chamador deve fornecer current_price = fechamento da janela que
+        acabou de fechar em current_epoch_ms. Não há interpolação, nearest
+        ou busca de preço posterior: boundary perdido permanece NULL
+        (consumidores já ignoram NULL em denominadores/probabilidades).
+
+        evaluated_at = timestamp da ÚLTIMA avaliação que efetivamente
+        preencheu algum horizonte. NÃO é timestamp específico de um
+        outcome individual (5m/15m/etc.) e não deve ser usado como tal.
         """
         try:
             with self._get_conn() as conn:
-                # Buscar sinais que ainda não foram totalmente avaliados
+                # Pré-filtro LARGO (apenas performance):
+                #  - limite superior inclusivo: permite idade exatamente 5m;
+                #  - limite inferior: um sinal só ainda pode receber ALGUM
+                #    stamp enquanto drift do último horizonte (60m) estiver
+                #    em [0, tol]; mais velho que isso todos os horizontes
+                #    estão permanentemente perdidos e a linha sairia da
+                #    varredura sem alterar nenhum resultado possível
+                #    (elimina churn de rescan etário). A decisão definitiva
+                #    continua sendo o drift por horizonte abaixo.
                 cursor = conn.execute(
                     """SELECT id, signal_epoch_ms, entry_price, event_type, battle_result
                     FROM signal_outcomes
                     WHERE outcome_60m_pct IS NULL
-                    AND signal_epoch_ms < ?
+                    AND signal_epoch_ms <= ?
+                    AND signal_epoch_ms >= ?
                     ORDER BY signal_epoch_ms ASC
                     LIMIT 100""",
-                    (current_epoch_ms - 300_000,)  # pelo menos 5 min atrás
+                    (
+                        current_epoch_ms - 300_000,
+                        current_epoch_ms - 3_600_000 - OUTCOME_BOUNDARY_TOLERANCE_MS,
+                    ),
                 )
 
                 for row in cursor.fetchall():
                     row_id, signal_ms, entry_price, event_type, battle_result = row
-                    elapsed_min = (current_epoch_ms - signal_ms) / 60_000
 
                     if entry_price <= 0:
                         continue
@@ -145,27 +191,32 @@ class OutcomeTracker:
                     pct_change = ((current_price - entry_price) / entry_price) * 100
                     direction = "UP" if pct_change > 0.01 else ("DOWN" if pct_change < -0.01 else "FLAT")
 
-                    updates = {}
-                    if elapsed_min >= 5 and not self._has_outcome(conn, row_id, "5m"):
-                        updates["outcome_5m_pct"] = round(pct_change, 4)
-                        updates["outcome_direction_5m"] = direction
-                    if elapsed_min >= 15 and not self._has_outcome(conn, row_id, "15m"):
-                        updates["outcome_15m_pct"] = round(pct_change, 4)
-                        updates["outcome_direction_15m"] = direction
-                    if elapsed_min >= 30 and not self._has_outcome(conn, row_id, "30m"):
-                        updates["outcome_30m_pct"] = round(pct_change, 4)
-                        updates["outcome_direction_30m"] = direction
-                    if elapsed_min >= 60 and not self._has_outcome(conn, row_id, "60m"):
-                        updates["outcome_60m_pct"] = round(pct_change, 4)
-                        updates["outcome_direction_60m"] = direction
+                    for horizon_min, window in _OUTCOME_HORIZONS:
+                        # Otimização; a garantia real de concorrência está no
+                        # UPDATE condicional (outcome_X_pct IS NULL) abaixo.
+                        if self._has_outcome(conn, row_id, window):
+                            continue
 
-                    if updates:
-                        updates["evaluated_at"] = current_epoch_ms
-                        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
-                        conn.execute(
-                            f"UPDATE signal_outcomes SET {set_clause} WHERE id = ?",
-                            list(updates.values()) + [row_id],
+                        target_epoch_ms = signal_ms + horizon_min * 60_000
+                        drift_ms = current_epoch_ms - target_epoch_ms
+                        if not (0 <= drift_ms <= OUTCOME_BOUNDARY_TOLERANCE_MS):
+                            continue
+
+                        result = conn.execute(
+                            f"""UPDATE signal_outcomes
+                            SET outcome_{window}_pct = ?,
+                                outcome_direction_{window} = ?,
+                                evaluated_at = ?
+                            WHERE id = ?
+                              AND outcome_{window}_pct IS NULL""",
+                            (
+                                round(pct_change, 4),
+                                direction,
+                                current_epoch_ms,
+                                row_id,
+                            ),
                         )
+                        _ = result.rowcount  # 0 => outro writer venceu; não sobrescrever
 
         except Exception as e:
             logger.error(f"Erro ao avaliar outcomes: {e}")
