@@ -10,6 +10,8 @@ from collections import deque
 from typing import Any, List, Dict, Optional
 import logging
 
+from common.signal_direction import infer_signal_side
+
 logger = logging.getLogger("EventMemory")
 
 # Memória global de eventos (em memória — para produção, use Redis, SQLite, etc.)
@@ -44,7 +46,7 @@ def adicionar_memoria_evento(evento: Dict):
         # Registrar sinal para tracking de outcome
         if _TRACKER_OK and _outcome_tracker:
             tipo = evento.get("tipo_evento", "")
-            if tipo in ("Absorção", "Exaustão", "Absorção"):
+            if tipo in ("Absorção", "Exaustão", "AbsorÃ§Ã£o"):
                 _outcome_tracker.register_signal(evento)
     else:
         logger.warning("Tentativa de adicionar evento inválido à memória.")
@@ -64,6 +66,11 @@ def calcular_probabilidade_historica(evento: Dict) -> Dict:
     Calcula probabilidades históricas REAIS baseadas em outcomes passados.
     Usa OutcomeTracker (SQLite) quando disponível, senão fallback conservador.
     """
+    tipo = evento.get("tipo_evento", "")
+    resultado = evento.get("resultado_da_batalha", "")
+    side = evento.get("side", evento.get("absorption_side"))
+    signal_side = infer_signal_side(event_type=tipo, battle_result=resultado, explicit_side=side)
+
     # Tentar probabilidade real do OutcomeTracker
     if _TRACKER_OK and _outcome_tracker:
         confidence = _outcome_tracker.get_confidence_for_event(evento)
@@ -73,31 +80,41 @@ def calcular_probabilidade_historica(evento: Dict) -> Dict:
             if w15:
                 prob_up = w15.get("prob_up", 0.33)
                 prob_down = w15.get("prob_down", 0.33)
-                prob_flat = 1.0 - prob_up - prob_down
+                prob_flat = w15.get("prob_flat", max(0.0, 1.0 - prob_up - prob_down))
                 return {
                     "long_prob": round(prob_up, 4),
                     "short_prob": round(prob_down, 4),
-                    "neutral_prob": round(max(0, prob_flat), 4),
+                    "neutral_prob": round(max(0.0, prob_flat), 4),
+                    "prob_win": w15.get("prob_win"),
+                    "prob_loss": w15.get("prob_loss"),
+                    "win_rate": w15.get("win_rate"),
+                    "directional_win_rate": w15.get("directional_win_rate"),
+                    "signal_side": w15.get("signal_side", signal_side),
                     "samples": w15.get("samples", 0),
-                    "win_rate": w15.get("win_rate", 0),
                     "avg_return_pct": w15.get("avg_return_pct", 0),
                     "is_real_data": True,
                     "source": "outcome_tracker_15m",
                 }
 
     # Fallback conservador (sem dados históricos suficientes)
-    tipo = evento.get("tipo_evento", "")
-    resultado = evento.get("resultado_da_batalha", "")
+    base = {
+        "long_prob": 0.33,
+        "short_prob": 0.33,
+        "neutral_prob": 0.34,
+        "prob_win": None,
+        "prob_loss": None,
+        "win_rate": None,
+        "directional_win_rate": None,
+        "signal_side": signal_side,
+        "is_real_data": False,
+        "source": "fallback_base",
+    }
 
-    # Probabilidades base conservadoras (não hardcoded otimistas)
-    base = {"long_prob": 0.33, "short_prob": 0.33, "neutral_prob": 0.34,
-            "is_real_data": False, "source": "fallback_base"}
-
-    if "Compra" in resultado:
-        base.update({"long_prob": 0.45, "short_prob": 0.25, "neutral_prob": 0.30})
-    elif "Venda" in resultado:
-        base.update({"long_prob": 0.25, "short_prob": 0.45, "neutral_prob": 0.30})
-    elif "Exaustão" in tipo or "Exaust" in tipo:
-        base.update({"long_prob": 0.35, "short_prob": 0.35, "neutral_prob": 0.30})
+    if signal_side == "LONG":
+        base.update({"long_prob": 0.45, "short_prob": 0.25, "neutral_prob": 0.30, "win_rate": 45.0})
+    elif signal_side == "SHORT":
+        base.update({"long_prob": 0.25, "short_prob": 0.45, "neutral_prob": 0.30, "win_rate": 45.0})
+    elif signal_side in ("NEUTRAL", "UNKNOWN"):
+        base.update({"long_prob": 0.33, "short_prob": 0.33, "neutral_prob": 0.34, "win_rate": None})
 
     return base

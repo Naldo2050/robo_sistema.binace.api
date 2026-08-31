@@ -20,6 +20,8 @@ from typing import Dict, Any, List, Optional, Tuple
 from collections import defaultdict
 from pathlib import Path
 
+from common.signal_direction import infer_signal_side
+
 logger = logging.getLogger("OutcomeTracker")
 
 # Janelas de avaliação em minutos
@@ -239,6 +241,10 @@ class OutcomeTracker:
         """
         Calcula probabilidade histórica real baseada em outcomes passados.
 
+        Preserva contratos de movimento de mercado (prob_up, prob_down, prob_flat,
+        avg_return_pct, avg_win_pct, avg_loss_pct) e fornece métricas direction-aware
+        (prob_win, prob_loss, win_rate, directional_win_rate).
+
         Args:
             event_type: Tipo de evento (ex: "Absorção", "Exaustão")
             battle_result: Resultado da batalha (ex: "Absorção de Venda")
@@ -300,7 +306,7 @@ class OutcomeTracker:
                         "max_return_pct": round(max_pct, 4),
                     }
 
-                # Calcular métricas agregadas
+                # Calcular métricas agregadas brutas (preservadas exatamente)
                 cursor = conn.execute(
                     f"""SELECT AVG({pct_col}),
                     AVG(CASE WHEN {pct_col} > 0 THEN {pct_col} END),
@@ -312,20 +318,68 @@ class OutcomeTracker:
 
                 up_data = results.get("UP", {})
                 down_data = results.get("DOWN", {})
+                flat_data = results.get("FLAT", {})
+
+                # Probabilidades brutas de movimento de preço (preservadas intactas)
+                prob_up = round(up_data.get("pct", 0) / 100, 4)
+                prob_down = round(down_data.get("pct", 0) / 100, 4)
+                prob_flat = round(flat_data.get("pct", 0) / 100, 4)
+
+                # Inferir polaridade do sinal para métricas direction-aware
+                signal_side = infer_signal_side(event_type=event_type, battle_result=battle_result)
+
+                if signal_side == "LONG":
+                    wins = up_data.get("count", 0)
+                    losses = down_data.get("count", 0)
+                    prob_win = round(wins / total, 4)
+                    prob_loss = round(losses / total, 4)
+                    win_rate = round(wins / total * 100, 1)
+                    directional_win_rate = (
+                        round(wins / (wins + losses) * 100, 1)
+                        if (wins + losses) > 0
+                        else None
+                    )
+                    status = "ok"
+                elif signal_side == "SHORT":
+                    wins = down_data.get("count", 0)
+                    losses = up_data.get("count", 0)
+                    prob_win = round(wins / total, 4)
+                    prob_loss = round(losses / total, 4)
+                    win_rate = round(wins / total * 100, 1)
+                    directional_win_rate = (
+                        round(wins / (wins + losses) * 100, 1)
+                        if (wins + losses) > 0
+                        else None
+                    )
+                    status = "ok"
+                else:
+                    # NEUTRAL ou UNKNOWN: não inventa win_rate
+                    prob_win = None
+                    prob_loss = None
+                    win_rate = None
+                    directional_win_rate = None
+                    status = "neutral_signal" if signal_side == "NEUTRAL" else "unknown_signal_side"
 
                 return {
-                    "status": "ok",
+                    "status": status,
                     "window": window,
                     "samples": total,
                     "event_type": event_type,
                     "battle_result": battle_result,
-                    "prob_up": round(up_data.get("pct", 0) / 100, 4),
-                    "prob_down": round(down_data.get("pct", 0) / 100, 4),
-                    "prob_flat": round(results.get("FLAT", {}).get("pct", 0) / 100, 4),
+                    "signal_side": signal_side,
+                    "prob_up": prob_up,
+                    "prob_down": prob_down,
+                    "prob_flat": prob_flat,
+                    "prob_win": prob_win,
+                    "prob_loss": prob_loss,
+                    "win_rate": win_rate,
+                    "directional_win_rate": directional_win_rate,
+                    # Métricas de magnitude do movimento do preço (LEGACY price-direction metrics, não signal-aware):
+                    # avg_win_pct: média dos retornos de preço POSITIVOS (> 0)
+                    # avg_loss_pct: média dos retornos de preço NEGATIVOS (< 0)
                     "avg_return_pct": round(agg[0] or 0, 4),
                     "avg_win_pct": round(agg[1] or 0, 4),
                     "avg_loss_pct": round(agg[2] or 0, 4),
-                    "win_rate": round(up_data.get("pct", 0), 1),
                     "details": results,
                     "is_real_data": True,
                 }
@@ -362,7 +416,7 @@ class OutcomeTracker:
                         window=window,
                         min_samples=min_samples,
                     )
-                    if prob.get("status") == "ok":
+                    if prob.get("status") in ("ok", "unknown_signal_side", "neutral_signal"):
                         results[f"{key}|{window}"] = prob
 
             return {
@@ -392,11 +446,16 @@ class OutcomeTracker:
                 window=window,
                 min_samples=5,
             )
-            if prob.get("status") == "ok":
+            if prob.get("status") in ("ok", "unknown_signal_side", "neutral_signal"):
                 confidence[window] = {
                     "prob_up": prob["prob_up"],
                     "prob_down": prob["prob_down"],
+                    "prob_flat": prob["prob_flat"],
+                    "prob_win": prob["prob_win"],
+                    "prob_loss": prob["prob_loss"],
                     "win_rate": prob["win_rate"],
+                    "directional_win_rate": prob["directional_win_rate"],
+                    "signal_side": prob.get("signal_side"),
                     "avg_return_pct": prob["avg_return_pct"],
                     "samples": prob["samples"],
                 }

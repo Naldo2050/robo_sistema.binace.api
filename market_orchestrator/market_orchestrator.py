@@ -152,23 +152,11 @@ except Exception:
 # Ativa filtro anti-eco global
 configure_dedup_logs()
 
-# ====== Resultados bullish de resultado_da_batalha (comparado em UPPERCASE) ======
-# Usado em _handle_signal_event para signal_direction (RegimeBasedRules).
-# Inclui os rótulos de absorção/exaustão bullish que antes caíam no "short" por
-# mismatch de string ("Absorção de Venda" = venda absorvida = compradores no
-# controle; "Exaustão de Venda" = vendedores exauridos; "Demanda no Livro" e
-# "SUPPLY_EXHAUSTION" = pressão compradora). Variantes sem acento por robustez.
-BULLISH_RESULTS = frozenset({
-    "COMPRA",
-    "BULLISH",
-    "ABSORÇÃO DE VENDA",
-    "ABSORCAO DE VENDA",
-    "EXAUSTÃO DE VENDA",
-    "EXAUSTAO DE VENDA",
-    "DEMANDA NO LIVRO (BID>ASK)",
-    "LEVE DEMANDA NO LIVRO",
-    "SUPPLY_EXHAUSTION",
-})
+from common.signal_direction import (
+    infer_signal_side,
+    get_directional_confidence,
+    BULLISH_RESULTS,
+)
 
 
 class EnhancedMarketBot:
@@ -1011,16 +999,17 @@ class EnhancedMarketBot:
                 regime_rules = RegimeBasedRules()
                 
                 # Verificar se deve operar baseado no regime.
-                # Rótulos bullish: COMPRA/BULLISH, "Absorção de Venda" (venda
-                # absorvida = compradores no controle), "Exaustão de Venda"
-                # (vendedores exauridos), "Demanda no Livro (Bid>Ask)"/leve
-                # demanda, "SUPPLY_EXHAUSTION" (exaustão de oferta).
-                signal_direction = (
-                    "long"
-                    if event_data.get("resultado_da_batalha", "").upper() in BULLISH_RESULTS
-                    else "short"
+                signal_side = infer_signal_side(
+                    event_type=event_data.get("tipo_evento"),
+                    battle_result=event_data.get("resultado_da_batalha"),
+                    explicit_side=event_data.get("side", event_data.get("absorption_side")),
                 )
-                signal_confidence = event_data.get("historical_confidence", {}).get("long_prob", 0.5)
+                signal_direction = "long" if signal_side == "LONG" else ("short" if signal_side == "SHORT" else "neutral")
+                signal_confidence = get_directional_confidence(
+                    event_data.get("historical_confidence", {}),
+                    signal_direction,
+                    default_fallback=0.5,
+                )
                 
                 should_trade, reason = regime_rules.should_trade(
                     regime_analysis=regime_analysis,

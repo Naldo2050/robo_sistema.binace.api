@@ -26,6 +26,8 @@ import numpy as np
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
+from common.signal_direction import infer_signal_side, classify_outcome
+
 logger = logging.getLogger("EventSimilarity")
 
 # Features a extrair de cada evento para o vetor
@@ -47,6 +49,10 @@ TREND_MAP = {"UP": 1.0, "DOWN": -1.0, "SIDEWAYS": 0.0, "RANGE_BOUND": 0.0}
 VOL_MAP = {"HIGH": 1.0, "LOW": -1.0, "NORMAL": 0.0, "MODERATE": 0.0}
 SESSION_MAP = {"US": 1.0, "EUROPE": 0.5, "ASIA": -0.5, "OVERLAP": 0.75}
 SIDE_MAP = {"buy": 1.0, "sell": -1.0}
+
+
+# Mínimo de amostras compatíveis com outcome para cálculo estatístico e interpretação confiável
+MIN_SIMILAR_SAMPLES = 3
 
 
 class EventSimilaritySearch:
@@ -219,8 +225,8 @@ class EventSimilaritySearch:
         # Enriquecer com outcomes se disponível
         similar_with_outcomes = self._enrich_with_outcomes(similar)
 
-        # Resumo estatístico
-        summary = self._build_summary(similar_with_outcomes)
+        # Resumo estatístico direction-aware baseado no evento de consulta
+        summary = self._build_summary(similar_with_outcomes, current_event=current_event)
 
         return {
             "status": "ok",
@@ -277,44 +283,128 @@ class EventSimilaritySearch:
 
         return similar
 
-    def _build_summary(self, events: List[Dict]) -> Dict[str, Any]:
-        """Constrói resumo estatístico dos eventos similares."""
+    def _build_summary(
+        self,
+        events: List[Dict],
+        current_event: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Constrói resumo estatístico dos eventos similares.
+
+        Preserva contagens brutas do mercado e calcula historical_win_rate
+        apenas com base em candidatos direction-compatible com o evento de consulta.
+        """
         outcomes_up = 0
         outcomes_down = 0
+        outcomes_flat = 0
         returns = []
 
         for ev in events:
             outcome = ev.get("outcome", {})
             o15 = outcome.get("15m", {})
-            if o15.get("direction") == "UP":
+            direction = o15.get("direction")
+            if direction == "UP":
                 outcomes_up += 1
-            elif o15.get("direction") == "DOWN":
+            elif direction == "DOWN":
                 outcomes_down += 1
+            elif direction == "FLAT":
+                outcomes_flat += 1
+
             if o15.get("pct") is not None:
                 returns.append(o15["pct"])
 
-        total = outcomes_up + outcomes_down
+        total_with_outcomes = outcomes_up + outcomes_down + outcomes_flat
+
+        query_side = "UNKNOWN"
+        if current_event:
+            query_side = infer_signal_side(
+                event_type=current_event.get("tipo_evento"),
+                battle_result=current_event.get("resultado_da_batalha"),
+                explicit_side=current_event.get("side", current_event.get("absorption_side")),
+            )
+
+        compatible_count = 0
+        valid_compatible_outcomes = 0
+        historical_win_rate = None
+        directional_win_rate = None
+        interpretation = "Sem dados históricos suficientes"
+
+        if query_side in ("LONG", "SHORT"):
+            compatible_events = [
+                ev for ev in events
+                if infer_signal_side(
+                    event_type=ev.get("tipo_evento"),
+                    battle_result=ev.get("resultado_da_batalha"),
+                ) == query_side
+            ]
+            compatible_count = len(compatible_events)
+
+            wins = 0
+            losses = 0
+            flats = 0
+            compatible_returns = []
+
+            for ev in compatible_events:
+                o15 = ev.get("outcome", {}).get("15m", {})
+                dir_15 = o15.get("direction")
+                if dir_15:
+                    outcome_class = classify_outcome(query_side, dir_15)
+                    if outcome_class == "WIN":
+                        wins += 1
+                    elif outcome_class == "LOSS":
+                        losses += 1
+                    elif outcome_class == "FLAT":
+                        flats += 1
+                    if o15.get("pct") is not None:
+                        compatible_returns.append(o15["pct"])
+
+            valid_compatible_outcomes = wins + losses + flats
+            if valid_compatible_outcomes >= MIN_SIMILAR_SAMPLES:
+                historical_win_rate = round(wins / valid_compatible_outcomes * 100, 1)
+                if wins + losses > 0:
+                    directional_win_rate = round(wins / (wins + losses) * 100, 1)
+                interpretation = self._interpret_direction_aware(
+                    query_side, wins, losses, flats, compatible_returns
+                )
+            else:
+                interpretation = "Amostras compatíveis insuficientes para interpretação confiável"
+        elif query_side in ("NEUTRAL", "UNKNOWN"):
+            interpretation = "Sinal não-direcional ou desconhecido"
+
         return {
             "similar_count": len(events),
-            "with_outcomes": total,
+            "with_outcomes": total_with_outcomes,
             "outcomes_up": outcomes_up,
             "outcomes_down": outcomes_down,
-            "historical_win_rate": round(outcomes_up / total * 100, 1) if total > 0 else None,
+            "outcomes_flat": outcomes_flat,
+            "query_side": query_side,
+            "compatible_candidates_count": compatible_count,
+            "compatible_samples_used": valid_compatible_outcomes,
+            "historical_win_rate": historical_win_rate,
+            "directional_win_rate": directional_win_rate,
             "avg_return_pct": round(sum(returns) / len(returns), 4) if returns else None,
-            "interpretation": self._interpret(outcomes_up, outcomes_down, returns),
+            "interpretation": interpretation,
         }
 
-    def _interpret(self, up: int, down: int, returns: List[float]) -> str:
-        total = up + down
-        if total < 3:
+    def _interpret_direction_aware(
+        self,
+        query_side: str,
+        wins: int,
+        losses: int,
+        flats: int,
+        returns: List[float],
+    ) -> str:
+        total = wins + losses + flats
+        if total < MIN_SIMILAR_SAMPLES:
             return "Dados insuficientes para interpretação confiável"
 
-        win_rate = up / total * 100
+        win_rate = wins / total * 100
         avg_ret = sum(returns) / len(returns) if returns else 0
 
+        side_label = "alta" if query_side == "LONG" else "queda"
         if win_rate >= 70:
-            return f"Cenários similares tiveram {win_rate:.0f}% de alta (retorno médio: {avg_ret:.3f}%)"
+            return f"Cenários similares tiveram {win_rate:.0f}% de acerto em {side_label} (retorno médio: {avg_ret:.3f}%)"
         elif win_rate <= 30:
-            return f"Cenários similares tiveram {100-win_rate:.0f}% de queda (retorno médio: {avg_ret:.3f}%)"
+            return f"Cenários similares tiveram apenas {win_rate:.0f}% de acerto em {side_label} (retorno médio: {avg_ret:.3f}%)"
         else:
-            return f"Cenários similares tiveram resultado misto ({win_rate:.0f}% alta, retorno médio: {avg_ret:.3f}%)"
+            return f"Cenários similares tiveram resultado misto ({win_rate:.0f}% acerto, retorno médio: {avg_ret:.3f}%)"
