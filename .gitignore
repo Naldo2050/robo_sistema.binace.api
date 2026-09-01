@@ -189,3 +189,12 @@ erro.txt
 # Documentação local (não código)
 # ==============================
 Regras/ARQUIVOS DE MONITORAMENTO.odt
+
+# ==============================
+# Artefatos shadow run e saídas de teste
+# ==============================
+logs/shadow_*
+*.out
+scratch/
+/test_guardrail_compressor.py
+/test_payload_analysis.py
