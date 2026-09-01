@@ -411,13 +411,14 @@ class TestQualityVeryLow:
         assert any("good friday" in i.lower() or "feriado" in i.lower()
                    for i in result["issues"])
 
-    def test_quality_summary_note_includes_confidence_pct(self):
+    def test_quality_summary_confidence_cap_and_issues(self):
         payload = {
             "qual": {"lat": "DEGR", "liq": "VERY_LOW", "holiday": "Good Friday"},
             "ctx": {},
         }
         result = build_quality_summary(payload)
-        assert "%" in result["note"]
+        assert result["confidence_cap"] <= 0.6
+        assert "note" not in result
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -631,16 +632,18 @@ class TestProductionEventIntegration:
             assert qual_s["reliable"] is False
             assert qual_s["confidence_cap"] <= 0.6
 
-    def test_production_event_summary_note_mentions_holiday(self):
+    def test_production_event_summary_issues_mentions_holiday(self):
         payload = bcp.build_compact_payload(make_production_event())
 
         if "summary" in payload:
-            note = payload["summary"]["quality"]["note"]
-            assert (
-                "feriado" in note.lower()
-                or "good friday" in note.lower()
-                or "holiday" in note.lower()
-            ), f"Nota não menciona feriado: '{note}'"
+            qual_s = payload["summary"]["quality"]
+            assert "note" not in qual_s
+            assert any(
+                "feriado" in i.lower()
+                or "good friday" in i.lower()
+                or "holiday" in i.lower()
+                for i in qual_s["issues"]
+            ), f"Feriado não mencionado nas issues: '{qual_s['issues']}'"
 
     def test_production_event_is_serializable(self):
         import json

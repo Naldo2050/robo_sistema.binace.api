@@ -227,22 +227,10 @@ def build_quality_summary(payload: dict[str, Any]) -> dict[str, Any]:
     confidence_cap = round(min(caps), 2)
     reliable = confidence_cap >= 0.7 and len(issues) == 0
 
-    note = _build_note(
-        reliable=reliable,
-        confidence_cap=confidence_cap,
-        issues=issues,
-        lat_cat=lat_cat,
-        liq_raw=liq_raw,
-        src_raw=src_raw,
-        ctx_cached=ctx_cached,
-        holiday=holiday,
-    )
-
     return {
         "reliable":       reliable,
         "confidence_cap": confidence_cap,
         "issues":         issues,
-        "note":           note,
     }
 
 

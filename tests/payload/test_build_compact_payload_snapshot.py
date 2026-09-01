@@ -492,17 +492,15 @@ def test_snapshot_structure_is_serializable_to_json():
     assert reparsed["trigger"] == "AT"
 
 
-# ── Testes adicionais: contrato da seção summary ───────────────────────
+# ── Testes adicionais: contrato da seção summary (SAFE) ─────────────────
 
 REQUIRED_SUMMARY_KEYS = {"flow", "sr", "regime", "institutional", "quality"}
 
-REQUIRED_SUMMARY_FLOW_KEYS        = {"bias", "type", "actor", "conf", "note"}
-REQUIRED_SUMMARY_SR_KEYS          = {"nearest", "compressed", "conf_bias", "note"}
-REQUIRED_SUMMARY_REGIME_KEYS      = {"label", "strategies", "avoid", "duration", "note"}
-REQUIRED_SUMMARY_INSTITUTIONAL_KEYS = {
-    "auction_state", "whale_bias", "profile_bias", "unfinished", "note"
-}
-REQUIRED_SUMMARY_QUALITY_KEYS     = {"reliable", "confidence_cap", "issues", "note"}
+REQUIRED_SUMMARY_FLOW_KEYS          = {"bias", "type", "actor"}
+REQUIRED_SUMMARY_SR_KEYS            = {"nearest", "compressed", "conf_bias"}
+REQUIRED_SUMMARY_REGIME_KEYS        = {"label", "strategies", "avoid", "duration"}
+REQUIRED_SUMMARY_INSTITUTIONAL_KEYS = {"auction_state", "whale_bias", "profile_bias", "alignment"}
+REQUIRED_SUMMARY_QUALITY_KEYS       = {"reliable", "confidence_cap", "issues"}
 
 
 def test_snapshot_summary_section_present():
@@ -528,8 +526,8 @@ def test_snapshot_summary_flow_structure():
     assert flow_s["bias"] in {"BUY", "SELL", "NEUTRAL"}
     assert flow_s["type"] in {"absorption", "aggressive", "passive", "mixed"}
     assert flow_s["actor"] in {"whale", "retail", "mixed", "unknown"}
-    assert flow_s["conf"] in {"H", "M", "L"}
-    assert isinstance(flow_s["note"], str) and len(flow_s["note"]) > 5
+    assert "conf" not in flow_s
+    assert "note" not in flow_s
 
 
 def test_snapshot_summary_sr_structure():
@@ -545,7 +543,7 @@ def test_snapshot_summary_sr_structure():
     assert sr_s["nearest"] in {"support", "resistance", "equidistant", "unknown"}
     assert isinstance(sr_s["compressed"], bool)
     assert sr_s["conf_bias"] in {"BUY", "SELL", "NEUTRAL"}
-    assert isinstance(sr_s["note"], str) and len(sr_s["note"]) > 5
+    assert "note" not in sr_s
 
 
 def test_snapshot_summary_regime_structure():
@@ -562,7 +560,7 @@ def test_snapshot_summary_regime_structure():
     assert isinstance(reg_s["strategies"], list)
     assert isinstance(reg_s["avoid"], list)
     assert isinstance(reg_s["duration"], str)
-    assert isinstance(reg_s["note"], str) and len(reg_s["note"]) > 5
+    assert "note" not in reg_s
 
 
 def test_snapshot_summary_institutional_structure():
@@ -575,10 +573,12 @@ def test_snapshot_summary_institutional_structure():
     missing = REQUIRED_SUMMARY_INSTITUTIONAL_KEYS - set(inst_s.keys())
     assert not missing, f"Chaves ausentes em summary.institutional: {missing}"
 
+    assert isinstance(inst_s["auction_state"], str)
     assert inst_s["whale_bias"] in {"ACCUMULATING", "DISTRIBUTING", "NEUTRAL"}
     assert inst_s["profile_bias"] in {"BULLISH", "BEARISH", "NEUTRAL"}
-    assert isinstance(inst_s["unfinished"], list)
-    assert isinstance(inst_s["note"], str) and len(inst_s["note"]) > 5
+    assert inst_s["alignment"] in {"BULL_ALIGNED", "BEAR_ALIGNED", "CONFLICTED", "NEUTRAL"}
+    assert "unfinished" not in inst_s
+    assert "note" not in inst_s
 
 
 def test_snapshot_summary_quality_structure():
@@ -595,7 +595,7 @@ def test_snapshot_summary_quality_structure():
     assert isinstance(qual_s["confidence_cap"], float)
     assert 0.0 <= qual_s["confidence_cap"] <= 1.0
     assert isinstance(qual_s["issues"], list)
-    assert isinstance(qual_s["note"], str) and len(qual_s["note"]) > 5
+    assert "note" not in qual_s
 
 
 def test_snapshot_payload_with_summary_still_serializable():

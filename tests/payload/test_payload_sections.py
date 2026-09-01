@@ -132,8 +132,10 @@ class TestFlowSummary:
 
     def test_nominal_returns_required_keys(self):
         result = build_flow_summary(make_compact_payload())
-        for key in ("bias", "type", "actor", "conf", "note"):
-            assert key in result, f"Chave ausente: {key}"
+        for key in ("bias", "type", "actor"):
+            assert key in result, f"Chave obrigatória ausente: {key}"
+        for removed in ("conf", "note"):
+            assert removed not in result, f"Campo removido ainda presente: {removed}"
 
     def test_nominal_buy_absorption_bias(self):
         result = build_flow_summary(make_compact_payload())
@@ -143,15 +145,6 @@ class TestFlowSummary:
     def test_nominal_whale_actor_detected(self):
         result = build_flow_summary(make_compact_payload())
         assert result["actor"] == "whale"
-
-    def test_nominal_conviction_medium(self):
-        result = build_flow_summary(make_compact_payload())
-        assert result["conf"] == "M"
-
-    def test_nominal_note_is_non_empty_string(self):
-        result = build_flow_summary(make_compact_payload())
-        assert isinstance(result["note"], str)
-        assert len(result["note"]) > 10
 
     def test_divergence_d1_vs_d5_sets_reversal_signal(self):
         payload = make_compact_payload()
@@ -170,8 +163,10 @@ class TestFlowSummary:
     def test_fallback_when_no_flow(self):
         result = build_flow_summary({})
         assert result["bias"] == "NEUTRAL"
-        assert result["conf"] == "L"
-        assert "note" in result
+        assert result["type"] == "mixed"
+        assert result["actor"] == "unknown"
+        assert "note" not in result
+        assert "conf" not in result
 
     def test_sell_absorption_sets_sell_bias(self):
         payload = make_compact_payload()
@@ -181,13 +176,6 @@ class TestFlowSummary:
         result = build_flow_summary(payload)
         assert result["bias"] == "SELL"
         assert result["type"] == "absorption"
-
-    def test_high_buyer_strength_upgrades_conviction(self):
-        payload = make_compact_payload()
-        payload["flow"]["abs_buy_str"] = 8.5
-        payload["flow"]["abs_sell_exh"] = 0.5
-        result = build_flow_summary(payload)
-        assert result["conf"] == "H"
 
     def test_retail_actor_when_only_retail_active(self):
         payload = make_compact_payload()
@@ -212,8 +200,9 @@ class TestSrSummary:
 
     def test_nominal_returns_required_keys(self):
         result = build_sr_summary(make_compact_payload())
-        for key in ("nearest", "compressed", "conf_bias", "note"):
-            assert key in result, f"Chave ausente: {key}"
+        for key in ("nearest", "compressed", "conf_bias"):
+            assert key in result, f"Chave obrigatória ausente: {key}"
+        assert "note" not in result, "Campo note não deveria estar presente"
 
     def test_nominal_resistance_is_nearest(self):
         result = build_sr_summary(make_compact_payload())
@@ -258,7 +247,7 @@ class TestSrSummary:
         result = build_sr_summary({})
         assert result["nearest"] == "unknown"
         assert result["compressed"] is False
-        assert "note" in result
+        assert "note" not in result
 
     def test_support_nearest_when_s1_closer(self):
         payload = make_compact_payload()
@@ -266,11 +255,6 @@ class TestSrSummary:
         payload["sr"]["s1_dist"] = 36
         result = build_sr_summary(payload)
         assert result["nearest"] == "support"
-
-    def test_note_is_non_empty_string(self):
-        result = build_sr_summary(make_compact_payload())
-        assert isinstance(result["note"], str)
-        assert len(result["note"]) > 10
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -281,8 +265,13 @@ class TestRegimeSummary:
 
     def test_nominal_returns_required_keys(self):
         result = build_regime_summary(make_compact_payload())
-        for key in ("label", "strategies", "avoid", "duration", "note"):
-            assert key in result, f"Chave ausente: {key}"
+        for key in ("strategies", "avoid", "duration"):
+            assert key in result, f"Chave obrigatória ausente: {key}"
+    def test_nominal_returns_required_keys(self):
+        result = build_regime_summary(make_compact_payload())
+        for key in ("label", "strategies", "avoid", "duration"):
+            assert key in result, f"Chave obrigatória ausente: {key}"
+        assert "note" not in result, "Campo note não deveria estar presente"
 
     def test_nominal_mode_mr_label(self):
         result = build_regime_summary(make_compact_payload())
@@ -339,13 +328,9 @@ class TestRegimeSummary:
         assert result["label"] == "Indeterminado"
         assert result["strategies"] == []
         assert result["avoid"] == []
+        assert "note" not in result
 
-    def test_note_is_non_empty_string(self):
-        result = build_regime_summary(make_compact_payload())
-        assert isinstance(result["note"], str)
-        assert len(result["note"]) > 10
-
-    def test_breakout_mode_label(self):
+    def test_breakout_mode_strategies(self):
         payload = make_compact_payload()
         payload["regime"]["mode"] = "BRK"
         result = build_regime_summary(payload)
@@ -361,8 +346,10 @@ class TestInstitutionalSummary:
 
     def test_nominal_returns_required_keys(self):
         result = build_institutional_summary(make_compact_payload())
-        for key in ("auction_state", "whale_bias", "profile_bias", "unfinished", "note"):
-            assert key in result, f"Chave ausente: {key}"
+        for key in ("auction_state", "whale_bias", "profile_bias", "alignment"):
+            assert key in result, f"Chave obrigatória ausente: {key}"
+        for removed in ("unfinished", "note"):
+            assert removed not in result, f"Campo removido ainda presente: {removed}"
 
     def test_nominal_shape_b_is_bullish(self):
         result = build_institutional_summary(make_compact_payload())
@@ -371,10 +358,6 @@ class TestInstitutionalSummary:
     def test_nominal_whale_ma_is_accumulating(self):
         result = build_institutional_summary(make_compact_payload())
         assert result["whale_bias"] == "ACCUMULATING"
-
-    def test_nominal_poor_low_in_unfinished(self):
-        result = build_institutional_summary(make_compact_payload())
-        assert "low" in result["unfinished"]
 
     def test_nominal_auction_state_populated(self):
         result = build_institutional_summary(make_compact_payload())
@@ -396,17 +379,6 @@ class TestInstitutionalSummary:
         result = build_institutional_summary(payload)
         assert result["alignment"] == "CONFLICTED"
 
-    def test_brk_risk_vhi_appears_in_note(self):
-        result = build_institutional_summary(make_compact_payload())
-        assert "muito alto" in result["note"].lower() or "alto" in result["note"].lower()
-
-    def test_no_unfinished_when_no_poor_extremes(self):
-        payload = make_compact_payload()
-        payload["price"].pop("ph", None)
-        payload["price"].pop("pl", None)
-        result = build_institutional_summary(payload)
-        assert result["unfinished"] == []
-
     def test_distribution_classification(self):
         payload = make_compact_payload()
         payload["w"]["c"] = "SD"
@@ -417,7 +389,7 @@ class TestInstitutionalSummary:
         result = build_institutional_summary({})
         assert result["whale_bias"] == "NEUTRAL"
         assert result["profile_bias"] == "NEUTRAL"
-        assert result["unfinished"] == []
+        assert result["alignment"] == "NEUTRAL"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -431,6 +403,7 @@ class TestQualitySummary:
         assert result["reliable"] is True
         assert result["confidence_cap"] == 1.0
         assert result["issues"] == []
+        assert "note" not in result
 
     def test_degraded_latency_reduces_confidence(self):
         payload = make_compact_payload()
@@ -468,24 +441,9 @@ class TestQualitySummary:
         assert result["confidence_cap"] == 0.7
         assert len(result["issues"]) >= 2
 
-    def test_note_includes_confidence_percentage(self):
-        payload = make_compact_payload()
-        payload["qual"] = {"lat": "DEGR", "ms": 3622}
-        result = build_quality_summary(payload)
-        assert "70%" in result["note"]
-
-    def test_reliable_note_is_positive(self):
-        result = build_quality_summary(make_compact_payload())
-        assert "plena" in result["note"].lower() or "real" in result["note"].lower()
-
     def test_fallback_when_no_qual_is_fail_closed(self):
-        # ETAPA 2 (auditoria 2026-08-10): ausência de latência NÃO é
-        # promovida a "saudável". O contrato antigo (reliable=True,
-        # confidence_cap=1.0, issues=[]) transformava dado ausente em
-        # "Dados em tempo real... confiança plena" (JANELA 1). Novo
-        # contrato: informação de latência ausente -> fail-closed.
         result = build_quality_summary({})
         assert result["reliable"] is False
         assert result["confidence_cap"] < 1.0
         assert result["issues"]
-        assert "plena" not in result["note"].lower()
+        assert "note" not in result

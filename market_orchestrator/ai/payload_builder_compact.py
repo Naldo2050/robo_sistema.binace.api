@@ -1444,19 +1444,19 @@ _SUMMARY_THRESHOLDS = [
 ]
 
 _SUMMARY_ESSENTIAL_KEYS: dict[str, set] = {
-    "flow":          {"bias", "type", "conf", "actor"},
+    "flow":          {"bias", "type", "actor"},
     "sr":            {"nearest", "compressed", "conf_bias"},
     "regime":        {"label", "strategies"},
-    "institutional": {"whale_bias", "profile_bias", "unfinished"},
+    "institutional": {"auction_state", "whale_bias", "profile_bias", "alignment"},
     "quality":       {"reliable", "confidence_cap", "issues"},
 }
 
 _SUMMARY_REQUIRED_KEYS: dict[str, set] = {
-    "flow":          {"bias", "type", "actor", "conf", "note"},
-    "sr":            {"nearest", "compressed", "conf_bias", "note"},
-    "regime":        {"label", "strategies", "avoid", "duration", "note"},
-    "institutional": {"auction_state", "whale_bias", "profile_bias", "unfinished", "note"},
-    "quality":       {"reliable", "confidence_cap", "issues", "note"},
+    "flow":          {"bias", "type", "actor"},
+    "sr":            {"nearest", "compressed", "conf_bias"},
+    "regime":        {"label", "strategies", "avoid", "duration"},
+    "institutional": {"auction_state", "whale_bias", "profile_bias", "alignment"},
+    "quality":       {"reliable", "confidence_cap", "issues"},
 }
 
 

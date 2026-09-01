@@ -426,7 +426,7 @@ class TestFlowSummaryDegradedTemporal:
             },
         })
         assert result.get("reversal_signal") is True
-        assert "15m parcial (55.6% cobertura)" in result["note"]
+        assert "note" not in result
 
     def test_divergence_suppressed_when_comparison_window_degraded(self):
         result = self._summary_for({
@@ -436,12 +436,12 @@ class TestFlowSummaryDegradedTemporal:
             },
         })
         assert "reversal_signal" not in result
-        assert "5m em aquecimento (42.0% cobertura)" in result["note"]
+        assert "note" not in result
 
     def test_legacy_without_q_keeps_old_behavior(self):
         result = self._summary_for({})
         assert result.get("reversal_signal") is True
-        assert "Cobertura temporal parcial" not in result["note"]
+        assert "note" not in result
 
     def test_full_windows_add_no_note_noise(self):
         result = self._summary_for({
@@ -451,7 +451,7 @@ class TestFlowSummaryDegradedTemporal:
                 "15m": {"s": "full", "c": 100.0},
             },
         })
-        assert "Cobertura temporal parcial" not in result["note"]
+        assert "note" not in result
         assert result.get("reversal_signal") is True
 
 

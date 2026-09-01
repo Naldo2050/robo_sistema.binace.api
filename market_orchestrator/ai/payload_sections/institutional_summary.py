@@ -64,11 +64,6 @@ def build_institutional_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
     shape = price.get("sh", "")
     auction_raw = str(price.get("auc", "")).lower()
-    ph = price.get("ph", 0)
-    pl = price.get("pl", 0)
-    brk_risk = price.get("brk_risk", "")
-
-    whale_score = whale.get("s", 0) or 0
     whale_cls = whale.get("c", "N")
     whale_bias = _WHALE_CLS_BIAS.get(str(whale_cls).upper(), "NEUTRAL")
 
@@ -79,34 +74,14 @@ def build_institutional_summary(payload: dict[str, Any]) -> dict[str, Any]:
         auction_raw.replace("_", " ").capitalize() if auction_raw else "Estado de leilão desconhecido",
     )
 
-    # --- Extremos incompletos ---
-    unfinished: list[str] = []
-    if pl:
-        unfinished.append("low")
-    if ph:
-        unfinished.append("high")
-
     # --- Consistência whale vs profile ---
     alignment = _check_alignment(whale_bias, profile_bias, flow)
-
-    # --- Nota interpretada ---
-    note = _build_note(
-        auction_state=auction_state,
-        profile_bias=profile_bias,
-        whale_bias=whale_bias,
-        whale_score=whale_score,
-        unfinished=unfinished,
-        brk_risk=brk_risk,
-        alignment=alignment,
-    )
 
     return {
         "auction_state": auction_state,
         "whale_bias":    whale_bias,
         "profile_bias":  profile_bias,
-        "unfinished":    unfinished,
         "alignment":     alignment,
-        "note":          note,
     }
 
 

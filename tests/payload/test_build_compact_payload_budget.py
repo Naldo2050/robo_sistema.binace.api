@@ -180,9 +180,9 @@ def test_budget_summary_has_expected_builders():
     assert not missing, f"Builders ausentes no summary: {missing}"
 
 
-def test_budget_summary_notes_are_non_empty_strings():
+def test_budget_summary_notes_removed_in_safe_level():
     """
-    Cada seção do summary deve ter uma nota não vazia.
+    No nível SAFE, notas em prosa foram removidas de todas as seções do summary.
     """
     payload = bcp.build_compact_payload(make_base_event())
 
@@ -190,14 +190,8 @@ def test_budget_summary_notes_are_non_empty_strings():
         pytest.skip("summary não disponível neste ambiente")
 
     for section_name, section_data in payload["summary"].items():
-        assert "note" in section_data, (
-            f"summary.{section_name} sem campo 'note'"
-        )
-        assert isinstance(section_data["note"], str), (
-            f"summary.{section_name}.note não é string"
-        )
-        assert len(section_data["note"]) > 5, (
-            f"summary.{section_name}.note está vazio ou muito curto"
+        assert "note" not in section_data, (
+            f"summary.{section_name} ainda contém campo 'note'"
         )
 
 
@@ -276,3 +270,6 @@ def test_budget_summary_regime_label_consistent_with_regime_mode():
         assert label == _expected[mode], (
             f"regime.mode={mode} mas summary.regime.label={label}"
         )
+    assert "strategies" in payload["summary"]["regime"]
+    assert "avoid" in payload["summary"]["regime"]
+    assert "duration" in payload["summary"]["regime"]

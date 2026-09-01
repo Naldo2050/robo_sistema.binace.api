@@ -366,6 +366,7 @@ class TestE2EPipelineIntegration:
         }
         if mode in expected:
             assert label == expected[mode]
+        assert "note" not in payload["summary"]["regime"]
 
     def test_summary_regime_strategies_not_empty(self):
         payload = bcp.build_compact_payload(make_full_event())
@@ -377,14 +378,18 @@ class TestE2EPipelineIntegration:
         assert isinstance(strategies, list)
         assert len(strategies) > 0
 
-    def test_summary_institutional_unfinished_has_low(self):
+    def test_summary_institutional_safe_structure(self):
         payload = bcp.build_compact_payload(make_full_event())
 
         if "summary" not in payload:
             pytest.skip("summary não disponível")
 
-        unfinished = payload["summary"]["institutional"]["unfinished"]
-        assert "low" in unfinished
+        inst = payload["summary"]["institutional"]
+        assert "unfinished" not in inst
+        assert "note" not in inst
+        assert "auction_state" in inst
+        assert "whale_bias" in inst
+        assert "alignment" in inst
 
     def test_summary_sr_nearest_is_valid_value(self):
         payload = bcp.build_compact_payload(make_full_event())
@@ -520,23 +525,17 @@ class TestE2EBudgetGuard:
 
 class TestE2ECoherence:
 
-    def test_summary_notes_reference_real_values(self):
+    def test_summary_notes_removed_in_safe(self):
         """
-        As notas do summary devem referenciar valores reais do payload,
-        não valores hardcoded de fallback.
+        No nível SAFE, notas em prosa foram removidas de todas as seções do summary.
         """
         payload = bcp.build_compact_payload(make_full_event())
 
         if "summary" not in payload:
             pytest.skip("summary não disponível")
 
-        r1_price = payload["sr"].get("r1", [None])[0]
-        sr_note = payload["summary"]["sr"]["note"]
-
-        if r1_price and sr_note != "Sem dados de S/R disponíveis.":
-            assert str(r1_price) in sr_note, (
-                f"Nota de S/R não menciona o preço real {r1_price}: '{sr_note}'"
-            )
+        for sec_name, sec_data in payload["summary"].items():
+            assert "note" not in sec_data, f"summary.{sec_name} ainda contém 'note'"
 
     def test_summary_regime_avoids_opposite_direction_strategies(self):
         """

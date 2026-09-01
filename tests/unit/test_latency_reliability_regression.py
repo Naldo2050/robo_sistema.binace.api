@@ -168,8 +168,7 @@ def test_caso_d_missing_latency_payload_cannot_claim_full_confidence():
     assert quality["reliable"] is False
     assert quality["confidence_cap"] < 1.0
     assert quality["issues"], "payload sem latência não pode ter issues=[]"
-    assert "plena" not in quality["note"].lower()
-    assert "sem anomalias" not in quality["note"].lower()
+    assert "note" not in quality
 
 
 def test_caso_d_summary_without_qual_is_fail_closed():
@@ -177,7 +176,7 @@ def test_caso_d_summary_without_qual_is_fail_closed():
     assert summary["reliable"] is False
     assert summary["confidence_cap"] < 1.0
     assert summary["issues"]
-    assert "plena" not in summary["note"].lower()
+    assert "note" not in summary
 
 
 def test_caso_d_healthy_latency_keeps_full_confidence():

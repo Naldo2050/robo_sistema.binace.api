@@ -269,8 +269,9 @@ class TestConsumidoresNaoPropagamErro(unittest.TestCase):
         from market_orchestrator.ai.payload_sections.institutional_summary import build_institutional_summary
         payload = {"price": {"c": 100.0}, "w": {"s": 0, "c": "N"}, "flow": {}}
         summary = build_institutional_summary(payload)
-        self.assertNotIn("breakout", summary["note"].lower())
-        self.assertIsNotNone(summary["note"])
+        self.assertNotIn("note", summary)
+        self.assertEqual(summary["whale_bias"], "NEUTRAL")
+        self.assertEqual(summary["profile_bias"], "NEUTRAL")
 
 
 class TestInjecaoAlternativaDeErro(unittest.TestCase):

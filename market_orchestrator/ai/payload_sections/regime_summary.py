@@ -114,16 +114,12 @@ def build_regime_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "strategies": [],
             "avoid":      [],
             "duration":   "desconhecida",
-            "note":       "Regime não disponível.",
         }
 
     mode = regime.get("mode", "RB")
     cs = regime.get("cs", "MIX")
-    cf = regime.get("cf", 0.0) or 0.0
     vol = regime.get("v", "")
     bbw = regime.get("bbw")
-    atr_pct = regime.get("atr%")
-    dom_tf = regime.get("dom", "")
 
     label = _MODE_LABEL.get(mode, mode)
     strategies = _MODE_STRATEGIES.get(mode, [])
@@ -131,8 +127,6 @@ def build_regime_summary(payload: dict[str, Any]) -> dict[str, Any]:
     duration = _MODE_DURATION.get(mode, "indefinida")
 
     # --- Filtrar estratégias por consenso direcional ---
-    cs_label = _CONSENSUS_LABEL.get(cs, "indefinida")
-
     if cs == "BEAR" and mode in ("TRD", "MR"):
         strategies = [s for s in strategies if "comprar" not in s.lower()]
     elif cs == "BULL" and mode in ("TRD", "MR"):
@@ -153,26 +147,11 @@ def build_regime_summary(payload: dict[str, Any]) -> dict[str, Any]:
         elif bbw > 0.40:
             bbw_note = "Bandas expandidas — momentum ativo"
 
-    # --- Confiança do consenso ---
-    conf_label = "alta" if cf >= 0.7 else "média" if cf >= 0.4 else "baixa"
-
-    note = _build_note(
-        label=label,
-        cs_label=cs_label,
-        conf_label=conf_label,
-        dom_tf=dom_tf,
-        vol_note=vol_note,
-        bbw_note=bbw_note,
-        mode=mode,
-        cf=cf,
-    )
-
     result: dict[str, Any] = {
         "label":      label,
         "strategies": strategies,
         "avoid":      avoid,
         "duration":   duration,
-        "note":       note,
     }
 
     if vol_note:

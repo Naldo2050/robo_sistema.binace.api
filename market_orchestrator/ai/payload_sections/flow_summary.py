@@ -82,8 +82,6 @@ def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "bias": "NEUTRAL",
             "type": "mixed",
             "actor": "unknown",
-            "conf": "L",
-            "note": "Sem dados de fluxo disponíveis.",
         }
 
     # --- Bias principal via pa signal ---
@@ -97,10 +95,6 @@ def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
     # --- Tipo de fluxo ---
     flow_type = _TYPE_FROM_SIGNAL.get(pa_signal, "mixed")
-
-    # --- Conviction ---
-    raw_conv = str(flow.get("conv", "M")).upper()
-    conf = _CONVICTION_MAP.get(raw_conv, "M")
 
     # --- Actor: whale vs retail (acumulado 4h, ver legend cvd_4h/sf_*_4h) ---
     sf_w = flow.get("sf_w_4h") or 0.0
@@ -126,12 +120,10 @@ def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
     # --- Absorção: forçar bias se sinal forte ---
     abs_buy = flow.get("abs_buy_str") or 0.0
     abs_sell = flow.get("abs_sell_exh") or 0.0
-    abs_cont = flow.get("abs_cont") or 0.0
 
     if flow_type == "absorption":
         if abs_buy > 5.0 and abs_sell < 2.0:
             bias = "BUY"
-            conf = "H" if abs_buy > 7.0 else conf
         elif abs_buy < 2.0 and abs_sell > 5.0:
             bias = "SELL"
 
@@ -158,37 +150,14 @@ def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
         )
     )
 
-    # --- Montar nota interpretada ---
-    note = _build_note(
-        bias=bias,
-        flow_type=flow_type,
-        actor=actor,
-        conf=conf,
-        pa_signal=pa_signal,
-        abs_buy=abs_buy,
-        abs_sell=abs_sell,
-        abs_cont=abs_cont,
-        imb=imb,
-        short_term_reversal=short_term_reversal,
-        sf_w=sf_w,
-        sf_r=sf_r,
-        buy_pct=float(flow.get("buy_pct", 50) or 50),
-        bsr=float(flow.get("bsr", 1) or 1),
-    )
-
     result: dict[str, Any] = {
         "bias":  bias,
         "type":  flow_type,
         "actor": actor,
-        "conf":  conf,
-        "note":  note,
     }
 
     if short_term_reversal:
         result["reversal_signal"] = True
-
-    if degraded_windows:
-        result["note"] = f"{result['note']}. {_flow_quality_note(flow.get('q'), degraded_windows)}"
 
     return result
 

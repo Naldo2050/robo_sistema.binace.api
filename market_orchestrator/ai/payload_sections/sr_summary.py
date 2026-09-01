@@ -59,17 +59,12 @@ def build_sr_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "nearest":    "unknown",
             "compressed": False,
             "conf_bias":  "NEUTRAL",
-            "note":       "Sem dados de S/R disponíveis.",
         }
 
     r1 = sr.get("r1")
     s1 = sr.get("s1")
-    r1_p = r1[0] if r1 and isinstance(r1, list) else "?"
-    s1_p = s1[0] if s1 and isinstance(s1, list) else "?"
     r1_dist = sr.get("r1_dist")
     s1_dist = sr.get("s1_dist")
-    r1_conf = sr.get("r1_conf", 0)
-    s1_conf = sr.get("s1_conf", 0)
     def_bias_raw = str(sr.get("def_bias", "neutral")).lower()
     conf_bias = _BIAS_MAP.get(def_bias_raw, "NEUTRAL")
 
@@ -102,31 +97,10 @@ def build_sr_summary(payload: dict[str, Any]) -> dict[str, Any]:
     r1_near = r1_dist is not None and close > 0 and r1_dist / close < _NEAR_THRESHOLD_PCT
     s1_near = s1_dist is not None and close > 0 and s1_dist / close < _NEAR_THRESHOLD_PCT
 
-    # --- Nota interpretada ---
-    note = _build_note(
-        nearest=nearest,
-        compressed=compressed,
-        conf_bias=conf_bias,
-        r1=r1,
-        s1=s1,
-        r1_p=r1_p,
-        s1_p=s1_p,
-        r1_dist=r1_dist,
-        s1_dist=s1_dist,
-        r1_conf=r1_conf,
-        s1_conf=s1_conf,
-        r1_dist_atr=r1_dist_atr,
-        s1_dist_atr=s1_dist_atr,
-        r1_near=r1_near,
-        s1_near=s1_near,
-        gap_total=gap_total,
-    )
-
     result: dict[str, Any] = {
         "nearest":    nearest,
         "compressed": compressed,
         "conf_bias":  conf_bias,
-        "note":       note,
     }
 
     if r1_dist_atr is not None:
