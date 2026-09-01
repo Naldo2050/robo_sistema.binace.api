@@ -177,12 +177,19 @@ def age_seconds(value) -> Optional[float]:
     return max(0.0, time.time() - ts)
 
 
+DOWNSTREAM_COMPONENTS = frozenset(
+    {"orderbook", "trade_ingestion", "window_processor", "trade_buffer"}
+)
+
+
 def _status_from_stats(stats, ws_connected: bool) -> dict:
     heartbeats = stats.get("heartbeats") or {}
     monitored = set(stats.get("monitored_modules") or [])
     registered_stages = monitored & STAGE_COMPONENTS
+    is_recovering = bool(stats.get("is_recovering"))
 
     critical_components = []
+    recovering_downstream = []
     degraded = False
 
     for stage in STAGE_COMPONENTS:
@@ -192,7 +199,10 @@ def _status_from_stats(stats, ws_connected: bool) -> dict:
         silence = float(heartbeat.get("silence_seconds", 0.0))
         threshold = STAGE_CRITICAL_THRESHOLDS.get(stage, 600.0)
         if silence > threshold:
-            critical_components.append(stage)
+            if is_recovering and stage in DOWNSTREAM_COMPONENTS:
+                recovering_downstream.append(stage)
+            else:
+                critical_components.append(stage)
         elif (
             stage == "ws"
             and silence > DEGRADED_WS_SILENCE
@@ -215,6 +225,15 @@ def _status_from_stats(stats, ws_connected: bool) -> dict:
             "healthy": False,
             "reason": "critical_components",
             "unhealthy_components": sorted(critical_components),
+            "monitored_components": sorted(registered_stages),
+        }
+
+    if is_recovering or recovering_downstream:
+        return {
+            "status": "degraded",
+            "healthy": False,
+            "reason": "recovering_warmup",
+            "unhealthy_components": [],
             "monitored_components": sorted(registered_stages),
         }
 

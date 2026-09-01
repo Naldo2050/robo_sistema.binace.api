@@ -411,6 +411,11 @@ def process_window_snapshot(
             if bot.warmup_windows_remaining <= 0:
                 bot.warming_up = False
                 logging.info("✅ AQUECIMENTO CONCLUÍDO - Sistema pronto!")
+                if getattr(bot, "health_monitor", None) is not None:
+                    try:
+                        bot.health_monitor.set_recovering(False)
+                    except Exception as e:
+                        logging.debug(f"Erro ao desativar recovering no HealthMonitor: {e}")
             return
 
     # ----------------------------

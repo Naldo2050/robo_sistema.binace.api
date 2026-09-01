@@ -2,6 +2,7 @@
 import time
 import threading
 import logging
+from typing import Any, Optional, Dict
 
 from config import HEALTH_CHECK_TIMEOUT, HEALTH_CHECK_CRITICAL, HEALTH_CHECK_INTERVAL
 from orderbook_core.structured_logging import StructuredLogger
@@ -11,6 +12,10 @@ try:
     from infrastructure.oci.monitoring import OCIMonitor
 except ImportError:
     OCIMonitor = None
+
+NON_STAGE_CHANNELS = frozenset({"ws_error", "buffer_critical", "buffer_overflow", "main"})
+# Componentes estritamente downstream do feed de trades/orderbook do WebSocket
+DOWNSTREAM_COMPONENTS = frozenset({"orderbook", "trade_ingestion", "window_processor", "trade_buffer"})
 
 class HealthMonitor:
     def __init__(
@@ -31,6 +36,18 @@ class HealthMonitor:
         self.check_interval = max(1, check_interval_seconds)
 
         self.last_heartbeat: dict[str, float] = {}
+        # Canais passivos / contadores de eventos (não sujeitos a timeout de silêncio)
+        self.last_events: dict[str, float] = {}
+        self.event_counts: dict[str, int] = {}
+
+        # Estado de recuperação (reconnecting / warming up)
+        self._is_recovering: bool = False
+        self._recovery_start_time: float | None = None
+        self._first_recovery_start_time: float | None = None
+        self._max_recovery_seconds: float = 300.0
+        self._max_total_recovery_seconds: float = 600.0
+        self._recovery_reason: str = ""
+
         # guarda nível já alertado: "warning" ou "critical"
         self.alerted_level: dict[str, str] = {}
         self._lock = threading.Lock()
@@ -79,10 +96,71 @@ class HealthMonitor:
         except Exception:
             pass
 
+    def record_event(self, event_name: str, data: Any = None):
+        """Registra a ocorrência de um evento passivo sem criar expectativa de heartbeat periódico."""
+        now = time.time()
+        with self._lock:
+            self.last_events[event_name] = now
+            self.event_counts[event_name] = self.event_counts.get(event_name, 0) + 1
+
+    def set_recovering(self, recovering: bool, reason: str = "", max_recovery_seconds: float = 300.0):
+        """
+        Define se o sistema está em processo de recuperação/aquecimento pós-reconexão.
+        Durante a recuperação válida, componentes downstream não sofrem alarme falso de silêncio.
+        """
+        with self._lock:
+            now = time.time()
+            if recovering:
+                self._is_recovering = True
+                self._recovery_reason = reason or "reconnect"
+                self._recovery_start_time = now
+                self._max_recovery_seconds = max_recovery_seconds
+                if self._first_recovery_start_time is None:
+                    self._first_recovery_start_time = now
+                self._max_total_recovery_seconds = max(max_recovery_seconds * 2, 600.0)
+                logging.info(
+                    "🔄 HealthMonitor: Modo RECOVERING ativado (motivo: %s, max_janela: %.0fs, teto_total: %.0fs).",
+                    self._recovery_reason,
+                    max_recovery_seconds,
+                    self._max_total_recovery_seconds,
+                )
+            else:
+                self._is_recovering = False
+                self._recovery_reason = ""
+                self._recovery_start_time = None
+                self._first_recovery_start_time = None
+                logging.info("✅ HealthMonitor: Modo RECOVERING desativado. Monitoramento normal restabelecido.")
+
+    def is_recovering(self) -> bool:
+        """Verifica se o sistema está em período de recuperação válido."""
+        with self._lock:
+            if self._is_recovering:
+                now = time.time()
+                elapsed_attempt = now - (self._recovery_start_time or now)
+                elapsed_total = now - (self._first_recovery_start_time or self._recovery_start_time or now)
+                if elapsed_attempt > self._max_recovery_seconds or elapsed_total > self._max_total_recovery_seconds:
+                    logging.critical(
+                        "💀 HealthMonitor: Tempo máximo de recuperação excedido (tentativa: %.1fs > %.0fs, total: %.1fs > %.0fs) sem restabelecimento! Transicionando para UNHEALTHY.",
+                        elapsed_attempt,
+                        self._max_recovery_seconds,
+                        elapsed_total,
+                        self._max_total_recovery_seconds,
+                    )
+                    self._is_recovering = False
+                    return False
+                return True
+            return False
+
     def heartbeat(self, module_name: str):
         """Registra que um módulo está vivo."""
         now = time.time()
         with self._lock:
+            # Canais passivos não participam do timeout de silêncio
+            if module_name in NON_STAGE_CHANNELS:
+                self.last_events[module_name] = now
+                self.event_counts[module_name] = self.event_counts.get(module_name, 0) + 1
+                return
+
             self.last_heartbeat[module_name] = now
 
             # Se já tinha sido alertado, limpa o estado e loga recovery
@@ -105,12 +183,17 @@ class HealthMonitor:
         while not self._stop_event.is_set():
             time.sleep(self.check_interval)
             now = time.time()
+            recovering = self.is_recovering()
             
             # 1. Verificação de Liveness (Logs locais)
             with self._lock:
                 for module, last_beat in list(self.last_heartbeat.items()):
                     silence = now - last_beat
                     level = self.alerted_level.get(module)
+
+                    # Se estiver em RECOVERING legítimo, componentes downstream não disparam falha isolada
+                    if recovering and module in DOWNSTREAM_COMPONENTS:
+                        continue
 
                     # Primeiro WARNING, depois CRITICAL
                     if silence >= self.critical_silence and level != "critical":
@@ -189,6 +272,10 @@ class HealthMonitor:
             return
         self._stopped = True
         self._stop_event.set()
+        with self._lock:
+            self._is_recovering = False
+            self._recovery_start_time = None
+            self._first_recovery_start_time = None
         if self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=5)
         logging.info("🛑 HealthMonitor parado.")
@@ -220,12 +307,17 @@ class HealthMonitor:
                 1 for lvl in self.alerted_level.values() if lvl == "warning"
             )
 
+            is_rec = bool(self._is_recovering)
+
         return {
             "warn_silence": self.warn_silence,
             "critical_silence": self.critical_silence,
             "check_interval": self.check_interval,
             "monitored_modules": list(self.last_heartbeat.keys()),
             "heartbeats": heartbeats,
+            "last_events": dict(self.last_events),
+            "event_counts": dict(self.event_counts),
+            "is_recovering": is_rec,
             "active_critical_alerts": critical_count,
             "active_warning_alerts": warning_count,
             "oci_enabled": bool(self.oci_monitor),

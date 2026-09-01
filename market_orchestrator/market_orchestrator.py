@@ -414,7 +414,11 @@ class EnhancedMarketBot:
             self.window_end_ms = None
             self._sent_triggers.clear()
 
-
+        if getattr(self, "health_monitor", None) is not None:
+            try:
+                self.health_monitor.set_recovering(True, reason="ws_reconnect")
+            except Exception as e:
+                logging.debug(f"Erro ao ativar recovering no HealthMonitor: {e}")
 
         logging.info(
             f"⏳ Aguardando {self.warmup_windows_required} janelas "
@@ -2157,9 +2161,12 @@ class EnhancedMarketBot:
             exc_info=True,
         )
         try:
-            self.health_monitor.heartbeat("ws_error")
+            if hasattr(self.health_monitor, "record_event"):
+                self.health_monitor.record_event("ws_error")
+            else:
+                self.health_monitor.heartbeat("ws_error")
         except Exception as e:
-            logging.debug(f"Erro ao registrar heartbeat em on_error: {e}")
+            logging.debug(f"Erro ao registrar evento em on_error: {e}")
 
     def on_open(self, ws: Any) -> None:
         logging.info(
