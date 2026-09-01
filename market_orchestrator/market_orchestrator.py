@@ -1510,6 +1510,7 @@ class EnhancedMarketBot:
                     _absorption = _flow.get("absorption_analysis", {})
 
                 # Calcular tudo
+                _t_inst_start = time.perf_counter()
                 institutional_result = self.institutional_analytics.compute_all(
                     current_price=signal.get("preco_fechamento", 0) or (
                         signal.get("contextual_snapshot", {}).get("ohlc", {}).get("close", 0)
@@ -1529,12 +1530,14 @@ class EnhancedMarketBot:
                     window_close_ms=close_ms,
                     time_manager=self.time_manager,
                 )
+                _t_inst_ms = (time.perf_counter() - _t_inst_start) * 1000
 
                 signal["institutional_analytics"] = institutional_result
 
             except Exception as e:
                 logging.debug(f"InstitutionalAnalytics error: {e}")
                 signal["institutional_analytics"] = {"status": "error", "error": str(e)}
+                _t_inst_ms = 0.0
 
         # ====== Promoção de campos para ANALYSIS_TRIGGER ======
         # Garante que multi_tf, historical_vp, flow_metrics estejam no top-level
@@ -1562,11 +1565,21 @@ class EnhancedMarketBot:
         # ====== Enriquecimento Institucional (Onda 1 + 2) ======
         # Injeta campos faltantes: pivot_points, fibonacci, bid/ask, alertas,
         # volume_profile_advanced, volatility_metrics, whale_activity, etc.
+        _t_enrich_ms = 0.0
         if _INSTITUTIONAL_ENRICHER_OK and _institutional_enrich is not None:
             try:
+                _t_enrich_start = time.perf_counter()
                 _institutional_enrich(signal, valid_window_data=valid_window_data)
+                _t_enrich_ms = (time.perf_counter() - _t_enrich_start) * 1000
             except Exception as _enrich_err:
                 logging.debug(f"institutional_enrich error (não crítico): {_enrich_err}")
+
+        logging.info(
+            "event=signal_enrichment_timings window_id=%s inst_analytics_ms=%.1f inst_enricher_ms=%.1f",
+            f"{getattr(self, 'symbol', 'BTCUSDT')}_{close_ms}",
+            locals().get("_t_inst_ms", 0.0),
+            _t_enrich_ms,
+        )
 
         if signal.get("tipo_evento") == "ANALYSIS_TRIGGER":
             key = (

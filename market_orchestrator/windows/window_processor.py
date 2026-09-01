@@ -421,6 +421,9 @@ def process_window_snapshot(
     # ----------------------------
     # Normalização dos trades
     # ----------------------------
+    t_start_wall_ms = int(time.time() * 1000)
+    t_start_perf = time.perf_counter()
+
     valid_window_data: List[Dict[str, Any]] = []
     for trade in window_data:
         if "q" in trade and "p" in trade and "T" in trade:
@@ -832,6 +835,56 @@ def process_window_snapshot(
             # ----------------------------
             # Log estruturado de sucesso da janela
             # ----------------------------
+            t_end_wall_ms = int(time.time() * 1000)
+            pipeline_processing_ms = int((time.perf_counter() - t_start_perf) * 1000)
+            last_trade_epoch_ms = max(
+                (int(t.get("T", 0)) for t in valid_window_data if t.get("T")),
+                default=close_ms,
+            )
+            market_data_age_at_start_ms = max(0, t_start_wall_ms - last_trade_epoch_ms)
+            market_data_age_at_end_ms = max(0, t_end_wall_ms - last_trade_epoch_ms)
+            window_delivery_delay_ms = max(0, t_start_wall_ms - close_ms)
+            decision_delay_ms = max(0, t_end_wall_ms - close_ms)
+
+            flow_window_status = "unknown"
+            if isinstance(flow_metrics, dict):
+                integrity = flow_metrics.get("flow_window_integrity")
+                if isinstance(integrity, dict):
+                    status_1m = integrity.get("1m")
+                    if isinstance(status_1m, dict):
+                        raw_status = status_1m.get("status")
+                        if raw_status:
+                            flow_window_status = str(raw_status)
+
+            ob_src = "unknown"
+            if isinstance(ob_event, dict):
+                dq = ob_event.get("data_quality")
+                if isinstance(dq, dict):
+                    raw_src = dq.get("data_source")
+                    if raw_src:
+                        ob_src = str(raw_src)
+
+            logging.info(
+                "event=window_latency_breakdown window_id=%s window_close_ms=%d "
+                "last_trade_epoch_ms=%d processing_start_ms=%d processing_end_ms=%d "
+                "payload_ready_ms=%d market_data_age_at_start_ms=%d market_data_age_at_end_ms=%d "
+                "window_delivery_delay_ms=%d pipeline_processing_ms=%d decision_delay_ms=%d "
+                "flow_window_status=%s orderbook_source=%s",
+                f"{getattr(bot, 'symbol', 'BTCUSDT')}_{close_ms}",
+                close_ms,
+                last_trade_epoch_ms,
+                t_start_wall_ms,
+                t_end_wall_ms,
+                t_end_wall_ms,
+                market_data_age_at_start_ms,
+                market_data_age_at_end_ms,
+                window_delivery_delay_ms,
+                pipeline_processing_ms,
+                decision_delay_ms,
+                flow_window_status,
+                ob_src,
+            )
+
             try:
                 ob_evt = ob_event if isinstance(ob_event, dict) else {}
                 dq = ob_evt.get("data_quality") or {}
@@ -846,6 +899,8 @@ def process_window_snapshot(
                     orderbook_source=dq.get("data_source"),
                     orderbook_valid=ob_evt.get("is_valid"),
                     signals_count=len(signals) if signals else 0,
+                    pipeline_processing_ms=pipeline_processing_ms,
+                    decision_delay_ms=decision_delay_ms,
                 )
             except Exception:
                 pass
