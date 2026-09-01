@@ -714,33 +714,59 @@ def _build_slippage_small(event: dict) -> dict:
 # ONDA 1 — Funding Rate BTC (via derivatives já presentes no evento)
 # ---------------------------------------------------------------------------
 
+def _parse_valid_funding_value(val: Any) -> Optional[float]:
+    """
+    Valida e converte valor de funding:
+    - Rejeita None, bool (True/False) e strings não-numéricas.
+    - Rejeita valores não-finitos: NaN, +Inf, -Inf.
+    - Retorna float finito ou None.
+    """
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        f = float(val)
+        if math.isfinite(f):
+            return f
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
 def _build_btc_funding(event: dict) -> Optional[float]:
     """
-    Extrai funding rate do BTC. Já deve vir em derivatives.BTCUSDT se o
-    funding_aggregator estiver ativo. Caso não venha, retorna None.
+    Extrai funding rate do BTC em formato PERCENTUAL (ex: 0.01 para 0.01%).
+    Retorna SEMPRE em percentual finito. Nunca retorna fração nem NaN/Inf.
+
+    Precedência canônica determinística:
+    1. funding_rate_percent [%]      (se numérico finito)
+    2. funding_rate_pct     [%]      (se numérico finito)
+    3. funding_rate         [fração] -> convertido ×100 (se numérico finito)
     """
     deriv = event.get("derivatives", {}) or {}
     btc_d = deriv.get("BTCUSDT", {}) or {}
-    val_pct = btc_d.get("funding_rate_percent")
+
+    val_percent = _parse_valid_funding_value(btc_d.get("funding_rate_percent"))
+    val_pct = _parse_valid_funding_value(btc_d.get("funding_rate_pct"))
+
+    # 1. Preferir funding_rate_percent se válido e finito
+    if val_percent is not None:
+        if val_pct is not None and abs(val_percent - val_pct) > 1e-6:
+            logging.getLogger(__name__).warning(
+                "Inconsistência em derivativos BTC: funding_rate_percent=%.6f != funding_rate_pct=%.6f. "
+                "Usando funding_rate_percent.", val_percent, val_pct
+            )
+        return val_percent
+
+    # 2. Fallback para funding_rate_pct se válido e finito
     if val_pct is not None:
-        val = val_pct  # já é percentual, usar direto
-    else:
-        val_raw = btc_d.get("funding_rate")
-        if val_raw is not None:
-            # funding_rate é fração decimal (ex: 0.000079),
-            # converter para percentual (×100 → 0.0079)
-            if abs(val_raw) < 1:
-                logging.getLogger(__name__).warning(
-                    "funding_rate fallback: converting raw fraction %.6f "
-                    "to percent (×100) = %.4f", val_raw, val_raw * 100
-                )
-                val = val_raw * 100
-            else:
-                # já parece estar em percentual (valor >= 1), usar direto
-                val = val_raw
-        else:
-            val = None  # sem dado disponível, não inventar valor
-    return val
+        return val_pct
+
+    # 3. Fallback para funding_rate (fração decimal) -> converte para percentual
+    val_raw = _parse_valid_funding_value(btc_d.get("funding_rate"))
+    if val_raw is not None:
+        return val_raw * 100.0
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2156,23 +2182,13 @@ def enrich_signal(
         sm.setdefault("10k_usd", small_slippage["10k_usd"])
 
         # ------------------------------------------------------------------
-        # ONDA 1: Funding rate BTC explícito
+        # ONDA 1: Funding rate BTC explícito (contrato canônico percentual)
         # ------------------------------------------------------------------
         funding_btc = _build_btc_funding(event)
         if funding_btc is not None:
             deriv = event.setdefault("derivatives", {})
             btc_d = deriv.setdefault("BTCUSDT", {})
-            # só fazer setdefault se funding_btc for um valor percentual válido
-            # (já convertido acima); nunca gravar fração bruta no campo _percent
-            if abs(funding_btc) < 1:
-                # é fração bruta chegando aqui — converter antes de gravar
-                logger.warning(
-                    "enricher line 2126: funding_btc parece fração bruta "
-                    "(%.6f), convertendo ×100 antes de setdefault", funding_btc
-                )
-                btc_d.setdefault("funding_rate_percent", funding_btc * 100)
-            else:
-                btc_d.setdefault("funding_rate_percent", funding_btc)
+            btc_d.setdefault("funding_rate_percent", funding_btc)
 
         # ------------------------------------------------------------------
         # ONDA 2: Volume Profile avançado
