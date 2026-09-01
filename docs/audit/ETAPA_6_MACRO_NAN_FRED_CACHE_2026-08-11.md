@@ -78,6 +78,12 @@ Diff total: **5 arquivos, +66/−14** (+2 arquivos novos não contados: `common/
 ## FASE 8 — Contratos (tests/unit/test_etapa6_forense_contract.py, 21 testes)
 
 - FRED: `updated` timezone-aware (+00:00), `ts`==instante (tolerância 1s), leitura de cache legado naive, arquivo strict-parsable.
+
+## Achado pendente: `flow_trades`
+
+`flow_trades` usa `deque(maxlen=100000)`. A 200 tps, isso cobre aproximadamente 500s,
+abaixo dos 900s necessários para `net_flow_15m`; pode haver truncamento silencioso
+independente do `RollingAggregate`. Este achado permanece fora deste patch.
 - Sanitizador: NaN/±Inf→None escalares e aninhados; None/0 preservados; não muta entrada; numpy; RFC 8259 (`json.dumps` com `allow_nan=False`); parser estrito (`parse_constant` rejeita literais) — string `"nan"` é legítima.
 - EventStore: RFC 8259 no round-trip SQLite; sem literal non-finite no BLOB; valores finitos intactos.
 - EventSaver: jsonl (incl. não-ANALYSIS_TRIGGER) e fallback json sanitizados.
@@ -97,7 +103,14 @@ Diff total: **5 arquivos, +66/−14** (+2 arquivos novos não contados: `common/
 
 - Nada fabricado (sem 0/último válido/forward-fill); upstream (providers, cross_asset_correlations, ml_features) **intocado**; bancos históricos não alterados; NaN nunca vira preço 0 no caminho IA; séries/providers/tickers/TTLs/nomes preservados.
 
+## FASE 11 — Fechamento (commit)
+
+- **Commit `d448221`** `fix(data): sanitize non-finite values and normalize FRED timestamps` — 8 arquivos, **+718/−14** (create: `common/json_safe.py`, `docs/audit/ETAPA_6_MACRO_NAN_FRED_CACHE_2026-08-11.md`, `tests/unit/test_etapa6_forense_contract.py`).
+- Stage **explícito** (sem `git add .`/`-A`); `git diff --cached --name-only` = 8 arquivos da ETAPA 6; `git diff --cached --check` limpo.
+- Working tree pós-commit: somente untracked **fora de escopo** (6 pré-existentes: `pytest_vp_etapa4.out`, `pytest_vp_etapa4_run.out`, `scripts/diagnostics/capture_compact_sr.py`, `scripts/diagnostics/map_pbc_keys.py`, `scripts/diagnostics/replay_j4_scorer.py`, `tests/unit/test_funding_rate_fallback.py` + 1 desta ETAPA: `scripts/diagnostics/replay_etapa6_j1j4.py`). Nada pendente de produção.
+- **Sem push** (aguardando autorização).
+
 ## Anexos (scripts de diagnóstico, sem commit)
 
 - `scripts/diagnostics/replay_etapa6_j1j4.py` — replay J1-J4 (matriz FIELD/VALUE/SOURCE/STATUS + persistência RFC 8259 + payload IA).
-- `common/json_safe.py` — sanitizador canônico (novo, parte do patch).
+- `common/json_safe.py` — sanitizador canônico (novo, parte do patch — commitado).
