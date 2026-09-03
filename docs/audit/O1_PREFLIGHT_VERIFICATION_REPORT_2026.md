@@ -7,12 +7,13 @@
 ---
 
 ## 1. Git Provenance & Imutabilidade
-- **HEAD Commit SHA:** `bda05d75d202a08109e414df3b638064cf09471a`
-- **Tag do Cohort O1:** `o1_baseline_preflight_bda05d7`
+- **HEAD Commit SHA:** `e20d55828b06c16f2b920143d31cc56c809657b4`
+- **Tag do Cohort O1:** `o1_baseline_preflight_final`
 - **Working Tree State:** CLEAN (`git status --porcelain` retorna vazio)
 - **Base Baseline Pré-P0:** `4c599349055e78d1409639010de210b5df14cb01` (`paper_trading_freeze_2026-09-01`)
-- **Fases Consolidadas no Commit:** P0, P1.1, P1.1B, P1.2, P1.3, P1.3C, V1, V1.1, V1.2, Test-the-Tester e ferramentas operacionais da Fase O1.
+- **Fases Consolidadas no Commit:** P0, P1.1, P1.1B, P1.2, P1.3, P1.3C, V1, V1.1, V1.2, Test-the-Tester (incluindo structural shift leakage), Manifesto de Cohort e ferramentas operacionais da Fase O1.
 - **Reprodutibilidade:** Cohort 100% determinístico e reproduzível a partir do commit limpo.
+
 
 ---
 
@@ -120,13 +121,14 @@
 ---
 
 ## 11. Limites do Cohort (Cohort Boundaries)
-- **`O1_START_UTC`:** `2026-09-03T01:09:26Z`
-- Observações anteriores são tratadas estritamente como baseline pré-O1.
+- **`O1_START_UTC`:** `2026-09-03T01:35:00Z` (`o1_start_timestamp_ms = 1788399300000`)
+- **Segregação:** Todas as 91 observações e 4 snapshots de posicionamento anteriores (incluindo as geradas durante o smoke run pré-fix) são estritamente excluídas das métricas oficiais de observação e do Gate V2 via cláusula `WHERE timestamp_ms >= ?`.
 
 ---
 
 ## 12. Governança e Regras de Congelamento
-1. **NÃO ALTERAR DURANTE O1:** O código permanecerá rigorosamente congelado sob o commit `bda05d7`. Proibido alterar thresholds, prompts, indicadores ou modelos de ML.
+1. **NÃO ALTERAR DURANTE O1:** O código permanecerá rigorosamente congelado sob a tag `o1_baseline_preflight_final`. Proibido alterar thresholds, prompts, indicadores ou modelos de ML.
+
 2. **NÃO EXECUTAR TESTES PREDITIVOS DURANTE A OBSERVAÇÃO:** Proibido rodar métricas de ganho preditivo, forward labels ou p-values durante a coleta shadow para prevenir viés de espionagem de dados (data snooping / p-hacking).
 3. **CRITÉRIOS DO V2 GATE:** A Fase V2 só será aberta após a satisfação cumulativa dos seguintes critérios:
    - $\ge 2.000$ observações live
