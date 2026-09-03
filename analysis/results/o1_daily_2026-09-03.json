@@ -1,10 +1,10 @@
 {
   "snapshot_date_utc": "2026-09-03",
-  "generated_at_utc": "2026-09-03T01:41:41Z",
+  "generated_at_utc": "2026-09-03T01:50:37Z",
   "git_provenance": {
-    "git_sha": "2a42bea517771f86aa16962463a85185dce59dfd",
-    "is_dirty": true,
-    "diff_hash": "4bb2ec2230a45475"
+    "git_sha": "0d616afb7fc8f2d4b39f795d0f1e902e5f9bf712",
+    "is_dirty": false,
+    "diff_hash": "clean"
   },
   "cohort_definition": {
     "cohort_name": "O1_PRODUCTION_SHADOW_OBSERVATION",
@@ -24,37 +24,37 @@
     "order_endpoints_count": 0
   },
   "database_totals_unfiltered": {
-    "total_events_in_db": 91,
-    "total_positioning_rows_in_db": 4,
+    "total_events_in_db": 94,
+    "total_positioning_rows_in_db": 5,
     "pre_o1_legacy_events": 91
   },
   "cohort_o1_baseline": {
-    "cohort_observations": 0,
-    "first_timestamp_ms": 0,
-    "last_timestamp_ms": 0,
-    "calendar_days_covered": 0.0
+    "cohort_observations": 3,
+    "first_timestamp_ms": 1788399780000,
+    "last_timestamp_ms": 1788399900000,
+    "calendar_days_covered": 0.001
   },
   "cohort_o1_positioning": {
-    "timeline_rows": 0,
-    "unique_source_snapshots": 0,
-    "unique_snapshot_ratio": 0.0,
+    "timeline_rows": 1,
+    "unique_source_snapshots": 1,
+    "unique_snapshot_ratio": 1.0,
     "stale_count": 0,
     "cache_hits": 0
   },
   "cohort_o1_session_vwap": {
-    "total_observations": 0,
-    "valid_count": 0,
+    "total_observations": 3,
+    "valid_count": 3,
     "warming_up_count": 0,
     "error_count": 0,
-    "valid_pct": 0.0,
-    "last_status": "UNKNOWN",
-    "last_session_start_utc": ""
+    "valid_pct": 100.0,
+    "last_status": "VALID",
+    "last_session_start_utc": "2026-09-03T00:00:00Z"
   },
   "cohort_o1_market_structure": {
-    "market_structure_analysis_count": 0,
-    "bos_event_count": 0,
-    "sweep_event_count": 0,
-    "distinct_event_count": 0,
+    "market_structure_analysis_count": 3,
+    "bos_event_count": 3,
+    "sweep_event_count": 3,
+    "distinct_event_count": 2,
     "schema_version": "1.1.0",
     "duplicate_event_id_collisions": 0
   },
@@ -67,8 +67,8 @@
     "is_quality_clean": true
   },
   "v2_gate_progress": {
-    "observations_live": "0 / 2000 (0.0%)",
-    "positioning_snapshots": "0 / 500 (0.0%)",
+    "observations_live": "3 / 2000 (0.1%)",
+    "positioning_snapshots": "1 / 500 (0.2%)",
     "calendar_days": "0.00 / 7.00 (0.0%)",
     "quality_clean": true,
     "ready_for_v2": false
