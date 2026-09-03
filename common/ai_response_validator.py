@@ -14,6 +14,7 @@ antes de marcar como sucesso. Garante que:
 """
 
 import json
+import math
 import re
 import logging
 from copy import deepcopy
@@ -256,15 +257,77 @@ class AIResponseValidator:
         
         return any(truncated_indicators)
     
+    def _validate_and_normalize_zone(self, val: Any) -> Tuple[Optional[list[float]], Optional[str]]:
+        """
+        Valida e normaliza zona de preço para lista [min_price, max_price] com floats positivos e finitos.
+        Retorna (zona_normalizada, erro). Se val for None, retorna (None, None).
+        """
+        if val is None:
+            return None, None
+
+        if isinstance(val, (list, tuple)):
+            if len(val) == 2:
+                try:
+                    p1, p2 = float(val[0]), float(val[1])
+                    if not (math.isfinite(p1) and math.isfinite(p2)):
+                        return None, "non_finite_values"
+                    if p1 <= 0 or p2 <= 0:
+                        return None, "non_positive_values"
+                    return [round(min(p1, p2), 2), round(max(p1, p2), 2)], None
+                except (ValueError, TypeError):
+                    return None, "unparseable_list_elements"
+            elif len(val) == 1:
+                try:
+                    p = float(val[0])
+                    if math.isfinite(p) and p > 0:
+                        return [round(p, 2), round(p, 2)], None
+                except (ValueError, TypeError):
+                    pass
+            return None, "invalid_zone_list_length"
+
+        if isinstance(val, (int, float)):
+            try:
+                p = float(val)
+                if math.isfinite(p) and p > 0:
+                    return [round(p, 2), round(p, 2)], None
+            except (ValueError, TypeError):
+                pass
+            return None, "invalid_numeric_zone"
+
+        if isinstance(val, str):
+            val_str = val.strip()
+            if not val_str or val_str.lower() in ("null", "none", ""):
+                return None, None
+            # Tenta separadores comuns como '-' ou ','
+            for sep in [",", "-", "~", ".."]:
+                if sep in val_str and val_str.count(sep) == 1:
+                    parts = val_str.split(sep)
+                    try:
+                        p1, p2 = float(parts[0].strip()), float(parts[1].strip())
+                        if math.isfinite(p1) and math.isfinite(p2) and p1 > 0 and p2 > 0:
+                            return [round(min(p1, p2), 2), round(max(p1, p2), 2)], None
+                    except Exception:
+                        pass
+            # Tenta número único em string
+            try:
+                p = float(val_str)
+                if math.isfinite(p) and p > 0:
+                    return [round(p, 2), round(p, 2)], None
+            except (ValueError, TypeError):
+                pass
+            return None, "unparseable_zone_string"
+
+        return None, "invalid_zone_type"
+
     def _validate_fields(self, data: Dict[str, Any]) -> Optional[str]:
-        """Valida campos obrigatórios e seus valores."""
+        """Valida campos obrigatórios, tipos, faixas e invariantes de zonas."""
         # Verifica campos obrigatórios
         missing = self.REQUIRED_FIELDS - set(data.keys())
         if missing:
             return f"Campos obrigatórios faltando: {missing}"
         
         # Valida sentiment
-        sentiment = data.get("sentiment", "").lower()
+        sentiment = str(data.get("sentiment") or "").lower()
         if sentiment not in VALID_SENTIMENTS:
             return f"sentiment inválido: '{sentiment}'. Deve ser um de: {VALID_SENTIMENTS}"
         
@@ -275,13 +338,13 @@ class AIResponseValidator:
         
         try:
             confidence = float(confidence)
-            if not (0.0 <= confidence <= 1.0):
+            if not math.isfinite(confidence) or not (0.0 <= confidence <= 1.0):
                 return f"confidence fora do intervalo [0,1]: {confidence}"
         except (ValueError, TypeError):
             return f"confidence inválido: {confidence}"
         
         # Valida action
-        action = data.get("action", "").lower()
+        action = str(data.get("action") or "").lower()
         if action not in VALID_ACTIONS:
             return f"action inválida: '{action}'. Deve ser um de: {VALID_ACTIONS}"
         
@@ -289,31 +352,55 @@ class AIResponseValidator:
         rationale = data.get("rationale", "")
         if not rationale or not isinstance(rationale, str) or len(rationale.strip()) == 0:
             return "rationale não pode ser vazio"
-        
+
+        # Valida entry_zone e invalidation_zone
+        entry_val, entry_err = self._validate_and_normalize_zone(data.get("entry_zone"))
+        if entry_err:
+            return f"entry_zone inválido: {entry_err}"
+
+        inv_val, inv_err = self._validate_and_normalize_zone(data.get("invalidation_zone"))
+        if inv_err:
+            return f"invalidation_zone inválido: {inv_err}"
+
+        # Invariantes direcionais para compras e vendas com zonas definidas
+        if action == "buy" and entry_val and inv_val:
+            # Em compra, a invalidação (stop loss) deve estar estritamente abaixo da entrada
+            if inv_val[0] >= entry_val[1]:
+                return "invalidation_zone_must_be_below_entry_zone_for_buy"
+
+        if action == "sell" and entry_val and inv_val:
+            # Em venda, a invalidação (stop loss) deve estar estritamente acima da entrada
+            if inv_val[1] <= entry_val[0]:
+                return "invalidation_zone_must_be_above_entry_zone_for_sell"
+
         return None
     
     def _normalize_values(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Normaliza valores para tipos corretos."""
+        """Normaliza valores para tipos corretos e normaliza zonas."""
         normalized = dict(data)
         
         # Normaliza sentiment
-        normalized["sentiment"] = data.get("sentiment", "neutral").lower()
+        normalized["sentiment"] = str(data.get("sentiment") or "neutral").lower()
         
         # Normaliza confidence para float
         try:
-            normalized["confidence"] = float(data.get("confidence", 0.0))
+            c = float(data.get("confidence", 0.0))
+            normalized["confidence"] = c if math.isfinite(c) else 0.0
         except (ValueError, TypeError):
             normalized["confidence"] = 0.0
         
         # Normaliza action
-        normalized["action"] = data.get("action", "wait").lower()
+        normalized["action"] = str(data.get("action") or "wait").lower()
         
         # Normaliza rationale
         normalized["rationale"] = str(data.get("rationale", "")).strip()[:MAX_RATIONALE_CHARS]
 
-        # Preserva campos opcionais
-        for field in self.OPTIONAL_FIELDS:
-            normalized[field] = data.get(field)
+        # Normaliza e valida zonas estruturadas
+        entry_norm, _ = self._validate_and_normalize_zone(data.get("entry_zone"))
+        inv_norm, _ = self._validate_and_normalize_zone(data.get("invalidation_zone"))
+        normalized["entry_zone"] = entry_norm
+        normalized["invalidation_zone"] = inv_norm
+        normalized["region_type"] = data.get("region_type")
 
         # Marca como não-fallback
         normalized["_is_fallback"] = False

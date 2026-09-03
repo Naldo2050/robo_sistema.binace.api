@@ -1,0 +1,133 @@
+{
+  "manifest": {
+    "git_sha": "HEAD_P1_3C_V1_2",
+    "generated_at": 1788315170.0630763,
+    "sources": [
+      "dados/trading_bot.db",
+      "benchmark_synthetic_stream"
+    ],
+    "live_rows": 89,
+    "historical_rows": 0,
+    "synthetic_rows": 1440,
+    "unique_source_observations": 89,
+    "time_range": "1788300000000 -> 1788389940000",
+    "schema_versions": [
+      "1.1.0"
+    ]
+  },
+  "v2_readiness": {
+    "status": "NOT_READY",
+    "current_calendar_days": 0.06,
+    "target_calendar_days": 7.0,
+    "current_live_observations": 89,
+    "target_live_observations": 2000,
+    "current_pos_snapshots": 2,
+    "target_pos_snapshots": 500,
+    "current_bos_events": 0,
+    "target_bos_events": 100,
+    "current_sweep_events": 0,
+    "target_sweep_events": 100,
+    "missing_data_pct": 0.0,
+    "recommendations": [
+      "Amostra de observações live insuficiente: 89/2.000 necessárias.",
+      "Snapshots de positioning insuficientes: 2/500 necessários.",
+      "Cobertura temporal em dias insuficiente: 0.06/7.00 dias requeridos."
+    ]
+  },
+  "sanity_check_vwap": {
+    "r_levels": 0.9655518494874901,
+    "r_dist_pearson": 0.21696552227877886,
+    "r_dist_spearman": 0.2752155551772546
+  },
+  "cohorts": [
+    {
+      "cohort_name": "COHORT_SESSION_VWAP",
+      "target_horizon": "15m",
+      "data_provenance": "SYNTHETIC_BENCHMARK",
+      "raw_n": 1440,
+      "unique_source_n": 1440,
+      "non_overlapping_n": 96,
+      "n_features_base": 6,
+      "n_features_model": 7,
+      "val_auc_base": 0.5615,
+      "val_auc_model": 0.4319,
+      "delta_val_auc": -0.1296,
+      "oos_auc_base": 0.5152,
+      "oos_auc_model": 0.6973,
+      "delta_oos_auc": 0.1821,
+      "delta_oos_auc_ci_low": 0.0904,
+      "delta_oos_auc_ci_high": 0.2679,
+      "neg_control_hash_delta_oos": 0.0009,
+      "neg_control_prng_delta_oos": 0.0145,
+      "null_permutation_p_val": 0.0099,
+      "verdict": "STRONG_INCREMENTAL_EVIDENCE"
+    },
+    {
+      "cohort_name": "COHORT_POSITIONING",
+      "target_horizon": "15m",
+      "data_provenance": "SYNTHETIC_BENCHMARK",
+      "raw_n": 1440,
+      "unique_source_n": 288,
+      "non_overlapping_n": 96,
+      "n_features_base": 6,
+      "n_features_model": 12,
+      "val_auc_base": 0.5615,
+      "val_auc_model": 0.4733,
+      "delta_val_auc": -0.0882,
+      "oos_auc_base": 0.5152,
+      "oos_auc_model": 0.5105,
+      "delta_oos_auc": -0.0048,
+      "delta_oos_auc_ci_low": -0.0615,
+      "delta_oos_auc_ci_high": 0.0494,
+      "neg_control_hash_delta_oos": 0.0009,
+      "neg_control_prng_delta_oos": 0.0145,
+      "null_permutation_p_val": 0.703,
+      "verdict": "INCREMENTAL_VALUE_UNKNOWN"
+    },
+    {
+      "cohort_name": "COHORT_MARKET_STRUCTURE",
+      "target_horizon": "15m",
+      "data_provenance": "SYNTHETIC_BENCHMARK",
+      "raw_n": 1440,
+      "unique_source_n": 1440,
+      "non_overlapping_n": 96,
+      "n_features_base": 6,
+      "n_features_model": 12,
+      "val_auc_base": 0.5615,
+      "val_auc_model": 0.5561,
+      "delta_val_auc": -0.0054,
+      "oos_auc_base": 0.5152,
+      "oos_auc_model": 0.5059,
+      "delta_oos_auc": -0.0094,
+      "delta_oos_auc_ci_low": -0.0378,
+      "delta_oos_auc_ci_high": 0.0243,
+      "neg_control_hash_delta_oos": 0.0009,
+      "neg_control_prng_delta_oos": 0.0145,
+      "null_permutation_p_val": 0.6634,
+      "verdict": "NO_EVIDENCE"
+    },
+    {
+      "cohort_name": "COHORT_CONFLUENCE_ALL",
+      "target_horizon": "15m",
+      "data_provenance": "SYNTHETIC_BENCHMARK",
+      "raw_n": 1440,
+      "unique_source_n": 288,
+      "non_overlapping_n": 96,
+      "n_features_base": 6,
+      "n_features_model": 19,
+      "val_auc_base": 0.5615,
+      "val_auc_model": 0.3998,
+      "delta_val_auc": -0.1616,
+      "oos_auc_base": 0.5152,
+      "oos_auc_model": 0.643,
+      "delta_oos_auc": 0.1278,
+      "delta_oos_auc_ci_low": 0.0427,
+      "delta_oos_auc_ci_high": 0.2323,
+      "neg_control_hash_delta_oos": 0.0009,
+      "neg_control_prng_delta_oos": 0.0145,
+      "null_permutation_p_val": 0.0099,
+      "verdict": "STRONG_INCREMENTAL_EVIDENCE"
+    }
+  ],
+  "evaluated_at": 1788315170.0630763
+}

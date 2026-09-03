@@ -289,6 +289,56 @@ def _safe_int(ext: dict, key: str) -> Optional[int]:
 # CONSTRUTORES DE SEÇÕES
 # ============================================================
 
+def _extract_canonical_funding_rate(event_data: dict) -> Optional[float]:
+    """
+    Extrai o funding rate em formato FRAÇÃO DECIMAL CANÔNICA (ex: 0.0001 = 0.01% ou 1 bp).
+    Valida finitude e range válido [-0.05, 0.05]. Rejeita NaN/Inf/None e booleanos.
+    """
+    deriv = event_data.get("derivatives", {}) or {}
+    btc_deriv = deriv.get("BTCUSDT", {}) or {}
+    
+    # 1. Tenta funding_rate direto (fração decimal)
+    raw_fr = btc_deriv.get("funding_rate")
+    if raw_fr is None:
+        raw_fr = event_data.get("funding_rate")
+    if raw_fr is None:
+        sentiment = event_data.get("sentiment", {}) or {}
+        funding_agg = sentiment.get("funding_agg", {}) or {}
+        raw_fr = (funding_agg.get("BTCUSDT", {}) or {}).get("funding_rate")
+    if raw_fr is None:
+        contextual = event_data.get("contextual_snapshot", {}) or {}
+        raw_fr = contextual.get("funding_rate")
+
+    if raw_fr is not None and not isinstance(raw_fr, bool):
+        try:
+            val = float(raw_fr)
+            if math.isfinite(val) and -0.05 <= val <= 0.05:
+                return round(val, 6)
+        except (ValueError, TypeError):
+            pass
+
+    # 2. Tenta funding_rate_percent ou funding_rate_pct (percentual -> converte para fração)
+    pct_fr = btc_deriv.get("funding_rate_percent")
+    if pct_fr is None:
+        pct_fr = btc_deriv.get("funding_rate_pct")
+    if pct_fr is None:
+        sentiment = event_data.get("sentiment", {}) or {}
+        funding_agg = sentiment.get("funding_agg", {}) or {}
+        pct_fr = (funding_agg.get("BTCUSDT", {}) or {}).get("funding_rate_pct")
+
+    if pct_fr is not None and not isinstance(pct_fr, bool):
+        try:
+            val_pct = float(pct_fr)
+            if math.isfinite(val_pct):
+                val_frac = val_pct / 100.0
+                if -0.05 <= val_frac <= 0.05:
+                    return round(val_frac, 6)
+        except (ValueError, TypeError):
+            pass
+
+    return None
+
+
 def _build_price(event_data: dict) -> dict:
     """Constrói seção de preço."""
     ohlc = (
@@ -351,6 +401,11 @@ def _build_price(event_data: dict) -> dict:
             price["brk_risk"] = {"HIGH": "HI", "VERY_HIGH": "V_HI"}.get(brk_risk, brk_risk[:4])
         elif compression:
             price["brk_risk"] = "MOD"
+
+    # P0.1: Funding rate canônico (fração decimal ex: 0.0001)
+    fr = _extract_canonical_funding_rate(event_data)
+    if fr is not None:
+        price["fr"] = fr
 
     return price
 
@@ -1199,37 +1254,36 @@ def _build_ofi(event_data: dict) -> dict:
 
 def _build_vwap_context(event_data: dict) -> dict:
     """
-    Desvio do VWAP — posição relativa ao fair value intraday.
-    Fontes: institutional/vwap_twap, contextual_snapshot.ohlc.vwap
+    Desvio e Contexto de Session VWAP (ancorado em UTC 00:00).
+    Fase P1.2 (Arquitetura Context-Only).
     """
-    ia = event_data.get("institutional_analytics", {})
-    vwap_data = ia.get("vwap_twap", {})
-
-    if vwap_data and isinstance(vwap_data, dict):
-        dev_pct = vwap_data.get("deviation_pct") or vwap_data.get("vwap_deviation_pct")
-        signal = vwap_data.get("signal", "")
-        if dev_pct is not None:
-            side = "above" if float(dev_pct) > 0 else "below"
+    ia = event_data.get("institutional_analytics", {}) or {}
+    svw_data = ia.get("session_vwap", {})
+    if svw_data and isinstance(svw_data, dict) and svw_data.get("is_valid"):
+        svw_val = svw_data.get("session_vwap")
+        dist = svw_data.get("distance_fraction")
+        side = svw_data.get("side", "UNKNOWN")
+        if svw_val is not None and dist is not None:
             return {
-                "dev": round(float(dev_pct), 3),
-                "side": side,
-                "sig": str(signal)[:10] if signal else side,
+                "svw": svw_val,
+                "dist": dist,
+                "side": side.lower(),
+                "m": "session_utc",
             }
 
-    # Fallback: calcular via ohlc.vwap e preco_fechamento
+    # Fallback: rolling window vwap da janela atual
     close = event_data.get("preco_fechamento", 0) or 0
     ohlc = event_data.get("contextual_snapshot", {}).get("ohlc", {})
     vwap = ohlc.get("vwap", 0) or 0
 
     if close and vwap and vwap > 0:
-        dev = (close - vwap) / vwap * 100
-        side = "above" if dev > 0 else "below"
-        signal = "premium" if dev > 0.1 else "discount" if dev < -0.1 else "fair"
+        dev_frac = round((close - vwap) / vwap, 4)
+        side = "above" if dev_frac > 0 else "below"
         return {
-            "dev": round(dev, 3),
+            "rw": round(float(vwap), 2),
+            "dist": dev_frac,
             "side": side,
-            "sig": signal,
-            "src": "ohlc",
+            "m": "rolling_window",
         }
 
     return {}
@@ -1430,6 +1484,124 @@ def _build_mean_reversion_score(event_data: dict) -> dict:
             }
 
     return {}
+
+
+def _build_positioning(event_data: dict) -> dict:
+    """
+    Constrói a seção compacta 'pos' (Binance Positioning & Crypto COT).
+    Fase P1.1 (Arquitetura Context-Only).
+    """
+    ia = event_data.get("institutional_analytics", {}) or {}
+    pos = ia.get("positioning") or event_data.get("positioning") or {}
+
+    if not isinstance(pos, dict) or not pos.get("is_available"):
+        return {}
+
+    def _safe_val(v: Any, precision: int = 2) -> Optional[float]:
+        if v is None or isinstance(v, bool):
+            return None
+        try:
+            f = float(v)
+            if math.isfinite(f):
+                return round(f, precision)
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    out = {}
+    g_ratio = _safe_val(pos.get("global_account_ratio"), 2)
+    if g_ratio is not None:
+        out["ga"] = g_ratio
+
+    t_acc_ratio = _safe_val(pos.get("top_account_ratio"), 2)
+    if t_acc_ratio is not None:
+        out["ta"] = t_acc_ratio
+
+    t_pos_ratio = _safe_val(pos.get("top_position_ratio"), 2)
+    if t_pos_ratio is not None:
+        out["tp"] = t_pos_ratio
+
+    od1 = _safe_val(pos.get("oi_delta_1h"), 4)
+    if od1 is not None:
+        out["od1"] = od1
+
+    od4 = _safe_val(pos.get("oi_delta_4h"), 4)
+    if od4 is not None:
+        out["od4"] = od4
+
+    rgm = pos.get("regime")
+    if rgm and str(rgm) not in ("UNKNOWN", "PARTIAL", "NEUTRAL"):
+        out["rg"] = str(rgm)
+
+    return out
+
+
+def _build_market_structure(event_data: dict) -> dict:
+    """
+    Constrói a seção compacta 'ms' (Market Structure: BOS & Liquidity Sweep).
+    Fase P1.3 (Arquitetura Context-Only).
+    """
+    ia = event_data.get("institutional_analytics", {}) or {}
+    ms = ia.get("market_structure", {})
+    if not isinstance(ms, dict) or ms.get("status") != "VALID":
+        return {}
+
+    out = {}
+    bos = ms.get("bos")
+    if bos and isinstance(bos, dict):
+        b_type = "BULL" if bos.get("type") == "bullish" else "BEAR"
+        out["bos"] = f"{b_type}_{round(float(bos.get('level', 0)))}"
+        str_val = bos.get("strength_pct")
+        if str_val is not None and not isinstance(str_val, bool):
+            try:
+                f = float(str_val)
+                if math.isfinite(f):
+                    out["b_str"] = round(f, 4)
+            except (ValueError, TypeError):
+                pass
+
+    swp = ms.get("sweep")
+    if swp and isinstance(swp, dict):
+        sw_type_raw = swp.get("type", "")
+        if sw_type_raw == "both":
+            s_type = "BOTH"
+        elif sw_type_raw == "buy_side":
+            s_type = "BUY"
+        else:
+            s_type = "SELL"
+        out["sw"] = f"{s_type}_{round(float(swp.get('level', 0)))}"
+        exc_val = swp.get("excursion_fraction")
+        if exc_val is not None and not isinstance(exc_val, bool):
+            try:
+                f = float(exc_val)
+                if math.isfinite(f):
+                    out["sw_exc"] = round(f, 4)
+            except (ValueError, TypeError):
+                pass
+
+    sh = ms.get("last_swing_high")
+    if sh is not None and not isinstance(sh, bool):
+        try:
+            f = float(sh)
+            if math.isfinite(f) and f > 0:
+                out["sh"] = round(f, 1)
+        except (ValueError, TypeError):
+            pass
+
+    sl = ms.get("last_swing_low")
+    if sl is not None and not isinstance(sl, bool):
+        try:
+            f = float(sl)
+            if math.isfinite(f) and f > 0:
+                out["sl"] = round(f, 1)
+        except (ValueError, TypeError):
+            pass
+
+    tf = ms.get("timeframe")
+    if tf:
+        out["tf"] = str(tf)
+
+    return out
 
 
 # ============================================================
@@ -1719,6 +1891,16 @@ def build_compact_payload(
     mr_score = _build_mean_reversion_score(event_data)
     if mr_score:
         payload["mr"] = mr_score
+
+    # P1.1: Binance Positioning & Crypto COT (context-only)
+    pos_ctx = _build_positioning(event_data)
+    if pos_ctx:
+        payload["pos"] = pos_ctx
+
+    # P1.3: Market Structure — BOS & Liquidity Sweep (context-only)
+    ms_ctx = _build_market_structure(event_data)
+    if ms_ctx:
+        payload["ms"] = ms_ctx
 
     # ═══════════════════════════════════════════════════════════
     # SUMMARY BUILDERS

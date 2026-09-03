@@ -1,373 +1,288 @@
+# institutional/crypto_cot.py
+# -*- coding: utf-8 -*-
 """
-Crypto COT (Commitment of Traders) Equivalent.
+Crypto COT (Commitment of Traders) & Positioning Analyzer.
+Fase P1.1 (Arquitetura Context-Only).
 
-Combina Funding Rate + Open Interest + Long/Short Ratio
-para replicar o conceito do relatório COT em crypto.
+Interpreta a estrutura de posicionamento institucional da Binance Futures:
+1. Global Long/Short Account Ratio (Varejo + Mercado Geral)
+2. Top Trader Long/Short Account Ratio (Top 20% Contas)
+3. Top Trader Long/Short Position Ratio (Top 20% Volume Financeiro)
+4. Open Interest e Deltas Temporais (1h / 4h)
+5. Funding Rate Canônico (fração decimal)
 
-Substituto gratuito do método #44.
+RESTRIÇÃO DE ARQUITETURA:
+Este módulo é ESTRITAMENTE CONTEXT-ONLY.
+Não gera ordens de compra/venda diretas, não altera sizing nem limites de risco.
 """
+
 from __future__ import annotations
 
+import logging
+import math
 import time
-from collections import deque
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import asdict, dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional
 
-from institutional.base import (
-    AnalysisResult,
-    InvalidParameterError,
-    Side,
-    Signal,
-    SignalStrength,
-)
+from institutional.base import AnalysisResult, Side, Signal, SignalStrength
+
+logger = logging.getLogger("CryptoCOT")
 
 
-@dataclass
-class COTDataPoint:
-    """Ponto de dados do Crypto COT."""
-    timestamp: float
-    funding_rate: float
-    open_interest: float
-    long_short_ratio: float  # >1 = mais longs, <1 = mais shorts
-    top_trader_ls_ratio: float  # Ratio dos top traders
-    price: float
+class PositioningRegime(str, Enum):
+    """Regimes determinísticos de posicionamento de mercado."""
+    NEUTRAL = "NEUTRAL"
+    CROWDED_LONG = "CROWDED_LONG"
+    CROWDED_SHORT = "CROWDED_SHORT"
+    TOP_LONG_DIVERGENCE = "TOP_LONG_DIVERGENCE"
+    TOP_SHORT_DIVERGENCE = "TOP_SHORT_DIVERGENCE"
+    OI_EXPANSION = "OI_EXPANSION"
+    SQUEEZE_RISK = "SQUEEZE_RISK"
+    PARTIAL = "PARTIAL"
+    UNKNOWN = "UNKNOWN"
 
 
 @dataclass
-class COTSignal:
-    """Sinal derivado do COT crypto."""
-    signal_type: str
-    direction: str
-    strength: float
-    description: str
+class CryptoCOTAnalysis:
+    """Resultado estruturado da interpretação de posicionamento."""
+    symbol: str
+    observed_at: float
+    regime: PositioningRegime
+    reasons: List[str] = field(default_factory=list)
+
+    # Ratios brutos e normalizados
+    global_account_ratio: Optional[float] = None
+    top_account_ratio: Optional[float] = None
+    top_position_ratio: Optional[float] = None
+
+    # Percentuais
+    global_long_pct: Optional[float] = None
+    global_short_pct: Optional[float] = None
+    top_long_account_pct: Optional[float] = None
+    top_long_position_pct: Optional[float] = None
+
+    # Divergências
+    top_account_vs_global: Optional[float] = None
+    top_position_vs_global: Optional[float] = None
+
+    # Open interest e deltas
+    open_interest: Optional[float] = None
+    open_interest_usd: Optional[float] = None
+    oi_delta_1h: Optional[float] = None
+    oi_delta_4h: Optional[float] = None
+
+    # Funding rate canônico
+    funding_rate: Optional[float] = None
+
+    # Freshness
+    is_stale: bool = False
+    is_available: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Exporta para dicionário serializável em JSON."""
+        d = asdict(self)
+        d["regime"] = self.regime.value
+        return d
 
 
 class CryptoCOT:
     """
-    Equivalente do COT Report para mercados crypto.
-
-    Analisa:
-    1. Funding Rate: quem paga quem (longs vs shorts)
-    2. Open Interest: dinheiro total posicionado
-    3. Long/Short Ratio: proporção de posições
-    4. Top Traders Ratio: posicionamento dos maiores
-
-    Sinais:
-    - Funding extremo + OI alto = possível squeeze
-    - Top traders divergem do varejo = smart money signal
-    - OI crescendo com preço = dinheiro novo na tendência
-    - OI caindo com preço estável = desalavancagem
+    Motor de análise de posicionamento institucional (Crypto COT).
+    Avalia divergências institucionais, crowding e risco de liquidação em cascata.
     """
 
-    # Thresholds de funding rate
-    FUNDING_EXTREME_HIGH = 0.01   # 1% por 8h
-    FUNDING_HIGH = 0.005          # 0.5%
-    FUNDING_EXTREME_LOW = -0.01
-    FUNDING_LOW = -0.005
+    # Thresholds determinísticos documentados
+    CROWDED_LONG_RATIO = 2.0     # > 66.7% contas compradas
+    CROWDED_SHORT_RATIO = 0.5    # > 66.7% contas vendidas
+    DIVERGENCE_THRESHOLD = 0.40  # Diferença expressiva entre Top Traders e Varejo
+    OI_EXPANSION_1H = 0.05       # +5% crescimento de OI em 1h
+    OI_EXPANSION_4H = 0.10       # +10% crescimento de OI em 4h
+    SQUEEZE_FUNDING_THRESHOLD = 0.0003  # 0.03% (3 bps por 8h)
 
-    def __init__(
+    def __init__(self):
+        pass
+
+    def analyze(
         self,
-        max_history: int = 500,
-        squeeze_threshold: float = 0.01,
-        oi_change_threshold_pct: float = 10.0,
-    ):
-        self.max_history = max_history
-        self.squeeze_threshold = squeeze_threshold
-        self.oi_change_threshold = oi_change_threshold_pct
+        positioning_data: Optional[Any],
+        funding_rate: Optional[float] = None,
+        symbol: str = "BTCUSDT",
+    ) -> CryptoCOTAnalysis:
+        """
+        Interpreta dados de posicionamento e retorna regime determinístico com evidências.
+        """
+        now = time.time()
 
-        self._data: deque[COTDataPoint] = deque(maxlen=max_history)
-
-    @property
-    def data_points(self) -> int:
-        return len(self._data)
-
-    @property
-    def latest(self) -> Optional[COTDataPoint]:
-        return self._data[-1] if self._data else None
-
-    def add_data(
-        self,
-        timestamp: float,
-        funding_rate: float,
-        open_interest: float,
-        long_short_ratio: float,
-        top_trader_ls_ratio: float = 1.0,
-        price: float = 0.0,
-    ) -> None:
-        """Adiciona ponto de dados."""
-        self._data.append(COTDataPoint(
-            timestamp=timestamp,
-            funding_rate=funding_rate,
-            open_interest=open_interest,
-            long_short_ratio=long_short_ratio,
-            top_trader_ls_ratio=top_trader_ls_ratio,
-            price=price,
-        ))
-
-    def _analyze_funding(self) -> list[COTSignal]:
-        """Analisa funding rate."""
-        signals = []
-        if not self._data:
-            return signals
-
-        fr = self._data[-1].funding_rate
-
-        if fr >= self.FUNDING_EXTREME_HIGH:
-            signals.append(COTSignal(
-                signal_type="funding_extreme_high",
-                direction="bearish",
-                strength=min(abs(fr) / 0.02, 1.0),
-                description=(
-                    f"EXTREME positive funding ({fr*100:.4f}%): "
-                    f"longs paying heavily. Short squeeze risk low, "
-                    f"long squeeze risk HIGH."
-                ),
-            ))
-        elif fr >= self.FUNDING_HIGH:
-            signals.append(COTSignal(
-                signal_type="funding_high",
-                direction="bearish",
-                strength=min(abs(fr) / 0.01, 1.0),
-                description=(
-                    f"High positive funding ({fr*100:.4f}%): "
-                    f"market crowded long."
-                ),
-            ))
-        elif fr <= self.FUNDING_EXTREME_LOW:
-            signals.append(COTSignal(
-                signal_type="funding_extreme_low",
-                direction="bullish",
-                strength=min(abs(fr) / 0.02, 1.0),
-                description=(
-                    f"EXTREME negative funding ({fr*100:.4f}%): "
-                    f"shorts paying heavily. Long squeeze risk low, "
-                    f"short squeeze risk HIGH."
-                ),
-            ))
-        elif fr <= self.FUNDING_LOW:
-            signals.append(COTSignal(
-                signal_type="funding_low",
-                direction="bullish",
-                strength=min(abs(fr) / 0.01, 1.0),
-                description=(
-                    f"Low negative funding ({fr*100:.4f}%): "
-                    f"market crowded short."
-                ),
-            ))
-
-        return signals
-
-    def _analyze_open_interest(self) -> list[COTSignal]:
-        """Analisa Open Interest."""
-        signals = []
-        if len(self._data) < 5:
-            return signals
-
-        recent = list(self._data)[-5:]
-        oi_start = recent[0].open_interest
-        oi_end = recent[-1].open_interest
-        price_start = recent[0].price
-        price_end = recent[-1].price
-
-        if oi_start <= 0:
-            return signals
-
-        oi_change_pct = ((oi_end - oi_start) / oi_start) * 100
-        price_change_pct = (
-            ((price_end - price_start) / price_start) * 100
-            if price_start > 0 else 0
-        )
-
-        # OI subindo + preço subindo = dinheiro novo na alta
-        if oi_change_pct > self.oi_change_threshold and price_change_pct > 0:
-            signals.append(COTSignal(
-                signal_type="oi_confirming_uptrend",
-                direction="bullish",
-                strength=min(oi_change_pct / 20, 1.0),
-                description=(
-                    f"OI +{oi_change_pct:.1f}% with price +{price_change_pct:.1f}%: "
-                    f"new money entering uptrend."
-                ),
-            ))
-
-        # OI subindo + preço caindo = dinheiro novo na baixa
-        elif oi_change_pct > self.oi_change_threshold and price_change_pct < 0:
-            signals.append(COTSignal(
-                signal_type="oi_confirming_downtrend",
-                direction="bearish",
-                strength=min(oi_change_pct / 20, 1.0),
-                description=(
-                    f"OI +{oi_change_pct:.1f}% with price {price_change_pct:.1f}%: "
-                    f"new money entering downtrend."
-                ),
-            ))
-
-        # OI caindo = desalavancagem
-        elif oi_change_pct < -self.oi_change_threshold:
-            signals.append(COTSignal(
-                signal_type="oi_deleveraging",
-                direction="neutral",
-                strength=min(abs(oi_change_pct) / 20, 1.0),
-                description=(
-                    f"OI {oi_change_pct:.1f}%: deleveraging in progress."
-                ),
-            ))
-
-        return signals
-
-    def _analyze_positioning(self) -> list[COTSignal]:
-        """Analisa posicionamento long/short e divergência retail vs smart money."""
-        signals = []
-        if not self._data:
-            return signals
-
-        latest = self._data[-1]
-        ls = latest.long_short_ratio
-        top_ls = latest.top_trader_ls_ratio
-
-        # Divergência entre top traders e varejo
-        if top_ls > 0 and ls > 0:
-            divergence = top_ls / ls
-
-            if divergence > 1.3:
-                # Top traders mais long que varejo
-                signals.append(COTSignal(
-                    signal_type="smart_money_long",
-                    direction="bullish",
-                    strength=min((divergence - 1) / 0.5, 1.0),
-                    description=(
-                        f"Smart money more long than retail: "
-                        f"top={top_ls:.2f}, retail={ls:.2f}"
-                    ),
-                ))
-            elif divergence < 0.7:
-                # Top traders menos long que varejo
-                signals.append(COTSignal(
-                    signal_type="smart_money_short",
-                    direction="bearish",
-                    strength=min((1 - divergence) / 0.5, 1.0),
-                    description=(
-                        f"Smart money more short than retail: "
-                        f"top={top_ls:.2f}, retail={ls:.2f}"
-                    ),
-                ))
-
-        # Crowding extremo
-        if ls > 2.0:
-            signals.append(COTSignal(
-                signal_type="crowded_long",
-                direction="bearish",
-                strength=min((ls - 1) / 3, 1.0),
-                description=f"Market crowded long: L/S ratio={ls:.2f}",
-            ))
-        elif ls < 0.5:
-            signals.append(COTSignal(
-                signal_type="crowded_short",
-                direction="bullish",
-                strength=min((1 / max(ls, 0.01) - 1) / 3, 1.0),
-                description=f"Market crowded short: L/S ratio={ls:.2f}",
-            ))
-
-        return signals
-
-    def _detect_squeeze_conditions(self) -> list[COTSignal]:
-        """Detecta condições para squeeze."""
-        signals = []
-        if not self._data:
-            return signals
-
-        latest = self._data[-1]
-        fr = latest.funding_rate
-        ls = latest.long_short_ratio
-
-        # Short squeeze: funding negativo + muitos shorts
-        if fr < -self.squeeze_threshold and ls < 0.8:
-            signals.append(COTSignal(
-                signal_type="short_squeeze_risk",
-                direction="bullish",
-                strength=min(abs(fr) / 0.02 + (1 - ls), 1.0),
-                description=(
-                    f"SHORT SQUEEZE conditions: "
-                    f"funding={fr*100:.3f}%, L/S={ls:.2f}"
-                ),
-            ))
-
-        # Long squeeze: funding positivo + muitos longs
-        if fr > self.squeeze_threshold and ls > 1.5:
-            signals.append(COTSignal(
-                signal_type="long_squeeze_risk",
-                direction="bearish",
-                strength=min(fr / 0.02 + (ls - 1), 1.0),
-                description=(
-                    f"LONG SQUEEZE conditions: "
-                    f"funding={fr*100:.3f}%, L/S={ls:.2f}"
-                ),
-            ))
-
-        return signals
-
-    def analyze(self) -> AnalysisResult:
-        """Análise completa do Crypto COT."""
-        result = AnalysisResult(
-            source="crypto_cot",
-            timestamp=time.time(),
-        )
-
-        if not self._data:
-            result.confidence = 0.0
-            return result
-
-        latest = self._data[-1]
-
-        result.metrics = {
-            "funding_rate": latest.funding_rate,
-            "funding_rate_pct": latest.funding_rate * 100,
-            "open_interest": latest.open_interest,
-            "long_short_ratio": latest.long_short_ratio,
-            "top_trader_ls_ratio": latest.top_trader_ls_ratio,
-            "price": latest.price,
-            "data_points": len(self._data),
-        }
-
-        # Coletar todos os sinais
-        all_signals: list[COTSignal] = []
-        all_signals.extend(self._analyze_funding())
-        all_signals.extend(self._analyze_open_interest())
-        all_signals.extend(self._analyze_positioning())
-        all_signals.extend(self._detect_squeeze_conditions())
-
-        for cot_signal in all_signals:
-            direction = (
-                Side.BUY if cot_signal.direction == "bullish"
-                else Side.SELL if cot_signal.direction == "bearish"
-                else Side.UNKNOWN
+        if positioning_data is None:
+            return CryptoCOTAnalysis(
+                symbol=symbol,
+                observed_at=now,
+                regime=PositioningRegime.UNKNOWN,
+                reasons=["Dados de posicionamento indisponíveis (None)"],
+                is_available=False,
             )
 
-            strength = (
-                SignalStrength.STRONG if cot_signal.strength > 0.7
-                else SignalStrength.MODERATE if cot_signal.strength > 0.4
-                else SignalStrength.WEAK
+        # Suporta tanto BinancePositioningSnapshot quanto dict
+        if hasattr(positioning_data, "to_dict"):
+            p_dict = positioning_data.to_dict()
+        elif isinstance(positioning_data, dict):
+            p_dict = positioning_data
+        else:
+            return CryptoCOTAnalysis(
+                symbol=symbol,
+                observed_at=now,
+                regime=PositioningRegime.UNKNOWN,
+                reasons=["Tipo de dado de posicionamento inválido"],
+                is_available=False,
             )
 
-            result.signals.append(
-                Signal(
-                    timestamp=time.time(),
-                    signal_type=f"cot_{cot_signal.signal_type}",
-                    direction=direction,
-                    strength=strength,
-                    price=latest.price,
-                    confidence=cot_signal.strength,
-                    source="crypto_cot",
-                    description=cot_signal.description,
+        is_stale = bool(p_dict.get("is_stale", False))
+        is_available = bool(p_dict.get("is_available", True))
+
+        if not is_available:
+            return CryptoCOTAnalysis(
+                symbol=symbol,
+                observed_at=now,
+                regime=PositioningRegime.UNKNOWN,
+                reasons=["Posicionamento marcado como indisponível pela fonte"],
+                is_available=False,
+                is_stale=is_stale,
+            )
+
+        if is_stale:
+            return CryptoCOTAnalysis(
+                symbol=symbol,
+                observed_at=now,
+                regime=PositioningRegime.UNKNOWN,
+                reasons=[f"Dados obsoletos (age={p_dict.get('age_seconds')}s > limite)"],
+                is_available=False,
+                is_stale=True,
+            )
+
+        g_ratio = p_dict.get("global_account_ratio")
+        t_acc_ratio = p_dict.get("top_account_ratio")
+        t_pos_ratio = p_dict.get("top_position_ratio")
+        g_long_pct = p_dict.get("global_long_account_pct")
+        g_short_pct = p_dict.get("global_short_account_pct")
+        t_long_acc_pct = p_dict.get("top_long_account_pct")
+        t_long_pos_pct = p_dict.get("top_long_position_pct")
+
+        oi = p_dict.get("open_interest")
+        oi_usd = p_dict.get("open_interest_usd")
+        oi_1h = p_dict.get("oi_delta_1h")
+        oi_4h = p_dict.get("oi_delta_4h")
+
+        # Prioriza funding_rate canônico passado ou contido no dict
+        fr = funding_rate if funding_rate is not None else p_dict.get("funding_rate")
+
+        # Verifica completude essencial
+        if g_ratio is None or t_pos_ratio is None:
+            reasons = ["Dados parciais: ausência de global_account_ratio ou top_position_ratio"]
+            return CryptoCOTAnalysis(
+                symbol=symbol,
+                observed_at=now,
+                regime=PositioningRegime.PARTIAL,
+                reasons=reasons,
+                global_account_ratio=g_ratio,
+                top_account_ratio=t_acc_ratio,
+                top_position_ratio=t_pos_ratio,
+                open_interest=oi,
+                open_interest_usd=oi_usd,
+                oi_delta_1h=oi_1h,
+                oi_delta_4h=oi_4h,
+                funding_rate=fr,
+                is_available=True,
+                is_stale=False,
+            )
+
+        # Cálculos de divergência
+        top_acc_vs_global = (
+            round(t_acc_ratio - g_ratio, 4) if t_acc_ratio is not None else None
+        )
+        top_pos_vs_global = round(t_pos_ratio - g_ratio, 4)
+
+        reasons: List[str] = []
+        regime = PositioningRegime.NEUTRAL
+
+        # 1. Detecção de Risco de Squeeze (Funding Extremo + Crowding)
+        if fr is not None:
+            if fr > self.SQUEEZE_FUNDING_THRESHOLD and g_ratio > self.CROWDED_LONG_RATIO:
+                regime = PositioningRegime.SQUEEZE_RISK
+                reasons.append(
+                    f"Risco de Long Squeeze: funding elevado ({fr*100:.3f}%) com varejo comprado (L/S={g_ratio:.2f})"
                 )
-            )
+            elif fr < -self.SQUEEZE_FUNDING_THRESHOLD and g_ratio < self.CROWDED_SHORT_RATIO:
+                regime = PositioningRegime.SQUEEZE_RISK
+                reasons.append(
+                    f"Risco de Short Squeeze: funding negativo ({fr*100:.3f}%) com varejo vendido (L/S={g_ratio:.2f})"
+                )
 
-        result.confidence = max(
-            (s.confidence for s in result.signals), default=0.0
+        # 2. Detecção de Divergência Top Traders vs Global
+        if regime == PositioningRegime.NEUTRAL:
+            if top_pos_vs_global > self.DIVERGENCE_THRESHOLD:
+                regime = PositioningRegime.TOP_LONG_DIVERGENCE
+                reasons.append(
+                    f"Top Traders posicionados comprados vs Varejo (Top Pos={t_pos_ratio:.2f}, Global={g_ratio:.2f}, Diff=+{top_pos_vs_global:.2f})"
+                )
+            elif top_pos_vs_global < -self.DIVERGENCE_THRESHOLD:
+                regime = PositioningRegime.TOP_SHORT_DIVERGENCE
+                reasons.append(
+                    f"Top Traders posicionados vendidos vs Varejo (Top Pos={t_pos_ratio:.2f}, Global={g_ratio:.2f}, Diff={top_pos_vs_global:.2f})"
+                )
+
+        # 3. Detecção de Crowding Unilateral
+        if regime == PositioningRegime.NEUTRAL:
+            if g_ratio >= self.CROWDED_LONG_RATIO:
+                regime = PositioningRegime.CROWDED_LONG
+                reasons.append(f"Mercado sobrecarregado na compra (Global L/S={g_ratio:.2f} >= {self.CROWDED_LONG_RATIO})")
+            elif g_ratio <= self.CROWDED_SHORT_RATIO:
+                regime = PositioningRegime.CROWDED_SHORT
+                reasons.append(f"Mercado sobrecarregado na venda (Global L/S={g_ratio:.2f} <= {self.CROWDED_SHORT_RATIO})")
+
+        # 4. Detecção de Expansão de Open Interest
+        if regime == PositioningRegime.NEUTRAL:
+            if oi_1h is not None and abs(oi_1h) >= self.OI_EXPANSION_1H:
+                regime = PositioningRegime.OI_EXPANSION
+                direction = "crescimento" if oi_1h > 0 else "queda"
+                reasons.append(f"Variação expressiva de OI 1h ({direction} de {oi_1h*100:+.1f}%)")
+            elif oi_4h is not None and abs(oi_4h) >= self.OI_EXPANSION_4H:
+                regime = PositioningRegime.OI_EXPANSION
+                direction = "crescimento" if oi_4h > 0 else "queda"
+                reasons.append(f"Variação expressiva de OI 4h ({direction} de {oi_4h*100:+.1f}%)")
+
+        if not reasons:
+            reasons.append(f"Posicionamento equilibrado (Global L/S={g_ratio:.2f}, Top Pos={t_pos_ratio:.2f})")
+
+        return CryptoCOTAnalysis(
+            symbol=symbol,
+            observed_at=now,
+            regime=regime,
+            reasons=reasons,
+            global_account_ratio=g_ratio,
+            top_account_ratio=t_acc_ratio,
+            top_position_ratio=t_pos_ratio,
+            global_long_pct=g_long_pct,
+            global_short_pct=g_short_pct,
+            top_long_account_pct=t_long_acc_pct,
+            top_long_position_pct=t_long_pos_pct,
+            top_account_vs_global=top_acc_vs_global,
+            top_position_vs_global=top_pos_vs_global,
+            open_interest=oi,
+            open_interest_usd=oi_usd,
+            oi_delta_1h=oi_1h,
+            oi_delta_4h=oi_4h,
+            funding_rate=fr,
+            is_stale=is_stale,
+            is_available=is_available,
         )
 
-        return result
-
-    def reset(self) -> None:
-        """Reseta dados."""
-        self._data.clear()
+    def to_legacy_analysis_result(self, analysis: CryptoCOTAnalysis) -> AnalysisResult:
+        """
+        Converte para formato AnalysisResult da camada institucional mantendo Side.UNKNOWN
+        para garantir que seja estritamente CONTEXT-ONLY (sem interferência em trade).
+        """
+        res = AnalysisResult(source="crypto_cot", timestamp=analysis.observed_at)
+        res.metrics = analysis.to_dict()
+        res.confidence = 0.0  # Context-only, zero influência direcional
+        return res

@@ -1509,6 +1509,13 @@ class EnhancedMarketBot:
                 if isinstance(_flow, dict):
                     _absorption = _flow.get("absorption_analysis", {})
 
+                # Positioning data (Binance Futures)
+                _positioning = (
+                    signal.get("positioning")
+                    or signal.get("contextual_snapshot", {}).get("positioning")
+                    or signal.get("sentiment", {}).get("positioning")
+                )
+
                 # Calcular tudo
                 _t_inst_start = time.perf_counter()
                 institutional_result = self.institutional_analytics.compute_all(
@@ -1529,6 +1536,7 @@ class EnhancedMarketBot:
                     monthly_vp=_monthly_vp,
                     window_close_ms=close_ms,
                     time_manager=self.time_manager,
+                    positioning_data=_positioning,
                 )
                 _t_inst_ms = (time.perf_counter() - _t_inst_start) * 1000
 
@@ -1865,13 +1873,21 @@ class EnhancedMarketBot:
         try:
             ohlc = enriched.get("ohlc") or {}
             if ohlc:
+                ts_open = int(ohlc.get("open_time") or ohlc.get("timestamp") or (time.time() * 1000))
+                ts_close = int(ohlc.get("close_time") or (ts_open + 60000))
                 with self._history_lock:
                     self.pattern_ohlc_history.append(
                         {
+                            "timestamp": ts_open,
+                            "open_time": ts_open,
+                            "close_time": ts_close,
                             "open": float(ohlc.get("open", ohlc.get("close", 0.0))),
                             "high": float(ohlc.get("high", 0.0)),
                             "low": float(ohlc.get("low", 0.0)),
                             "close": float(ohlc.get("close", 0.0)),
+                            "volume": float(ohlc.get("volume", 0.0)),
+                            "timeframe": "1m",
+                            "is_closed": True,
                         }
                     )
         except Exception as e:
@@ -2256,13 +2272,19 @@ class EnhancedMarketBot:
                         data = await resp.json()
                         for k in data:
                             self.pattern_ohlc_history.append({
+                                "timestamp": int(k[0]),
+                                "open_time": int(k[0]),
+                                "close_time": int(k[6]),
                                 "open": float(k[1]),
                                 "high": float(k[2]),
                                 "low": float(k[3]),
                                 "close": float(k[4]),
+                                "volume": float(k[5]),
+                                "timeframe": "1m",
+                                "is_closed": True,
                             })
                         logging.info(
-                            "✅ OHLC history pré-carregado: %d barras (indicadores avançados ativos)",
+                            "✅ OHLC history pré-carregado: %d barras 1m (indicadores avançados e market structure ativos)",
                             len(self.pattern_ohlc_history),
                         )
         except Exception as _e:

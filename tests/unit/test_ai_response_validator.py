@@ -299,20 +299,116 @@ class TestLogSanitizer(unittest.TestCase):
         self.assertIn("REDACTED", sanitized)
 
 
-class TestOCIPathCorrection(unittest.TestCase):
-    """Testes para verificação do path OCI."""
-    
-    def test_oci_config_path(self):
-        """Path OCI deve ser ~/.oci/config (sem typo)."""
-        import os
-        
-        # Verifica o caminho hardcoded
-        expected_path = os.path.expanduser("~/.oci/config")
-        
-        # O caminho não deve ter o typo 'configg'
-        self.assertNotIn("configg", expected_path)
-        self.assertEqual(expected_path, os.path.expanduser("~/.oci/config"))
+class TestZoneValidationInvariants(unittest.TestCase):
+    """Testes para validação e invariantes de entry_zone e invalidation_zone."""
+
+    def setUp(self):
+        self.validator = AIResponseValidator()
+
+    def test_valid_buy_zones(self):
+        """Em BUY, invalidation deve estar abaixo de entry."""
+        valid_buy = json.dumps({
+            "sentiment": "bullish",
+            "confidence": 0.85,
+            "action": "buy",
+            "rationale": "Setup de absorção compradora com defesa",
+            "entry_zone": [77000.0, 77100.0],
+            "invalidation_zone": [76800.0, 76900.0],
+            "region_type": "defense_zone"
+        })
+        result = self.validator.validate(valid_buy)
+        self.assertTrue(result.is_valid)
+        self.assertEqual(result.data["entry_zone"], [77000.0, 77100.0])
+        self.assertEqual(result.data["invalidation_zone"], [76800.0, 76900.0])
+
+    def test_inverted_buy_zones_rejected_fail_closed(self):
+        """Em BUY, se invalidation >= entry, deve falhar closed."""
+        inverted_buy = json.dumps({
+            "sentiment": "bullish",
+            "confidence": 0.85,
+            "action": "buy",
+            "rationale": "Setup inválido com stop acima da entrada",
+            "entry_zone": [77000.0, 77100.0],
+            "invalidation_zone": [77200.0, 77300.0],
+            "region_type": "defense_zone"
+        })
+        result = self.validator.validate(inverted_buy)
+        self.assertFalse(result.is_valid)
+        self.assertTrue(result.is_fallback)
+        self.assertIn("invalidation_zone_must_be_below_entry_zone_for_buy", result.error_message)
+
+    def test_valid_sell_zones(self):
+        """Em SELL, invalidation deve estar acima de entry."""
+        valid_sell = json.dumps({
+            "sentiment": "bearish",
+            "confidence": 0.80,
+            "action": "sell",
+            "rationale": "Distribuição com exaustão de alta",
+            "entry_zone": [77000.0, 77100.0],
+            "invalidation_zone": [77200.0, 77300.0],
+            "region_type": "distribution_zone"
+        })
+        result = self.validator.validate(valid_sell)
+        self.assertTrue(result.is_valid)
+        self.assertEqual(result.data["entry_zone"], [77000.0, 77100.0])
+        self.assertEqual(result.data["invalidation_zone"], [77200.0, 77300.0])
+
+    def test_inverted_sell_zones_rejected_fail_closed(self):
+        """Em SELL, se invalidation <= entry, deve falhar closed."""
+        inverted_sell = json.dumps({
+            "sentiment": "bearish",
+            "confidence": 0.80,
+            "action": "sell",
+            "rationale": "Setup inválido com stop abaixo da entrada",
+            "entry_zone": [77000.0, 77100.0],
+            "invalidation_zone": [76800.0, 76900.0],
+            "region_type": "distribution_zone"
+        })
+        result = self.validator.validate(inverted_sell)
+        self.assertFalse(result.is_valid)
+        self.assertTrue(result.is_fallback)
+        self.assertIn("invalidation_zone_must_be_above_entry_zone_for_sell", result.error_message)
+
+    def test_string_formatted_zones_normalized(self):
+        """Zonas em string (ex: '77000-77100') devem ser normalizadas para lista."""
+        str_zones = json.dumps({
+            "sentiment": "bullish",
+            "confidence": 0.75,
+            "action": "buy",
+            "rationale": "Zonas em string formatada",
+            "entry_zone": "77000-77100",
+            "invalidation_zone": "76800, 76900",
+            "region_type": "support"
+        })
+        result = self.validator.validate(str_zones)
+        self.assertTrue(result.is_valid)
+        self.assertEqual(result.data["entry_zone"], [77000.0, 77100.0])
+        self.assertEqual(result.data["invalidation_zone"], [76800.0, 76900.0])
+
+    def test_null_zones_allowed_for_wait_and_hold(self):
+        """WAIT e HOLD com zonas nulas devem ser válidos."""
+        wait_resp = json.dumps({
+            "sentiment": "neutral",
+            "confidence": 0.30,
+            "action": "wait",
+            "rationale": "Mercado lateral sem confluência",
+            "entry_zone": None,
+            "invalidation_zone": None,
+            "region_type": None
+        })
+        result = self.validator.validate(wait_resp)
+        self.assertTrue(result.is_valid)
+        self.assertIsNone(result.data["entry_zone"])
+        self.assertIsNone(result.data["invalidation_zone"])
+
+    def test_non_finite_zones_rejected(self):
+        """Zonas com NaN ou strings malformadas devem falhar closed."""
+        bad_json = '{"sentiment":"bullish","confidence":0.7,"action":"buy","rationale":"ok","entry_zone":[NaN, 77000],"invalidation_zone":null,"region_type":null}'
+        result = self.validator.validate(bad_json)
+        self.assertFalse(result.is_valid)
+        self.assertTrue(result.is_fallback)
 
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

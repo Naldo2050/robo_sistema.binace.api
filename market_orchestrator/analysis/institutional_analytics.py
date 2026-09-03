@@ -93,6 +93,22 @@ class InstitutionalAnalyticsEngine:
             self.reference_prices = None
             self._init_errors.append(f"ReferencePrices: {e}")
 
+        # Fase P1.2 — Canonical Session VWAP Tracker (UTC 00:00)
+        try:
+            from institutional.session_vwap import SessionVWAPTracker
+            self.session_vwap_tracker = SessionVWAPTracker(symbol=symbol)
+        except Exception as e:
+            self.session_vwap_tracker = None
+            self._init_errors.append(f"SessionVWAPTracker: {e}")
+
+        # Fase P1.3C — Canonical Market Structure Detector (BOS & Liquidity Sweep)
+        try:
+            from institutional.market_structure import MarketStructureDetector
+            self.structure_detector = MarketStructureDetector(left_bars=2, right_bars=2, timeframe="1m", symbol=symbol)
+        except Exception as e:
+            self.structure_detector = None
+            self._init_errors.append(f"MarketStructureDetector: {e}")
+
         # ═══════════════════════════════════════
         # Módulos STATELESS (importar para uso)
         # ═══════════════════════════════════════
@@ -141,6 +157,7 @@ class InstitutionalAnalyticsEngine:
         monthly_vp: Optional[Dict[str, Any]] = None,
         window_close_ms: Optional[int] = None,
         time_manager: Optional[Any] = None,
+        positioning_data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Calcula TODOS os indicadores institucionais de uma vez.
@@ -223,6 +240,31 @@ class InstitutionalAnalyticsEngine:
         if _cp.get("patterns_detected", 0) > 0:
             result["candlestick_patterns"] = _cp
         logger.debug("[TIMING] candlestick: %.0fms", (time.monotonic() - _t0) * 1000)
+
+        # ═══════════════════════════════════════
+        # SEÇÃO 7: POSITIONING & CRYPTO COT (FASE P1.1 - CONTEXT-ONLY)
+        # ═══════════════════════════════════════
+        _t0 = time.monotonic()
+        result["positioning"] = self._compute_positioning_analysis(
+            positioning_data, derivatives_data
+        )
+        logger.debug("[TIMING] positioning: %.0fms", (time.monotonic() - _t0) * 1000)
+
+        # ═══════════════════════════════════════
+        # SEÇÃO 8: SESSION VWAP ANCORADO EM UTC (FASE P1.2 - CONTEXT-ONLY)
+        # ═══════════════════════════════════════
+        _t0 = time.monotonic()
+        result["session_vwap"] = self._compute_session_vwap(
+            candles_df, current_price
+        )
+        logger.debug("[TIMING] session_vwap: %.0fms", (time.monotonic() - _t0) * 1000)
+
+        # ═══════════════════════════════════════
+        # SEÇÃO 9: MARKET STRUCTURE — BOS & LIQUIDITY SWEEP (FASE P1.3 - CONTEXT-ONLY)
+        # ═══════════════════════════════════════
+        _t0 = time.monotonic()
+        result["market_structure"] = self._compute_market_structure(candles_df)
+        logger.debug("[TIMING] market_structure: %.0fms", (time.monotonic() - _t0) * 1000)
 
         logger.info("[TIMING] institutional_analytics.compute_all total: %.0fms",
                     (time.monotonic() - _t_start) * 1000)
@@ -730,6 +772,102 @@ class InstitutionalAnalyticsEngine:
             return detect_candlestick_patterns(candles_df)
         except Exception as e:
             return {"patterns_detected": 0, "patterns": [], "error": str(e)}
+
+    # ═══════════════════════════════════════════════════════════
+    # SEÇÃO 7: POSITIONING & CRYPTO COT (FASE P1.1 - CONTEXT-ONLY)
+    # ═══════════════════════════════════════════════════════════
+    def _compute_positioning_analysis(
+        self, positioning_data: Optional[Any], derivatives_data: Optional[dict] = None
+    ) -> dict:
+        """
+        Interpreta dados de posicionamento institucional (Crypto COT) de forma CONTEXT-ONLY.
+        """
+        try:
+            from institutional.crypto_cot import CryptoCOT
+            cot = CryptoCOT()
+            funding_rate = None
+            if derivatives_data and isinstance(derivatives_data, dict):
+                btc_d = derivatives_data.get("BTCUSDT", {})
+                if isinstance(btc_d, dict):
+                    fr_val = btc_d.get("funding_rate")
+                    if fr_val is None and btc_d.get("funding_rate_percent") is not None:
+                        try:
+                            fr_val = float(btc_d["funding_rate_percent"]) / 100.0
+                        except (ValueError, TypeError):
+                            pass
+                    funding_rate = fr_val
+
+            analysis = cot.analyze(positioning_data, funding_rate=funding_rate, symbol=self.symbol)
+            return analysis.to_dict()
+        except Exception as e:
+            logger.warning(f"Erro ao processar positioning_analysis: {e}")
+            return {
+                "regime": "UNKNOWN",
+                "reasons": [f"Erro interno: {e}"],
+                "is_available": False,
+                "is_stale": False,
+            }
+
+    # ═══════════════════════════════════════════════════════════
+    # SEÇÃO 8: SESSION VWAP ANCORADO EM UTC (FASE P1.2 - CONTEXT-ONLY)
+    # ═══════════════════════════════════════════════════════════
+    def _compute_session_vwap(
+        self, candles_df: Optional[pd.DataFrame], current_price: float
+    ) -> dict:
+        """
+        Calcula e atualiza o Session VWAP diário ancorado em UTC 00:00:00.
+        """
+        if self.session_vwap_tracker is None:
+            return {"status": "ERROR", "is_valid": False, "error": "session_vwap_tracker_not_init"}
+
+        try:
+            if candles_df is not None and isinstance(candles_df, pd.DataFrame) and not candles_df.empty:
+                # Detectar nomes de colunas de forma flexível
+                t_col = next((c for c in ["open_time", "timestamp", "t", "T"] if c in candles_df.columns), None)
+                h_col = next((c for c in ["high", "h", "High"] if c in candles_df.columns), None)
+                l_col = next((c for c in ["low", "l", "Low"] if c in candles_df.columns), None)
+                c_col = next((c for c in ["close", "c", "Close"] if c in candles_df.columns), None)
+                v_col = next((c for c in ["volume", "v", "Volume", "q"] if c in candles_df.columns), None)
+
+                if t_col and h_col and l_col and c_col and v_col:
+                    for _, row in candles_df.iterrows():
+                        try:
+                            ts = int(row[t_col])
+                            h = float(row[h_col])
+                            l = float(row[l_col])
+                            close = float(row[c_col])
+                            v = float(row[v_col])
+                            self.session_vwap_tracker.update_candle(ts, h, l, close, v)
+                        except (ValueError, TypeError):
+                            continue
+
+            snap = self.session_vwap_tracker.get_snapshot(current_price)
+            return snap.to_dict()
+        except Exception as e:
+            logger.warning(f"Erro ao processar session_vwap: {e}")
+            return {"status": "ERROR", "is_valid": False, "error": str(e)}
+
+    # ═══════════════════════════════════════════════════════════
+    # SEÇÃO 9: MARKET STRUCTURE — BOS & LIQUIDITY SWEEP (FASE P1.3 - CONTEXT-ONLY)
+    # ═══════════════════════════════════════════════════════════
+    def _compute_market_structure(self, candles_df: Optional[pd.DataFrame]) -> dict:
+        """
+        Calcula Break of Structure (BOS) e Liquidity Sweep via detector canônico.
+        """
+        if self.structure_detector is None:
+            return {"status": "ERROR", "error": "structure_detector_not_init"}
+
+        try:
+            if candles_df is None or not isinstance(candles_df, pd.DataFrame) or candles_df.empty:
+                return {"status": "INSUFFICIENT_DATA"}
+
+            # Converter DataFrame para lista de dicts
+            candles_list = candles_df.to_dict(orient="records")
+            res = self.structure_detector.analyze_candles(candles_list)
+            return res.to_dict()
+        except Exception as e:
+            logger.warning(f"Erro ao processar market_structure: {e}")
+            return {"status": "ERROR", "error": str(e)}
 
     # ═══════════════════════════════════════════════════════════
     # MÉTODOS AUXILIARES

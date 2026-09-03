@@ -99,6 +99,12 @@ try:
 except ImportError:
     _FUNDING_AGG_AVAILABLE = False
 
+try:
+    from fetchers.binance_positioning_fetcher import BinancePositioningFetcher
+    _POSITIONING_FETCHER_AVAILABLE = True
+except ImportError:
+    _POSITIONING_FETCHER_AVAILABLE = False
+
 # Mapeamento de tickers para yFinance
 TICKER_MAPPING = {
     'BTC': 'BTC-USD',
@@ -175,9 +181,10 @@ class ContextCollector:
             if not self.alpha_vantage_api_key or self.alpha_vantage_api_key == "demo":
                 logger.warning("⚠️ Alpha Vantage habilitado mas API key inválida/demo!")
          
-        # Fetchers reais de on-chain e funding agregado
+        # Fetchers reais de on-chain, funding agregado e positioning institucional
         self._onchain_fetcher = OnchainFetcher() if _ONCHAIN_FETCHER_AVAILABLE else None
         self._funding_aggregator = FundingAggregator() if _FUNDING_AGG_AVAILABLE else None
+        self._positioning_fetcher = BinancePositioningFetcher() if _POSITIONING_FETCHER_AVAILABLE else None
 
         # Fallbacks
         self._dxy_cache: Optional[Dict[str, Any]] = None
@@ -1112,7 +1119,29 @@ class ContextCollector:
         else:
             sentiment["funding_agg"] = {"status": "fetcher_not_available", "is_real_data": False}
 
+        # Positioning institucional REAL (Binance Futures - gratuito)
+        if self._positioning_fetcher:
+            try:
+                snap = await self._positioning_fetcher.fetch_positioning("BTCUSDT", session)
+                sentiment["positioning"] = snap.to_dict()
+            except Exception as e:
+                logger.debug(f"Positioning indisponível: {e}")
+                sentiment["positioning"] = {"is_available": False, "is_stale": False, "error": str(e)}
+        else:
+            sentiment["positioning"] = {"is_available": False, "is_stale": False, "error": "fetcher_not_available"}
+
         return sentiment
+
+    async def _fetch_positioning_context(self, session: Optional[aiohttp.ClientSession] = None) -> Dict[str, Any]:
+        """Busca posicionamento institucional Binance Futures."""
+        if self._positioning_fetcher:
+            try:
+                snap = await self._positioning_fetcher.fetch_positioning("BTCUSDT", session)
+                return snap.to_dict()
+            except Exception as e:
+                logger.debug(f"Positioning indisponível: {e}")
+                return {"is_available": False, "is_stale": False, "error": str(e)}
+        return {"is_available": False, "is_stale": False, "error": "fetcher_not_available"}
 
     # ---------- Consolidação ----------
     
@@ -1143,6 +1172,7 @@ class ContextCollector:
             "external": asyncio.create_task(self._fetch_external_markets(session)),
             "derivatives": asyncio.create_task(self._fetch_derivatives_data(session)),
             "sentiment": asyncio.create_task(self._fetch_onchain_sentiment(session)),
+            "positioning": asyncio.create_task(self._fetch_positioning_context(session)),
             "profile": asyncio.create_task(
                 asyncio.to_thread(self.historical_profiler.update_profiles)
             ),

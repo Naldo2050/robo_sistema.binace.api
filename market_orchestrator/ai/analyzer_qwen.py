@@ -655,6 +655,27 @@ DADOS DISPONÍVEIS NO PAYLOAD (use TODOS para sua análise):
 - cross.ndx_30d = correlação BTC/NASDAQ
 - Macro regime: RISK_ON, RISK_OFF, TRANSITION
 
+📊 POSICIONAMENTO E CRYPTO COT (pos) [CONTEXT-ONLY]:
+- pos.ga = Global Long/Short Account Ratio (% contas compradas / % vendidas no mercado geral)
+- pos.ta = Top Trader Account Ratio (proporção de contas compradas vs vendidas dos top 20% traders com maior margem)
+- pos.tp = Top Trader Position Ratio (volume financeiro nocional alocado em compra vs venda pelos top 20% traders)
+- pos.od1/od4 = Variação de Open Interest em 1h/4h em fração decimal canônica (ex: 0.0017 = +0.17%, -0.0035 = -0.35%)
+- pos.rg = Regime heurístico de posicionamento (CROWDED_LONG, CROWDED_SHORT, TOP_LONG_DIVERGENCE, TOP_SHORT_DIVERGENCE, SQUEEZE_RISK, NEUTRAL)
+* NOTA: Posicionamento é contexto estrutural de mercado (crowding/squeeze risk). NÃO é sinal direcional isolado de compra/venda.
+
+📍 SESSION VWAP (vwap) [CONTEXT-ONLY]:
+- vwap.svw = Session VWAP canônico ancorado em UTC 00:00:00 (preço médio ponderado por volume acumulado do dia)
+- vwap.dist = Distância fracionária ao Session VWAP ((preço - VWAP) / VWAP, ex: 0.0020 = +0.20%)
+- vwap.side = above / below / at (localização relativa ao benchmark de execução institucional da sessão UTC)
+* NOTA: Session VWAP é benchmark institucional de localização/execução. Preço acima/abaixo NÃO é sinal direto de compra/venda, apenas contexto de valuation intraday.
+
+🏛️ ESTRUTURA DE MERCADO — BOS & LIQUIDITY SWEEP (ms) [CONTEXT-ONLY]:
+- ms.bos = Break of Structure confirmado (ex: BULL_77500 ou BEAR_76800 com b_str=% de rompimento)
+- ms.sw = Liquidity Sweep detectado (ex: BUY_77800 = varredura de topo/stops de short; SELL_76500 = varredura de fundo/stops de long; BOTH_77800 = varredura simultânea de topo e fundo)
+- ms.sh / ms.sl = Último Swing High / Swing Low confirmado no timeframe 1m (janela canônica L=2, R=2)
+- ms.tf = Timeframe canônico ("1m")
+* NOTA: BOS indica expansão estrutural e Sweep indica rejeição/reclaim de liquidez. Nenhum deles é sinal isolado de entrada. Usar SEMPRE em confluência com flow, CVD, orderbook e S/R.
+
 🤖 MODELO QUANTITATIVO:
 - quant.prob_up = probabilidade de alta do modelo ML (0-1)
 - quant.conf = confiança do modelo
@@ -1696,13 +1717,13 @@ class AIAnalyzer:
         if trigger:
             out["t"] = trigger
 
-        # PRICE: OHLC + shape/auction (criticos)
+        # PRICE: OHLC + shape/auction + funding rate (criticos)
         price = payload.get("price") or {}
         if price:
             p = {}
-            for key in ("c", "o", "h", "l", "vw", "sh", "auc", "ph", "pl",
+            for key in ("c", "o", "h", "l", "vw", "sh", "auc", "ph", "pl", "fr", "brk_risk",
                          # Compat com v1 keys
-                         "vwap", "shape", "auction", "poor_high", "poor_low"):
+                         "vwap", "shape", "auction", "poor_high", "poor_low", "funding_rate"):
                 if key in price:
                     p[key] = price[key]
             if p:
@@ -1813,11 +1834,11 @@ class AIAnalyzer:
             out["ctx"] = ctx
         # Se ctx nao presente, IA usa ultimo contexto recebido
 
-        # FIX 5: pass-through de seções adicionadas em v3.1+
+        # FIX 5: pass-through de seções adicionadas em v3.1+ (incluindo pos da P1.1 e ms da P1.3)
         # Estas seções eram descartadas pelo groq summary, causando
         # perda de ~60% do payload antes de chegar na IA.
         for passthrough_key in ("ofi", "vwap", "liq", "mr", "sm",
-                                "cvd_div", "iceberg", "qual", "summary"):
+                                "cvd_div", "iceberg", "qual", "summary", "pos", "ms"):
             val = payload.get(passthrough_key)
             if val is not None and val not in ({}, [], ""):
                 out[passthrough_key] = val
