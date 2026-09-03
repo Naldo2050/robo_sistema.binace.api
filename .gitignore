@@ -41,6 +41,7 @@ playwright_user_data/
 # NOTA: comentários inline quebram os padrões; manter comentários em linha própria
 # ==============================
 dados/
+!dados/o1_cohort_manifest.json
 firefox_data/
 gemini_data/
 features/

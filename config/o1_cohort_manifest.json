@@ -1,0 +1,14 @@
+{
+  "cohort_name": "O1_PRODUCTION_SHADOW_OBSERVATION",
+  "o1_start_utc": "2026-09-03T01:35:00Z",
+  "o1_start_timestamp_ms": 1788399300000,
+  "git_baseline_sha": "9db68e7ecda65bba7432804232ee79609e397874",
+  "git_tag": "o1_baseline_preflight_final",
+  "symbol": "BTCUSDT",
+  "v2_gate_requirements": {
+    "min_cohort_observations": 2000,
+    "min_positioning_snapshots": 500,
+    "min_calendar_days": 7.0,
+    "require_clean_quality": true
+  }
+}

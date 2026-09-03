@@ -34,25 +34,28 @@ logger = logging.getLogger("O1DailySnapshot")
 
 DB_PATH = "dados/trading_bot.db"
 OUTPUT_DIR = "analysis/results"
-MANIFEST_PATH = "dados/o1_cohort_manifest.json"
+MANIFEST_PATHS = ["config/o1_cohort_manifest.json", "dados/o1_cohort_manifest.json"]
 
-# Timestamp boundary padrão caso o manifesto não exista (2026-09-03T01:09:26Z)
-DEFAULT_O1_START_MS = 1788397766000
+# Timestamp boundary padrão pós-commit 9db68e7 (2026-09-03T01:35:00Z)
+DEFAULT_O1_START_MS = 1788399300000
+DEFAULT_O1_START_UTC = "2026-09-03T01:35:00Z"
 
 
 def load_cohort_manifest() -> Dict[str, Any]:
     """Carrega metadados e limite temporal do cohort O1."""
-    if os.path.exists(MANIFEST_PATH):
-        try:
-            with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning(f"Falha ao carregar {MANIFEST_PATH}: {e}")
+    for p in MANIFEST_PATHS:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Falha ao carregar {p}: {e}")
     return {
         "cohort_name": "O1_PRODUCTION_SHADOW_OBSERVATION",
-        "o1_start_utc": "2026-09-03T01:09:26Z",
+        "o1_start_utc": DEFAULT_O1_START_UTC,
         "o1_start_timestamp_ms": DEFAULT_O1_START_MS,
     }
+
 
 
 def get_git_provenance() -> Dict[str, Any]:
