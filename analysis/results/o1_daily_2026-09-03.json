@@ -1,16 +1,16 @@
 {
   "snapshot_date_utc": "2026-09-03",
-  "generated_at_utc": "2026-09-03T01:35:28Z",
+  "generated_at_utc": "2026-09-03T01:41:41Z",
   "git_provenance": {
-    "git_sha": "9db68e7ecda65bba7432804232ee79609e397874",
+    "git_sha": "2a42bea517771f86aa16962463a85185dce59dfd",
     "is_dirty": true,
-    "diff_hash": "48b61aa63cab59df"
+    "diff_hash": "4bb2ec2230a45475"
   },
   "cohort_definition": {
     "cohort_name": "O1_PRODUCTION_SHADOW_OBSERVATION",
-    "o1_start_utc": "2026-09-03T01:35:00Z",
-    "o1_start_timestamp_ms": 1788399300000,
-    "boundary_clause_applied": "WHERE timestamp_ms >= 1788399300000"
+    "o1_start_utc": "2026-09-03T01:41:00Z",
+    "o1_start_timestamp_ms": 1788399660000,
+    "boundary_clause_applied": "WHERE timestamp_ms >= 1788399660000"
   },
   "schema_versions": {
     "market_structure": "1.1.0",

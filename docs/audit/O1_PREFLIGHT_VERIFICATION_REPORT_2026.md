@@ -121,8 +121,9 @@
 ---
 
 ## 11. Limites do Cohort (Cohort Boundaries)
-- **`O1_START_UTC`:** `2026-09-03T01:35:00Z` (`o1_start_timestamp_ms = 1788399300000`)
+- **`O1_START_UTC`:** `2026-09-03T01:41:00Z` (`o1_start_timestamp_ms = 1788399660000`)
 - **Segregação:** Todas as 91 observações e 4 snapshots de posicionamento anteriores (incluindo as geradas durante o smoke run pré-fix) são estritamente excluídas das métricas oficiais de observação e do Gate V2 via cláusula `WHERE timestamp_ms >= ?`.
+
 
 ---
 

@@ -36,9 +36,10 @@ DB_PATH = "dados/trading_bot.db"
 OUTPUT_DIR = "analysis/results"
 MANIFEST_PATHS = ["config/o1_cohort_manifest.json", "dados/o1_cohort_manifest.json"]
 
-# Timestamp boundary padrão pós-commit 9db68e7 (2026-09-03T01:35:00Z)
-DEFAULT_O1_START_MS = 1788399300000
-DEFAULT_O1_START_UTC = "2026-09-03T01:35:00Z"
+# Timestamp boundary padrão pós-commit 2a42bea (2026-09-03T01:41:00Z)
+DEFAULT_O1_START_MS = 1788399660000
+DEFAULT_O1_START_UTC = "2026-09-03T01:41:00Z"
+
 
 
 def load_cohort_manifest() -> Dict[str, Any]:
