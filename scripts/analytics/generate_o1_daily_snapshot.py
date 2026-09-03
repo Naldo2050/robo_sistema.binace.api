@@ -4,15 +4,12 @@
 Gerador de Snapshot Diário da Coleta Shadow — Fase O1.
 Produz diariamente: analysis/results/o1_daily_YYYY-MM-DD.json
 
-Registra:
-- Git provenance (SHA, dirty status, diff hash)
-- Schema versions (Market Structure 1.1.0, Data Contracts 1.0.0)
-- Uptime e cobertura de calendário
-- Baseline observations
-- Positioning (timeline rows, unique Binance source timestamps, stale/cache)
-- Session VWAP (valid %, warming_up, rollover UTC status)
-- Market Structure (analysis count, BOS count, Sweep count)
-- Data Quality Monitor (NaN/Inf, duplicates, out-of-order, future timestamps)
+Segregação Rígida de Cohort (Item B):
+- Filtra estritamente por `WHERE timestamp_ms >= O1_START_TIMESTAMP_MS`.
+- Nenhuma linha anterior ao cohort boundary entra no cômputo do Gate V2.
+
+Asserção Contínua de Modo Seguro (Item E):
+- Re-executa verificação de runtime safe mode em cada snapshot diário.
 """
 
 from __future__ import annotations
@@ -28,11 +25,34 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("O1DailySnapshot")
 
 DB_PATH = "dados/trading_bot.db"
 OUTPUT_DIR = "analysis/results"
+MANIFEST_PATH = "dados/o1_cohort_manifest.json"
+
+# Timestamp boundary padrão caso o manifesto não exista (2026-09-03T01:09:26Z)
+DEFAULT_O1_START_MS = 1788397766000
+
+
+def load_cohort_manifest() -> Dict[str, Any]:
+    """Carrega metadados e limite temporal do cohort O1."""
+    if os.path.exists(MANIFEST_PATH):
+        try:
+            with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Falha ao carregar {MANIFEST_PATH}: {e}")
+    return {
+        "cohort_name": "O1_PRODUCTION_SHADOW_OBSERVATION",
+        "o1_start_utc": "2026-09-03T01:09:26Z",
+        "o1_start_timestamp_ms": DEFAULT_O1_START_MS,
+    }
 
 
 def get_git_provenance() -> Dict[str, Any]:
@@ -56,30 +76,50 @@ def get_git_provenance() -> Dict[str, Any]:
 
 
 def generate_daily_snapshot(db_path: str = DB_PATH, target_date_utc: Optional[str] = None) -> Dict[str, Any]:
-    """Gera o payload estruturado do snapshot diário O1."""
+    """Gera o payload estruturado do snapshot diário O1 com filtros estritos de cohort."""
     now_ts = time.time()
     today_utc = target_date_utc or time.strftime("%Y-%m-%d", time.gmtime(now_ts))
     out_file = os.path.join(OUTPUT_DIR, f"o1_daily_{today_utc}.json")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+    manifest = load_cohort_manifest()
+    o1_start_ms = manifest.get("o1_start_timestamp_ms", DEFAULT_O1_START_MS)
+    o1_start_utc = manifest.get("o1_start_utc", "2026-09-03T01:09:26Z")
+
     git_info = get_git_provenance()
+
+    # Asserção contínua de modo seguro em runtime (Item E)
+    from scripts.diagnostics.verify_safe_mode import verify_runtime_safe_mode
+    safe_proof = verify_runtime_safe_mode()
 
     snapshot: Dict[str, Any] = {
         "snapshot_date_utc": today_utc,
         "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_ts)),
         "git_provenance": git_info,
+        "cohort_definition": {
+            "cohort_name": manifest.get("cohort_name", "O1_PRODUCTION_SHADOW_OBSERVATION"),
+            "o1_start_utc": o1_start_utc,
+            "o1_start_timestamp_ms": o1_start_ms,
+            "boundary_clause_applied": f"WHERE timestamp_ms >= {o1_start_ms}",
+        },
         "schema_versions": {
             "market_structure": "1.1.0",
             "data_contracts": "1.0.0",
             "feature_evaluator": "1.2.0",
         },
-        "operational_mode": "SHADOW_OBSERVATION (SAFE_MODE_READ_ONLY)",
-        "uptime": {},
-        "baseline": {},
-        "positioning": {},
-        "session_vwap": {},
-        "market_structure": {},
-        "data_quality": {},
+        "operational_mode": {
+            "mode": "SHADOW_OBSERVATION (SAFE_MODE_READ_ONLY)",
+            "execution_enabled": safe_proof.get("execution_enabled", False),
+            "is_safe_verified": safe_proof.get("is_safe_for_o1", False),
+            "order_endpoints_count": len(safe_proof.get("forbidden_calls", [])),
+        },
+        "database_totals_unfiltered": {},
+        "cohort_o1_baseline": {},
+        "cohort_o1_positioning": {},
+        "cohort_o1_session_vwap": {},
+        "cohort_o1_market_structure": {},
+        "cohort_o1_data_quality": {},
+        "v2_gate_progress": {},
     }
 
     if not os.path.exists(db_path):
@@ -91,10 +131,31 @@ def generate_daily_snapshot(db_path: str = DB_PATH, target_date_utc: Optional[st
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
-    # 1. BASELINE EVENTS (events table)
-    events_count = 0
-    min_ts_ms = 0
-    max_ts_ms = 0
+    # 1. TOTAL ACUMULADO BRUTO NO BANCO (All-Time Unfiltered)
+    cur.execute("SELECT count(*) FROM events")
+    all_time_events = cur.fetchone()[0] or 0
+    cur.execute("SELECT count(*) FROM positioning_shadow_dataset")
+    all_time_positioning = cur.fetchone()[0] or 0
+
+    snapshot["database_totals_unfiltered"] = {
+        "total_events_in_db": all_time_events,
+        "total_positioning_rows_in_db": all_time_positioning,
+        "pre_o1_legacy_events": all_time_events - 0,  # será ajustado abaixo
+    }
+
+    # 2. COHORT O1 BASELINE EVENTS — FILTRAGEM ESTRITA POR WHERE timestamp_ms >= O1_START_MS
+    cur.execute("""
+        SELECT count(*), min(timestamp_ms), max(timestamp_ms) 
+        FROM events 
+        WHERE timestamp_ms >= ?
+    """, (o1_start_ms,))
+    row = cur.fetchone()
+    cohort_events_count = row[0] or 0
+    min_ts_ms = row[1] or 0
+    max_ts_ms = row[2] or 0
+
+    snapshot["database_totals_unfiltered"]["pre_o1_legacy_events"] = all_time_events - cohort_events_count
+
     vwap_valid_count = 0
     vwap_warming_count = 0
     vwap_error_count = 0
@@ -109,18 +170,13 @@ def generate_daily_snapshot(db_path: str = DB_PATH, target_date_utc: Optional[st
     future_ts_count = 0
     nan_inf_count = 0
 
-    try:
-        cur.execute("SELECT count(*), min(timestamp_ms), max(timestamp_ms) FROM events")
-        row = cur.fetchone()
-        events_count = row[0] or 0
-        min_ts_ms = row[1] or 0
-        max_ts_ms = row[2] or 0
-    except Exception as e:
-        logger.warning(f"Erro ao ler events: {e}")
-
-    # Checagem detalhada dos eventos salvos
-    if events_count > 0:
-        cur.execute("SELECT timestamp_ms, payload FROM events ORDER BY timestamp_ms ASC")
+    if cohort_events_count > 0:
+        cur.execute("""
+            SELECT timestamp_ms, payload 
+            FROM events 
+            WHERE timestamp_ms >= ? 
+            ORDER BY timestamp_ms ASC
+        """, (o1_start_ms,))
         rows = cur.fetchall()
         prev_ts = 0
 
@@ -135,7 +191,6 @@ def generate_daily_snapshot(db_path: str = DB_PATH, target_date_utc: Optional[st
 
             try:
                 p = json.loads(payload_str)
-                # Verifica NaN/Inf no JSON raw (não permitido em JSON padrão, mas checa floats anômalos)
                 ia = p.get("institutional_analytics") or {}
 
                 # Session VWAP
@@ -151,7 +206,6 @@ def generate_daily_snapshot(db_path: str = DB_PATH, target_date_utc: Optional[st
                     vwap_last_status = status
                     vwap_last_session_start = str(sv.get("session_start_iso") or sv.get("session_start") or "")
 
-                    # Checa valores numéricos
                     for val in [
                         sv.get("session_vwap") or sv.get("vwap"),
                         sv.get("distance_fraction") or sv.get("distance_to_vwap"),
@@ -182,41 +236,36 @@ def generate_daily_snapshot(db_path: str = DB_PATH, target_date_utc: Optional[st
 
     calendar_days = (max_ts_ms - min_ts_ms) / (1000.0 * 86400.0) if (max_ts_ms > min_ts_ms) else 0.0
 
-
-    snapshot["baseline"] = {
-        "total_observations": events_count,
+    snapshot["cohort_o1_baseline"] = {
+        "cohort_observations": cohort_events_count,
         "first_timestamp_ms": min_ts_ms,
         "last_timestamp_ms": max_ts_ms,
         "calendar_days_covered": round(calendar_days, 3),
     }
 
-    # 2. POSITIONING DATASET
-    pos_rows = 0
-    pos_unique_sources = 0
-    pos_stale_count = 0
-    pos_cache_hits = 0
-    try:
-        cur.execute("SELECT count(*), count(DISTINCT source_timestamp_ms), sum(is_stale), sum(cache_hit) FROM positioning_shadow_dataset")
-        p_row = cur.fetchone()
-        pos_rows = p_row[0] or 0
-        pos_unique_sources = p_row[1] or 0
-        pos_stale_count = p_row[2] or 0
-        pos_cache_hits = p_row[3] or 0
-    except Exception as e:
-        logger.warning(f"Erro ao ler positioning_shadow_dataset: {e}")
+    # 3. COHORT O1 POSITIONING — FILTRAGEM ESTRITA POR WHERE timestamp_ms >= O1_START_MS
+    cur.execute("""
+        SELECT count(*), count(DISTINCT source_timestamp_ms), sum(is_stale), sum(cache_hit) 
+        FROM positioning_shadow_dataset 
+        WHERE timestamp_ms >= ?
+    """, (o1_start_ms,))
+    p_row = cur.fetchone()
+    cohort_pos_rows = p_row[0] or 0
+    cohort_pos_unique = p_row[1] or 0
+    cohort_pos_stale = p_row[2] or 0
+    cohort_pos_cache = p_row[3] or 0
 
-    snapshot["positioning"] = {
-        "timeline_rows": pos_rows,
-        "unique_source_snapshots": pos_unique_sources,
-        "unique_snapshot_ratio": round(pos_unique_sources / pos_rows, 3) if pos_rows > 0 else 0.0,
-        "stale_count": pos_stale_count,
-        "cache_hits": pos_cache_hits,
-        "missing_rate_pct": 0.0 if pos_rows > 0 else 100.0,
+    snapshot["cohort_o1_positioning"] = {
+        "timeline_rows": cohort_pos_rows,
+        "unique_source_snapshots": cohort_pos_unique,
+        "unique_snapshot_ratio": round(cohort_pos_unique / cohort_pos_rows, 3) if cohort_pos_rows > 0 else 0.0,
+        "stale_count": cohort_pos_stale,
+        "cache_hits": cohort_pos_cache,
     }
 
-    # 3. SESSION VWAP
+    # 4. COHORT O1 SESSION VWAP
     total_vwap = vwap_valid_count + vwap_warming_count + vwap_error_count
-    snapshot["session_vwap"] = {
+    snapshot["cohort_o1_session_vwap"] = {
         "total_observations": total_vwap,
         "valid_count": vwap_valid_count,
         "warming_up_count": vwap_warming_count,
@@ -226,56 +275,66 @@ def generate_daily_snapshot(db_path: str = DB_PATH, target_date_utc: Optional[st
         "last_session_start_utc": vwap_last_session_start,
     }
 
-    # 4. MARKET STRUCTURE
+    # 5. COHORT O1 MARKET STRUCTURE
     distinct_ms_events = len(set(ms_event_ids))
-    event_id_collisions = 0
-
-    snapshot["market_structure"] = {
+    snapshot["cohort_o1_market_structure"] = {
         "market_structure_analysis_count": ms_analysis_count,
         "bos_event_count": ms_bos_count,
         "sweep_event_count": ms_sweep_count,
         "distinct_event_count": distinct_ms_events,
         "schema_version": "1.1.0",
-        "duplicate_event_id_collisions": event_id_collisions,
+        "duplicate_event_id_collisions": 0,
     }
 
-    # 5. DATA QUALITY MONITOR
-    snapshot["data_quality"] = {
+    # 6. COHORT O1 DATA QUALITY
+    is_quality_clean = (
+        nan_inf_count == 0
+        and duplicate_timestamps == 0
+        and out_of_order_count == 0
+        and future_ts_count == 0
+    )
+    snapshot["cohort_o1_data_quality"] = {
         "nan_inf_count": nan_inf_count,
         "duplicate_timestamps": duplicate_timestamps,
         "out_of_order_count": out_of_order_count,
         "future_timestamps": future_ts_count,
-        "duplicate_event_id_collisions": event_id_collisions,
-        "is_quality_clean": (
-            nan_inf_count == 0
-            and duplicate_timestamps == 0
-            and out_of_order_count == 0
-            and future_ts_count == 0
-            and event_id_collisions == 0
+        "duplicate_event_id_collisions": 0,
+        "is_quality_clean": is_quality_clean,
+    }
+
+    # 7. V2 GATE PROGRESS (Métricas Oficiais do Cohort)
+    snapshot["v2_gate_progress"] = {
+        "observations_live": f"{cohort_events_count} / 2000 ({cohort_events_count / 2000.0 * 100.0:.1f}%)",
+        "positioning_snapshots": f"{cohort_pos_unique} / 500 ({cohort_pos_unique / 500.0 * 100.0:.1f}%)",
+        "calendar_days": f"{calendar_days:.2f} / 7.00 ({calendar_days / 7.0 * 100.0:.1f}%)",
+        "quality_clean": is_quality_clean,
+        "ready_for_v2": (
+            cohort_events_count >= 2000
+            and cohort_pos_unique >= 500
+            and calendar_days >= 7.0
+            and is_quality_clean
         ),
     }
 
-
     conn.close()
 
-    # Salva arquivo
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(snapshot, f, indent=2, ensure_ascii=False)
 
-    logger.info(f"✅ Snapshot diário salvo em: {out_file}")
+    logger.info(f"✅ Snapshot diário O1 salvo em: {out_file}")
     return snapshot
 
 
 if __name__ == "__main__":
     snap = generate_daily_snapshot()
-    print("\n" + "=" * 60)
-    print("SNAPSHOT DIÁRIO O1 GERADO:")
-    print(f"Data UTC:         {snap['snapshot_date_utc']}")
-    print(f"Git SHA:          {snap['git_provenance']['git_sha'][:8]}")
-    print(f"Dirty:            {snap['git_provenance']['is_dirty']}")
-    print(f"Baseline rows:    {snap['baseline'].get('total_observations', 0)}")
-    print(f"Pos unique snaps: {snap['positioning'].get('unique_source_snapshots', 0)}")
-    print(f"MS analysis:      {snap['market_structure'].get('market_structure_analysis_count', 0)}")
-    print(f"VWAP valid %:     {snap['session_vwap'].get('valid_pct', 0.0)}%")
-    print(f"Data clean:       {snap['data_quality'].get('is_quality_clean', False)}")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("SNAPSHOT DIÁRIO O1 (COM SEGREGAÇÃO RÍGIDA DE COHORT):")
+    print(f"Cohort Start:         {snap['cohort_definition']['o1_start_utc']}")
+    print(f"Filtro SQL:           {snap['cohort_definition']['boundary_clause_applied']}")
+    print(f"Modo Seguro Auditado: {snap['operational_mode']['is_safe_verified']}")
+    print(f"Baseline Cohort O1:   {snap['cohort_o1_baseline']['cohort_observations']} obs (Legado pré-O1 excluído: {snap['database_totals_unfiltered']['pre_o1_legacy_events']})")
+    print(f"Pos Snapshots O1:     {snap['cohort_o1_positioning']['unique_source_snapshots']} únicos")
+    print(f"MS Analysis O1:       {snap['cohort_o1_market_structure']['market_structure_analysis_count']}")
+    print(f"VWAP Valid %:         {snap['cohort_o1_session_vwap']['valid_pct']}%")
+    print(f"Gate V2 Pronto:       {snap['v2_gate_progress']['ready_for_v2']}")
+    print("=" * 70)

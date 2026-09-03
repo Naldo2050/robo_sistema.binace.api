@@ -120,7 +120,7 @@ class TestFeatureEvaluatorDiagnostics(unittest.TestCase):
         self.assertGreater(res.delta_oos_auc, 0.02)
 
     def test_future_leakage_detected(self):
-        """Caso E (Future Leakage): Evaluator deve detectar violação anti-lookahead e rejeitar dataset."""
+        """Caso E1 (Direct Target Leakage): Evaluator deve detectar vazamento direto do target futuro."""
         df_test = self.df.copy()
         # Injeta feature artificial que vaza diretamente o target futuro (lookahead violado)
         df_test["future_leaked_target"] = self.df["target_dir_15m"].values * 3.0
@@ -134,6 +134,23 @@ class TestFeatureEvaluatorDiagnostics(unittest.TestCase):
         self.assertTrue(res.leakage_detected)
         self.assertEqual(res.verdict, "REJECTED_FUTURE_LEAKAGE")
         self.assertGreater(len(res.leakage_reasons), 0)
+
+    def test_structural_shift_leakage_detected(self):
+        """Caso E2 (Structural Shift Leakage): Evaluator deve detectar feature construída com shift(-1) de target."""
+        df_test = self.df.copy()
+        # Injeta feature com vazamento estrutural off-by-one por construção (shift de 1 barra futura)
+        df_test["shift_minus_1_target"] = df_test["target_dir_15m"].shift(-1).fillna(0).values
+
+        model_cols = self.base_cols + ["shift_minus_1_target"]
+        res = self.evaluator.evaluate_cohort(
+            df_test, self.base_cols, model_cols, "COHORT_SHIFT_LEAKAGE", horizon_bars=15, n_permutations=20
+        )
+
+        # Deve detectar a violação estrutural de futuro e rejeitar o cohort
+        self.assertTrue(res.leakage_detected)
+        self.assertEqual(res.verdict, "REJECTED_FUTURE_LEAKAGE")
+        self.assertTrue(any("Future lookahead" in r for r in res.leakage_reasons))
+
 
     def test_high_autocorrelation_effective_n(self):
         """Caso F (High Autocorrelation): Evaluator deve reportar dependência temporal e não inflar effective N."""

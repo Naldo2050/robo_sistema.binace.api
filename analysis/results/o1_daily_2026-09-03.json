@@ -1,33 +1,47 @@
 {
   "snapshot_date_utc": "2026-09-03",
-  "generated_at_utc": "2026-09-03T01:14:51Z",
+  "generated_at_utc": "2026-09-03T01:30:17Z",
   "git_provenance": {
-    "git_sha": "e8bb9d5d3c8ee12dcc77053760ff212c65b14f9d",
+    "git_sha": "90f72260c3b43bff90f269eb7a449e3960a52f5e",
     "is_dirty": true,
-    "diff_hash": "3c2a2deca17184c8"
+    "diff_hash": "071ff96bc60ca7bf"
+  },
+  "cohort_definition": {
+    "cohort_name": "O1_PRODUCTION_SHADOW_OBSERVATION",
+    "o1_start_utc": "2026-09-03T01:09:26Z",
+    "o1_start_timestamp_ms": 1788397766000,
+    "boundary_clause_applied": "WHERE timestamp_ms >= 1788397766000"
   },
   "schema_versions": {
     "market_structure": "1.1.0",
     "data_contracts": "1.0.0",
     "feature_evaluator": "1.2.0"
   },
-  "operational_mode": "SHADOW_OBSERVATION (SAFE_MODE_READ_ONLY)",
-  "uptime": {},
-  "baseline": {
-    "total_observations": 91,
-    "first_timestamp_ms": 1788304340078,
+  "operational_mode": {
+    "mode": "SHADOW_OBSERVATION (SAFE_MODE_READ_ONLY)",
+    "execution_enabled": false,
+    "is_safe_verified": true,
+    "order_endpoints_count": 0
+  },
+  "database_totals_unfiltered": {
+    "total_events_in_db": 91,
+    "total_positioning_rows_in_db": 4,
+    "pre_o1_legacy_events": 89
+  },
+  "cohort_o1_baseline": {
+    "cohort_observations": 2,
+    "first_timestamp_ms": 1788397800000,
     "last_timestamp_ms": 1788397860000,
-    "calendar_days_covered": 1.082
+    "calendar_days_covered": 0.001
   },
-  "positioning": {
-    "timeline_rows": 4,
-    "unique_source_snapshots": 3,
-    "unique_snapshot_ratio": 0.75,
+  "cohort_o1_positioning": {
+    "timeline_rows": 1,
+    "unique_source_snapshots": 1,
+    "unique_snapshot_ratio": 1.0,
     "stale_count": 0,
-    "cache_hits": 0,
-    "missing_rate_pct": 0.0
+    "cache_hits": 0
   },
-  "session_vwap": {
+  "cohort_o1_session_vwap": {
     "total_observations": 2,
     "valid_count": 2,
     "warming_up_count": 0,
@@ -36,7 +50,7 @@
     "last_status": "VALID",
     "last_session_start_utc": "2026-09-03T00:00:00Z"
   },
-  "market_structure": {
+  "cohort_o1_market_structure": {
     "market_structure_analysis_count": 2,
     "bos_event_count": 2,
     "sweep_event_count": 2,
@@ -44,12 +58,19 @@
     "schema_version": "1.1.0",
     "duplicate_event_id_collisions": 0
   },
-  "data_quality": {
+  "cohort_o1_data_quality": {
     "nan_inf_count": 0,
     "duplicate_timestamps": 0,
     "out_of_order_count": 0,
     "future_timestamps": 0,
     "duplicate_event_id_collisions": 0,
     "is_quality_clean": true
+  },
+  "v2_gate_progress": {
+    "observations_live": "2 / 2000 (0.1%)",
+    "positioning_snapshots": "1 / 500 (0.2%)",
+    "calendar_days": "0.00 / 7.00 (0.0%)",
+    "quality_clean": true,
+    "ready_for_v2": false
   }
 }
