@@ -1,10 +1,10 @@
 {
   "snapshot_date_utc": "2026-09-03",
-  "generated_at_utc": "2026-09-03T01:05:08Z",
+  "generated_at_utc": "2026-09-03T01:14:51Z",
   "git_provenance": {
-    "git_sha": "4c599349055e78d1409639010de210b5df14cb01",
+    "git_sha": "e8bb9d5d3c8ee12dcc77053760ff212c65b14f9d",
     "is_dirty": true,
-    "diff_hash": "42f8e667726b5230"
+    "diff_hash": "3c2a2deca17184c8"
   },
   "schema_versions": {
     "market_structure": "1.1.0",
@@ -14,41 +14,42 @@
   "operational_mode": "SHADOW_OBSERVATION (SAFE_MODE_READ_ONLY)",
   "uptime": {},
   "baseline": {
-    "total_observations": 89,
+    "total_observations": 91,
     "first_timestamp_ms": 1788304340078,
-    "last_timestamp_ms": 1788309780000,
-    "calendar_days_covered": 0.063
+    "last_timestamp_ms": 1788397860000,
+    "calendar_days_covered": 1.082
   },
   "positioning": {
-    "timeline_rows": 2,
-    "unique_source_snapshots": 2,
-    "unique_snapshot_ratio": 1.0,
+    "timeline_rows": 4,
+    "unique_source_snapshots": 3,
+    "unique_snapshot_ratio": 0.75,
     "stale_count": 0,
     "cache_hits": 0,
     "missing_rate_pct": 0.0
   },
   "session_vwap": {
-    "total_observations": 0,
-    "valid_count": 0,
+    "total_observations": 2,
+    "valid_count": 2,
     "warming_up_count": 0,
     "error_count": 0,
-    "valid_pct": 0.0,
-    "last_status": "UNKNOWN",
-    "last_session_start_utc": ""
+    "valid_pct": 100.0,
+    "last_status": "VALID",
+    "last_session_start_utc": "2026-09-03T00:00:00Z"
   },
   "market_structure": {
-    "market_structure_analysis_count": 0,
-    "bos_event_count": 0,
-    "sweep_event_count": 0,
+    "market_structure_analysis_count": 2,
+    "bos_event_count": 2,
+    "sweep_event_count": 2,
+    "distinct_event_count": 2,
     "schema_version": "1.1.0",
-    "duplicate_event_id_count": 0
+    "duplicate_event_id_collisions": 0
   },
   "data_quality": {
     "nan_inf_count": 0,
     "duplicate_timestamps": 0,
     "out_of_order_count": 0,
     "future_timestamps": 0,
-    "duplicate_event_ids": 0,
+    "duplicate_event_id_collisions": 0,
     "is_quality_clean": true
   }
 }
