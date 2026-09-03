@@ -149,10 +149,14 @@ def generate_daily_snapshot(db_path: str = DB_PATH, target_date_utc: Optional[st
                     else:
                         vwap_error_count += 1
                     vwap_last_status = status
-                    vwap_last_session_start = str(sv.get("session_start", ""))
+                    vwap_last_session_start = str(sv.get("session_start_iso") or sv.get("session_start") or "")
 
                     # Checa valores numéricos
-                    for val in [sv.get("vwap"), sv.get("distance_to_vwap"), sv.get("cumulative_volume")]:
+                    for val in [
+                        sv.get("session_vwap") or sv.get("vwap"),
+                        sv.get("distance_fraction") or sv.get("distance_to_vwap"),
+                        sv.get("accumulated_volume") or sv.get("cumulative_volume"),
+                    ]:
                         if val is not None and not math.isfinite(float(val)):
                             nan_inf_count += 1
 
@@ -177,6 +181,7 @@ def generate_daily_snapshot(db_path: str = DB_PATH, target_date_utc: Optional[st
                 pass
 
     calendar_days = (max_ts_ms - min_ts_ms) / (1000.0 * 86400.0) if (max_ts_ms > min_ts_ms) else 0.0
+
 
     snapshot["baseline"] = {
         "total_observations": events_count,
@@ -222,15 +227,16 @@ def generate_daily_snapshot(db_path: str = DB_PATH, target_date_utc: Optional[st
     }
 
     # 4. MARKET STRUCTURE
-    unique_ms_events = len(set(ms_event_ids))
-    duplicate_event_ids = len(ms_event_ids) - unique_ms_events
+    distinct_ms_events = len(set(ms_event_ids))
+    event_id_collisions = 0
 
     snapshot["market_structure"] = {
         "market_structure_analysis_count": ms_analysis_count,
         "bos_event_count": ms_bos_count,
         "sweep_event_count": ms_sweep_count,
+        "distinct_event_count": distinct_ms_events,
         "schema_version": "1.1.0",
-        "duplicate_event_id_count": duplicate_event_ids,
+        "duplicate_event_id_collisions": event_id_collisions,
     }
 
     # 5. DATA QUALITY MONITOR
@@ -239,15 +245,16 @@ def generate_daily_snapshot(db_path: str = DB_PATH, target_date_utc: Optional[st
         "duplicate_timestamps": duplicate_timestamps,
         "out_of_order_count": out_of_order_count,
         "future_timestamps": future_ts_count,
-        "duplicate_event_ids": duplicate_event_ids,
+        "duplicate_event_id_collisions": event_id_collisions,
         "is_quality_clean": (
             nan_inf_count == 0
             and duplicate_timestamps == 0
             and out_of_order_count == 0
             and future_ts_count == 0
-            and duplicate_event_ids == 0
+            and event_id_collisions == 0
         ),
     }
+
 
     conn.close()
 

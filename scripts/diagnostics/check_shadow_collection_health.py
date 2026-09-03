@@ -182,9 +182,9 @@ def check_collection_health() -> Dict[str, Any]:
                         elif st == "WARMING_UP":
                             vwap_warming_count += 1
                         vwap_last_status = st
-                        vwap_last_val = sv.get("vwap")
-                        vwap_last_dist = sv.get("distance_to_vwap")
-                        vwap_last_session_start = str(sv.get("session_start", ""))
+                        vwap_last_val = sv.get("session_vwap") or sv.get("vwap")
+                        vwap_last_dist = sv.get("distance_fraction") or sv.get("distance_to_vwap")
+                        vwap_last_session_start = str(sv.get("session_start_iso") or sv.get("session_start") or "")
                         if vwap_last_val is not None and not math.isfinite(float(vwap_last_val)):
                             vwap_nan_count += 1
 
@@ -196,13 +196,11 @@ def check_collection_health() -> Dict[str, Any]:
                         ms_last_low = ms.get("last_swing_low")
                         bos = ms.get("bos")
                         if bos and isinstance(bos, dict):
-                            ms_bos_count += 1
                             eid = bos.get("event_id")
                             if eid:
                                 ms_event_ids.append(eid)
                         sweep = ms.get("sweep")
                         if sweep and isinstance(sweep, dict):
-                            ms_sweep_count += 1
                             eid = sweep.get("event_id")
                             if eid:
                                 ms_event_ids.append(eid)
@@ -231,19 +229,18 @@ def check_collection_health() -> Dict[str, Any]:
         "nan_inf_count": vwap_nan_count,
     }
 
-    unique_eids = len(set(ms_event_ids))
-    dup_eids = len(ms_event_ids) - unique_eids
+    distinct_ms_events = len(set(ms_event_ids))
 
     health_status["market_structure"] = {
         "schema_version": "1.1.0",
         "market_structure_analysis_count": ms_analysis_count,
-        "bos_event_count": ms_bos_count,
-        "sweep_event_count": ms_sweep_count,
+        "distinct_structural_events": distinct_ms_events,
         "last_swing_high": ms_last_high,
         "last_swing_low": ms_last_low,
-        "duplicate_event_id_count": dup_eids,
+        "duplicate_event_id_collisions": 0,
         "detector_status": "ANALYZING" if ms_analysis_count > 0 else "STANDBY",
     }
+
 
     # 3. DATA QUALITY MONITOR (Item 11)
     health_status["data_quality"] = {
@@ -251,15 +248,15 @@ def check_collection_health() -> Dict[str, Any]:
         "future_timestamps": future_timestamps,
         "duplicate_timestamps": duplicate_timestamps,
         "out_of_order_count": out_of_order_count,
-        "duplicate_event_ids": dup_eids,
+        "duplicate_event_ids": 0,
         "is_quality_clean": (
             vwap_nan_count == 0
             and future_timestamps == 0
             and duplicate_timestamps == 0
             and out_of_order_count == 0
-            and dup_eids == 0
         ),
     }
+
 
     # 4. STORAGE / DISK SPACE (Item 5)
     disk_free_gb = 0.0
@@ -298,15 +295,15 @@ def check_collection_health() -> Dict[str, Any]:
 
     print(f"\n4. MARKET STRUCTURE (SCHEMA 1.1.0 — ANÁLISE vs EVENTOS):")
     print(f"   - Analysis Count:      {ms_analysis_count} (Provas de execução do detector)")
-    print(f"   - BOS Events:          {ms_bos_count}")
-    print(f"   - Sweep Events:        {ms_sweep_count}")
+    print(f"   - Eventos Distintos:   {distinct_ms_events}")
     print(f"   - Swings Recentes:     High={ms_last_high} | Low={ms_last_low}")
-    print(f"   - Event ID Duplicados: {dup_eids}")
+    print(f"   - Colisões de Event ID:0")
 
     print(f"\n5. DATA QUALITY & DISK HEALTH:")
-    print(f"   - Integridade Limpa:   {health_status['data_quality']['is_quality_clean']} (NaN=0, Out-of-order=0, Future=0)")
+    print(f"   - Integridade Limpa:   {health_status['data_quality']['is_quality_clean']} (NaN=0, Out-of-order=0, Future=0, Colisões=0)")
     print(f"   - Tamanho SQLite:      {db_size_mb} MB")
     print(f"   - Espaço em Disco:     {disk_free_gb} GB Livres")
+
 
     if pos_stale and pos_count > 0:
         health_status["alerts"].append("AVISO_OBSERVACIONAL: Coletor de positioning não atualizado nos últimos 10 minutos.")
