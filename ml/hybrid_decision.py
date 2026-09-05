@@ -305,22 +305,31 @@ class HybridDecisionMaker:
         model_prob_up: Optional[float] = None
         model_confidence: Optional[float] = None
 
+        ml_stale_flag = False
+        if isinstance(ml_prediction, dict):
+            if ml_prediction.get("ml_stale") is True or ml_prediction.get("valid_for_futures") is False:
+                ml_stale_flag = True
+
         if isinstance(ml_prediction, dict) and ml_prediction.get("status") == "ok":
-            model_ok = True
+            if ml_stale_flag:
+                logger.warning("⚠️ ML neutralizado (ml_stale=True / modelo spot incompatível com futures).")
+                model_ok = False
+            else:
+                model_ok = True
 
-            # prob_up
-            prob_raw = ml_prediction.get("prob_up", 0.5)
-            try:
-                model_prob_up = float(prob_raw)
-            except (TypeError, ValueError):
-                model_prob_up = 0.5
+                # prob_up
+                prob_raw = ml_prediction.get("prob_up", 0.5)
+                try:
+                    model_prob_up = float(prob_raw)
+                except (TypeError, ValueError):
+                    model_prob_up = 0.5
 
-            # confidence
-            conf_raw = ml_prediction.get("confidence", 0.0)
-            try:
-                model_confidence = float(conf_raw)
-            except (TypeError, ValueError):
-                model_confidence = 0.0
+                # confidence
+                conf_raw = ml_prediction.get("confidence", 0.0)
+                try:
+                    model_confidence = float(conf_raw)
+                except (TypeError, ValueError):
+                    model_confidence = 0.0
         
         # ── FIX 5A: Extract warmup metadata for downstream decisions ──
         _warmup_ready = True

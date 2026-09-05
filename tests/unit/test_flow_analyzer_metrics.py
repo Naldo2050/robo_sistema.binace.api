@@ -97,10 +97,10 @@ class TestFlowAnalyzerPrometheusMetrics:
         """Counters de trades válidos e inválidos refletem o fluxo."""
         now = int(time.time() * 1000)
         analyzer.process_trade(
-            {'p': 50000.0, 'q': 1.5, 'T': now, 'm': False}
+            {'p': 50000.0, 'q': 2.5, 'T': now, 'm': False}
         )
         analyzer.process_trade(
-            {'p': 50000.0, 'q': 0.4, 'T': now + 100, 'm': True}
+            {'p': 50000.0, 'q': 0.1, 'T': now + 100, 'm': True}
         )
         analyzer.process_trade({'invalid': 'data'})
 

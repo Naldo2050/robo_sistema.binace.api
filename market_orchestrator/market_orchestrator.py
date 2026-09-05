@@ -1453,6 +1453,9 @@ class EnhancedMarketBot:
         ):
             if "orderbook_data" in ob_event:
                 signal["orderbook_data"] = ob_event["orderbook_data"]
+            elif "orderbook_data" not in signal:
+                signal["orderbook_data"] = ob_event
+
             if "order_book_depth" in ob_event:
                 signal["order_book_depth"] = ob_event["order_book_depth"]
 
@@ -1460,12 +1463,20 @@ class EnhancedMarketBot:
             # dentro de orderbook_data (evita seções separadas duplicadas)
             if isinstance(signal.get("orderbook_data"), dict):
                 signal["orderbook_data"] = signal["orderbook_data"].copy()
+                # Garantir presença de timestamps, source e snapshot_offset_ms
+                for k in ("timestamps", "source", "source_type", "snapshot_offset_ms"):
+                    val = ob_event.get(k)
+                    if val is not None and k not in signal["orderbook_data"]:
+                        signal["orderbook_data"][k] = val
                 # Mover spread_bps de spread_analysis para orderbook_data
                 sa = ob_event.get("spread_analysis") or {}
                 if sa.get("current_spread_bps"):
                     signal["orderbook_data"]["spread_bps"] = sa["current_spread_bps"]
                 # FIX 7B: depth_metrics NOT copied here — order_book_depth (L1-L25)
                 # is the canonical source. Keeping both duplicates the data.
+
+            if isinstance(signal.get("raw_event"), dict):
+                signal["raw_event"]["orderbook_data"] = signal.get("orderbook_data")
 
             dq = ob_event.get("data_quality") or {}
             if dq:

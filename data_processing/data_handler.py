@@ -1020,6 +1020,7 @@ def create_absorption_event(
     event_epoch_ms: Optional[int] = None,
     data_context: str = "real_time",
     tick_context: Optional[dict] = None,
+    orderbook_data: Optional[dict] = None,
 ) -> dict:
     """
     ✅ Cria evento de Absorção usando funções CORE diretamente.
@@ -1331,6 +1332,26 @@ def create_absorption_event(
             event["fluxo_continuo"] = flow_metrics
         if historical_profile:
             event["historical_vp"] = historical_profile
+        if orderbook_data:
+            if isinstance(orderbook_data, dict):
+                ob_payload = orderbook_data.get("orderbook_data")
+                if isinstance(ob_payload, dict):
+                    ob_final = ob_payload.copy()
+                else:
+                    ob_final = orderbook_data.copy()
+                for k in ("timestamps", "source", "source_type", "snapshot_offset_ms"):
+                    val = orderbook_data.get(k)
+                    if val is not None:
+                        if k == "timestamps" and isinstance(val, dict) and isinstance(ob_final.get("timestamps"), dict):
+                            merged_ts = ob_final["timestamps"].copy()
+                            merged_ts.update(val)
+                            ob_final["timestamps"] = merged_ts
+                        elif k not in ob_final:
+                            ob_final[k] = val
+            else:
+                ob_final = orderbook_data
+            event["orderbook_data"] = ob_final
+            event.setdefault("raw_event", {})["orderbook_data"] = ob_final
 
         # Timestamps coerentes
         _attach_time_index(event, tm, event_ms)
@@ -1388,6 +1409,7 @@ def create_exhaustion_event(
     event_epoch_ms: Optional[int] = None,
     data_context: str = "real_time",
     tick_context: Optional[dict] = None,
+    orderbook_data: Optional[dict] = None,
 ) -> dict:
     """
     ✅ Cria evento de Exaustão usando funções CORE diretamente.
@@ -1632,6 +1654,26 @@ def create_exhaustion_event(
             event["fluxo_continuo"] = flow_metrics
         if historical_profile:
             event["historical_vp"] = historical_profile
+        if orderbook_data:
+            if isinstance(orderbook_data, dict):
+                ob_payload = orderbook_data.get("orderbook_data")
+                if isinstance(ob_payload, dict):
+                    ob_final = ob_payload.copy()
+                else:
+                    ob_final = orderbook_data.copy()
+                for k in ("timestamps", "source", "source_type", "snapshot_offset_ms"):
+                    val = orderbook_data.get(k)
+                    if val is not None:
+                        if k == "timestamps" and isinstance(val, dict) and isinstance(ob_final.get("timestamps"), dict):
+                            merged_ts = ob_final["timestamps"].copy()
+                            merged_ts.update(val)
+                            ob_final["timestamps"] = merged_ts
+                        elif k not in ob_final:
+                            ob_final[k] = val
+            else:
+                ob_final = orderbook_data
+            event["orderbook_data"] = ob_final
+            event.setdefault("raw_event", {})["orderbook_data"] = ob_final
 
         # Timestamps coerentes
         _attach_time_index(event, tm, event_ms)

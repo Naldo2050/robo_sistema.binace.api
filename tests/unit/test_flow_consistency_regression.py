@@ -80,10 +80,10 @@ class TestBucketBoundaries:
 
     @pytest.mark.parametrize("qty,sector", [
         (0.0, "retail"),
-        (0.4999, "retail"),
-        (0.5, "mid"),
-        (0.9999, "mid"),
-        (1.0, "whale"),
+        (0.1999, "retail"),
+        (0.2, "mid"),
+        (1.9999, "mid"),
+        (2.0, "whale"),
         (9998.999, "whale"),
         (9999.0, "whale"),      # antes: nenhum bucket (bug de cobertura)
         (9999.001, "whale"),    # antes: nenhum bucket
@@ -109,14 +109,14 @@ class TestBucketBoundaries:
         a = _mk_analyzer()
         _feed(a, [
             _trade(BASE, 9999.0, buy=True),
-            _trade(BASE + 100, 1.5, buy=False),
+            _trade(BASE + 100, 2.5, buy=False),
         ], BASE + 100)
         m = a.get_flow_metrics(reference_epoch_ms=BASE + 100)
         whale = _sf(m, "whale")
         assert float(whale["buy"]) == pytest.approx(9999.0, abs=1e-6)
-        assert float(whale["sell"]) == pytest.approx(1.5, abs=1e-6)
-        assert float(whale["delta"]) == pytest.approx(9997.5, abs=1e-6)
-        assert float(m["cvd"]) == pytest.approx(9997.5, abs=1e-6)
+        assert float(whale["sell"]) == pytest.approx(2.5, abs=1e-6)
+        assert float(whale["delta"]) == pytest.approx(9996.5, abs=1e-6)
+        assert float(m["cvd"]) == pytest.approx(9996.5, abs=1e-6)
 
 
 # ============================================================================
@@ -151,9 +151,9 @@ class TestSectorFlowLifecycle:
 
     def test_reset_clears_sector_flow(self):
         a = _mk_analyzer()
-        _feed(a, [_trade(BASE, 1.0, buy=True)], BASE)
+        _feed(a, [_trade(BASE, 2.0, buy=True)], BASE)
         m1 = a.get_flow_metrics(reference_epoch_ms=BASE)
-        assert float(_sf(m1, "whale")["buy"]) == 1.0
+        assert float(_sf(m1, "whale")["buy"]) == 2.0
 
         a._reset_metrics()
         m2 = a.get_flow_metrics(reference_epoch_ms=BASE + 100)

@@ -71,22 +71,52 @@ def _clean_alert_data(alert: Dict[str, Any]) -> Dict[str, Any]:
     return cleaned
 
 
+import json
+from pathlib import Path
+from datetime import datetime, timezone
+
+_VOLUME_BASELINE_PATH = Path("config/volume_baseline_fut.json")
+_VOLUME_BASELINE_DATA = {}
+_DEFAULT_P95_GLOBAL = 367.6
+
+
+def _get_volume_baseline_p95(hour_utc: Optional[int] = None) -> float:
+    """Retorna o p95 para a hora UTC especificada ou o fallback global (367.6)."""
+    global _VOLUME_BASELINE_DATA
+    if not _VOLUME_BASELINE_DATA and _VOLUME_BASELINE_PATH.exists():
+        try:
+            with open(_VOLUME_BASELINE_PATH, "r", encoding="utf-8") as f:
+                _VOLUME_BASELINE_DATA = json.load(f)
+        except Exception:
+            _VOLUME_BASELINE_DATA = {}
+
+    p95_global = _VOLUME_BASELINE_DATA.get("p95_global", _DEFAULT_P95_GLOBAL)
+    if hour_utc is None:
+        hour_utc = datetime.now(timezone.utc).hour
+
+    hourly_map = _VOLUME_BASELINE_DATA.get("p95_hourly", {})
+    return float(hourly_map.get(str(hour_utc), p95_global))
+
+
 def detect_volume_spike(
     current_volume: float,
     average_volume: float,
     threshold_factor: float = 3.0,
     duration: str = "5_MINUTES",
     symbol: str = DEFAULT_SYMBOL,
+    hour_utc: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Volume spike detection com formatação adequada."""
+    """Volume spike detection com gate duplo (ratio >= threshold_factor E current_volume >= p95_hourly)."""
     if average_volume <= 0:
         return None
-    
+
     ratio = current_volume / average_volume
-    
-    if ratio >= threshold_factor:
+    p95_thresh = _get_volume_baseline_p95(hour_utc)
+
+    # Gate duplo: ratio E volume absoluto >= p95 horário
+    if ratio >= threshold_factor and current_volume >= p95_thresh:
         intensity = min(1.0, (ratio - threshold_factor) / (10 - threshold_factor))
-        
+
         alert = {
             "type": "VOLUME_SPIKE",
             "symbol": symbol,
@@ -97,6 +127,7 @@ def detect_volume_spike(
             "current_volume": current_volume,
             "average_volume": average_volume,
             "volume_ratio": ratio,
+            "p95_threshold": p95_thresh,
             "description": (
                 f"Volume atual {format_large_number(current_volume)} é "
                 f"{ratio:.1f}x a média de {format_large_number(average_volume)} "
@@ -104,7 +135,7 @@ def detect_volume_spike(
             )
         }
         return _clean_alert_data(alert)
-    
+
     return None
 
 

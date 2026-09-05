@@ -777,10 +777,10 @@ def _build_whale(event_data: dict) -> dict:
 
 
 def _build_quant(event_data: dict) -> dict:
-    """Constrói seção quantitativa (ML) — FIX 2: flag extreme predictions."""
+    """Constrói seção quantitativa (ML) — FIX 2: flag extreme predictions; neutralizado se stale."""
     ml = event_data.get("ml_prediction", {}) or event_data.get("quant_prediction", {})
     if not ml:
-        return {"pu": 0.5, "c": 0.0}
+        return {"pu": 0.5, "c": 0.0, "ml_stale": True}
 
     prob_up = ml.get("prob_up", 0.5)
     confidence = ml.get("confidence", 0)
@@ -791,9 +791,17 @@ def _build_quant(event_data: dict) -> dict:
         or prob_up < _ML_EXTREME_LOW
     )
 
+    ml_stale = ml.get("ml_stale")
+    if ml_stale is None:
+        if "valid_for_futures" in ml:
+            ml_stale = not bool(ml.get("valid_for_futures"))
+        else:
+            ml_stale = True
+
     quant: dict[str, Any] = {
         "pu": round(prob_up, 2),
         "c": round(confidence, 2),
+        "ml_stale": bool(ml_stale),
     }
 
     if is_extreme:

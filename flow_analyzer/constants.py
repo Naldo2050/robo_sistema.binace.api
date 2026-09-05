@@ -25,7 +25,7 @@ DEFAULT_FLOW_LOG_PERF = False
 DEFAULT_FLOW_LOG_DETAILED = False
 DEFAULT_FLOW_TIME_BUDGET_MS = 500.0
 DEFAULT_FLOW_CACHE_ENABLED = True
-DEFAULT_WHALE_TRADE_THRESHOLD = 1.0  # reduzido de 5.0 → detecta trades ~$68K+ (top ~0.5%)
+DEFAULT_WHALE_TRADE_THRESHOLD = 2.0  # p99 aggTrade fapi 2026-09-04 14-15 UTC, dados/audit/aggtrades_sample.json
 DEFAULT_CVD_RESET_INTERVAL_HOURS = 4
 
 # ==============================================================================
@@ -86,12 +86,11 @@ MEMORY_USAGE_WARNING_RATIO = 0.9
 # PARTICIPANT ANALYSIS
 # ==============================================================================
 # Intervalos [min, max): max=None indica bucket superior ABERTO (sem teto).
-# A intenção de negócio é: whale = qty >= 1.0 BTC, sem limite superior.
-# (Antes: teto arbitrário de 9999.0 BTC deixava qty >= 9999 sem bucket.)
+# Calibração futures: p99 aggTrade fapi 2026-09-04 14-15 UTC, dados/audit/aggtrades_sample.json
 DEFAULT_ORDER_SIZE_BUCKETS: Dict[str, Tuple[float, Optional[float]]] = {
-    "retail": (0.0, 0.5),
-    "mid": (0.5, 1.0),
-    "whale": (1.0, None),
+    "retail": (0.0, 0.2),
+    "mid": (0.2, 2.0),
+    "whale": (2.0, None),
 }
 
 # Pesos para composite score

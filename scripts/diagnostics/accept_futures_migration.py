@@ -321,6 +321,77 @@ def main():
     print(f"Aceite: PASSOU {num_passed}/5")
     print("═" * 80)
 
+    # ────────────────────────────────────────────────────────────
+    # DIAGNÓSTICO ESTENDIDO: SNAPSHOT OFFSET, LIVE_SYNC, WHALE, SPIKES
+    # ────────────────────────────────────────────────────────────
+    offsets = []
+    sources_ob = []
+    whales_per_window = []
+    volume_spikes_count = 0
+
+    for ts_ms, ev_type, win_id, p in windows_raw:
+        if not isinstance(p, dict):
+            continue
+
+        # Snapshot offset e source do orderbook
+        ob = p.get("orderbook_data") or {}
+        if isinstance(ob, dict):
+            off = ob.get("snapshot_offset_ms")
+            if off is None:
+                off = p.get("snapshot_offset_ms")
+            if off is not None:
+                offsets.append(float(off))
+
+            src = ob.get("source") or ob.get("source_type") or p.get("source")
+            if isinstance(src, dict):
+                src = src.get("stream")
+            if src:
+                sources_ob.append(str(src))
+
+        # Whale trades por janela
+        fc = p.get("fluxo_continuo") or {}
+        if isinstance(fc, dict):
+            wc = fc.get("whale_trade_count") or fc.get("whale_trades")
+            if wc is not None:
+                whales_per_window.append(float(wc))
+
+        # VOLUME_SPIKE alerts
+        alerts = p.get("alerts") or p.get("trading_alerts") or []
+        if isinstance(alerts, list):
+            for a in alerts:
+                if isinstance(a, dict) and "VOLUME_SPIKE" in str(a.get("type", "") or a.get("alert_type", "")):
+                    volume_spikes_count += 1
+                elif isinstance(a, str) and "VOLUME_SPIKE" in a:
+                    volume_spikes_count += 1
+
+    print("\n" + "═" * 80)
+    print("DIAGNÓSTICO ESTENDIDO — CALIBRAÇÃO FUTURES + SNAPSHOT DO BOOK")
+    print("═" * 80)
+
+    if offsets:
+        ser_off = pd.Series(offsets)
+        p50_off = ser_off.median()
+        p90_off = ser_off.quantile(0.90)
+        print(f"• Distribuição snapshot_offset_ms: p50 = {p50_off:.1f} ms | p90 = {p90_off:.1f} ms (amostras: {len(ser_off)})")
+    else:
+        print("• Distribuição snapshot_offset_ms: N/A (sem registros de offset nos eventos)")
+
+    if sources_ob:
+        live_count = sum(1 for s in sources_ob if "live" in s.lower())
+        pct_live = (live_count / len(sources_ob)) * 100.0
+        print(f"• Eventos com orderbook live_sync: {pct_live:.1f}% ({live_count}/{len(sources_ob)})")
+    else:
+        print("• Eventos com orderbook live_sync: N/A")
+
+    if whales_per_window:
+        ser_wh = pd.Series(whales_per_window)
+        print(f"• Whale Trades / Janela (threshold >= 2.0 BTC): média = {ser_wh.mean():.1f} | mediana = {ser_wh.median():.1f} | max = {ser_wh.max():.0f}")
+    else:
+        print("• Whale Trades / Janela: N/A (campo whale_trade_count ausente)")
+
+    print(f"• Total de alertas VOLUME_SPIKE: {volume_spikes_count}")
+    print("═" * 80 + "\n")
+
     return 0 if all_passed else 1
 
 

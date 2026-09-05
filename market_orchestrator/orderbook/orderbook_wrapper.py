@@ -41,12 +41,16 @@ from orderbook_core.event_factory import build_emergency_orderbook_event, build_
 # 1. EXECUTA OrderBookAnalyzer.analyze() NO LOOP ASSÍNCRONO
 # ============================================================
 
-def run_orderbook_analyze(bot: BotProtocol, close_ms: int) -> Optional[Dict[str, Any]]:
+def run_orderbook_analyze(
+    bot: BotProtocol,
+    close_ms: int,
+    timeout_sec: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
     """
     Equivalente a EnhancedMarketBot._run_orderbook_analyze.
 
     Executa OrderBookAnalyzer.analyze() no loop asyncio dedicado,
-    com timeouts interno e externo.
+    com timeout síncrono padrão de 1.5s.
     """
 
     # Se o bot está em processo de shutdown, não agendar novas corotinas
@@ -91,6 +95,10 @@ def run_orderbook_analyze(bot: BotProtocol, close_ms: int) -> Optional[Dict[str,
             },
         ):
             # Wrapper assíncrono com timeout interno via asyncio.wait_for
+            sync_timeout = timeout_sec or float(
+                getattr(config, "ORDERBOOK_SYNC_TIMEOUT_SEC", 1.5)
+            )
+
             async def _wrapped_analyze() -> Optional[Dict[str, Any]]:
                 try:
                     inner_coro = bot.orderbook_analyzer.analyze(
@@ -99,18 +107,14 @@ def run_orderbook_analyze(bot: BotProtocol, close_ms: int) -> Optional[Dict[str,
                         window_id=f"W{bot.window_count:04d}",
                     )
 
-                    # Timeout interno da coroutine dentro do loop
-                    coro_timeout = float(
-                        getattr(config, "ORDERBOOK_CORO_TIMEOUT_SEC", 4.0)
-                    )
                     return await asyncio.wait_for(
                         inner_coro,
-                        timeout=coro_timeout,
+                        timeout=sync_timeout,
                     )
                 except asyncio.TimeoutError:
                     logging.warning(
-                        "⏱️ Timeout interno na coroutine de orderbook "
-                        "(asyncio.wait_for); resultado será None"
+                        "⏱️ Timeout interno na coroutine de orderbook (%.1fs); usando fallback",
+                        sync_timeout,
                     )
                     return None
 
@@ -121,16 +125,13 @@ def run_orderbook_analyze(bot: BotProtocol, close_ms: int) -> Optional[Dict[str,
             )
 
             try:
-                # Timeout externo ao aguardar o Future (seguro contra loop travado)
-                outer_timeout = float(
-                    getattr(config, "ORDERBOOK_FUTURE_TIMEOUT_SEC", 5.0)
-                )
+                # Timeout externo ligeiramente superior para margem de escalonamento
+                outer_timeout = sync_timeout + 0.5
                 return future.result(timeout=outer_timeout)
             except FutureTimeoutError:
-                # Se nem o wrapper respondeu, cancelamos o future explicitamente
-                logging.error(
-                    "⏱️ Timeout ao aguardar resultado do orderbook "
-                    "(async loop) - cancelando Future"
+                logging.warning(
+                    "⏱️ Timeout externo ao aguardar resultado síncrono do orderbook (%.1fs) - cancelando Future",
+                    outer_timeout,
                 )
                 future.cancel()
                 return None
@@ -147,13 +148,21 @@ def run_orderbook_analyze(bot: BotProtocol, close_ms: int) -> Optional[Dict[str,
 # 2. FETCH COM RETRY + FALLBACK (PATCH W-02A: salvar sucesso sob lock)
 # ============================================================
 
-def fetch_orderbook_with_retry(bot: BotProtocol, close_ms: int) -> Dict[str, Any]:
+def fetch_orderbook_with_retry(
+    bot: BotProtocol,
+    close_ms: int,
+    timeout_sec: Optional[float] = None,
+) -> Dict[str, Any]:
     """
     Equivalente a EnhancedMarketBot._fetch_orderbook_with_retry.
+    Executa fetch síncrono com timeout de 1.5s; se timeout, recorre a cache_bg.
     """
-
+    sync_timeout = timeout_sec or float(getattr(config, "ORDERBOOK_SYNC_TIMEOUT_SEC", 1.5))
     try:
-        ob_event = run_orderbook_analyze(bot, close_ms)
+        try:
+            ob_event = run_orderbook_analyze(bot, close_ms, timeout_sec=sync_timeout)
+        except TypeError:
+            ob_event = run_orderbook_analyze(bot, close_ms)
         if ob_event and ob_event.get("is_valid", False):
             ob_data = ob_event.get("orderbook_data", {}) or {}
             bid_depth = float(ob_data.get("bid_depth_usd", 0.0))
@@ -163,6 +172,21 @@ def fetch_orderbook_with_retry(bot: BotProtocol, close_ms: int) -> Dict[str, Any
                 getattr(config, "ORDERBOOK_MIN_DEPTH_USD", 500.0)
             )
             if bid_depth >= min_depth or ask_depth >= min_depth:
+                exchange_ms = (
+                    ob_event.get("timestamps", {}).get("exchange_ms")
+                    or int(time.time() * 1000)
+                )
+                snapshot_offset_ms = int(exchange_ms - close_ms)
+
+                ob_event["source_type"] = "live_sync"
+                ob_event["source"] = "live_sync"
+                ob_event["snapshot_offset_ms"] = snapshot_offset_ms
+                ob_data["source"] = "live_sync"
+                ob_data["source_type"] = "live_sync"
+                ob_data["snapshot_offset_ms"] = snapshot_offset_ms
+                ob_data["timestamps"] = ob_event.get("timestamps", {})
+                ob_event["orderbook_data"] = ob_data
+
                 # PATCH W-02A: Salvar sucesso sob lock
                 with bot._orderbook_refresh_lock:
                     # PATCH W-03: deepcopy para isolamento total
@@ -174,17 +198,19 @@ def fetch_orderbook_with_retry(bot: BotProtocol, close_ms: int) -> Dict[str, Any
                         getattr(bot, "health_monitor", None).heartbeat("orderbook")
                     except Exception:
                         pass
-                logging.debug(f"✅ Orderbook OK - Janela #{bot.window_count}")
+                logging.debug(f"✅ Orderbook LIVE SYNC OK - Janela #{getattr(bot, 'window_count', '?')} (offset={snapshot_offset_ms}ms)")
 
                 # Logger estruturado
                 slog = StructuredLogger("orderbook_wrapper", getattr(bot, "symbol", "UNKNOWN"))
                 try:
                     slog.info(
                         "orderbook_ok",
-                        window_id=bot.window_count,
+                        window_id=getattr(bot, "window_count", 0),
                         bid_depth_usd=bid_depth,
                         ask_depth_usd=ask_depth,
                         min_depth_usd=min_depth,
+                        source="live_sync",
+                        snapshot_offset_ms=snapshot_offset_ms,
                     )
                 except Exception:
                     pass
@@ -196,11 +222,11 @@ def fetch_orderbook_with_retry(bot: BotProtocol, close_ms: int) -> Dict[str, Any
                 )
     except Exception as e:
         logging.error(
-            f"❌ Erro ao buscar orderbook (best-effort): {e}"
+            f"❌ Erro ao buscar orderbook síncrono (timeout={sync_timeout}s): {e}"
         )
 
     # fallback + async background refresh
-    fallback = orderbook_fallback(bot)
+    fallback = orderbook_fallback(bot, close_ms)
     refresh_orderbook_async(bot, close_ms)
     return fallback
 
@@ -257,9 +283,13 @@ def refresh_orderbook_async(bot: BotProtocol, close_ms: int) -> None:
 # 4. FALLBACK DO ORDERBOOK (PATCH W-01, W-02B, W-03, 19)
 # ============================================================
 
-def orderbook_fallback(bot: BotProtocol) -> Dict[str, Any]:
+def orderbook_fallback(
+    bot: BotProtocol,
+    close_ms: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     Equivalente a EnhancedMarketBot._orderbook_fallback.
+    Usa cache de segundo plano com source='cache_bg' e calcula snapshot_offset_ms.
     """
 
     slog = StructuredLogger("orderbook_wrapper", getattr(bot, "symbol", "UNKNOWN"))
@@ -292,19 +322,37 @@ def orderbook_fallback(bot: BotProtocol) -> Dict[str, Any]:
             count_1h = sum(1 for t in _fallback_timestamps if t >= cutoff_1h)
             count_24h = sum(1 for t in _fallback_timestamps if t >= cutoff_24h)
 
+        ref_close = close_ms if close_ms and close_ms > 0 else int(now * 1000)
+        exchange_ms = (
+            last_evt.get("timestamps", {}).get("exchange_ms")
+            or int(last_time * 1000)
+        )
+        snapshot_offset_ms = int(exchange_ms - ref_close)
+
         logging.warning(
-            f"Usando orderbook em cache (age={age:.0f}s) "
+            f"Usando orderbook em cache background (source=cache_bg, age={age:.1f}s, offset={snapshot_offset_ms}ms) "
             f"após {failures} falhas | fallbacks: {count_1h}/1h, {count_24h}/24h"
         )
 
         # PATCH W-03: deepcopy para evitar mutação acidental
         ob_event = copy.deepcopy(last_evt)
+        ob_event["source_type"] = "cache_bg"
+        ob_event["source"] = "cache_bg"
+        ob_event["snapshot_offset_ms"] = snapshot_offset_ms
+
+        ob_data = ob_event.setdefault("orderbook_data", {})
+        ob_data["source"] = "cache_bg"
+        ob_data["source_type"] = "cache_bg"
+        ob_data["snapshot_offset_ms"] = snapshot_offset_ms
+        ob_data["timestamps"] = ob_event.get("timestamps", {})
+
         ob_event["data_quality"] = {
             "is_valid": True,
             "data_source": "cache",
-            "age_seconds": age,
+            "age_seconds": round(age, 2),
             "fallbacks_1h": count_1h,
             "fallbacks_24h": count_24h,
+            "emergency_mode": False,
         }
 
         try:
@@ -314,6 +362,8 @@ def orderbook_fallback(bot: BotProtocol) -> Dict[str, Any]:
                 failures=failures,
                 fallbacks_1h=count_1h,
                 fallbacks_24h=count_24h,
+                source="cache_bg",
+                snapshot_offset_ms=snapshot_offset_ms,
             )
         except Exception:
             pass

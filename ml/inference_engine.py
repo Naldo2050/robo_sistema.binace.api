@@ -10,6 +10,7 @@ v3 — Correções (2026-03-17):
   - Metadados de warmup no retorno de predict()
 """
 
+import json
 import logging
 import xgboost as xgb
 import numpy as np
@@ -124,7 +125,11 @@ class MLInferenceEngine:
     def __init__(self, model_dir: str = "ml/models"):
         self.model_dir = Path(model_dir)
         self.model_path = self.model_dir / "xgb_model_latest.json"
+        self.metadata_path = self.model_dir / "model_metadata_latest.json"
         self.model = None
+        self.metadata = {}
+        self.valid_for_futures = False
+        self.ml_stale = True
         
         # ── Histórico interno para computar features rolling ──
         self._price_history: Deque[float] = deque(maxlen=self.HISTORY_MAXLEN)
@@ -132,6 +137,7 @@ class MLInferenceEngine:
         self._window_count: int = 0
         
         self._load_model()
+        self._load_metadata()
 
     def _load_model(self):
         """Carrega o modelo XGBoost."""
@@ -147,6 +153,29 @@ class MLInferenceEngine:
         except Exception as e:
             logger.error(f"❌ Falha ao carregar modelo: {e}")
             self.model = None
+
+    def _load_metadata(self):
+        """Carrega metadados do modelo e verifica compatibilidade com futures."""
+        try:
+            if self.metadata_path.exists():
+                with open(self.metadata_path, "r", encoding="utf-8") as f:
+                    self.metadata = json.load(f)
+                self.valid_for_futures = bool(self.metadata.get("valid_for_futures", False))
+                self.ml_stale = not self.valid_for_futures
+                logger.info(
+                    "📊 Metadados ML carregados: valid_for_futures=%s, ml_stale=%s (trained_on=%s)",
+                    self.valid_for_futures,
+                    self.ml_stale,
+                    self.metadata.get("trained_on", "unknown"),
+                )
+            else:
+                logger.warning(f"⚠️ Metadados ML não encontrados em: {self.metadata_path} (assumindo ml_stale=True)")
+                self.valid_for_futures = False
+                self.ml_stale = True
+        except Exception as e:
+            logger.error(f"❌ Falha ao carregar metadados do modelo: {e}")
+            self.valid_for_futures = False
+            self.ml_stale = True
 
     @staticmethod
     def _deep_get(d: dict, dotted_key: str) -> Any:
@@ -450,13 +479,17 @@ class MLInferenceEngine:
                 'signal': 'neutral',
                 'status': 'hybrid_disabled',
                 'confidence': 0.0,
+                'valid_for_futures': self.valid_for_futures,
+                'ml_stale': self.ml_stale,
             }
 
         if self.model is None:
             return {
                 'prob_up': 0.5,
                 'signal': 'neutral',
-                'status': 'model_not_loaded'
+                'status': 'model_not_loaded',
+                'valid_for_futures': self.valid_for_futures,
+                'ml_stale': self.ml_stale,
             }
         
         try:
@@ -569,6 +602,8 @@ class MLInferenceEngine:
                 'signal': signal,
                 'status': 'ok',
                 'confidence': confidence,
+                'valid_for_futures': self.valid_for_futures,
+                'ml_stale': self.ml_stale,
                 'features_used': len(mapped_features),
                 'features_from_history': history_n,
                 'features_detail': {
@@ -586,7 +621,9 @@ class MLInferenceEngine:
             return {
                 'prob_up': 0.5,
                 'status': 'error',
-                'msg': str(e)
+                'msg': str(e),
+                'valid_for_futures': self.valid_for_futures,
+                'ml_stale': self.ml_stale,
             }
 
     def get_feature_importance(self) -> Dict[str, Any]:

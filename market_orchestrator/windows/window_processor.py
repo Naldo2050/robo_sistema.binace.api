@@ -643,6 +643,7 @@ def process_window_snapshot(
                     historical_profile=historical_profile,
                     time_manager=bot.time_manager,
                     event_epoch_ms=close_ms,
+                    orderbook_data=ob_event,
                 ),
                 exhaustion_detector=lambda data, sym: create_exhaustion_event(
                     data,
@@ -654,6 +655,7 @@ def process_window_snapshot(
                     historical_profile=historical_profile,
                     time_manager=bot.time_manager,
                     event_epoch_ms=close_ms,
+                    orderbook_data=ob_event,
                 ),
                 orderbook_data=ob_event,
             )

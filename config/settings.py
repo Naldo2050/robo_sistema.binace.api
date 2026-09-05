@@ -23,6 +23,7 @@ ORDERBOOK_REST_REQUEST_TIMEOUT = 15.0  # Timeout para requisições REST
 ORDERBOOK_REST_MAX_RETRIES = 5  # Máximo de retries para REST
 ORDERBOOK_REST_RETRY_BACKOFF = 2.0  # Fator de backoff exponencial
 ORDERBOOK_REST_JITTER_RANGE = 0.25  # Percentual de jitter (0.25 = 25%)
+ORDERBOOK_SYNC_TIMEOUT_SEC = 1.5   # Timeout para fetch síncrono no fechamento da janela (opção i)
 
 # CONFIGURAÇÕES DE WEBSOCKET ORDERBOOK (HABILITADO)
 ORDERBOOK_WS_ENABLED = True  # ✅ Habilitado para WebSocket
@@ -208,6 +209,7 @@ AI_SKIP_VOLUME_THRESHOLD = 100_000  # USD - threshold para pular IA em sideways
 
 # ===== ML / HYBRID DECISION =====
 HYBRID_ENABLED = False          # Desativado até dataset ter 500+ amostras balanceadas
+ML_STALE = True                 # Modelo treinado em spot; neutralizado em futures até retreino
 HYBRID_MODE = "llm_primary"
 HYBRID_MODEL_WEIGHT = 0.6
 HYBRID_LLM_WEIGHT = 0.4

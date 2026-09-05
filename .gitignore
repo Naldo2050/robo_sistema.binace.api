@@ -199,4 +199,10 @@ logs/shadow_*
 *.out
 scratch/
 /test_guardrail_compressor.py
-/test_payload_analysis.py
+/test_payload_analysis.py
+
+# ==============================
+# Audit datasets pesados (>1MB)
+# ==============================
+dados/audit/klines_fut_28d.json
+dados/audit/aggtrades_sample.json
