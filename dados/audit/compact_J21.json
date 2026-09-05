@@ -1,0 +1,277 @@
+{
+  "symbol": "BTCUSDT",
+  "epoch_ms": 1788306539353,
+  "trigger": "AT",
+  "price": {
+    "c": 77601,
+    "o": 77531,
+    "h": 77638,
+    "l": 77531,
+    "vw": 77589,
+    "sh": "B",
+    "auc": "expect_retest_both",
+    "ph": 1,
+    "pl": 1,
+    "fr": 3.8e-05
+  },
+  "regime": {
+    "cs": "MIX",
+    "cf": 0.0,
+    "v": "NOR",
+    "mode": "BRK",
+    "dom": "1d",
+    "bull%": 50,
+    "bear%": 50
+  },
+  "qual": {
+    "lat": "POOR",
+    "liq": "NORMAL",
+    "ms": 8554
+  },
+  "flow": {
+    "d1": "+891K",
+    "delta": 11.487,
+    "vol": 19.862,
+    "buy_pct": 79,
+    "ti": 64.8,
+    "trs": 581,
+    "obs": 2.029,
+    "sf_w_4h": -3.896,
+    "sf_r_4h": 45.202,
+    "d5": "+286K",
+    "d15": "+1.4M",
+    "cvd_4h": 42.4,
+    "imb": 0.58,
+    "ab": 79,
+    "bsr": 3.74,
+    "pa": "buy_absorp",
+    "conv": "M",
+    "abs_buy_str": 7.9,
+    "abs_sell_exh": 5.8,
+    "abs_cont": 0.3,
+    "q": {
+      "1m": {
+        "s": "warm",
+        "c": 97.4
+      },
+      "5m": {
+        "s": "full",
+        "c": 99.6
+      },
+      "15m": {
+        "s": "full",
+        "c": 99.2
+      }
+    }
+  },
+  "ob": {
+    "b": "534K",
+    "a": "2.2M",
+    "imb": -0.61,
+    "bias": "SELL",
+    "t5": -0.61,
+    "spread_pct": 0.0001,
+    "slip_b": 5.0,
+    "slip_s": 5.0
+  },
+  "tf": {
+    "15m": {
+      "t": "UP",
+      "rsi": 67,
+      "macd": [
+        -33,
+        -94
+      ],
+      "adx": 31,
+      "atr": 178,
+      "r": "RNG"
+    },
+    "1h": {
+      "t": "DN",
+      "rsi": 47,
+      "macd": [
+        -301,
+        -254
+      ],
+      "adx": 47,
+      "atr": 454,
+      "r": "RNG"
+    },
+    "4h": {
+      "t": "DN",
+      "rsi": 36,
+      "macd": [
+        -125,
+        -21
+      ],
+      "adx": 24,
+      "atr": 885,
+      "r": "MNP"
+    },
+    "1d": {
+      "t": "UP",
+      "rsi": 60,
+      "macd": [
+        3597,
+        3503
+      ],
+      "adx": 57,
+      "atr": 2532,
+      "r": "ACC"
+    }
+  },
+  "sr": {
+    "r1": [
+      77681,
+      70
+    ],
+    "r1_dist": 79,
+    "r1_conf": 4,
+    "r2": [
+      78608,
+      54
+    ],
+    "r2_dist": 1006,
+    "r2_conf": 3,
+    "s1": [
+      77356,
+      54
+    ],
+    "s1_dist": 245,
+    "s1_conf": 3,
+    "s2": [
+      77548,
+      43
+    ],
+    "s2_dist": 53,
+    "def_bias": "slight_sel"
+  },
+  "w": {
+    "s": -32,
+    "c": "MD"
+  },
+  "ext": {
+    "cci": "OS",
+    "stoch": 12,
+    "stoch_sig": "OS",
+    "wr": -37,
+    "garch": 0.0,
+    "hurst": 0.41,
+    "entropy": 3.4,
+    "fd": 0.53,
+    "kalman": {
+      "kp": 77373.8,
+      "dev": 0.2033,
+      "dir": "UP"
+    },
+    "reg": {
+      "sl": 6.6557,
+      "pos": 0.486,
+      "dev": -2.62
+    },
+    "mc": {
+      "pu": 0.495,
+      "p10": 77450.59,
+      "p90": 77767.15
+    },
+    "cycles": [
+      100.0,
+      40.0
+    ],
+    "smc": {
+      "fvg": 5,
+      "fvg_last": "BU",
+      "struct": "BULL",
+      "bos": false
+    },
+    "fib": {
+      "hi": 77638,
+      "lo": 76920,
+      "382": 77195,
+      "618": 77364
+    }
+  },
+  "ctx": {
+    "ses": "NY",
+    "poc": 77691,
+    "val": 77326,
+    "vah": 78528,
+    "lsr": 1.28,
+    "eth_lsr": 2.72,
+    "oi": 109,
+    "fr": 0.0038,
+    "longs": "+4738.4M",
+    "shorts": "+3691.5M",
+    "eth7": 0.9,
+    "dxy30": 0.08
+  },
+  "ofi": {
+    "score": 0.578,
+    "dir": "BUY",
+    "src": "order_flow"
+  },
+  "vwap": {
+    "rw": 77588.9,
+    "dist": 0.0002,
+    "side": "above",
+    "m": "rolling_window"
+  },
+  "iceberg": {
+    "det": 1,
+    "src": "whale_activity"
+  },
+  "liq": [
+    {
+      "p": 77611,
+      "side": "buy",
+      "vol": 10.42
+    }
+  ],
+  "cvd_div": {
+    "det": 1,
+    "type": "bullish_div",
+    "src": "inferred"
+  },
+  "summary": {
+    "flow": {
+      "bias": "BUY",
+      "type": "absorption",
+      "actor": "retail"
+    },
+    "sr": {
+      "nearest": "resistance",
+      "compressed": true,
+      "conf_bias": "NEUTRAL",
+      "r1_dist_atr": 0.17,
+      "s1_dist_atr": 0.54,
+      "r1_near": true,
+      "gap_usd": 324
+    },
+    "regime": {
+      "label": "Breakout",
+      "strategies": [
+        "aguardar confirmação de rompimento",
+        "entrar no reteste do nível rompido",
+        "usar stop apertado acima/abaixo do nível",
+        "monitorar volume de confirmação"
+      ],
+      "avoid": [
+        "entrar antes da confirmação",
+        "ignorar falsos rompimentos",
+        "operar range enquanto houver BRK ativo"
+      ],
+      "duration": "minutos a horas — confirmar rápido"
+    },
+    "institutional": {
+      "auction_state": "Leilão incompleto em ambos os extremos",
+      "whale_bias": "DISTRIBUTING",
+      "profile_bias": "NEUTRAL",
+      "alignment": "CONFLICTED"
+    },
+    "quality": {
+      "reliable": false,
+      "confidence_cap": 0.4,
+      "issues": []
+    }
+  }
+}
