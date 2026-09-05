@@ -281,7 +281,7 @@ class RobustConnectionManager:
         self.current_delay = self.initial_delay
         self.connection_start_time = datetime.now(timezone.utc)
         
-        logger.info(f"✅ Conexão estabelecida (Async) | {self.symbol}")
+        logger.info(f"✅ Conexão estabelecida (Async) | {self.symbol} | Endpoint: {self.stream_url}")
 
         try:
             self.slog.info(

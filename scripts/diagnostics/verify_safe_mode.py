@@ -67,8 +67,8 @@ def verify_runtime_safe_mode() -> Dict[str, Any]:
     # 2. Configurações de Stream e Conectividade
     stream_url = getattr(config, "STREAM_URL", settings.STREAM_URL)
     ws_endpoint = getattr(settings, "ORDERBOOK_WS_ENDPOINT", "")
-    is_public_stream = "stream.binance.com" in stream_url and "@trade" in stream_url
-    is_public_ob_stream = "stream.binance.com" in ws_endpoint and "@depth" in ws_endpoint
+    is_public_stream = ("stream.binance.com" in stream_url or "fstream.binance.com" in stream_url) and ("@trade" in stream_url or "@aggTrade" in stream_url)
+    is_public_ob_stream = ("stream.binance.com" in ws_endpoint or "fstream.binance.com" in ws_endpoint) and "@depth" in ws_endpoint
 
     # 3. Status de Credenciais
     api_key_set = bool(getattr(settings, "BINANCE_API_KEY", None))

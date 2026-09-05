@@ -79,7 +79,7 @@ def get_future_prices(symbol: str, start_ts_ms: int, duration_minutes: int = 60)
 
     # Fallback: Busca via API Binance
     try:
-        base_url = "https://api.binance.com/api/v3/klines"
+        base_url = "https://fapi.binance.com/fapi/v1/klines"
         interval = "1m"  # 1 minuto para precisão
         start_time = start_ts_ms
         end_time = start_ts_ms + (duration_minutes * 60 * 1000)

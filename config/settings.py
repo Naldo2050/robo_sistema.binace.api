@@ -26,7 +26,7 @@ ORDERBOOK_REST_JITTER_RANGE = 0.25  # Percentual de jitter (0.25 = 25%)
 
 # CONFIGURAÇÕES DE WEBSOCKET ORDERBOOK (HABILITADO)
 ORDERBOOK_WS_ENABLED = True  # ✅ Habilitado para WebSocket
-ORDERBOOK_WS_ENDPOINT = "wss://stream.binance.com:9443/ws/{symbol}@depth"  # ✅ Endpoint correto
+ORDERBOOK_WS_ENDPOINT = "wss://fstream.binance.com/market/ws/{symbol}@depth20@100ms"  # futures; NÃO usar stream.binance.com
 ORDERBOOK_WS_RECONNECT_ATTEMPTS = 15  # ✅ Mais tentativas
 
 ORDERBOOK_WS_RECONNECT_DELAY = 2.0  # ✅ Delay inicial menor
@@ -130,7 +130,8 @@ VP_ADVANCED = True
 
 # ===== PARÂMETROS DE TRADING =====
 SYMBOL = "BTCUSDT"
-STREAM_URL = f"wss://stream.binance.com:9443/ws/{SYMBOL.lower()}@trade"
+MARKET_TYPE = "binance_futures_perp"
+STREAM_URL = f"wss://fstream.binance.com/market/ws/{SYMBOL.lower()}@aggTrade"  # aggTrade Binance USD-M Futures. NÃO usar stream.binance.com (Spot) — ver docs/audit/AUDITORIA_JANELAS_EXTRAIDAS_R4b_2026-09-03.md
 WINDOW_SIZE_MINUTES = 1
 VOL_FACTOR_EXH = 2.5
 HISTORY_SIZE = 100

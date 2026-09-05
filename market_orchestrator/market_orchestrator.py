@@ -159,6 +159,82 @@ from common.signal_direction import (
 )
 
 
+def parse_trade_message(msg: Any) -> Optional[Dict[str, Any]]:
+    """
+    Parser normalizador de mensagens trade / aggTrade da Binance WebSocket.
+    Suporta aggTrade (Futures) e trade (Spot legado).
+    Retorna dict com (price, qty, ts_ms, is_buyer_maker, source, trade_id)
+    ou None se a mensagem for inválida.
+    """
+    if isinstance(msg, str):
+        try:
+            msg = json.loads(msg)
+        except Exception:
+            return None
+    if not isinstance(msg, dict):
+        return None
+
+    raw_trade = msg.get("data", msg)
+    if not isinstance(raw_trade, dict):
+        return None
+
+    if raw_trade.get("e") == "aggTrade" or "f" in raw_trade:
+        trade_id = raw_trade.get("a")        # agg trade id (futures)
+        source = "fut_agg"
+    else:
+        trade_id = raw_trade.get("t")        # trade id (spot legado)
+        source = "spot_trade"
+
+    p = raw_trade.get("p") or raw_trade.get("P") or raw_trade.get("price")
+    q = raw_trade.get("q") or raw_trade.get("Q") or raw_trade.get("quantity")
+    T = raw_trade.get("T")
+    m = raw_trade.get("m")
+
+    # Fallback para mensagens de kline
+    if (p is None or q is None or T is None) and isinstance(raw_trade.get("k"), dict):
+        k = raw_trade["k"]
+        if p is None:
+            p = k.get("c")
+        if q is None:
+            q = k.get("v")
+        if T is None:
+            T = k.get("T")
+
+    if p is None or q is None or T is None:
+        return None
+
+    try:
+        price = float(p)
+        qty = float(q)
+        ts_ms = int(T)
+    except (TypeError, ValueError):
+        return None
+
+    if price <= 0 or qty <= 0 or ts_ms <= 0:
+        return None
+
+    if trade_id is not None:
+        try:
+            trade_id = int(trade_id)
+        except (TypeError, ValueError):
+            pass
+
+    is_buyer_maker = bool(m) if m is not None else None
+
+    return {
+        "price": price,
+        "qty": qty,
+        "ts_ms": ts_ms,
+        "is_buyer_maker": is_buyer_maker,
+        "source": source,
+        "trade_id": trade_id,
+        "p": price,
+        "q": qty,
+        "T": ts_ms,
+        "m": is_buyer_maker if is_buyer_maker is not None else False,
+    }
+
+
 class EnhancedMarketBot:
     """Bot de análise de mercado com IA integrada (v2.3.2)."""
 
@@ -680,9 +756,22 @@ class EnhancedMarketBot:
         try:
             trade = raw.get("data", raw)
 
+            if trade.get("e") == "aggTrade" or "f" in trade:
+                trade_id = trade.get("a")        # agg trade id (futures)
+                source = "fut_agg"
+            else:
+                trade_id = trade.get("t")        # trade id (spot legado)
+                source = "spot_trade"
+
+            if trade_id is not None:
+                try:
+                    trade_id = int(trade_id)
+                except (TypeError, ValueError):
+                    pass
+
             p = trade.get("p") or trade.get("P") or trade.get("price")
             q = trade.get("q") or trade.get("Q") or trade.get("quantity")
-            T = trade.get("T") or trade.get("E") or trade.get("tradeTime")
+            T = trade.get("T")
             m = trade.get("m")
 
             # Fallback para mensagens de kline
@@ -695,7 +784,7 @@ class EnhancedMarketBot:
                 if q is None:
                     q = k.get("v")
                 if T is None:
-                    T = k.get("T") or raw.get("E")
+                    T = k.get("T")
 
             # 3) Verificação de campos obrigatórios
             missing: List[str] = []
@@ -797,7 +886,15 @@ class EnhancedMarketBot:
             # 7) Atualiza estados compartilhados
             self._last_price = p
 
-            norm = {"p": p, "q": q, "T": T, "T_raw": T_original, "m": bool(m)}
+            norm = {
+                "p": p,
+                "q": q,
+                "T": T,
+                "T_raw": T_original,
+                "m": bool(m),
+                "source": source,
+                "trade_id": trade_id,
+            }
 
             # Adiciona trade ao buffer assíncrono
             def process_trade_sync(trade):
@@ -811,6 +908,9 @@ class EnhancedMarketBot:
                 logging.warning(f"⚠️ Trade descartado por buffer overflow")
 
             if success:
+                if not getattr(self, "_first_trade_logged", False):
+                    self._first_trade_logged = True
+                    logging.info(f"✅ Trade recebido via WebSocket: source={source}, trade_id={trade_id}, p={p}, q={q}")
                 try:
                     self.health_monitor.heartbeat("trade_ingestion")
                 except Exception:
@@ -2262,7 +2362,7 @@ class EnhancedMarketBot:
         Falha silenciosamente — indicadores ficam disponíveis após warmup orgânico.
         """
         import aiohttp as _aiohttp
-        url = "https://api.binance.com/api/v3/klines"
+        url = "https://fapi.binance.com/fapi/v1/klines"
         params = {"symbol": self.symbol, "interval": "1m", "limit": 200}
         try:
             async with _aiohttp.ClientSession() as _sess:

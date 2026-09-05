@@ -1743,7 +1743,11 @@ def build_compact_payload(
     # procura "price" no event_data para detectar
     # payload flat e empacotar como ai_payload.
     # ═══════════════════════════════════════════════════════════
+    market_type = getattr(_app_settings, "MARKET_TYPE", "binance_futures_perp") if "_app_settings" in globals() else "binance_futures_perp"
+    mkt_label = "fut_perp" if market_type in ("binance_futures_perp", "fut_perp") else market_type
+
     payload: dict[str, Any] = {
+        "mkt": mkt_label,
         "symbol": event_data.get("symbol", "BTCUSDT"),  # ← ADICIONADO
         "epoch_ms": event_data.get("epoch_ms") or int(time.time() * 1000),
         "trigger": trigger,                              # ← ERA "t"
@@ -2012,7 +2016,11 @@ def build_compact_payload_for_llm(
     """
     compact = build_compact_payload(event_data, builders=builders)
 
+    market_type = getattr(_app_settings, "MARKET_TYPE", "binance_futures_perp") if "_app_settings" in globals() else "binance_futures_perp"
+    mkt_label = "fut_perp" if market_type in ("binance_futures_perp", "fut_perp") else market_type
+
     wrapped = {
+        "mkt": compact.pop("mkt", mkt_label),
         "symbol": compact.pop("symbol", symbol),
         "window": window,
         "epoch_ms": epoch_ms or int(time.time() * 1000),

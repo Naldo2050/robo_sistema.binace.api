@@ -102,7 +102,7 @@ def _fetch_binance_klines(symbol: str, interval: str = "1h", limit: int = 720) -
     import requests
     import time
     
-    url = "https://api.binance.com/api/v3/klines"
+    url = "https://fapi.binance.com/fapi/v1/klines"
     params = {
         "symbol": symbol,
         "interval": interval,

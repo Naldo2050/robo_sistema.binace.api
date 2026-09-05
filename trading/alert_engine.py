@@ -28,6 +28,12 @@ MIN_VOL_POINTS = 10        # mínimo de pontos de histórico para considerar squ
 MIN_VOL_SPREAD = 1e-8      # spread mínimo entre min/max(vols) para considerar variação real
 MIN_VALID_VOL = 1e-10      # volatilidade mínima “não-zero”
 
+try:
+    from config import settings
+    DEFAULT_SYMBOL = getattr(settings, "SYMBOL", "BTCUSDT")
+except Exception:
+    DEFAULT_SYMBOL = "BTCUSDT"
+
 
 def _clean_alert_data(alert: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -70,6 +76,7 @@ def detect_volume_spike(
     average_volume: float,
     threshold_factor: float = 3.0,
     duration: str = "5_MINUTES",
+    symbol: str = DEFAULT_SYMBOL,
 ) -> Optional[Dict[str, Any]]:
     """Volume spike detection com formatação adequada."""
     if average_volume <= 0:
@@ -82,6 +89,7 @@ def detect_volume_spike(
         
         alert = {
             "type": "VOLUME_SPIKE",
+            "symbol": symbol,
             "threshold_exceeded": round(ratio, 2),
             "severity": "HIGH" if ratio >= 5.0 else "MEDIUM",
             "intensity": round(intensity, 3),
@@ -105,6 +113,7 @@ def detect_volatility_squeeze(
     recent_vols: List[float],
     low_percentile: float = 10.0,
     high_percentile: float = 90.0,
+    symbol: str = DEFAULT_SYMBOL,
 ) -> Optional[Dict[str, Any]]:
     """
     Volatility squeeze detection com formatação adequada.
@@ -195,6 +204,7 @@ def detect_volatility_squeeze(
         
         alert = {
             "type": "VOLATILITY_SQUEEZE",
+            "symbol": symbol,
             "volatility_state": "COMPRESSED",
             "severity": severity,
             "intensity": round(intensity, 3),
@@ -245,6 +255,7 @@ def detect_volatility_squeeze(
         
         alert = {
             "type": "VOLATILITY_EXPANSION",
+            "symbol": symbol,
             "volatility_state": "EXPANDED",
             "severity": severity,
             "intensity": round(intensity, 3),

@@ -32,7 +32,7 @@ NY_TZ = ZoneInfo("America/New_York")
 SP_TZ = ZoneInfo("America/Sao_Paulo")
 LONDON_TZ = ZoneInfo("Europe/London")
 
-BINANCE_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_URL = "https://api.binance.com/api/v3/klines"  # SPOT intencional porque é script de análise legada isolada (não usado por produção)
 
 # Diretórios de saída
 FEATURES_DIR = Path("features"); FEATURES_DIR.mkdir(exist_ok=True)

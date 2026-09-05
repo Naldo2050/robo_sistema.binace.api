@@ -718,7 +718,10 @@ class InstitutionalAnalyticsEngine:
         # #21 — Latency Tracking
         if time_manager and window_close_ms and hasattr(time_manager, 'track_data_latency'):
             try:
-                quality["latency"] = time_manager.track_data_latency(window_close_ms)
+                lat_dict = time_manager.track_data_latency(window_close_ms)
+                if isinstance(lat_dict, dict) and "latency_ms" in lat_dict and "pipeline_lag_ms" not in lat_dict:
+                    lat_dict["pipeline_lag_ms"] = lat_dict["latency_ms"]
+                quality["latency"] = lat_dict
             except Exception as e:
                 quality["latency"] = {"error": str(e)}
 

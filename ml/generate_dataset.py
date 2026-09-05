@@ -68,7 +68,7 @@ class DatasetConfig:
     ]
     
     # API Binance para preços (fallback)
-    BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+    BINANCE_KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
 
 
 # =============================================================================

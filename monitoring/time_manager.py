@@ -1103,6 +1103,7 @@ class TimeManager:
 
         return {
             "latency_ms": round(latency_ms),
+            "pipeline_lag_ms": round(latency_ms),
             "latency_category": category,
             "data_freshness": freshness,
             "is_acceptable": latency_ms < 5000,

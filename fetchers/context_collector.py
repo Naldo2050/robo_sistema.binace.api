@@ -151,7 +151,7 @@ class ContextCollector:
         self.derivatives_symbols = DERIVATIVES_SYMBOLS
          
         # Endpoints Binance
-        self.klines_api_url = "https://api.binance.com/api/v3/klines"
+        self.klines_api_url = "https://fapi.binance.com/fapi/v1/klines"
         self.funding_api_url = "https://fapi.binance.com/fapi/v1/fundingRate"
         self.open_interest_api_url = "https://fapi.binance.com/fapi/v1/openInterest"
         self.long_short_ratio_api_url = "https://fapi.binance.com/futures/data/globalLongShortAccountRatio"

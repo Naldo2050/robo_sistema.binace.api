@@ -41,7 +41,7 @@ class HistoricalVolumeProfiler:
         self.symbol = symbol
         self.num_days = num_days
         self.value_area_percent = value_area_percent
-        self.api_url = "https://api.binance.com/api/v3/klines"
+        self.api_url = "https://fapi.binance.com/fapi/v1/klines"
         self.profile: dict = {}
 
     def _fetch_historical_data(self, start_time_ms: int, end_time_ms: int, interval: str = "1m") -> pd.DataFrame:

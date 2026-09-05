@@ -11,6 +11,7 @@ Uso:
 
 FIELD_LEGEND: str = """
 === FIELD REFERENCE ===
+mkt=market(fut_perp=Binance USD-M perpetual; flow AND ob ARE THE SAME BOOK; never mix with spot)
 t=trigger type (AT=analysis,ABS=absorption,EXH=exhaustion,BRK=breakout,WHL=whale,DIV=divergence)
 p=price: c=close,o=open,h=high,l=low,vw=vwap,sh=profile_shape(B=bimodal,P=P-shape,b=b-shape,D=D-shape),auc=auction_type,ph=poor_high(1=yes),pl=poor_low(1=yes)
 r=regime: v=volatility(L=low,M=med,H=high),tr=trend(DN=down,UP=up,SW=sideways),st=sentiment(BEAR/BULL/NEUT)

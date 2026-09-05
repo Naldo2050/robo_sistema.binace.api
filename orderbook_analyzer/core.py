@@ -198,12 +198,16 @@ def _simulate_market_impact(
 ) -> Dict[str, Any]:
     """Simula impacto de ordem de mercado."""
     if not levels or usd_amount <= 0:
+        insufficient = usd_amount > 0
         return {
             "usd": usd_amount,
             "move_usd": 0.0,
             "bps": 0.0,
             "levels": 0,
             "vwap": None,
+            "insufficient_liquidity": insufficient,
+            "fill_ratio": 0.0 if insufficient else 1.0,
+            "usd_filled": 0.0,
         }
 
     spent = 0.0
@@ -241,6 +245,9 @@ def _simulate_market_impact(
             move_usd = max(0.0, mid - terminal_price)
         bps = (move_usd / mid) * 10000.0
 
+    insufficient = spent < usd_amount
+    fill_ratio = round(spent / usd_amount, 4) if insufficient else 1.0
+
     return {
         "usd": usd_amount,
         "move_usd": round(move_usd, 4),
@@ -248,6 +255,9 @@ def _simulate_market_impact(
         "levels": levels_crossed,
         "vwap": vwap,
         "final_price": terminal_price,
+        "insufficient_liquidity": insufficient,
+        "fill_ratio": fill_ratio,
+        "usd_filled": spent,
     }
 
 

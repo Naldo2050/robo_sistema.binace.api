@@ -240,6 +240,7 @@ def make_event() -> dict:
 def test_build_compact_payload_has_required_sections():
     payload = bcp.build_compact_payload(make_event())
 
+    assert "mkt" in payload and payload["mkt"] == "fut_perp"
     assert payload["symbol"] == "BTCUSDT"
     assert payload["epoch_ms"] == 1775173800000
     assert payload["trigger"] == "AT"
