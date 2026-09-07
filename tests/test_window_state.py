@@ -128,11 +128,15 @@ def test_populate_window_state_from_pipeline():
         "volume_total": 5.986,
         "num_trades": 1200,
     }
+    # B-P0-3: shape produtivo real (produtor emite aninhado em order_flow;
+    # o formato top-level anterior nunca ocorre em produção).
     flow_metrics = {
         "cvd": 0.464,
-        "flow_imbalance": 0.15,
-        "buy_sell_ratio": 1.17,
-        "pressure_label": "SLIGHT_BUY",
+        "order_flow": {
+            "flow_imbalance": 0.15,
+            "buy_sell_ratio": {"buy_sell_ratio": 1.17,
+                               "pressure": "SLIGHT_BUY"},
+        },
     }
     ob_event = {
         "bid_depth_usd": 500000.0,
@@ -142,9 +146,20 @@ def test_populate_window_state_from_pipeline():
         "is_valid": True,
         "data_quality": {"data_source": "live"},
     }
+    # B-P0-3: shape produtivo real (external UPPERCASE com preco_atual;
+    # derivatives por símbolo).
     macro_context = {
-        "external": {"dxy": 104.5, "sp500": 5800.0, "vix": 14.2, "fear_greed": 72},
-        "derivatives": {"btc_funding_rate": 0.0001, "btc_long_short_ratio": 1.15},
+        "external": {
+            "DXY": {"preco_atual": 104.5, "source": "yfinance"},
+            "SP500": {"preco_atual": 5800.0, "source": "yfinance"},
+            "VIX": {"preco_atual": 14.2, "source": "yfinance"},
+            "FEAR_GREED": {"preco_atual": 72, "classification": "Greed"},
+        },
+        "derivatives": {
+            "BTCUSDT": {"funding_rate_percent": 0.0001,
+                        "open_interest": 1000000,
+                        "long_short_ratio": 1.15},
+        },
     }
 
     _populate_window_state(ws, enriched, flow_metrics, ob_event, macro_context, 3.225, 2.761)
@@ -162,16 +177,23 @@ def test_populate_window_state_from_pipeline():
     assert ws.orderbook.bid_depth_usd == 500000.0
     assert ws.orderbook.data_source == "live"
 
-    # Flow
+    # Flow (B-P0-3: lido do schema real aninhado em order_flow)
     assert ws.flow.cvd == 0.464
+    assert ws.flow.flow_imbalance == 0.15
+    assert ws.flow.buy_sell_ratio == 1.17
     assert ws.flow.pressure_label == "SLIGHT_BUY"
 
-    # Macro
+    # Macro (B-P0-3: dicts uppercase com preco_atual)
     assert ws.macro.dxy == 104.5
+    assert ws.macro.dxy_source == "yfinance"
     assert ws.macro.vix == 14.2
+    assert ws.macro.fear_greed == 72
+    assert ws.macro.fear_greed_label == "Greed"
 
-    # Derivatives
+    # Derivatives (B-P0-3: por símbolo)
     assert ws.derivatives.btc_funding_rate == 0.0001
+    assert ws.derivatives.btc_open_interest == 1000000
+    assert ws.derivatives.btc_long_short_ratio == 1.15
 
     # Writers: pipeline, orderbook, flow, macro, derivatives marcados
     assert ws._writers["pipeline"] is True

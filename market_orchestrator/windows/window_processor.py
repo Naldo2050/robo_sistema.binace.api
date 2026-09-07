@@ -52,6 +52,7 @@ from data_processing.data_handler import create_absorption_event, create_exhaust
 from orderbook_core.structured_logging import StructuredLogger
 from orderbook_core.tracing_utils import TracerWrapper
 from core.state_manager import StateManager
+from common.json_safe import is_non_finite_number
 
 
 # Última janela processada com sucesso (epoch seconds) — usada pelo
@@ -247,6 +248,27 @@ class WindowProcessor:
                 self._queue.task_done()
 
 
+def _finite_or_skip(value):
+    """Número finito ou None (ausente/inválido/não-finito).
+
+    Alinhado à política canônica common/json_safe. Usado para NÃO
+    transformar ausência em observação fabricada (B-P0-3).
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value if not is_non_finite_number(value) else None
+    return None
+
+
+def _ext_node(ext: Dict[str, Any], name: str) -> Dict[str, Any]:
+    """Nó external real (UPPERCASE do produtor; fallback legado lowercase)."""
+    node = ext.get(name.upper(), None)
+    if node is None:
+        node = ext.get(name.lower(), None)
+    return node if isinstance(node, dict) else {}
+
+
 def _populate_window_state(
     ws, enriched: Dict[str, Any],
     flow_metrics: Dict[str, Any],
@@ -285,41 +307,102 @@ def _populate_window_state(
     ws.mark_written("orderbook")
 
     # --- Flow ---
+    # B-P0-3: produtor emite aninhado em order_flow (flow_imbalance,
+    # buy_sell_ratio{buy_sell_ratio,pressure}); leitura top-level anterior
+    # retornava SEMPRE os defaults (0/1.0/NEUTRAL). Ausente => assignment
+    # pulado (sem crash em None; sem fabricar observação).
     fm = flow_metrics or {}
-    ws.flow.cvd = float(fm.get("cvd", 0))
-    ws.flow.flow_imbalance = float(fm.get("flow_imbalance", 0))
-    ws.flow.buy_sell_ratio = float(fm.get("buy_sell_ratio", 1.0))
-    ws.flow.pressure_label = fm.get("pressure_label", "NEUTRAL")
+    _cvd = _finite_or_skip(fm.get("cvd"))
+    if _cvd is not None:
+        ws.flow.cvd = float(_cvd)
+    _of = fm.get("order_flow", {}) or {}
+    _fi = _finite_or_skip(_of.get("flow_imbalance"))
+    if _fi is not None:
+        ws.flow.flow_imbalance = float(_fi)
+    _bsr = _of.get("buy_sell_ratio", None)
+    if isinstance(_bsr, dict):
+        _r = _finite_or_skip(_bsr.get("buy_sell_ratio"))
+        if _r is not None:
+            ws.flow.buy_sell_ratio = float(_r)
+        _pl = _bsr.get("pressure")
+        if isinstance(_pl, str) and _pl:
+            ws.flow.pressure_label = _pl
+    elif _finite_or_skip(_bsr) is not None:
+        # Forma legada escalar (compatibilidade com fixtures antigas).
+        ws.flow.buy_sell_ratio = float(_bsr)
     # sector_flow vem de flow_analyzer.core.compute_metrics() como:
     #   {"sector_flow": {"retail": {...}, "mid": {...}, "whale": {...}}}
     _sf = fm.get("sector_flow", {}) or {}
     for sector_key in ("retail", "mid", "whale"):
         sector = _sf.get(sector_key, {})
         if isinstance(sector, dict) and sector:
-            setattr(ws.flow, f"{sector_key}_buy", float(sector.get("buy", 0)))
-            setattr(ws.flow, f"{sector_key}_sell", float(sector.get("sell", 0)))
-            setattr(ws.flow, f"{sector_key}_delta", float(sector.get("delta", 0)))
+            _b = _finite_or_skip(sector.get("buy"))
+            _s = _finite_or_skip(sector.get("sell"))
+            _d = _finite_or_skip(sector.get("delta"))
+            if _b is not None:
+                setattr(ws.flow, f"{sector_key}_buy", float(_b))
+            if _s is not None:
+                setattr(ws.flow, f"{sector_key}_sell", float(_s))
+            if _d is not None:
+                setattr(ws.flow, f"{sector_key}_delta", float(_d))
     ws.mark_written("flow")
 
     # --- Macro ---
+    # B-P0-3: produtor emite UPPERCASE {"DXY": {"preco_atual":..,"source":..}};
+    # leitura lowercase anterior retornava None/dicts no lugar de floats.
     ext = macro_context.get("external", {}) or {}
-    ws.macro.dxy = ext.get("dxy")
-    ws.macro.dxy_source = ext.get("dxy_source", "")
-    ws.macro.sp500 = ext.get("sp500")
-    ws.macro.nasdaq = ext.get("nasdaq")
-    ws.macro.gold = ext.get("gold")
-    ws.macro.wti = ext.get("wti")
-    ws.macro.vix = ext.get("vix")
-    ws.macro.tnx = ext.get("tnx")
-    ws.macro.fear_greed = ext.get("fear_greed")
-    ws.macro.fear_greed_label = ext.get("fear_greed_label", "")
+
+    def _macro_value(name: str):
+        node = _ext_node(ext, name)
+        return _finite_or_skip(node.get("preco_atual"))
+
+    def _macro_source(name: str) -> str:
+        node = _ext_node(ext, name)
+        src = node.get("source", "")
+        return src if isinstance(src, str) else ""
+
+    _v = _macro_value("DXY")
+    if _v is not None:
+        ws.macro.dxy = float(_v)
+        ws.macro.dxy_source = _macro_source("DXY")
+    _v = _macro_value("SP500")
+    if _v is not None:
+        ws.macro.sp500 = float(_v)
+        ws.macro.sp500_source = _macro_source("SP500")
+    for _name, _attr in (("NASDAQ", "nasdaq"), ("GOLD", "gold"),
+                         ("WTI", "wti"), ("VIX", "vix"), ("TNX", "tnx")):
+        _v = _macro_value(_name)
+        if _v is not None:
+            setattr(ws.macro, _attr, float(_v))
+    _fg = _ext_node(ext, "FEAR_GREED")
+    _fgv = _finite_or_skip(_fg.get("preco_atual"))
+    if _fgv is not None:
+        try:
+            ws.macro.fear_greed = int(_fgv)
+        except (TypeError, ValueError):
+            pass
+        _fgl = _fg.get("classification", "")
+        if isinstance(_fgl, str) and _fgl:
+            ws.macro.fear_greed_label = _fgl
     ws.mark_written("macro")
 
     # --- Derivatives ---
+    # B-P0-3: produtor emite por símbolo {"BTCUSDT": {...}}; leitura
+    # top-level anterior retornava sempre defaults.
     deriv = macro_context.get("derivatives", {}) or {}
-    ws.derivatives.btc_funding_rate = deriv.get("btc_funding_rate")
-    ws.derivatives.btc_open_interest = float(deriv.get("btc_open_interest", 0))
-    ws.derivatives.btc_long_short_ratio = float(deriv.get("btc_long_short_ratio", 1.0))
+    for _sym, _prefix in (("BTCUSDT", "btc_"), ("ETHUSDT", "eth_")):
+        _node = deriv.get(_sym, {}) or {}
+        if not isinstance(_node, dict):
+            continue
+        _fr = _finite_or_skip(_node.get("funding_rate_percent"))
+        if _fr is not None:
+            setattr(ws.derivatives, f"{_prefix}funding_rate", float(_fr))
+        _oi = _finite_or_skip(_node.get("open_interest"))
+        if _oi is not None:
+            setattr(ws.derivatives, f"{_prefix}open_interest", float(_oi))
+        _lsr = _finite_or_skip(_node.get("long_short_ratio"))
+        if _lsr is not None:
+            setattr(ws.derivatives, f"{_prefix}long_short_ratio", float(_lsr))
     ws.mark_written("derivatives")
 
 
