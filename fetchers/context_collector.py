@@ -172,14 +172,15 @@ class ContextCollector:
         self._api_cache = {}
         self._cache_ttl = 300  # s (era 60s — reduz chamadas yFinance em 5x)
          
-        # Alpha Vantage
-        self.alpha_vantage_api_key = os.getenv("ALPHAVANTAGE_API_KEY", "KC4IE0MBOEXK88Y3")
+        # Alpha Vantage (fail-closed: sem env var, a feature é desabilitada;
+        # nunca usar chave default embutida no código)
+        self.alpha_vantage_api_key = os.getenv("ALPHAVANTAGE_API_KEY")
         self.alpha_vantage_url = "https://www.alphavantage.co/query"
-         
+
         # 🆕 VALIDAÇÃO DE API KEY
         if ENABLE_ALPHAVANTAGE:
             if not self.alpha_vantage_api_key or self.alpha_vantage_api_key == "demo":
-                logger.warning("⚠️ Alpha Vantage habilitado mas API key inválida/demo!")
+                logger.warning("⚠️ Alpha Vantage sem API key válida (ALPHAVANTAGE_API_KEY ausente/demo) — feature DESABILITADA (fail-closed).")
          
         # Fetchers reais de on-chain, funding agregado e positioning institucional
         self._onchain_fetcher = OnchainFetcher() if _ONCHAIN_FETCHER_AVAILABLE else None
@@ -340,6 +341,9 @@ class ContextCollector:
 
     async def _alpha_vantage_history(self, session: aiohttp.ClientSession, symbol: str, function: str = "ECONOMIC_INDICATORS", interval: str = "1min"):
         """Wrapper resiliente para Alpha Vantage com retry (async)."""
+        if not self.alpha_vantage_api_key:
+            logger.warning("⚠️ Alpha Vantage desabilitado (sem API key) — retornando vazio (fail-closed).")
+            return pd.DataFrame()
         logger.info(f"🔍 Tentando buscar dados Alpha Vantage para {symbol} com função {function}")
         try_count = 2
         for i in range(try_count):

@@ -76,13 +76,13 @@ Implementei com sucesso o sistema de correlações cross-asset **enhanced** usan
 ## 📊 **APIs Configuradas e Funcionais**
 
 ### ✅ **FRED API** (Federal Reserve)
-- **Chave**: `b5cc9b987bccd205d0e9f02cd5985d0d` ✅
+- **Chave**: `*** REDIGIDA — segredo não deve ficar no repo; revogar/rotacionar no painel do provedor ***` ✅
 - **Status**: Inicializada corretamente
 - **Séries disponíveis**: VIXCLS, DGS10, DGS2, DTWEXBGS, FEDFUNDS
 - **Rate limit**: Ilimitado ✅
 
 ### ✅ **Alpha Vantage**
-- **Chave**: `KC4IE0MBOEXK88Y3` ✅
+- **Chave**: `*** REDIGIDA — segredo não deve ficar no repo; revogar/rotacionar no painel do provedor ***` ✅
 - **Status**: Configurada corretamente
 - **Limite**: 25 calls/dia (estratégia de cache implementada)
 - **Dados**: Gold, Oil, índices
