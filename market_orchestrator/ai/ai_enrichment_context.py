@@ -8,7 +8,19 @@ from __future__ import annotations
 from typing import Dict, Any, List
 import logging
 
+from common.json_safe import is_non_finite_number
+
 logger = logging.getLogger(__name__)
+
+
+def _present_number(value: Any) -> bool:
+    """True se value é número real presente (None/NaN/±Inf = ausente).
+
+    0.0 legítimo continua presente — ausência nunca vira zero conclusivo.
+    """
+    if value is None or is_non_finite_number(value):
+        return False
+    return isinstance(value, (int, float))
 
 
 def build_enriched_ai_context(raw_event: Dict[str, Any]) -> Dict[str, Any]:
@@ -21,9 +33,16 @@ def build_enriched_ai_context(raw_event: Dict[str, Any]) -> Dict[str, Any]:
     # 1) Targets Context
     price_targets: List[Dict[str, Any]] = advanced.get("price_targets") or []
     if price_targets:
+        def _score_key(t: dict) -> float:
+            conf = t.get("confidence")
+            weight = t.get("weight")
+            conf = conf if _present_number(conf) else 0.0
+            weight = weight if _present_number(weight) else 0.0
+            return conf * weight
+
         sorted_targets = sorted(
             price_targets,
-            key=lambda t: (t.get("confidence", 0.0) * t.get("weight", 0.0)),
+            key=_score_key,
             reverse=True,
         )
         primary = sorted_targets[0] if sorted_targets else None
@@ -36,10 +55,14 @@ def build_enriched_ai_context(raw_event: Dict[str, Any]) -> Dict[str, Any]:
             "total_targets": len(price_targets),
         }
 
-    # 2) Options Context
+    # 2) Options Context (ausência -> "unknown", nunca conclusão fabricada)
     opt = advanced.get("options_metrics") or {}
     if opt:
-        sentiment = "bearish" if opt.get("put_call_ratio", 1.0) > 1.0 else "bullish"
+        pcr = opt.get("put_call_ratio")
+        if not _present_number(pcr):
+            sentiment = "unknown"
+        else:
+            sentiment = "bearish" if pcr > 1.0 else "bullish"
         ctx["options_context"] = {
             "put_call_ratio": opt.get("put_call_ratio"),
             "iv_rank": opt.get("iv_rank"),
@@ -50,12 +73,18 @@ def build_enriched_ai_context(raw_event: Dict[str, Any]) -> Dict[str, Any]:
             "sentiment": sentiment,
         }
 
-    # 3) On-chain Context
+    # 3) On-chain Context (ausência -> "unknown"; 0.0 presente -> "neutral")
     onch = advanced.get("onchain_metrics") or {}
     if onch:
-        sentiment = (
-            "accumulation" if (onch.get("exchange_netflow", 0.0) < 0.0) else "distribution"
-        )
+        netflow = onch.get("exchange_netflow")
+        if not _present_number(netflow):
+            sentiment = "unknown"
+        elif netflow < 0.0:
+            sentiment = "accumulation"
+        elif netflow > 0.0:
+            sentiment = "distribution"
+        else:
+            sentiment = "neutral"
         ctx["onchain_context"] = {
             "exchange_netflow": onch.get("exchange_netflow"),
             "whale_transactions": onch.get("whale_transactions"),
@@ -65,10 +94,14 @@ def build_enriched_ai_context(raw_event: Dict[str, Any]) -> Dict[str, Any]:
             "sentiment": sentiment,
         }
 
-    # 4) Risk / Adaptive thresholds
+    # 4) Risk / Adaptive thresholds (ausência -> "unknown")
     at = advanced.get("adaptive_thresholds") or {}
     if at:
-        regime = "high_vol" if at.get("current_volatility", 0.0) > 0.01 else "low_vol"
+        vol = at.get("current_volatility")
+        if not _present_number(vol):
+            regime = "unknown"
+        else:
+            regime = "high_vol" if vol > 0.01 else "low_vol"
         ctx["risk_context"] = {
             "current_volatility": at.get("current_volatility"),
             "volatility_factor": at.get("volatility_factor"),
@@ -86,8 +119,13 @@ def _calculate_confluence_score(price_targets: List[Dict[str, Any]]) -> float:
 
     sources = {t.get("source", "") for t in price_targets}
     unique_sources = len(sources)
-    avg_conf = sum(t.get("confidence", 0.0) for t in price_targets) / len(price_targets)
-    avg_weight = sum(t.get("weight", 0.0) for t in price_targets) / len(price_targets)
+
+    def _num(t: dict, key: str) -> float:
+        v = t.get(key)
+        return v if _present_number(v) else 0.0
+
+    avg_conf = sum(_num(t, "confidence") for t in price_targets) / len(price_targets)
+    avg_weight = sum(_num(t, "weight") for t in price_targets) / len(price_targets)
 
     score = (unique_sources * 15.0) + (avg_conf * 40.0) + (avg_weight * 30.0)
     return max(0.0, min(100.0, score))
