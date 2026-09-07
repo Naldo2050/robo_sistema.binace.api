@@ -456,29 +456,35 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
             
     Returns:
         Dict com ratios por janela e análise de tendência.
+
+    Contrato serializável (B-P0-1, idêntico a flow_analyzer.metrics):
+    ratio None + ratio_state quando não computável; nunca NaN/Inf/99.
     """
-    # Extrair volumes de compra/venda
-    buy_vol = (
-        flow_data.get("buy_volume_btc")
-        or flow_data.get("buy_volume")
-        or 0
-    )
-    sell_vol = (
-        flow_data.get("sell_volume_btc")
-        or flow_data.get("sell_volume")
-        or 0
-    )
+    from .metrics import _finite_volume, _present_volume
 
-    # Ratio principal
-    if sell_vol > 0:
-        main_ratio = round(buy_vol / sell_vol, 4)
+    # Extrair volumes de compra/venda (finito ou None; sem coagir p/ 0)
+    buy_vol = _present_volume(flow_data, "buy_volume_btc", "buy_volume")
+    sell_vol = _present_volume(flow_data, "sell_volume_btc", "sell_volume")
+
+    # Ratio principal (serializável)
+    if (buy_vol is None or sell_vol is None
+            or buy_vol < 0 or sell_vol < 0):
+        main_ratio, ratio_state = None, "invalid"
+    elif buy_vol == 0 and sell_vol == 0:
+        main_ratio, ratio_state = None, "no_volume"
+    elif buy_vol > 0 and sell_vol > 0:
+        main_ratio, ratio_state = round(buy_vol / sell_vol, 4), "two_sided"
+    elif sell_vol > 0:
+        # buy == 0: limite matemático 0.0 (válido)
+        main_ratio, ratio_state = 0.0, "sell_only"
     else:
-        main_ratio = 1.0 if buy_vol == 0 else 99.0
+        # buy > 0, sell == 0: infinito não serializa; direção nos volumes
+        main_ratio, ratio_state = None, "buy_only"
 
-    # Extrair flows de múltiplas janelas
-    net_flow_1m = flow_data.get("net_flow_1m", 0)
-    net_flow_5m = flow_data.get("net_flow_5m", 0)
-    net_flow_15m = flow_data.get("net_flow_15m", 0)
+    # Extrair flows de múltiplas janelas (None = ausente; sem coagir p/ 0)
+    net_flow_1m = _finite_volume(flow_data.get("net_flow_1m"))
+    net_flow_5m = _finite_volume(flow_data.get("net_flow_5m"))
+    net_flow_15m = _finite_volume(flow_data.get("net_flow_15m"))
     total_volume = flow_data.get("total_volume", 0) or flow_data.get("total_volume_btc", 0)
 
     # Calcular ratios por janela usando net_flow
@@ -487,26 +493,30 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
         "current": main_ratio,
     }
 
-    # Imbalance por janela (normalizado)
+    # Imbalance por janela (normalizado); chave omitida se net ausente
     if total_volume and total_volume > 0:
-        ratios["imbalance_1m"] = round(net_flow_1m / total_volume, 4) if net_flow_1m else 0
-        ratios["imbalance_5m"] = round(net_flow_5m / total_volume, 4) if net_flow_5m else 0
-        ratios["imbalance_15m"] = round(net_flow_15m / total_volume, 4) if net_flow_15m else 0
+        for key, net_flow in (("imbalance_1m", net_flow_1m),
+                              ("imbalance_5m", net_flow_5m),
+                              ("imbalance_15m", net_flow_15m)):
+            if net_flow is not None:
+                ratios[key] = round(net_flow / total_volume, 4)
 
-    # Sector ratios (se disponível)
+    # Sector ratios (se disponível; mesma regra: só com ambos finitos)
     sector_flow = flow_data.get("sector_flow", {})
     sector_ratios = {}
     for sector_name, sector_data in sector_flow.items():
         if isinstance(sector_data, dict):
-            s_buy = sector_data.get("buy", 0)
-            s_sell = sector_data.get("sell", 0)
-            if s_sell > 0:
+            s_buy = _present_volume(sector_data, "buy")
+            s_sell = _present_volume(sector_data, "sell")
+            if s_buy is None or s_sell is None or (s_buy == 0 and s_sell == 0):
+                sector_ratios[sector_name] = None
+            elif s_sell > 0:
                 # Cap ratio em 10.0 para evitar valores extremos
                 sector_ratios[sector_name] = round(min(s_buy / s_sell, 10.0), 4)
             elif s_buy > 0:
-                sector_ratios[sector_name] = 10.0  # buy-only: cap máximo
+                sector_ratios[sector_name] = None  # buy-only: direção nos volumes
             else:
-                sector_ratios[sector_name] = 1.0
+                sector_ratios[sector_name] = 0.0  # sell-only: limite válido
 
     # Detecção de tendência do fluxo (imbalance normalizado por janela)
     imbalance_1m = ratios.get("imbalance_1m", 0)
@@ -527,8 +537,10 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
         direction = "selling" if imbalance_1m < 0 else "buying"
         trend = f"{flow_trend}_{direction}"
 
-    # Classificação do pressure
-    if main_ratio > 2.0:
+    # Classificação do pressure (ratio ausente => pressure ausente)
+    if main_ratio is None:
+        pressure = None
+    elif main_ratio > 2.0:
         pressure = "STRONG_BUY"
     elif main_ratio > 1.3:
         pressure = "MODERATE_BUY"
@@ -545,12 +557,13 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
 
     return {
         "buy_sell_ratio": main_ratio,
+        "ratio_state": ratio_state,
         "ratios": ratios,
         "sector_ratios": sector_ratios,
         "pressure": pressure,
         "flow_trend": trend,
-        "buy_volume": round(buy_vol, 4),
-        "sell_volume": round(sell_vol, 4),
+        "buy_volume": round(buy_vol, 4) if buy_vol is not None else None,
+        "sell_volume": round(sell_vol, 4) if sell_vol is not None else None,
     }
 
 
