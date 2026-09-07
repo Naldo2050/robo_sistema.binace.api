@@ -395,8 +395,9 @@ class EnhancedMarketBot:
         self.last_valid_vp: Optional[Dict[str, Any]] = None
         self.last_valid_vp_time: float = 0.0
 
+        # FASE E3-A: áudio opt-in via SOUND_ALERT (default OFF em server).
         self.event_saver = EventSaver(
-            sound_alert=True, health_monitor=self.health_monitor
+            sound_alert=None, health_monitor=self.health_monitor
         )
         self.pattern_ohlc_history = deque(maxlen=200)
         self.context_collector = ContextCollector(symbol=self.symbol)

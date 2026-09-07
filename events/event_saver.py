@@ -14,9 +14,11 @@ EventSaver v5.0.0 - Sistema de salvamento de eventos de trading
 """
 
 import json
+import os
 from pathlib import Path
 import platform
 import logging
+import queue
 import threading
 import time
 import atexit
@@ -350,8 +352,28 @@ class EventSaver:
     ✅ v4.5.5: Lock em _janelas_processadas + timezone mais robusto
     """
 
-    def __init__(self, sound_alert: bool = True, health_monitor=None):
-        self.sound_alert = sound_alert
+    # Fila limitada do worker de áudio (sem crescimento ilimitado).
+    SOUND_QUEUE_MAXSIZE = 8
+
+    @staticmethod
+    def _resolve_sound_alert(sound_alert: Optional[bool]) -> bool:
+        """Default OFF (server/headless/produção); opt-in via SOUND_ALERT=1."""
+        if sound_alert is not None:
+            return bool(sound_alert)
+        return os.getenv("SOUND_ALERT", "0").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+
+    def __init__(self, sound_alert: Optional[bool] = None, health_monitor=None):
+        self.sound_alert = self._resolve_sound_alert(sound_alert)
+        # Worker único de áudio (lazy): nunca bloqueia o hot path.
+        self._sound_queue: "queue.Queue[bool]" = queue.Queue(
+            maxsize=self.SOUND_QUEUE_MAXSIZE
+        )
+        self._sound_thread: Optional[threading.Thread] = None
+        self._sound_stop = threading.Event()
+        self._sound_lock = threading.Lock()
+        self._sound_dropped = 0
         # HealthMonitor opcional: heartbeat de progresso "event_saver"
         # (apenas se injetado; None em testes/uso isolado)
         self.health_monitor = health_monitor
@@ -644,7 +666,7 @@ class EventSaver:
         """Para threads e realiza flush final."""
         if not self._stop_event.is_set():
             self._stop_event.set()
-            
+
             # Para threads
             try:
                 if self._flush_thread.is_alive():
@@ -653,6 +675,16 @@ class EventSaver:
                     self._cleanup_thread.join(timeout=1.0)
             except Exception as e:
                 self.logger.error(f"Erro ao parar threads: {e}")
+
+            # Para worker de áudio (não espera beep em curso além do limite)
+            try:
+                self._sound_stop.set()
+                thread, self._sound_thread = self._sound_thread, None
+                if (thread is not None and thread.is_alive()
+                        and thread is not threading.current_thread()):
+                    thread.join(timeout=2.0)
+            except Exception as e:
+                self.logger.error(f"Erro ao parar thread de áudio: {e}")
             
             # Flush final
             with self._buffer_lock:
@@ -1291,9 +1323,9 @@ class EventSaver:
                     except Exception:
                         pass
 
-            # Alerta sonoro
+            # Alerta sonoro (FASE E3-A): nunca bloqueia o hot path.
             if self.sound_alert and event.get("is_signal", False):
-                self._play_sound()
+                self._alert_sound_async()
 
         except Exception as e:
             self.logger.error(f"Erro crítico ao processar evento: {e}", exc_info=True)
@@ -1665,8 +1697,50 @@ class EventSaver:
         cleaned_event = remove_empty(clean)
         return cleaned_event if cleaned_event else clean
 
+    def _alert_sound_async(self) -> None:
+        """Enfileira beep no worker único (não-bloqueante; descarta se cheia).
+
+        Falha de áudio jamais quebra/atrasa o processamento do sinal.
+        """
+        try:
+            self._sound_queue.put_nowait(True)
+        except queue.Full:
+            self._sound_dropped += 1
+            return
+        except Exception:
+            return
+        try:
+            with self._sound_lock:
+                if self._sound_thread is None or not self._sound_thread.is_alive():
+                    self._sound_stop.clear()
+                    self._sound_thread = threading.Thread(
+                        target=self._sound_worker,
+                        name="eventsaver-sound",
+                        daemon=True,
+                    )
+                    self._sound_thread.start()
+        except Exception:
+            return
+
+    def _sound_worker(self) -> None:
+        """Worker único de áudio: um beep por vez; erro nunca propaga."""
+        while not self._sound_stop.is_set():
+            try:
+                self._sound_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                self._play_sound()
+            except Exception as e:
+                self.logger.debug(f"Som indisponível (ignorado): {e}")
+            finally:
+                try:
+                    self._sound_queue.task_done()
+                except Exception:
+                    pass
+
     def _play_sound(self):
-        """Reproduz alerta sonoro multiplataforma."""
+        """Reproduz alerta sonoro multiplataforma (chamado só pelo worker)."""
         try:
             system = platform.system()
             if system == "Windows":
