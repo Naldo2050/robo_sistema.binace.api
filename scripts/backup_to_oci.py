@@ -21,12 +21,23 @@ def authenticate():
         config = oci.config.from_file()
         return oci.object_storage.ObjectStorageClient(config)
 
+# Arquivos nunca incluídos no backup (podem conter segredos/histórico sensível)
+_EXCLUDED_SUFFIXES = (".db", ".sqlite3", ".sqlite", ".jsonl", ".env")
+
+def _tar_filter(tarinfo):
+    """Exclui segredos do pacote (fail-closed para backup)."""
+    base = tarinfo.name.replace("\\", "/").rsplit("/", 1)[-1]
+    if base.endswith(_EXCLUDED_SUFFIXES):
+        logger.debug(f"   - Excluído do backup: {tarinfo.name}")
+        return None
+    return tarinfo
+
 def create_archive(output_filename):
     logger.info(f"📦 Criando arquivo {output_filename}...")
     with tarfile.open(output_filename, "w:gz") as tar:
         for d in DATA_DIRS:
             if os.path.exists(d):
-                tar.add(d)
+                tar.add(d, filter=_tar_filter)
                 logger.info(f"   + Adicionado: {d}")
     return output_filename
 
