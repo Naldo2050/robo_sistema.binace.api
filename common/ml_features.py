@@ -535,9 +535,11 @@ def _map_correlations_to_features(correlations: Dict[str, Any]) -> Dict[str, Any
     features["us2y_change_1d"] = correlations.get("us2y_change_1d", float("nan"))
     features["btc_yields_corr_30d"] = correlations.get("btc_yields_corr_30d", float("nan"))
 
-    # Crypto Dominance
+    # Crypto Dominance (B-P0-4: ausente => NaN como os demais; 0.0 real
+    # explicitamente fornecido é preservado pelo .get sem default 0.0)
     features["btc_dominance"] = correlations.get("btc_dominance", float("nan"))
-    features["btc_dominance_change_7d"] = correlations.get("btc_dominance_change_7d", 0.0)
+    features["btc_dominance_change_7d"] = correlations.get(
+        "btc_dominance_change_7d", float("nan"))
     features["eth_dominance"] = correlations.get("eth_dominance", float("nan"))
     features["usdt_dominance"] = correlations.get("usdt_dominance", float("nan"))
 
