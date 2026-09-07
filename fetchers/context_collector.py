@@ -86,6 +86,7 @@ except (ImportError, AttributeError):
 from market_analysis.historical_profiler import HistoricalVolumeProfiler
 from monitoring.time_manager import TimeManager
 from fetchers.fred_fetcher import FREDFetcher
+from common.json_safe import sanitize_json_safe
 # Fetchers reais (on-chain e funding agregado)
 try:
     from fetchers.onchain_fetcher import OnchainFetcher
@@ -874,18 +875,20 @@ class ContextCollector:
                 atr = self._calculate_atr(df, self.atr_period)
                 regime = self._classify_regime(df, atr)
                  
+                # Non-finite (NaN/±Inf) -> None (JSON null), política canônica
+                # common/json_safe.py. 0.0 é valor legítimo e é preservado.
                 mtf_context[tf] = {
                     "tendencia": tendencia,
                     "preco_atual": last_close,
                     f"mme_{self.ema_period}": round(last_ema, 2),
                     "atr": round(atr, 2),
                     "regime": regime,
-                    "rsi_short": round(rsi_short, 2) if rsi_short else 0.0,
-                    "rsi_long": round(rsi_long, 2) if rsi_long else 0.0,
-                    "macd": round(macd_val, 4) if macd_val else 0.0,
-                    "macd_signal": round(macd_sig, 4) if macd_sig else 0.0,
-                    "adx": round(adx_val, 2) if adx_val else 0.0,
-                    "realized_vol": round(realized_vol, 4) if realized_vol else 0.0,
+                    "rsi_short": sanitize_json_safe(round(rsi_short, 2)) if rsi_short is not None else None,
+                    "rsi_long": sanitize_json_safe(round(rsi_long, 2)) if rsi_long is not None else None,
+                    "macd": sanitize_json_safe(round(macd_val, 4)) if macd_val is not None else None,
+                    "macd_signal": sanitize_json_safe(round(macd_sig, 4)) if macd_sig is not None else None,
+                    "adx": sanitize_json_safe(round(adx_val, 2)) if adx_val is not None else None,
+                    "realized_vol": sanitize_json_safe(round(realized_vol, 4)) if realized_vol is not None else None,
                 }
         return mtf_context
 
