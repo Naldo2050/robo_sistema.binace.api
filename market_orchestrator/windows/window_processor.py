@@ -583,11 +583,18 @@ def process_window_snapshot(
             # Criação do DataPipeline
             # ----------------------------
             try:
+                _cross_updater = getattr(bot, "cross_asset_updater", None)
+                _cross_view = (
+                    _cross_updater.read_view()
+                    if _cross_updater is not None
+                    else None
+                )
                 pipeline = DataPipeline(
                     valid_window_data,
                     bot.symbol,
                     time_manager=bot.time_manager,
                     onchain_updater=getattr(bot, "onchain_updater", None),
+                    cross_asset_snapshot=_cross_view,
                 )
             except ValueError as ve:
                 logging.error(

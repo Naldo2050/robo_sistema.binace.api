@@ -1426,6 +1426,29 @@ def _build_onchain(event_data: dict) -> dict:
     return out
 
 
+def _build_cross(event_data: dict) -> dict:
+    """
+    Freshness cross-asset — status/idade do snapshot (E3-B).
+    Fonte: ml_features.cross_asset_status/cross_asset_age_seconds.
+    Valores permanecem onde já estavam (ctx.eth7/dxy30, ml cross_asset).
+    Ausente no caminho legado (compat: chave omitida).
+    """
+    ml = event_data.get("ml_features", {}) or {}
+    st = ml.get("cross_asset_status")
+    age = ml.get("cross_asset_age_seconds")
+    if st is None and age is None:
+        return {}
+    out: dict[str, Any] = {}
+    if st is not None:
+        out["st"] = st
+    if age is not None:
+        try:
+            out["age"] = round(float(age), 1)
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def _build_smart_money_score(event_data: dict) -> dict:
     """
     Smart Money Score — footprint institucional agregado.
@@ -1960,6 +1983,10 @@ def build_compact_payload(
     liq_scope = _build_liquidity_scope(event_data)
     if liq_scope:
         payload["liq_scope"] = liq_scope
+
+    cross = _build_cross(event_data)
+    if cross:
+        payload["cross"] = cross
 
     onchain = _build_onchain(event_data)
     if onchain:

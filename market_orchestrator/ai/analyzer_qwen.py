@@ -1838,7 +1838,7 @@ class AIAnalyzer:
         # FIX 5: pass-through de seções adicionadas em v3.1+ (incluindo pos da P1.1 e ms da P1.3)
         # Estas seções eram descartadas pelo groq summary, causando
         # perda de ~60% do payload antes de chegar na IA.
-        for passthrough_key in ("ofi", "vwap", "liq", "liq_scope", "onchain", "mr", "sm",
+        for passthrough_key in ("ofi", "vwap", "liq", "liq_scope", "onchain", "cross", "mr", "sm",
                                 "cvd_div", "iceberg", "qual", "summary", "pos", "ms"):
             val = payload.get(passthrough_key)
             if val is not None and val not in ({}, [], ""):

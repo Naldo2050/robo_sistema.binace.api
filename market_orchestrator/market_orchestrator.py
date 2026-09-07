@@ -90,6 +90,7 @@ from orderbook_analyzer import OrderBookAnalyzer
 from events.event_saver import EventSaver
 from fetchers.context_collector import ContextCollector
 from fetchers.onchain_updater import OnchainUpdater
+from market_analysis.cross_asset_updater import CrossAssetUpdater
 from flow_analyzer import FlowAnalyzer
 from market_analysis.levels_registry import LevelRegistry
 from data_processing.data_validator import validator
@@ -315,6 +316,9 @@ class EnhancedMarketBot:
         # FASE B: bot possui exatamente 1 OnchainUpdater. O refresh onchain
         # roda fora do hot path; a janela só lê snapshot (DI explícita).
         self.onchain_updater = OnchainUpdater()
+
+        # E3-B: bot possui exatamente 1 CrossAssetUpdater (mesmo padrão).
+        self.cross_asset_updater = CrossAssetUpdater()
 
         self._loop = None
         self._initialized = False
@@ -2408,6 +2412,13 @@ class EnhancedMarketBot:
         except Exception as e:
             logging.warning(f"⚠️ Falha ao iniciar OnchainUpdater (não-crítico): {e}")
 
+        # CrossAssetUpdater: mesmo padrão (E3-B).
+        try:
+            if getattr(self, "cross_asset_updater", None) is not None:
+                self.cross_asset_updater.start()
+        except Exception as e:
+            logging.warning(f"⚠️ Falha ao iniciar CrossAssetUpdater (não-crítico): {e}")
+
         # Pre-popular histórico OHLC para habilitar indicadores avançados imediatamente
         await self._prefetch_ohlc_history()
 
@@ -2519,6 +2530,12 @@ class EnhancedMarketBot:
         try:
             if getattr(self, "onchain_updater", None) is not None:
                 self.onchain_updater.stop()
+        except Exception:
+            pass
+
+        try:
+            if getattr(self, "cross_asset_updater", None) is not None:
+                self.cross_asset_updater.stop()
         except Exception:
             pass
 

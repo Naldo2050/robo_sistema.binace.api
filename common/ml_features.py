@@ -468,136 +468,137 @@ def _calculate_tick_rule_sum(df: pd.DataFrame) -> float:
         return 0.0
 
 
-def calculate_cross_asset_features(
-    symbol: str,
-    now_utc: Optional[datetime] = None
-) -> Dict[str, Any]:
-    """
-    🆕 Calcula features de correlação cross-asset para BTCUSDT.
-    
-    Foca especialmente em:
-    - BTC x DXY (inversa) - correlação esperada negativa
-    - BTC x NDX - correlação com mercado tech
-    - BTC x ETH - correlação entre principais cryptos
-    
-    Args:
-        symbol: Símbolo do ativo (ex: BTCUSDT)
-        now_utc: Timestamp atual em UTC (opcional)
-        
-    Returns:
-        Dict com features de correlação cross-asset
+def _map_correlations_to_features(correlations: Dict[str, Any]) -> Dict[str, Any]:
+    """Mapeia dict de correlações -> 26 features (puro, sem I/O).
+
+    Usado tanto pelo caminho legado (fetch ao vivo) quanto pelo caminho
+    snapshot (E3-B, sem rede). Mesmas chaves, mesmos defaults.
     """
     features: Dict[str, Any] = {}
-    
+    if not isinstance(correlations, dict):
+        return features
+    # Extrai e mapeia as features conforme especificação
+    # Features BTC x ETH (dados de 1h)
+    features["btc_eth_corr_7d"] = correlations.get("btc_eth_corr_7d", float("nan"))
+    features["btc_eth_corr_30d"] = correlations.get("btc_eth_corr_30d", float("nan"))
+
+    # Features BTC x DXY (dados diários - foco especial)
+    features["btc_dxy_corr_30d"] = correlations.get("btc_dxy_corr_30d", float("nan"))
+    features["btc_dxy_corr_90d"] = correlations.get("btc_dxy_corr_90d", float("nan"))
+
+    # Features BTC x NDX (dados diários - secundário)
+    features["btc_ndx_corr_30d"] = correlations.get("btc_ndx_corr_30d", None)
+
+    # Features de retornos DXY
+    features["dxy_return_5d"] = correlations.get("dxy_return_5d", float("nan"))
+    features["dxy_return_20d"] = correlations.get("dxy_return_20d", float("nan"))
+
+    # Features derivadas para análise adicional
+    dxy_30d = features["btc_dxy_corr_30d"]
+    dxy_90d = features["btc_dxy_corr_90d"]
+
+    if pd.notna(dxy_30d) and pd.notna(dxy_90d):
+        # Estabilidade da correlação BTC x DXY
+        features["btc_dxy_correlation_stability"] = float(abs(dxy_30d - dxy_90d))
+
+        # Força da correlação inversa (média)
+        features["btc_dxy_inverse_strength"] = float(abs((dxy_30d + dxy_90d) / 2))
+    else:
+        features["btc_dxy_correlation_stability"] = float("nan")
+        features["btc_dxy_inverse_strength"] = float("nan")
+
+    # Força do USD (DXY)
+    dxy_5d = features["dxy_return_5d"]
+    dxy_20d = features["dxy_return_20d"]
+
+    if pd.notna(dxy_5d) and pd.notna(dxy_20d):
+        features["dxy_momentum"] = float(dxy_20d - dxy_5d)  # Aceleração
+    else:
+        features["dxy_momentum"] = float("nan")
+
+    # ========== 🆕 MÉTRICAS ENHANCED ==========
+
+    # VIX Metrics (Fear Index)
+    features["vix_current"] = correlations.get("vix_current", float("nan"))
+    features["vix_change_1d"] = correlations.get("vix_change_1d", float("nan"))
+    features["btc_vix_corr_30d"] = correlations.get("btc_vix_corr_30d", float("nan"))
+
+    # Treasury Yields
+    features["us10y_yield"] = correlations.get("us10y_yield", float("nan"))
+    features["us10y_change_1d"] = correlations.get("us10y_change_1d", float("nan"))
+    features["us2y_yield"] = correlations.get("us2y_yield", float("nan"))
+    features["us2y_change_1d"] = correlations.get("us2y_change_1d", float("nan"))
+    features["btc_yields_corr_30d"] = correlations.get("btc_yields_corr_30d", float("nan"))
+
+    # Crypto Dominance
+    features["btc_dominance"] = correlations.get("btc_dominance", float("nan"))
+    features["btc_dominance_change_7d"] = correlations.get("btc_dominance_change_7d", 0.0)
+    features["eth_dominance"] = correlations.get("eth_dominance", float("nan"))
+    features["usdt_dominance"] = correlations.get("usdt_dominance", float("nan"))
+
+    # Commodities
+    features["gold_price"] = correlations.get("gold_price", float("nan"))
+    features["gold_change_1d"] = correlations.get("gold_change_1d", float("nan"))
+    features["btc_gold_corr_30d"] = correlations.get("btc_gold_corr_30d", float("nan"))
+    features["oil_price"] = correlations.get("oil_price", float("nan"))
+    features["oil_change_1d"] = correlations.get("oil_change_1d", float("nan"))
+    features["btc_oil_corr_30d"] = correlations.get("btc_oil_corr_30d", float("nan"))
+
+    # Regime Detection
+    features["macro_regime"] = correlations.get("macro_regime", "UNKNOWN")
+    features["correlation_regime"] = correlations.get("correlation_regime", "UNKNOWN")
+
+    logging.debug(f"✅ Features cross-asset mapeadas: {len(features)} features")
+
+    return features
+
+
+def calculate_cross_asset_features(
+    symbol: str,
+    now_utc: Optional[datetime] = None,
+    cross_asset_snapshot: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Calcula features de correlação cross-asset para BTCUSDT (apenas BTCUSDT).
+
+    Dois caminhos (mesmo mapeamento via `_map_correlations_to_features`):
+      - legado (`cross_asset_snapshot=None`): busca ao vivo via
+        `get_cross_asset_features` (rede; usado por testes/scripts);
+      - snapshot (E3-B): usa `cross_asset_snapshot["values"]` (sem rede).
+        Status/idade são resolvidos pelo chamador (`generate_ml_features`).
+    """
     try:
-        # Só calcula para BTCUSDT conforme especificação
         if symbol != "BTCUSDT":
             logging.debug(f"Cross-asset features apenas para BTCUSDT, ignorando {symbol}")
-            return features
-        
-        # Verifica se módulo está disponível
+            return {}
+
+        if cross_asset_snapshot is not None:
+            values = cross_asset_snapshot.get("values", {})
+            return _map_correlations_to_features(values)
+
         if get_cross_asset_features is None:
             logging.warning("Módulo cross_asset_correlations não disponível")
-            return features
-        
-        # Define timestamp atual se não fornecido
+            return {}
+
         if now_utc is None:
             now_utc = datetime.utcnow()
-        
+
         logging.debug("Calculando features cross-asset para BTCUSDT...")
-        
-        # Calcula correlações usando a função principal unificada
         try:
             correlations = get_cross_asset_features(now_utc)
-            
+
             if correlations.get("status") != "ok":
                 logging.warning(f"Falha ao calcular correlações: {correlations.get('error')}")
-                return features
-            
-            # Extrai e mapeia as features conforme especificação
-            # Features BTC x ETH (dados de 1h)
-            features["btc_eth_corr_7d"] = correlations.get("btc_eth_corr_7d", float("nan"))
-            features["btc_eth_corr_30d"] = correlations.get("btc_eth_corr_30d", float("nan"))
-            
-            # Features BTC x DXY (dados diários - foco especial)
-            features["btc_dxy_corr_30d"] = correlations.get("btc_dxy_corr_30d", float("nan"))
-            features["btc_dxy_corr_90d"] = correlations.get("btc_dxy_corr_90d", float("nan"))
-            
-            # Features BTC x NDX (dados diários - secundário)
-            features["btc_ndx_corr_30d"] = correlations.get("btc_ndx_corr_30d", None)
-            
-            # Features de retornos DXY
-            features["dxy_return_5d"] = correlations.get("dxy_return_5d", float("nan"))
-            features["dxy_return_20d"] = correlations.get("dxy_return_20d", float("nan"))
-            
-            # Features derivadas para análise adicional
-            dxy_30d = features["btc_dxy_corr_30d"]
-            dxy_90d = features["btc_dxy_corr_90d"]
-            
-            if pd.notna(dxy_30d) and pd.notna(dxy_90d):
-                # Estabilidade da correlação BTC x DXY
-                features["btc_dxy_correlation_stability"] = float(abs(dxy_30d - dxy_90d))
-                
-                # Força da correlação inversa (média)
-                features["btc_dxy_inverse_strength"] = float(abs((dxy_30d + dxy_90d) / 2))
-            else:
-                features["btc_dxy_correlation_stability"] = float("nan")
-                features["btc_dxy_inverse_strength"] = float("nan")
-            
-            # Força do USD (DXY)
-            dxy_5d = features["dxy_return_5d"]
-            dxy_20d = features["dxy_return_20d"]
-            
-            if pd.notna(dxy_5d) and pd.notna(dxy_20d):
-                features["dxy_momentum"] = float(dxy_20d - dxy_5d)  # Aceleração
-            else:
-                features["dxy_momentum"] = float("nan")
-            
-            # ========== 🆕 NOVAS MÉTRICAS ENHANCED ==========
-            
-            # VIX Metrics (Fear Index)
-            features["vix_current"] = correlations.get("vix_current", float("nan"))
-            features["vix_change_1d"] = correlations.get("vix_change_1d", float("nan"))
-            features["btc_vix_corr_30d"] = correlations.get("btc_vix_corr_30d", float("nan"))
-            
-            # Treasury Yields
-            features["us10y_yield"] = correlations.get("us10y_yield", float("nan"))
-            features["us10y_change_1d"] = correlations.get("us10y_change_1d", float("nan"))
-            features["us2y_yield"] = correlations.get("us2y_yield", float("nan"))
-            features["us2y_change_1d"] = correlations.get("us2y_change_1d", float("nan"))
-            features["btc_yields_corr_30d"] = correlations.get("btc_yields_corr_30d", float("nan"))
-            
-            # Crypto Dominance
-            features["btc_dominance"] = correlations.get("btc_dominance", float("nan"))
-            features["btc_dominance_change_7d"] = correlations.get("btc_dominance_change_7d", 0.0)
-            features["eth_dominance"] = correlations.get("eth_dominance", float("nan"))
-            features["usdt_dominance"] = correlations.get("usdt_dominance", float("nan"))
-            
-            # Commodities
-            features["gold_price"] = correlations.get("gold_price", float("nan"))
-            features["gold_change_1d"] = correlations.get("gold_change_1d", float("nan"))
-            features["btc_gold_corr_30d"] = correlations.get("btc_gold_corr_30d", float("nan"))
-            features["oil_price"] = correlations.get("oil_price", float("nan"))
-            features["oil_change_1d"] = correlations.get("oil_change_1d", float("nan"))
-            features["btc_oil_corr_30d"] = correlations.get("btc_oil_corr_30d", float("nan"))
-            
-            # Regime Detection
-            features["macro_regime"] = correlations.get("macro_regime", "UNKNOWN")
-            features["correlation_regime"] = correlations.get("correlation_regime", "UNKNOWN")
-            
-            logging.debug(f"✅ Enhanced cross-asset features calculadas: {len(features)} features")
-            
-            logging.debug(f"✅ Features cross-asset calculadas: {len(features)} features")
-            
+                return {}
+
+            return _map_correlations_to_features(correlations)
         except Exception as e:
             logging.error(f"❌ Erro ao calcular correlações: {e}")
-            features["error"] = str(e)
-        
+            return {"error": str(e)}
+
     except Exception as e:
         logging.error(f"❌ Erro ao calcular cross-asset features: {e}")
-        features["error"] = str(e)
-    
-    return features
+        return {"error": str(e)}
 
 
 # ===============================
@@ -615,6 +616,7 @@ def generate_ml_features(
     lookback_windows: List[int] = [1, 5, 15],
     volume_ma_window: int = 20,
     symbol: str = "BTCUSDT",  # 🆕 Adiciona símbolo para cross-asset features
+    cross_asset_snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Gera features consolidadas.
@@ -666,8 +668,21 @@ def generate_ml_features(
         issues.append(f"microstructure_error: {e}")
 
     # 🆕 Cross-Asset Features (apenas para BTCUSDT)
+    # E3-B: com snapshot, sem rede; valores só se fresh/stale.
+    cross_asset_status: Optional[str] = None
+    cross_asset_age: Optional[float] = None
     try:
-        cross_asset_feats = calculate_cross_asset_features(symbol)
+        if cross_asset_snapshot is not None:
+            cross_asset_status = cross_asset_snapshot.get("status")
+            cross_asset_age = cross_asset_snapshot.get("age_seconds")
+            if cross_asset_status in ("fresh", "stale"):
+                cross_asset_feats = calculate_cross_asset_features(
+                    symbol, cross_asset_snapshot=cross_asset_snapshot
+                )
+            else:
+                cross_asset_feats = {}
+        else:
+            cross_asset_feats = calculate_cross_asset_features(symbol)
     except Exception as e:
         logging.error(f"❌ Erro ao calcular cross_asset_features: {e}")
         cross_asset_feats = {}
@@ -683,13 +698,18 @@ def generate_ml_features(
         "is_valid": len(issues) == 0,
     }
 
-    return {
+    out: Dict[str, Any] = {
         "price_features": price_feats,
         "volume_features": volume_feats,
         "microstructure": micro_feats,
         "cross_asset": cross_asset_feats,  # 🆕 Cross-asset features
         "data_quality": data_quality,
     }
+    # E3-B: freshness só no caminho snapshot (legado omite p/ compat).
+    if cross_asset_snapshot is not None:
+        out["cross_asset_status"] = cross_asset_status
+        out["cross_asset_age_seconds"] = cross_asset_age
+    return out
 
 
 # ===============================

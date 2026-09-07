@@ -59,6 +59,7 @@ class DataPipeline:
         validator: Optional[TradeValidator] = None,
         metrics_processor: Optional[MetricsProcessor] = None,
         onchain_updater=None,
+        cross_asset_snapshot=None,
     ) -> None:
         """
         Inicializa pipeline.
@@ -73,6 +74,8 @@ class DataPipeline:
             metrics_processor: Processador de métricas customizado (opcional, para DI)
             onchain_updater: Updater onchain do bot (opcional, para DI).
                 None => onchain unavailable, sem HTTP.
+            cross_asset_snapshot: Visão do CrossAssetUpdater (opcional, DI).
+                None => caminho legado (fetch ao vivo, para testes/scripts).
         """
         self.symbol = symbol
         self.config = config or PipelineConfig.from_config_file()
@@ -135,6 +138,10 @@ class DataPipeline:
         self._data_enricher = DataEnricher(
             config_dict, onchain_updater=onchain_updater
         )
+
+        # E3-B: snapshot cross-asset lido uma vez por janela (sem rede).
+        # None => caminho legado (fetch ao vivo).
+        self._cross_asset_snapshot = cross_asset_snapshot
 
         # Dados
         self.df: Optional[pd.DataFrame] = None
@@ -745,6 +752,9 @@ class DataPipeline:
                 lookback_windows=[1, 5, 15],
                 volume_ma_window=20,
                 symbol=self.symbol,  # 🆕 Para cross-asset features
+                cross_asset_snapshot=getattr(
+                    self, "_cross_asset_snapshot", None
+                ),
             )
 
             # Cross-asset features são calculadas dentro de generate_ml_features()

@@ -10,6 +10,15 @@ Foco especial:
 Fontes de dados:
 - Binance (velas 1h): BTCUSDT, ETHUSDT
 - yfinance (diário): BTC-USD, DXY, ^NDX
+
+DÍVIDA TEMPORAL P0/P1 (E4 futura; NÃO corrigir a matemática aqui):
+- O Pearson usa tail POSICIONAL entre séries com calendários distintos
+  (BTC 24/7 vs DXY/NDX dias úteis), sem join por timestamp, e pode incluir
+  candle/sessão ainda aberta; timezones não são normalizados.
+- Features cross-asset NÃO APROVADAS para treinamento ML
+  (ver CROSS_ASSET_TEMPORAL_AUDIT="pending" em cross_asset_updater.py).
+- `btc_dominance_change_7d=0.0` abaixo NÃO é observação real (placeholder);
+  nunca confundir com dado medido.
 """
 
 import logging
@@ -653,7 +662,8 @@ def get_enhanced_cross_asset_correlations(now_utc: Optional[datetime] = None) ->
             if treasury_10y is not None:
                 result["btc_yields_corr_30d"] = None  # Placeholder
             
-            # Dominance change (7d) - placeholder
+            # Dominance change (7d) - placeholder: 0.0 NÃO é observação
+            # real (ver dívida temporal no docstring do módulo).
             result["btc_dominance_change_7d"] = 0.0
             
             # Correlation Regime (baseado em BTC x DXY)
