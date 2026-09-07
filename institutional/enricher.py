@@ -2325,9 +2325,21 @@ def enrich_signal(
         _aa = _get_nested(event, "raw_event", "advanced_analysis") or {}
         _latency = _get_nested(event, "institutional_analytics", "quality", "latency") or {}
         _latency_known = bool(_latency) and _latency.get("latency_ms") is not None
+        # FASE C: coverage deriva do STATUS (stale/unavailable nunca é "full").
+        # Legado sem status: mantém regra antiga (flag is_real_data).
+        _oc_status = _aa.get("onchain_status")
+        if _oc_status is None:
+            _oc_coverage = ("full" if _aa.get("onchain_metrics", {}).get("is_real_data")
+                            else "partial")
+        elif _oc_status == "fresh":
+            _oc_coverage = "full"
+        elif _oc_status == "stale":
+            _oc_coverage = "stale"
+        else:
+            _oc_coverage = "partial"
         event["data_reliability"] = {
             "has_options_data": bool(_aa.get("options_metrics", {}).get("is_real_data")),
-            "onchain_coverage": "full" if _aa.get("onchain_metrics", {}).get("is_real_data") else "partial",
+            "onchain_coverage": _oc_coverage,
             "latency_acceptable": bool(_latency.get("is_acceptable")) if _latency_known else False,
             "price_targets_available": "price_targets" in event,
         }

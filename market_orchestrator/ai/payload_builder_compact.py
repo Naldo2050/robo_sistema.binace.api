@@ -1375,6 +1375,57 @@ def _build_liquidity_scope(event_data: dict) -> dict:
     return {"scope_type": scope_type, "scope_size": scope_size}
 
 
+def _build_onchain(event_data: dict) -> dict:
+    """
+    On-chain compacto — SOMENTE valores elegíveis + freshness explícita.
+    Fonte: raw_event.advanced_analysis (onchain_metrics + onchain_status/
+    onchain_age_seconds/onchain_source). Abreviações alinhadas com
+    payload_compressor_v3._compress_onchain.
+    """
+    adv = (
+        event_data.get("advanced_analysis")
+        or (event_data.get("raw_event") or {}).get("advanced_analysis")
+        or {}
+    )
+    oc = adv.get("onchain_metrics") or {}
+    st = adv.get("onchain_status")
+    age = adv.get("onchain_age_seconds")
+    src = adv.get("onchain_source")
+    if not oc and st is None:
+        return {}
+
+    def _num(v):
+        return v if isinstance(v, (int, float)) else None
+
+    out: dict[str, Any] = {}
+    if st is not None:
+        out["st"] = st
+    if age is not None:
+        out["age"] = round(float(age), 1)
+    if src is not None:
+        out["src"] = src
+    pairs = (
+        ("active_addresses", "active_addr"),
+        ("mempool_size", "mempool_sz"),
+        ("fees_fastest_sat_vb", "fees_fast"),
+        ("trade_volume_btc_24h", "trade_vol_24h"),
+        ("total_btc_sent_24h", "btc_sent_24h"),
+        ("minutes_between_blocks", "min_per_block"),
+        ("difficulty", "df"),
+        ("hash_rate", "hr"),
+    )
+    for src_key, dst_key in pairs:
+        v = _num(oc.get(src_key))
+        if v is not None:
+            out[dst_key] = v
+    diff_adj = oc.get("difficulty_adjustment") or {}
+    if isinstance(diff_adj, dict):
+        chg = _num(diff_adj.get("estimated_change_pct"))
+        if chg is not None:
+            out["diff_change_pct"] = chg
+    return out
+
+
 def _build_smart_money_score(event_data: dict) -> dict:
     """
     Smart Money Score — footprint institucional agregado.
@@ -1909,6 +1960,10 @@ def build_compact_payload(
     liq_scope = _build_liquidity_scope(event_data)
     if liq_scope:
         payload["liq_scope"] = liq_scope
+
+    onchain = _build_onchain(event_data)
+    if onchain:
+        payload["onchain"] = onchain
 
     sm_score = _build_smart_money_score(event_data)
     if sm_score:

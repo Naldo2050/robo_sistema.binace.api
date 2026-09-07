@@ -822,6 +822,12 @@ def _compress_onchain(payload: dict) -> Optional[dict]:
 
     result["min_per_block"] = _r(onchain.get("minutes_between_blocks"), "ratio")
 
+    # FASE C: freshness explícita (lê do advanced_analysis, não dos valores).
+    result["st"] = adv.get("onchain_status")
+    age = adv.get("onchain_age_seconds")
+    result["age"] = _r(age, "ratio") if age is not None else None
+    result["src"] = adv.get("onchain_source")
+
     return {k: v for k, v in result.items() if v is not None}
 
 

@@ -119,14 +119,17 @@ class OnchainSnapshot:
     """Snapshot imutável publicado pelo updater (all-or-nothing).
 
     Nunca armazena idade pré-computada: o leitor deriva
-    age = monotonic_now - fetched_monotonic. `fetched_at_ms` (wall-clock UTC)
-    serve só para auditoria. `last_error` é interno (logs/métricas).
+    age = monotonic_now - fetched_monotonic (por grupo). `fetched_at_ms`
+    (wall-clock UTC, por grupo) serve só para auditoria. `last_error` é
+    interno (logs/métricas).
     """
 
     fast: Dict[str, Any] = field(default_factory=dict)
     slow: Dict[str, Any] = field(default_factory=dict)
-    fetched_at_ms: Optional[int] = None
-    fetched_monotonic: Optional[float] = None
+    fast_fetched_at_ms: Optional[int] = None
+    slow_fetched_at_ms: Optional[int] = None
+    fast_fetched_monotonic: Optional[float] = None
+    slow_fetched_monotonic: Optional[float] = None
     last_error: Optional[str] = None
 
 
@@ -254,11 +257,15 @@ class OnchainUpdater:
 
     def _store_snapshot(self, fast: Dict[str, Any],
                         slow: Dict[str, Any]) -> None:
+        wall_ms = int(time.time() * 1000)
+        mono = self._monotonic_fn()
         snap = OnchainSnapshot(
             fast=dict(fast),
             slow=dict(slow),
-            fetched_at_ms=int(time.time() * 1000),
-            fetched_monotonic=self._monotonic_fn(),
+            fast_fetched_at_ms=wall_ms,
+            slow_fetched_at_ms=wall_ms,
+            fast_fetched_monotonic=mono,
+            slow_fetched_monotonic=mono,
             last_error=None,
         )
         with self._lock:
@@ -280,14 +287,16 @@ class OnchainUpdater:
                 "age_seconds": age,
             }
 
-        fetched_at = snap.fetched_at_ms if snap else None
-        fetched_mono = snap.fetched_monotonic if snap else None
         return {
-            "fast": _group(snap.fast if snap else {}, fetched_mono,
-                           self.policy.fast_fresh_s, self.policy.fast_usable_s),
-            "slow": _group(snap.slow if snap else {}, fetched_mono,
-                           self.policy.slow_fresh_s, self.policy.slow_usable_s),
-            "fetched_at_ms": fetched_at,
+            "fast": _group(
+                snap.fast if snap else {},
+                snap.fast_fetched_monotonic if snap else None,
+                self.policy.fast_fresh_s, self.policy.fast_usable_s),
+            "slow": _group(
+                snap.slow if snap else {},
+                snap.slow_fetched_monotonic if snap else None,
+                self.policy.slow_fresh_s, self.policy.slow_usable_s),
+            "fetched_at_ms": (snap.fast_fetched_at_ms if snap else None),
             "capabilities": {f: NEVER_EVIDENCE_REASON
                              for f in sorted(NEVER_EVIDENCE_FIELDS)},
         }
@@ -303,7 +312,7 @@ class OnchainUpdater:
             "last_error": self.last_error,
             "has_snapshot": snap is not None,
             "snapshot_age_s": (
-                (self._monotonic_fn() - snap.fetched_monotonic)
-                if snap and snap.fetched_monotonic is not None else None
+                (self._monotonic_fn() - snap.fast_fetched_monotonic)
+                if snap and snap.fast_fetched_monotonic is not None else None
             ),
         }

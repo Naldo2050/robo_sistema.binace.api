@@ -46,6 +46,7 @@ class CompactAIPayload(TypedDict, total=False):
     vwap: PayloadSection
     liq: PayloadSection
     liq_scope: PayloadSection
+    onchain: PayloadSection
     sm: PayloadSection
     cvd_div: PayloadSection
     mr: PayloadSection
@@ -95,6 +96,7 @@ COMPACT_AI_ALLOWED_ROOT_KEYS: frozenset[str] = frozenset(
         "vwap",
         "liq",
         "liq_scope",
+        "onchain",
         "sm",
         "cvd_div",
         "mr",

@@ -87,6 +87,51 @@ def _filter_real_onchain(onchain: dict) -> dict:
     return {k: v for k, v in onchain.items() if k in _REAL_ONCHAIN_FIELDS or v not in (0, None)}
 
 
+# Fonte canônica do payload (nunca HTTP). last_error/monotonic NUNCA saem daqui.
+ONCHAIN_SOURCE = "blockchain.info+mempool.space"
+
+_ONCHAIN_SEVERITY = {"fresh": 0, "stale": 1, "warming_up": 2, "unavailable": 3}
+
+
+def derive_onchain_status(view: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Deriva bloco de status a partir da visão do snapshot.
+
+    Retorna {overall, age_seconds, groups, source}. Ausência => warming_up.
+    last_error e selos monotonic ficam FORA (internos).
+    """
+    empty_groups = {
+        "fast": {"status": "warming_up", "age_seconds": None},
+        "slow": {"status": "warming_up", "age_seconds": None},
+    }
+    if not view:
+        return {
+            "overall": "warming_up",
+            "age_seconds": None,
+            "groups": empty_groups,
+            "source": ONCHAIN_SOURCE,
+        }
+    groups = {}
+    for name in ("fast", "slow"):
+        g = view.get(name) or {}
+        groups[name] = {
+            "status": g.get("status", "unavailable"),
+            "age_seconds": g.get("age_seconds"),
+        }
+    overall = max(
+        (groups["fast"]["status"], groups["slow"]["status"]),
+        key=lambda s: _ONCHAIN_SEVERITY.get(s, 3),
+    )
+    ages = [a for a in (groups["fast"]["age_seconds"],
+                        groups["slow"]["age_seconds"])
+            if isinstance(a, (int, float))]
+    return {
+        "overall": overall,
+        "age_seconds": max(ages) if ages else None,
+        "groups": groups,
+        "source": ONCHAIN_SOURCE,
+    }
+
+
 class DataEnricher:
     """
     Enriquecedor de dados baseado APENAS no raw_event atual.
@@ -237,6 +282,13 @@ class DataEnricher:
                 "adaptive_thresholds": adaptive_thresholds,
                 "onchain_metrics": _onchain,
             }
+            # FASE C: freshness onchain explícita (status/idade/fonte).
+            # last_error e selos monotonic NUNCA entram no evento/payload.
+            _oc_status = derive_onchain_status(self._last_onchain_view)
+            advanced_analysis["onchain_status"] = _oc_status["overall"]
+            advanced_analysis["onchain_age_seconds"] = _oc_status["age_seconds"]
+            advanced_analysis["onchain_freshness"] = _oc_status["groups"]
+            advanced_analysis["onchain_source"] = _oc_status["source"]
             # FIX 4.1: Só incluir options_metrics se tiver dados reais
             if _options and _options.get("is_real_data"):
                 advanced_analysis["options_metrics"] = _options
