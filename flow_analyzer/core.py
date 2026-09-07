@@ -1355,11 +1355,17 @@ class FlowAnalyzer(IFlowAnalyzer):
                 clusters = self.liquidity_heatmap.get_clusters(top_n=5)
                 supports, resistances = self.liquidity_heatmap.get_support_resistance()
             
+            # Escopo explícito: clusters agregam rolling window de N trades
+            # (NÃO são o volume da janela atual de ~60s). Lido da instância,
+            # nunca hardcoded — acompanha LHM_WINDOW_SIZE configurado.
+            scope_size = getattr(self.liquidity_heatmap, "window_size", None)
             return {
                 "clusters": clusters or [],
                 "supports": sorted(set(supports)) if supports else [],
                 "resistances": sorted(set(resistances)) if resistances else [],
                 "clusters_count": len(clusters) if clusters else 0,
+                "scope_type": "rolling_trades",
+                "scope_size": int(scope_size) if scope_size else None,
             }
         except Exception as e:
             if lazy_log.should_log("heatmap_get_error"):

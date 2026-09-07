@@ -1361,6 +1361,20 @@ def _build_liquidity_clusters(event_data: dict) -> list:
     return result
 
 
+def _build_liquidity_scope(event_data: dict) -> dict:
+    """
+    Escopo do heatmap de liquidez — rolling window de N trades, NÃO a janela atual.
+    Fonte: fluxo_continuo.liquidity_heatmap (scope_type/scope_size do FlowAnalyzer).
+    """
+    fluxo = event_data.get("fluxo_continuo", {})
+    heatmap = fluxo.get("liquidity_heatmap", {})
+    scope_type = heatmap.get("scope_type")
+    scope_size = heatmap.get("scope_size")
+    if scope_type is None and scope_size is None:
+        return {}
+    return {"scope_type": scope_type, "scope_size": scope_size}
+
+
 def _build_smart_money_score(event_data: dict) -> dict:
     """
     Smart Money Score — footprint institucional agregado.
@@ -1891,6 +1905,10 @@ def build_compact_payload(
     liq_clusters = _build_liquidity_clusters(event_data)
     if liq_clusters:
         payload["liq"] = liq_clusters
+
+    liq_scope = _build_liquidity_scope(event_data)
+    if liq_scope:
+        payload["liq_scope"] = liq_scope
 
     sm_score = _build_smart_money_score(event_data)
     if sm_score:

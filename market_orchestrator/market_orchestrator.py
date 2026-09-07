@@ -25,7 +25,7 @@ from collections import deque
 import signal
 import atexit
 import asyncio
-from typing import TYPE_CHECKING, Any, Dict, Optional, List
+from typing import TYPE_CHECKING, Any, Dict, Optional, List, Union
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import config
@@ -249,6 +249,7 @@ class EnhancedMarketBot:
         context_sma_period: int,
         liquidity_flow_alert_percentage: float,
         wall_std_dev_factor: float,
+        dump_raw_trades: Optional[Union[str, bool, Path]] = None,
     ) -> None:
         self.symbol = symbol
         self.window_size_minutes = window_size_minutes
@@ -256,6 +257,23 @@ class EnhancedMarketBot:
         self.ny_tz = NY_TZ
         self.should_stop = False
         self.is_cleaning_up = False
+
+        # Persistência opcional de trades brutos (dump JSONL para Item 8 / validação p99 whale)
+        self.dump_raw_trades_path: Optional[Path] = None
+        self._raw_trades_file = None
+        self._raw_trades_lock = threading.Lock()
+        if dump_raw_trades:
+            if isinstance(dump_raw_trades, (str, Path)):
+                self.dump_raw_trades_path = Path(dump_raw_trades)
+            else:
+                self.dump_raw_trades_path = Path("dados/trades_collect_2h.jsonl")
+            try:
+                self.dump_raw_trades_path.parent.mkdir(parents=True, exist_ok=True)
+                self._raw_trades_file = open(self.dump_raw_trades_path, "a", encoding="utf-8", buffering=1)
+                logging.info(f"💾 Persistência de trades brutos habilitada: {self.dump_raw_trades_path}")
+            except Exception as e:
+                logging.error(f"❌ Falha ao abrir arquivo de dump de trades: {e}")
+                self._raw_trades_file = None
 
         # Locks e sinalização de shutdown/cleanup
         self._cleanup_lock = threading.Lock()
@@ -915,6 +933,25 @@ class EnhancedMarketBot:
                     self.health_monitor.heartbeat("trade_ingestion")
                 except Exception:
                     pass
+
+            # Grava trade bruto em JSONL se configurado
+            if self._raw_trades_file is not None:
+                try:
+                    with self._raw_trades_lock:
+                        trade_line = json.dumps({
+                            "trade_id": trade_id,
+                            "timestamp": T,
+                            "price": p,
+                            "quantity": q,
+                            "is_buyer_maker": bool(m),
+                            "source": source,
+                            "p": p,
+                            "q": q,
+                            "T": T,
+                        })
+                        self._raw_trades_file.write(trade_line + "\n")
+                except Exception as e_dump:
+                    logging.debug(f"Erro ao escrever trade no dump JSONL: {e_dump}")
 
             # 8) Controle de janelas
             if self.window_end_ms is None:
@@ -2014,8 +2051,10 @@ class EnhancedMarketBot:
             clusters = liquidity_data.get("clusters", [])
 
             if clusters:
+                scope_size = liquidity_data.get("scope_size", "?")
                 logging.info(
-                    "📊 LIQUIDITY HEATMAP - Janela #%s:",
+                    "📊 LIQUIDITY HEATMAP rolling(%s trades) @ Janela #%s:",
+                    scope_size,
                     self.window_count,
                 )
 
@@ -2520,6 +2559,16 @@ class EnhancedMarketBot:
         try:
             if hasattr(self, "feature_store") and self.feature_store is not None:
                 self.feature_store.close()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "_raw_trades_file") and self._raw_trades_file is not None:
+                with self._raw_trades_lock:
+                    self._raw_trades_file.flush()
+                    self._raw_trades_file.close()
+                    self._raw_trades_file = None
+                logging.info("💾 Arquivo de dump de trades brutos encerrado com sucesso.")
         except Exception:
             pass
 
