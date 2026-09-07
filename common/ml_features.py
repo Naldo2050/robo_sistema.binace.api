@@ -13,6 +13,7 @@ ml_features.py v2.0.0 - CORRIGIDO
 from __future__ import annotations
 from typing import Dict, List, Any, Optional
 import logging
+import math
 from datetime import datetime
 import asyncio
 
@@ -328,49 +329,53 @@ def calculate_microstructure_features(
     # ========================================
     # 2. 🆕 FLOW IMBALANCE (COM LOGS)
     # ========================================
+    # B-P0-2: ausente permanece ausente. Derivar magnitude extrema (+/-1)
+    # de outro indicador (net_flow/bsr) é corrupção silenciosa; e o cast
+    # antigo `float(dict)` do buy_sell_ratio caía no except => 0.0 neutro.
+    def _finite_number(value):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        return v if math.isfinite(v) else None
+
     try:
         fm = flow_metrics or {}
-        
-        # Tenta pegar de order_flow primeiro
+
+        # Tenta pegar de order_flow primeiro (observado; nunca derivado)
         if "order_flow" in fm and isinstance(fm["order_flow"], dict):
             of = fm["order_flow"]
-            
-            # 🆕 Usa flow_imbalance se disponível
+
             if "flow_imbalance" in of:
-                features["flow_imbalance"] = float(of["flow_imbalance"])
-            else:
-                # Calcula via net_flow
-                net_flow = float(of.get("net_flow_1m", 0.0) or 0.0)
-                bsr = float(of.get("buy_sell_ratio", 0.0) or 0.0)
-                
-                # Aproximação: total ≈ |net| / max(ratio - 1, eps) para ratio > 1
-                if bsr > 1:
-                    total_flow = abs(net_flow) / max(bsr - 1, 1e-9)
-                elif bsr > 0:
-                    total_flow = abs(net_flow) / max(1 - bsr, 1e-9)
-                else:
-                    total_flow = abs(net_flow)
-                
-                features["flow_imbalance"] = float(net_flow / total_flow) if total_flow > 0 else 0.0
+                v = _finite_number(of["flow_imbalance"])
+                if v is not None:
+                    features["flow_imbalance"] = v
+                # ausente/inválido => chave omitida (missing permanece missing)
+            # SEM derivação via net_flow/buy_sell_ratio (B-P0-2).
         else:
-            # Fallback: sector_flow
+            # Fallback: sector_flow observado (soma real; vazio => omitido)
             sector_flow = fm.get("sector_flow", {}) if isinstance(fm, dict) else {}
-            buy_total = float(sum(
-                float(v.get("buy", 0.0) or 0.0) 
-                for v in sector_flow.values()
-            ))
-            sell_total = float(sum(
-                float(v.get("sell", 0.0) or 0.0) 
-                for v in sector_flow.values()
-            ))
-            net_flow = buy_total - sell_total
-            total_flow = buy_total + sell_total
-            
-            features["flow_imbalance"] = float(net_flow / total_flow) if total_flow > 0 else 0.0
-            
+            pairs = []
+            for v in sector_flow.values():
+                if not isinstance(v, dict):
+                    continue
+                b = _finite_number(v.get("buy"))
+                s = _finite_number(v.get("sell"))
+                if b is not None and s is not None:
+                    pairs.append((b, s))
+            if pairs:
+                buy_total = sum(b for b, _ in pairs)
+                sell_total = sum(s for _, s in pairs)
+                total_flow = buy_total + sell_total
+                if total_flow > 0:
+                    features["flow_imbalance"] = float(
+                        (buy_total - sell_total) / total_flow
+                    )
+            # sem pares finitos => chave omitida
+
     except Exception as e:
         logging.error(f"❌ Erro ao calcular flow_imbalance: {e}")
-        features["flow_imbalance"] = 0.0
+        # Exceção = desconhecido, nunca 0.0 (chave omitida).
 
     # ========================================
     # 3. 🆕 TICK RULE SUM (CORRIGIDO!)
