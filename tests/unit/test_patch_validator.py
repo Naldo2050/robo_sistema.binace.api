@@ -1,3 +1,4 @@
+import ast
 import sys
 sys.path.insert(0, ".")
 
@@ -46,7 +47,7 @@ for zone_input, expected in test_cases:
         "sentiment": "bullish",
         "confidence": 0.8,
         "action": "buy",
-        "entry_zone": eval(zone_input) if zone_input != 'null' else None,
+        "entry_zone": ast.literal_eval(zone_input) if zone_input != 'null' else None,
         "invalidation_zone": None
     }
     valid, err = validate_json_structure(data)
