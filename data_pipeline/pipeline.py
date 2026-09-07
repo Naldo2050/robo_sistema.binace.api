@@ -58,6 +58,7 @@ class DataPipeline:
         shared_adaptive: bool = True,
         validator: Optional[TradeValidator] = None,
         metrics_processor: Optional[MetricsProcessor] = None,
+        onchain_updater=None,
     ) -> None:
         """
         Inicializa pipeline.
@@ -70,6 +71,8 @@ class DataPipeline:
             shared_adaptive: Se True, usa thresholds adaptativos compartilhados
             validator: Validador customizado (opcional, para DI)
             metrics_processor: Processador de métricas customizado (opcional, para DI)
+            onchain_updater: Updater onchain do bot (opcional, para DI).
+                None => onchain unavailable, sem HTTP.
         """
         self.symbol = symbol
         self.config = config or PipelineConfig.from_config_file()
@@ -129,7 +132,9 @@ class DataPipeline:
         except Exception:
             config_dict = {}
 
-        self._data_enricher = DataEnricher(config_dict)
+        self._data_enricher = DataEnricher(
+            config_dict, onchain_updater=onchain_updater
+        )
 
         # Dados
         self.df: Optional[pd.DataFrame] = None

@@ -89,6 +89,7 @@ except ImportError:
 from orderbook_analyzer import OrderBookAnalyzer
 from events.event_saver import EventSaver
 from fetchers.context_collector import ContextCollector
+from fetchers.onchain_updater import OnchainUpdater
 from flow_analyzer import FlowAnalyzer
 from market_analysis.levels_registry import LevelRegistry
 from data_processing.data_validator import validator
@@ -310,6 +311,10 @@ class EnhancedMarketBot:
         self.min_trades_for_pipeline = getattr(
             config, "MIN_TRADES_FOR_PIPELINE", 10
         )
+
+        # FASE B: bot possui exatamente 1 OnchainUpdater. O refresh onchain
+        # roda fora do hot path; a janela só lê snapshot (DI explícita).
+        self.onchain_updater = OnchainUpdater()
 
         self._loop = None
         self._initialized = False
@@ -2394,6 +2399,14 @@ class EnhancedMarketBot:
 
         logging.info("✅ WindowProcessor iniciado | windows=%s", windows_min)
 
+        # OnchainUpdater: refresh em background (não-bloqueante; a janela
+        # nunca espera rede — lê snapshot, warming_up até o 1º fetch).
+        try:
+            if getattr(self, "onchain_updater", None) is not None:
+                self.onchain_updater.start()
+        except Exception as e:
+            logging.warning(f"⚠️ Falha ao iniciar OnchainUpdater (não-crítico): {e}")
+
         # Pre-popular histórico OHLC para habilitar indicadores avançados imediatamente
         await self._prefetch_ohlc_history()
 
@@ -2499,6 +2512,12 @@ class EnhancedMarketBot:
         try:
             if self.context_collector:
                 self.context_collector.stop()
+        except Exception:
+            pass
+
+        try:
+            if getattr(self, "onchain_updater", None) is not None:
+                self.onchain_updater.stop()
         except Exception:
             pass
 

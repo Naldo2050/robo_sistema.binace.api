@@ -587,6 +587,7 @@ def process_window_snapshot(
                     valid_window_data,
                     bot.symbol,
                     time_manager=bot.time_manager,
+                    onchain_updater=getattr(bot, "onchain_updater", None),
                 )
             except ValueError as ve:
                 logging.error(

@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import logging
-import asyncio
 
 # Importar métricas do sistema
 try:
@@ -41,16 +40,9 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Importar fetchers reais
-try:
-    from fetchers.onchain_fetcher import OnchainFetcher
-    _ONCHAIN_FETCHER = OnchainFetcher()
-    _ONCHAIN_OK = True
-except ImportError:
-    _ONCHAIN_OK = False
-    _ONCHAIN_FETCHER = None
-    logger.warning("onchain_fetcher indisponível, usando dados parciais")
-
+# Updater onchain (FASE B): a janela NUNCA faz HTTP. O refresh roda no
+# OnchainUpdater (background); aqui só lemos snapshot. Sem updater anexado,
+# onchain fica unavailable (sem rede, sem threads).
 try:
     from fetchers.funding_aggregator import FundingAggregator
     _FUNDING_AGG = FundingAggregator()
@@ -105,7 +97,7 @@ class DataEnricher:
     - Fallback matemático robusto baseado em volatilidade
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], onchain_updater=None):
         self.config = config
         self.symbol = config.get("SYMBOL", "BTCUSDT")
 
@@ -114,6 +106,10 @@ class DataEnricher:
         self.min_vol_factor = config.get("MIN_VOL_FACTOR", 0.5)
         self.max_vol_factor = config.get("MAX_VOL_FACTOR", 2.0)
         self._cached_historical_vp = None
+        # FASE B: updater injetado (bot possui exatamente 1). None =>
+        # onchain unavailable, SEMPRE sem HTTP e sem threads.
+        self._onchain_updater = onchain_updater
+        self._last_onchain_view: Optional[Dict[str, Any]] = None
 
     def enrich_from_raw_event(self, raw_event: Dict[str, Any]) -> Dict[str, Any]:
         inner = raw_event.get("raw_event") if isinstance(raw_event.get("raw_event"), dict) else {}
@@ -663,27 +659,42 @@ class DataEnricher:
     #   ON-CHAIN
     # ──────────────────────────────────────────────────────────────────────
 
-    def _build_onchain_metrics(self) -> Dict[str, Any]:
-        if _ONCHAIN_OK and _ONCHAIN_FETCHER is not None:
-            try:
-                try:
-                    asyncio.get_running_loop()
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        future = pool.submit(asyncio.run, _ONCHAIN_FETCHER.fetch_all())
-                        return future.result(timeout=15)
-                except RuntimeError:
-                    return asyncio.run(_ONCHAIN_FETCHER.fetch_all())
-            except Exception as e:
-                logger.warning(f"Falha ao buscar on-chain real: {e}")
+    @property
+    def last_onchain_view(self) -> Optional[Dict[str, Any]]:
+        """Última visão do snapshot (status/idade por grupo; seam p/ Fase C)."""
+        return self._last_onchain_view
 
-        return {
-            "hash_rate": 0,
-            "difficulty": 0,
-            "mempool_size": 0,
-            "is_real_data": False,
-            "status": "fetcher_unavailable",
-        }
+    def _read_onchain_view(self) -> Optional[Dict[str, Any]]:
+        """Lê snapshot do updater. Puro dict, sem I/O, sem threads."""
+        updater = self._onchain_updater
+        if updater is None:
+            return None
+        try:
+            return updater.read_view()
+        except Exception as e:
+            logger.debug(f"Falha ao ler snapshot onchain: {e}")
+            return None
+
+    def _build_onchain_metrics(self) -> Dict[str, Any]:
+        # FASE B: só valores elegíveis (fresh/stale) do snapshot. Grupos
+        # unavailable/warming_up contribuem com NADA (nem null aqui — a
+        # ausência é representada pela falta da chave; Fase C propaga status).
+        # NUNCA faz HTTP.
+        try:
+            view = self._read_onchain_view()
+        except Exception as e:
+            logger.debug(f"Falha ao ler snapshot onchain: {e}")
+            view = None
+        self._last_onchain_view = view
+        if not view:
+            return {}
+        values: Dict[str, Any] = {}
+        for group in ("fast", "slow"):
+            g = view.get(group) or {}
+            if g.get("status") in ("fresh", "stale"):
+                vals = g.get("values") or {}
+                values.update({k: v for k, v in vals.items() if v is not None})
+        return values
 
     # ──────────────────────────────────────────────────────────────────────
     #   ADAPTIVE THRESHOLDS

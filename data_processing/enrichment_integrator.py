@@ -61,12 +61,16 @@ def build_analysis_trigger_event(symbol: str, raw_event: Dict[str, Any]) -> Dict
 
 
 def enrich_analysis_trigger_event(
-    event: Dict[str, Any], config_dict: Dict[str, Any]
+    event: Dict[str, Any],
+    config_dict: Dict[str, Any],
+    onchain_updater=None,
 ) -> Dict[str, Any]:
     """
     Enriquece um evento ANALYSIS_TRIGGER adicionando raw_event.advanced_analysis.
 
     Chamar logo após montar o raw_event.
+
+    onchain_updater: updater do bot (DI). None => onchain unavailable, sem HTTP.
     """
     try:
         tipo = event.get("tipo_evento") or event.get("type")
@@ -85,7 +89,9 @@ def enrich_analysis_trigger_event(
         if "advanced_analysis" in raw_event and isinstance(raw_event["advanced_analysis"], dict):
             advanced = raw_event["advanced_analysis"]
         else:
-            enricher = DataEnricher(config_dict)
+            enricher = DataEnricher(
+                config_dict, onchain_updater=onchain_updater
+            )
             # Usar a nova função que calcula usando raw_event EXTERNO
             # CORREÇÃO: Capturar retorno e garantir atualização
             updated_event = enricher.enrich_event_with_advanced_analysis(event)

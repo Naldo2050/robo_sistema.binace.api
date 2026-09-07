@@ -103,7 +103,11 @@ def process_signals(
     config_dict = {k: v for k, v in vars(config).items() if not k.startswith("__")}
     for signal in signals:
         if signal.get("tipo_evento") == "ANALYSIS_TRIGGER":
-            signal = enrich_analysis_trigger_event(signal, config_dict)
+            signal = enrich_analysis_trigger_event(
+                signal,
+                config_dict,
+                onchain_updater=getattr(bot, "onchain_updater", None),
+            )
 
     # --------------------------------------------------------
     # Log do heatmap de liquidez (igual ao original)
