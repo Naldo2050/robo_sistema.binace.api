@@ -561,9 +561,12 @@ class InstitutionalAnalyticsEngine:
         # #14 — Passive/Aggressive Flow
         try:
             from flow_analyzer.aggregates import analyze_passive_aggressive_flow
+            # P1-B: propaga ausência/status honestamente (sem .get 50).
             flow_input = {
-                "aggressive_buy_pct": order_flow.get("aggressive_buy_pct", 50),
-                "aggressive_sell_pct": order_flow.get("aggressive_sell_pct", 50),
+                "aggressive_buy_pct": order_flow.get("aggressive_buy_pct"),
+                "aggressive_sell_pct": order_flow.get("aggressive_sell_pct"),
+                "aggressive_status": order_flow.get("aggressive_status"),
+                "aggressive_sample_count": order_flow.get("aggressive_sample_count"),
                 "buy_volume_btc": order_flow.get("buy_volume_btc", 0),
                 "sell_volume_btc": order_flow.get("sell_volume_btc", 0),
                 "flow_imbalance": order_flow.get("flow_imbalance", 0),

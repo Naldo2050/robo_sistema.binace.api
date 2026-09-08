@@ -962,11 +962,22 @@ def _build_passive_flow(event: dict) -> dict:
     Fonte primária: orderbook depth (bid_depth vs ask_depth).
     Fallback: inversão do aggressive pct.
     """
-    flow = _get_nested(event, "fluxo_continuo", "order_flow") or {}
-    agg_buy = flow.get("aggressive_buy_pct", 50.0) or 50.0
-    agg_sell = flow.get("aggressive_sell_pct", 50.0) or 50.0
+    # P1-B: presença explícita + finiteness + aggressive_status.
+    # 0.0/50.0/100.0 reais preservados (`or 50.0` os destruía e o gate
+    # `!= 50` abaixo estava morto: missing já chegava como 50.0).
+    def _finite_pct(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        fv = float(value)
+        return fv if math.isfinite(fv) else None
 
-    # Fonte primária: orderbook depth (quem tem mais liquidez passiva)
+    flow = _get_nested(event, "fluxo_continuo", "order_flow") or {}
+    status = flow.get("aggressive_status")
+    agg_buy = _finite_pct(flow.get("aggressive_buy_pct"))
+    agg_sell = _finite_pct(flow.get("aggressive_sell_pct"))
+
+    # Fonte primária: orderbook depth (quem tem mais liquidez passiva).
+    # Independente do agressivo (ver test_B2_*): vale mesmo sem pcts.
     ob = event.get("orderbook_data", {}) or {}
     bid_depth = ob.get("bid_depth_usd", 0) or 0
     ask_depth = ob.get("ask_depth_usd", 0) or 0
@@ -976,18 +987,20 @@ def _build_passive_flow(event: dict) -> dict:
         # Bids são passive buyers, asks são passive sellers
         passive_buy_pct = round(bid_depth / depth_total * 100, 1)
         passive_sell_pct = round(100 - passive_buy_pct, 1)
-    elif agg_buy != 50.0 or agg_sell != 50.0:
-        # Fallback: passive = inversão do aggressive
-        # Se agg_sell=85%, passive_buy=85% (compradores absorvendo)
-        passive_buy_pct = round(agg_sell, 1)
-        passive_sell_pct = round(agg_buy, 1)
-    else:
-        passive_buy_pct = 50.0
-        passive_sell_pct = 50.0
-
+        return {
+            "passive_buy_pct": passive_buy_pct,
+            "passive_sell_pct": passive_sell_pct,
+        }
+    if agg_buy is None or agg_sell is None:
+        return {}
+    if status is not None and status != "observed":
+        return {}
+    # Fallback: passive = inversão do aggressive observado
+    # (ou legado com pcts finitos e sem status).
+    # Se agg_sell=85%, passive_buy=85% (compradores absorvendo)
     return {
-        "passive_buy_pct": passive_buy_pct,
-        "passive_sell_pct": passive_sell_pct,
+        "passive_buy_pct": round(agg_sell, 1),
+        "passive_sell_pct": round(agg_buy, 1),
     }
 
 
