@@ -60,11 +60,23 @@ def test_9_insufficient_n_is_unknown():
                   "btc_dxy_corr_30d_n": 30}) == CorrelationRegime.MACRO_CORRELATED
 
 
-def test_10_stale_unavailable_snapshot_is_unknown():
-    # o que o builder encaminha quando o snapshot está stale (NaN) ou
-    # unavailable (ausente): nunca pode virar zero observado.
+def test_10_insufficient_unavailable_is_unknown():
+    # NaN = insufficient computado (n < min); chave ausente = unavailable.
+    # Nunca podem virar zero observado. Nomes honestos: este teste NÃO
+    # reproduz stale-com-valores (ver test_11).
     assert _corr({"btc_dxy_corr_30d": float("nan")}) == CorrelationRegime.UNKNOWN
     assert _corr({"correlation_spy": None}) == CorrelationRegime.UNKNOWN
+
+
+def test_11_stale_usable_with_values_stays_numeric():
+    # stale_usable (E3-B): snapshot stale preserva values completos e o
+    # builder encaminha {correlation_spy: None, btc_dxy_corr_30d: <float>,
+    # btc_dxy_corr_30d_n: <int>} — freshness/status NÃO descem ao detector.
+    # Com valor finito + n>=min, stale continua evidência numérica.
+    assert _corr({"correlation_spy": None, "btc_dxy_corr_30d": -0.45,
+                  "btc_dxy_corr_30d_n": 30}) == CorrelationRegime.MACRO_CORRELATED
+    assert _corr({"correlation_spy": None, "btc_dxy_corr_30d": 0.05,
+                  "btc_dxy_corr_30d_n": 30}) == CorrelationRegime.CRYPTO_NATIVE
 
 
 def test_json_safe_nan_does_not_recreate_zero():
