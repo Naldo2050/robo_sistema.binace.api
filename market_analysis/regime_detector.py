@@ -20,6 +20,7 @@ class CorrelationRegime(Enum):
     MACRO_CORRELATED = "MACRO_CORRELATED"     # BTC seguindo macro
     CRYPTO_NATIVE = "CRYPTO_NATIVE"           # BTC descolado
     INVERSE_MACRO = "INVERSE_MACRO"           # BTC inverso ao macro
+    UNKNOWN = "UNKNOWN"  # P1-A: sem evidência (ausente/nonfinite/insuficiente)
 
 
 class VolatilityRegime(Enum):
@@ -228,26 +229,64 @@ class EnhancedRegimeDetector:
         
         return score / max(weights_used, 1)
     
+    @staticmethod
+    def _evidenced_corr(cross_asset: Dict, key: str) -> Optional[float]:
+        """Float finito E com amostra suficiente, ou None (sem evidência).
+
+        P1-A: 0.0 observado é evidência válida; None/ausente/NaN/±Inf ou
+        n < CORR_MIN_POINTS => None. Nunca `or 0` (json_safe transforma
+        NaN em None, e o `or 0` antigo refazia o zero aqui).
+        """
+        try:
+            from market_analysis.cross_asset_correlations import (
+                CORR_MIN_POINTS,
+            )
+        except ImportError:
+            CORR_MIN_POINTS = 10
+        value = cross_asset.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if value != value or value in (float("inf"), float("-inf")):
+            return None
+        n = cross_asset.get(f"{key}_n")
+        if n is not None:
+            try:
+                if int(n) < int(CORR_MIN_POINTS):
+                    return None
+            except (TypeError, ValueError):
+                return None
+        return float(value)
+
     def _analyze_correlation_regime(
-        self, 
+        self,
         cross_asset: Dict
     ) -> CorrelationRegime:
         """Determina se BTC está seguindo macro ou não"""
-        
-        spy_corr = cross_asset.get("correlation_spy") or 0
-        dxy_corr = cross_asset.get("btc_dxy_corr_30d") or 0
-        
+        if cross_asset is None:
+            return CorrelationRegime.UNKNOWN
+
+        spy_corr = self._evidenced_corr(cross_asset, "correlation_spy")
+        dxy_corr = self._evidenced_corr(cross_asset, "btc_dxy_corr_30d")
+
+        # Sem evidência em nenhum indicador => UNKNOWN (nunca neutral inventado)
+        if spy_corr is None and dxy_corr is None:
+            return CorrelationRegime.UNKNOWN
+
         # Se correlação com SPY forte (>0.5 ou <-0.5)
-        if abs(spy_corr) > 0.5:
+        if spy_corr is not None and abs(spy_corr) > 0.5:
             if spy_corr > 0:
                 return CorrelationRegime.MACRO_CORRELATED
             else:
                 return CorrelationRegime.INVERSE_MACRO
-        
-        # Se correlação fraca com tudo
-        if abs(spy_corr) < 0.2 and abs(dxy_corr) < 0.2:
-            return CorrelationRegime.CRYPTO_NATIVE
-        
+
+        # Se correlação fraca com tudo (apenas entre evidências)
+        weak_spy = spy_corr is not None and abs(spy_corr) < 0.2
+        weak_dxy = dxy_corr is not None and abs(dxy_corr) < 0.2
+        if (spy_corr is None or weak_spy) and (dxy_corr is None or weak_dxy):
+            if spy_corr is not None or dxy_corr is not None:
+                return CorrelationRegime.CRYPTO_NATIVE
+            return CorrelationRegime.UNKNOWN
+
         return CorrelationRegime.MACRO_CORRELATED
     
     def _analyze_dominance(self, macro_data: Dict) -> float:

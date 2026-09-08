@@ -770,9 +770,11 @@ def build_ai_input(
             }
 
             # Dados de cross_asset reais para correlações
+            # P1-A: n acompanha o valor p/ o detector exigir amostra suficiente.
             cross_asset_features = {
                 "correlation_spy": market_environment.get("correlation_spy"),
                 "btc_dxy_corr_30d": market_environment.get("correlation_dxy") or _cross.get("btc_dxy_corr_30d"),
+                "btc_dxy_corr_30d_n": _cross.get("btc_dxy_corr_30d_n"),
                 "dxy_momentum": _dxy_mom,
             }
             
