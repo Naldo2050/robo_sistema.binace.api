@@ -555,6 +555,28 @@ def _map_correlations_to_features(correlations: Dict[str, Any]) -> Dict[str, Any
     features["macro_regime"] = correlations.get("macro_regime", "UNKNOWN")
     features["correlation_regime"] = correlations.get("correlation_regime", "UNKNOWN")
 
+    # Contrato temporal v2 (F5-C): método/instrumento/N viajam junto da feature
+    # para versionamento e filtro futuro. Linhas antigas (sem as chaves) =
+    # positional_v1. Numerics (n/versão) sobrevivem ao frame de treino;
+    # strings (método/instrumento) ficam no parquet para filtragem.
+    # Cross-asset CONTINUA BLOQUEADO para treinamento ML.
+    features["cross_asset_method"] = correlations.get("correlation_method")
+    features["cross_asset_contract_version"] = correlations.get(
+        "correlation_contract_version", 1)
+    for _key in ("btc_eth_corr_7d_n", "btc_eth_corr_30d_n",
+                 "btc_dxy_corr_30d_n", "btc_dxy_corr_90d_n",
+                 "btc_ndx_corr_30d_n"):
+        if _key in correlations:
+            features[_key] = correlations[_key]
+    if "btc_dxy_instrument" in correlations:
+        features["btc_dxy_instrument"] = correlations["btc_dxy_instrument"]
+    if "nasdaq_instrument" in correlations:
+        features["nasdaq_instrument"] = correlations["nasdaq_instrument"]
+    if "nasdaq_role" in correlations:
+        features["nasdaq_role"] = correlations["nasdaq_role"]
+    if "btc_eth_instrument" in correlations:
+        features["btc_eth_instrument"] = correlations["btc_eth_instrument"]
+
     logging.debug(f"✅ Features cross-asset mapeadas: {len(features)} features")
 
     return features

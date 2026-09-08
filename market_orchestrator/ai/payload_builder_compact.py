@@ -1428,15 +1428,25 @@ def _build_onchain(event_data: dict) -> dict:
 
 def _build_cross(event_data: dict) -> dict:
     """
-    Freshness cross-asset — status/idade do snapshot (E3-B).
-    Fonte: ml_features.cross_asset_status/cross_asset_age_seconds.
+    Freshness + método cross-asset — status/idade do snapshot (E3-B) mais
+    contrato temporal v2 (F5-C): method/n/instrumentos.
+    Fonte: ml_features.cross_asset_status/cross_asset_age_seconds/cross_asset.
     Valores permanecem onde já estavam (ctx.eth7/dxy30, ml cross_asset).
-    Ausente no caminho legado (compat: chave omitida).
+    Ausente no caminho legado (compat: chave omitida; chaves novas omitidas
+    quando o snapshot não as traz — linhas positional_v1).
     """
     ml = event_data.get("ml_features", {}) or {}
+    cross = ml.get("cross_asset", {}) or {}
     st = ml.get("cross_asset_status")
     age = ml.get("cross_asset_age_seconds")
-    if st is None and age is None:
+    method = cross.get("cross_asset_method")
+    inst_dxy = cross.get("btc_dxy_instrument")
+    inst_ndx = cross.get("nasdaq_instrument")
+    ns = [cross.get(k) for k in ("btc_eth_corr_7d_n", "btc_eth_corr_30d_n",
+                                 "btc_dxy_corr_30d_n", "btc_dxy_corr_90d_n",
+                                 "btc_ndx_corr_30d_n")]
+    ns = [int(v) for v in ns if isinstance(v, (int, float)) and v == v]
+    if st is None and age is None and method is None and not ns:
         return {}
     out: dict[str, Any] = {}
     if st is not None:
@@ -1446,6 +1456,14 @@ def _build_cross(event_data: dict) -> dict:
             out["age"] = round(float(age), 1)
         except (TypeError, ValueError):
             pass
+    if method is not None:
+        out["method"] = str(method)
+    if ns:
+        out["n"] = min(ns)
+    if inst_dxy is not None:
+        out["inst_dxy"] = str(inst_dxy)
+    if inst_ndx is not None:
+        out["inst_ndx"] = str(inst_ndx)
     return out
 
 

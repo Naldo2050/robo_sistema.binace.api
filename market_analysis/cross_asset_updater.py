@@ -21,10 +21,13 @@ Contrato:
     (correlações 7d/30d/90d e valores macro movem-se devagar intradia).
     `age_seconds` (derivada de monotonic no leitor) é a verdade primária.
 
-DÍVIDA TEMPORAL (não corrigir aqui — auditoria futura E4):
-  CROSS_ASSET_TEMPORAL_AUDIT = "pending": o Pearson usa tail posicional
-  entre séries 24/7 e dias úteis sem join por timestamp e pode incluir
-  candle/sessão aberta. Features cross-asset NÃO APROVADAS para treino ML.
+CONTRATO TEMPORAL (F5-C):
+  A matemática agora é shared-session (closes nas mesmas datas, retornos após
+  alinhamento, só sessões com availability <= decision). Cada snapshot carrega
+  correlation_method/correlation_contract_version (2) + n/instrumento por
+  campo; linhas sem a chave são positional_v1 legado — NÃO misturar em treino.
+  CROSS_ASSET_TEMPORAL_AUDIT segue "pending": features cross-asset continuam
+  BLOQUEADAS para treino ML (uso atual: leitura pela IA com method/n visível).
 """
 
 from __future__ import annotations

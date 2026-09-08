@@ -21,6 +21,7 @@ w=whale_score(-100=strong_distribution,+100=strong_accumulation,0=neutral,whale>
 q=quant/ML: pu=probability_up(0-1),c=confidence(0-1)
 tf=timeframes: t=trend(DN/UP/SW),rsi(0-100),macd=[line,signal],adx(0-100),atr=avg_true_range,r=regime(RNG=range,ACC=accumulation,TRD=trending,MNP=manipulation)
 ctx=context(sent every 5min): ses=session,dxy/tnx/spx/ndx/gold/wti/vix=market_prices,fg=fear_greed(0-100),poc/val/vah=volume_profile_daily,lsr=btc_long_short_ratio,eth_lsr=eth_long_short_ratio,oi=btc_open_interest_thousands,eth7=btc_eth_corr_7d,dxy30=btc_dxy_corr_30d
+cross=cross_asset(st=fresh/stale/unavailable,method=shared_session_returns_v2|positional_v1[legacy],n=min_returns_used_for_pearson,inst_dxy/inst_ndx=actual_ticker_used;ndx_field_is_QQQ_or_IXIC_PROXY_never_the_index;positional_v1_values_are_NOT_temporally_aligned_do_not_compare_across_methods)
 pivot_points (evento completo, quando presente): Pivot clássico (H+L+C)/3 do período anterior COMPLETO (iloc[-2]); FIXO durante o dia quando source=classic. Quando source=vp_fallback (dados insuficientes p/ clássico), reflete volume profile INTRADAY PARCIAL (dia atual 00:00Z→agora, muda a cada atualização) — não é pivot clássico fixo. pivot_points NÃO é enviado no payload compacto (ver sr.* e ctx.poc/val/vah).
 sr=defense_zones: r1/r2/s1/s2=[preco,forca], forca(0-100)=CONFLUENCIA de fontes de defesa (orderbook+VP+pivots), NAO proximidade; r*_dist/s*_dist=distancia ao preco; r*_conf/s*_conf=fontes do nivel; def_bias=viés da defesa. ctx.poc/val/vah = Volume Profile diario REAL.
 Number suffixes: K=thousands,M=millions. Always in USD unless noted as BTC. Signs: +=buy/positive,-=sell/negative.
@@ -29,5 +30,5 @@ When ctx is absent, use the last received context values.
 
 # Versão ultra-compacta para economizar tokens no prompt (~60 tokens)
 FIELD_LEGEND_COMPACT: str = """
-KEYS: t=trigger,p=price(c/o/h/l/vw/sh/auc/ph/pl),r=regime(v/tr/st),f=flow(d1/d5/d15=deltaUSD,cvd_4h=BTC[acc4h],sf_w_4h/sf_r_4h=BTC[acc4h],imb[-1sell+1buy],ab=aggBuy%,bsr[>1=buyDom]),ob(b/a=depthUSD,t5),w=whaleScore[-100dist+100accum],q(pu=probUp,c=conf),tf(t=trend,rsi,macd,adx,atr,r=regime),ctx(ses,dxy,tnx,spx,ndx,gold,wti,vix,fg,poc,val,vah,lsr,oi,eth7,dxy30).K=1000,M=1M.+buy/-sell.USD unless BTC noted.No ctx=use last.
+KEYS: t=trigger,p=price(c/o/h/l/vw/sh/auc/ph/pl),r=regime(v/tr/st),f=flow(d1/d5/d15=deltaUSD,cvd_4h=BTC[acc4h],sf_w_4h/sf_r_4h=BTC[acc4h],imb[-1sell+1buy],ab=aggBuy%,bsr[>1=buyDom]),ob(b/a=depthUSD,t5),w=whaleScore[-100dist+100accum],q(pu=probUp,c=conf),tf(t=trend,rsi,macd,adx,atr,r=regime),ctx(ses,dxy,tnx,spx,ndx,gold,wti,vix,fg,poc,val,vah,lsr,oi,eth7,dxy30),cross(st,method,n,inst;ndx=proxy).K=1000,M=1M.+buy/-sell.USD unless BTC noted.No ctx=use last.
 """.strip()
