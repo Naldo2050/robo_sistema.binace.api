@@ -163,6 +163,12 @@ class OnchainUpdater:
         self._snapshot: Optional[OnchainSnapshot] = None
         self._thread: Optional[threading.Thread] = None
         self._stop_requested = threading.Event()
+        # PF-S1: owner loop/task refs para cancelamento real no owner loop.
+        # Guardados por _lifecycle_lock; session.close() SEMPRE no owner loop
+        # (finally de _amain), nunca de thread estranha.
+        self._lifecycle_lock = threading.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._main_task: Optional[asyncio.Task] = None
         # Métricas (observabilidade; last_error NÃO vai ao payload).
         self.updates_total = 0
         self.failures_total = 0
@@ -181,22 +187,86 @@ class OnchainUpdater:
         logger.info("✅ OnchainUpdater iniciado (refresh a cada %.0fs)",
                     self.policy.refresh_interval_s)
 
-    def stop(self, timeout: float = 10.0) -> None:
+    def stop(self, timeout: float = 10.0) -> Dict[str, Any]:
+        """PF-S1: cancelamento real do refresh async + join bounded.
+
+        Retorna status estruturado honesto (nunca finge sucesso):
+        {"clean_shutdown": bool, "thread_alive": bool, "elapsed_ms": int}.
+        Idempotente: stop duplo / nunca iniciado não quebra.
+        """
+        start = time.monotonic()
         self._stop_requested.set()
-        thread, self._thread = self._thread, None
+        with self._lifecycle_lock:
+            thread = self._thread
+            self._thread = None
+            loop = self._loop
+            task = self._main_task
+        if task is not None and loop is not None:
+            try:
+                if not task.done():
+                    loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                # Loop já fechado: thread vai sair sozinha via finally.
+                pass
+            except Exception as e:
+                logger.debug(f"OnchainUpdater cancel falhou (ignorado): {e}")
+        alive = False
         if thread is not None and thread.is_alive():
-            thread.join(timeout=timeout)
-            if thread.is_alive():
-                logger.warning("⚠️ OnchainUpdater thread não parou em %.1fs",
-                               timeout)
+            if thread is not threading.current_thread():
+                thread.join(timeout=timeout)
+                alive = thread.is_alive()
             else:
-                logger.info("🛑 OnchainUpdater parado")
+                alive = True
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        clean = not alive
+        if thread is not None:
+            if alive:
+                logger.warning("⚠️ OnchainUpdater thread não parou em %.1fs "
+                               "(elapsed=%dms, cancel solicitado)",
+                               timeout, elapsed_ms)
+            else:
+                logger.info("🛑 OnchainUpdater parado (elapsed=%dms)", elapsed_ms)
+        return {"clean_shutdown": clean, "thread_alive": alive,
+                "elapsed_ms": elapsed_ms}
 
     def _run(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        with self._lifecycle_lock:
+            # stop() pode ter sido chamado antes do loop ficar ready:
+            # registra o loop cedo para o cancel alcançar a task.
+            self._loop = loop
+            self._main_task = None
+        if self._stop_requested.is_set():
+            with self._lifecycle_lock:
+                self._loop = None
+            try:
+                loop.close()
+            except Exception:
+                pass
+            return
+        task = loop.create_task(self._amain())
+        with self._lifecycle_lock:
+            self._main_task = task
         try:
-            asyncio.run(self._amain())
+            loop.run_until_complete(task)
+        except asyncio.CancelledError:
+            # Cancelamento via stop(): caminho esperado, não é falha.
+            pass
         except Exception as e:
             logger.error(f"❌ OnchainUpdater loop falhou: {e}")
+        finally:
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
+            with self._lifecycle_lock:
+                self._loop = None
+                self._main_task = None
 
     async def _amain(self) -> None:
         connector = aiohttp.TCPConnector(force_close=True,
@@ -211,6 +281,11 @@ class OnchainUpdater:
                     if self._stop_requested.is_set():
                         break
                     await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            # stop() cancelou a task no owner loop: propaga para
+            # run_until_complete observar o cancelamento; finally fecha
+            # a sessão no MESMO loop (nunca de thread estranha).
+            raise
         finally:
             await session.close()
 
@@ -224,6 +299,9 @@ class OnchainUpdater:
             self.last_duration_s = self._monotonic_fn() - start
             self.last_error = None
             return True
+        except asyncio.CancelledError:
+            # Cancelamento de stop(): nunca engolir, nunca contar como falha.
+            raise
         except Exception as e:
             self.failures_total += 1
             self.last_duration_s = self._monotonic_fn() - start
