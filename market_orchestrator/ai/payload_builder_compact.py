@@ -643,6 +643,13 @@ def _build_flow(event_data: dict) -> dict:
     ab = of.get("aggressive_buy_pct")
     if ab is not None:
         flow["ab"] = round(ab)
+    # P1-B: status/amostra p/ distinguir 50/50 observado de ausente.
+    ab_s = of.get("aggressive_status")
+    if ab_s is not None:
+        flow["ab_s"] = str(ab_s)
+    ab_n = of.get("aggressive_sample_count")
+    if isinstance(ab_n, int) and not isinstance(ab_n, bool) and ab_n >= 0:
+        flow["ab_n"] = ab_n
 
     bsr = bsr_data.get("buy_sell_ratio")
     if bsr is not None:

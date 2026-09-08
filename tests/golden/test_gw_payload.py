@@ -92,6 +92,10 @@ def test_gw1_payload_preserves_critical_metadata(frozen_state):
     assert compact["price"]["c"] == int(trades[-1]["p"])
     assert compact["price"]["fr"] == pytest.approx(0.0001)  # P0.1 funding
     assert compact["flow"]["imb"] == pytest.approx(0.0, abs=0.05)
+    # P1-B: observed 50/50 chega como observado (mudança contratual)
+    assert compact["flow"]["ab"] == pytest.approx(50.0)
+    assert compact["flow"]["ab_s"] == "observed"
+    assert compact["flow"]["ab_n"] == 120
     assert compact["cross"]["st"] == "fresh"
     assert compact["cross"]["method"] == "shared_session_returns_v2"
     assert compact["cross"]["n"] == 30
@@ -122,6 +126,19 @@ def test_gw4_payload_missing_stays_missing(frozen_state):
     assert ml_cross == {}
     compact, _, final = _full_chain(_event(spec, fm, trades, ml_cross, status, age))
     assert "fr" not in compact["price"]  # sem funding => sem fr (A3 echo)
+    # P1-B: fluxo da GW4 é observado (120 trades); o missing aqui é externo.
+    # Missing de fluxo (E/F) => sem ab; com status não-observed => ab_s presente
+    # sem ab (a IA distingue). Prova direta:
+    fm2 = dict(fm)
+    fm2["order_flow"] = dict(fm["order_flow"])
+    fm2["order_flow"].pop("aggressive_buy_pct", None)
+    fm2["order_flow"].pop("aggressive_sell_pct", None)
+    fm2["order_flow"]["aggressive_status"] = "insufficient"
+    fm2["order_flow"]["aggressive_sample_count"] = 3
+    compact2, _, _ = _full_chain(_event(spec, fm2, trades, ml_cross, status, age))
+    assert "ab" not in compact2.get("flow", {})
+    assert compact2["flow"]["ab_s"] == "insufficient"
+    assert compact2["flow"]["ab_n"] == 3
     assert compact["cross"]["st"] == "warming_up"
     assert "method" not in compact["cross"]
     assert "n" not in compact["cross"]

@@ -79,6 +79,10 @@ def test_gw1_balanced_math(frozen_state):
     assert of["flow_imbalance"] == pytest.approx(0.0, abs=0.05)
     assert of["buy_sell_ratio"]["pressure"] == "NEUTRAL"
     assert of["buy_sell_ratio"]["buy_sell_ratio"] != 99.0  # sentinela proibida
+    # P1-B: 50/50 observado carrega status + amostra (balanced permitido)
+    assert of["aggressive_status"] == "observed"
+    assert of["aggressive_sample_count"] == 120
+    assert of["aggressive_buy_pct"] == pytest.approx(50.0)
     assert_no_nonfinite(of)
     # heatmap: default produtivo rolling_2000, não instância de teste
     hm = m["liquidity_heatmap"]
@@ -129,6 +133,20 @@ def test_gw2_buy_pressure_math(frozen_state):
     assert ws.flow.pressure_label == "STRONG_BUY"
 
 
+def test_gw4b_flow_missing_contract(frozen_state):
+    """P1-B no Golden: sem trades/insuficiente => status explícito, sem pcts.
+    Mudança intencional de contrato (não 'ficar verde')."""
+    from flow_analyzer.core import FlowAnalyzer as _FA
+
+    clock = FakeClock()
+    flow = _FA(time_manager=clock)
+    m = flow.get_flow_metrics(reference_epoch_ms=1788880000000)["order_flow"]
+    assert m.get("aggressive_status") == "no_volume"
+    assert m.get("aggressive_sample_count") == 0
+    assert "aggressive_buy_pct" not in m
+    assert "aggressive_sell_pct" not in m
+
+
 def test_gw2b_sell_only_legit_zero(frozen_state):
     """Zero observado (sell_only) != missing: ratio 0.0 legítimo preservado."""
     clock = FakeClock()
@@ -142,6 +160,11 @@ def test_gw2b_sell_only_legit_zero(frozen_state):
     assert of["buy_sell_ratio"]["buy_sell_ratio"] == pytest.approx(0.0)
     assert of["buy_sell_ratio"]["ratio_state"] == "sell_only"
     assert of["flow_imbalance"] == pytest.approx(-1.0)  # extremo OBSERVADO
+    # P1-B: 0/100 real também carrega status observed (zero preservado)
+    assert of["aggressive_status"] == "observed"
+    assert of["aggressive_sample_count"] == 5
+    assert of["aggressive_buy_pct"] == pytest.approx(0.0)
+    assert of["aggressive_sell_pct"] == pytest.approx(100.0)
 
 
 def test_gw3_sell_pressure_math(frozen_state):
