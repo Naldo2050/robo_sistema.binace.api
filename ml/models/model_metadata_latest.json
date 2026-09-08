@@ -1,6 +1,11 @@
 {
   "trained_on": "spot",
   "valid_for_futures": false,
+  "training_eligibility": {
+    "futures": false,
+    "reason": "trained_on_spot_n9_requires_retraining_with_feature_ready_gated_data",
+    "requires_retraining": true
+  },
   "created_at": "2025-12-07T23:32:28.852094",
   "model_type": "XGBoost",
   "feature_names": [

@@ -102,3 +102,42 @@ def test_model_metadata_spot_invalidation():
 
     assert meta.get("trained_on") == "spot"
     assert meta.get("valid_for_futures") is False
+
+
+def test_model_metadata_training_eligibility_block():
+    """P1-C2: bloco estruturado de elegibilidade; leitores antigos toleram."""
+    meta_path = Path("ml/models/model_metadata_latest.json")
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+
+    block = meta.get("training_eligibility")
+    assert isinstance(block, dict)
+    assert block.get("futures") is False
+    assert block.get("requires_retraining") is True
+    assert isinstance(block.get("reason"), str) and block["reason"]
+    # chaves antigas intactas (compat)
+    assert meta.get("trained_on") == "spot"
+    assert meta.get("valid_for_futures") is False
+    assert "rsi" in meta.get("feature_names", [])
+
+    from ml.inference_engine import MLInferenceEngine
+    engine = MLInferenceEngine.__new__(MLInferenceEngine)
+    engine.metadata_path = meta_path
+    engine.valid_for_futures = False
+    engine.ml_stale = True
+    engine.metadata = meta
+    assert engine.valid_for_futures is False
+    assert engine.ml_stale is True
+
+
+def test_sanitize_dmatrix_values_inf_never_reaches_model():
+    """P1-C2 trava: ±Inf vira NaN (ausente nativo); resto intacto."""
+    from ml.inference_engine import sanitize_dmatrix_values
+
+    out = sanitize_dmatrix_values(
+        [70000.0, 0.0, 50.0, float("inf"), float("-inf"), float("nan"), 1.0])
+    assert out[0] == 70000.0 and out[1] == 0.0 and out[2] == 50.0
+    assert out[3] != out[3] and out[4] != out[4] and out[5] != out[5]
+    assert out[6] == 1.0
+    for v in out:
+        assert v != float("inf") and v != float("-inf")

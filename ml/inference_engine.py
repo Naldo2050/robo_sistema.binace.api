@@ -23,6 +23,28 @@ from config import settings as config
 logger = logging.getLogger("MLInference")
 
 
+def sanitize_dmatrix_values(values):
+    """Troca ±Inf por NaN (ausente nativo do XGBoost) antes da DMatrix.
+
+    P1-C2 trava: infinito nunca chega ao modelo. NaN passa como missing
+    (mesmo contrato do fallback BB honesto); finitos e bools intactos.
+    """
+    clean = []
+    for v in values:
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            clean.append(v)
+            continue
+        if fv != fv:
+            clean.append(float("nan"))
+        elif fv in (float("inf"), float("-inf")):
+            clean.append(float("nan"))
+        else:
+            clean.append(v)
+    return clean
+
+
 class MLInferenceEngine:
     """
     Carrega o modelo XGBoost treinado e realiza previsões em tempo real.
@@ -530,6 +552,10 @@ class MLInferenceEngine:
 
             # 3. Ordenação conforme treino
             feature_values = [mapped_features[f] for f in self.EXPECTED_FEATURES]
+
+            # P1-C2 trava: ±Inf nunca chega ao XGBoost (vira NaN = ausente
+            # nativo, como já faz o BB honesto). NaN passa como missing.
+            feature_values = sanitize_dmatrix_values(feature_values)
 
             # 4. Criação da DMatrix
             dmatrix = xgb.DMatrix(
