@@ -613,9 +613,24 @@ def analyze_passive_aggressive_flow(
     if not flow_data or not isinstance(flow_data, dict):
         return default
 
-    # --- Fluxo Agressivo (direto dos dados de trades) ---
-    agg_buy_pct = flow_data.get("aggressive_buy_pct", 50)
-    agg_sell_pct = flow_data.get("aggressive_sell_pct", 50)
+    # --- Fluxo Agressivo (P1-B: disponibilidade explícita, nunca default 50) ---
+    # status presente e != observed => unknown/insufficient_data (shape default).
+    # status ausente (legado): classifica se pcts finitos (compat), senão unknown.
+    import math as _math
+
+    def _finite_pct(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        fv = float(value)
+        return fv if _math.isfinite(fv) else None
+
+    agg_status = flow_data.get("aggressive_status")
+    if agg_status is not None and agg_status != "observed":
+        return dict(default)
+    agg_buy_pct = _finite_pct(flow_data.get("aggressive_buy_pct"))
+    agg_sell_pct = _finite_pct(flow_data.get("aggressive_sell_pct"))
+    if agg_buy_pct is None or agg_sell_pct is None:
+        return dict(default)
     buy_vol = flow_data.get("buy_volume_btc", 0) or flow_data.get("buy_volume", 0)
     sell_vol = flow_data.get("sell_volume_btc", 0) or flow_data.get("sell_volume", 0)
     flow_imb = flow_data.get("flow_imbalance", 0)

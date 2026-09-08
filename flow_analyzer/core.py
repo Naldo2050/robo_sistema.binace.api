@@ -1240,6 +1240,8 @@ class FlowAnalyzer(IFlowAnalyzer):
         ]
         
         if not relevant:
+            order_flow["aggressive_sample_count"] = 0
+            order_flow["aggressive_status"] = "no_volume"
             return
         
         # Cálculos
@@ -1286,16 +1288,30 @@ class FlowAnalyzer(IFlowAnalyzer):
         order_flow["whale_sell_volume_window"] = decimal_round(whale_sell)
         order_flow["whale_delta_window"] = decimal_round(whale_buy - whale_sell)
         
-        # Flow imbalance
+        # Flow imbalance + aggressive pcts (P1-B: contrato explícito).
+        # aggressive_status/sample_count SEMPRE emitidos; pcts SÓ quando
+        # observados (n >= mínimo, volume > 0, finitos). 50/50, 100/0 e 0/100
+        # reais preservados; missing nunca vira 50/50.
+        import math as _math
+
+        order_flow["aggressive_sample_count"] = int(len(relevant))
         total_vol = float(total_buy_usd + total_sell_usd)
+        if not relevant or total_vol <= 0:
+            order_flow["aggressive_status"] = "no_volume"
+        elif len(relevant) < self._flow_imbalance_min_trades:
+            order_flow["aggressive_status"] = "insufficient"
+        else:
+            buy_pct = float(total_buy_usd) / total_vol * 100
+            sell_pct = float(total_sell_usd) / total_vol * 100
+            if _math.isfinite(buy_pct) and _math.isfinite(sell_pct):
+                order_flow["aggressive_status"] = "observed"
+                order_flow["aggressive_buy_pct"] = decimal_round(buy_pct, 2)
+                order_flow["aggressive_sell_pct"] = decimal_round(sell_pct, 2)
+            else:
+                order_flow["aggressive_status"] = "invalid"
         if total_vol > 0 and len(relevant) >= self._flow_imbalance_min_trades:
             imbalance = float(total_buy_usd - total_sell_usd) / total_vol
             order_flow["flow_imbalance"] = decimal_round(imbalance, 4)
-            
-            buy_pct = float(total_buy_usd) / total_vol * 100
-            sell_pct = float(total_sell_usd) / total_vol * 100
-            order_flow["aggressive_buy_pct"] = decimal_round(buy_pct, 2)
-            order_flow["aggressive_sell_pct"] = decimal_round(sell_pct, 2)
     
     def _compute_participant_analysis(
         self,
