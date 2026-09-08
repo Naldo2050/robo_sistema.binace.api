@@ -2222,8 +2222,17 @@ def enrich_signal(
         # ------------------------------------------------------------------
         passive_flow = _build_passive_flow(event)
         flow_root = event.setdefault("order_flow_extended", {})
-        flow_root.setdefault("passive_buy_pct", passive_flow["passive_buy_pct"])
-        flow_root.setdefault("passive_sell_pct", passive_flow["passive_sell_pct"])
+        # B8-FIX: chaves opcionais (ausência permanece ausência).
+        if "passive_buy_pct" in passive_flow:
+            flow_root.setdefault(
+                "passive_buy_pct",
+                passive_flow["passive_buy_pct"],
+            )
+        if "passive_sell_pct" in passive_flow:
+            flow_root.setdefault(
+                "passive_sell_pct",
+                passive_flow["passive_sell_pct"],
+            )
 
         # ------------------------------------------------------------------
         # ONDA 2: Whale Activity (large orders + iceberg)

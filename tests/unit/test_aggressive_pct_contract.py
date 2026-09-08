@@ -152,6 +152,36 @@ def test_H_real_0_100_preserved():
     assert passive["passive_sell_pct"] == pytest.approx(0.0)
 
 
+def _signal_event(order_flow):
+    return {"epoch_ms": 1_700_000_000_000, "preco_fechamento": 65000.0,
+            "fluxo_continuo": {"order_flow": dict(order_flow)}}
+
+
+def test_enrich_signal_tolerates_absent_passive():
+    """B8-FIX: passive_flow={} não pode dar KeyError em enrich_signal."""
+    from institutional.enricher import enrich_signal
+
+    out = enrich_signal(_signal_event({}))
+    ext = out.get("order_flow_extended", {})
+    assert "passive_buy_pct" not in ext
+    assert "passive_sell_pct" not in ext
+    assert "data_reliability" in out
+
+
+def test_enrich_signal_preserves_observed_passive():
+    """50/50, 0/100 e 100/0 reais sobrevivem ao enrich_signal."""
+    from institutional.enricher import enrich_signal
+
+    for buy, sell in ((50.0, 50.0), (0.0, 100.0), (100.0, 0.0)):
+        of = {"aggressive_buy_pct": buy, "aggressive_sell_pct": sell,
+              "aggressive_status": "observed", "aggressive_sample_count": 10}
+        out = enrich_signal(_signal_event(of))
+        ext = out.get("order_flow_extended", {})
+        assert ext["passive_buy_pct"] == pytest.approx(sell)
+        assert ext["passive_sell_pct"] == pytest.approx(buy)
+        assert "data_reliability" in out
+
+
 def test_payload_omits_unobserved():
     from market_orchestrator.ai.payload_builder_compact import (
         build_compact_payload,
