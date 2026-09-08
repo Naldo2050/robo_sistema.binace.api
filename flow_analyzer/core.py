@@ -1400,8 +1400,25 @@ class FlowAnalyzer(IFlowAnalyzer):
         delta_usd = float(of.get(net_key, 0) or 0)
         total_usd = float(of.get("total_volume", 0) or 0)
         flow_imb = float(of.get("flow_imbalance", 0) or 0)
-        buy_pct = float(of.get("aggressive_buy_pct", 0) or 0)
-        sell_pct = float(of.get("aggressive_sell_pct", 0) or 0)
+        # P1-B2: strengths 5.0/5.0 só com pcts observados. Status presente e
+        # != observed, ou pct ausente/nonfinite => sem análise (nunca 5/5
+        # fabricado). 5.0/5.0 de 50/50 real permanece legítimo.
+        aggr_status = of.get("aggressive_status")
+        if aggr_status is not None and aggr_status != "observed":
+            return None
+
+        def _finite_pct(value):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            fv = float(value)
+            if fv != fv or fv in (float("inf"), float("-inf")):
+                return None
+            return fv
+
+        buy_pct = _finite_pct(of.get("aggressive_buy_pct"))
+        sell_pct = _finite_pct(of.get("aggressive_sell_pct"))
+        if buy_pct is None or sell_pct is None:
+            return None
         
         analysis = self._absorption_analyzer.analyze(
             delta_usd=delta_usd,
