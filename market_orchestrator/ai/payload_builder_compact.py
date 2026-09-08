@@ -783,11 +783,44 @@ def _build_whale(event_data: dict) -> dict:
     return result
 
 
+def _eligible_ml(ml: dict) -> Optional[str]:
+    """None se a predição pode virar evidência; senão o motivo (P1-C3).
+
+    Espelha ml.hybrid_decision.eligibility_reason sem importar o módulo
+    (payload builder não pode puxar dependência de decisão aqui).
+    """
+    if not isinstance(ml, dict) or not ml:
+        return "missing_prediction"
+    if ml.get("status") == "neutralized":
+        return str(ml.get("reason") or "neutralized_upstream")
+    if ml.get("status") != "ok":
+        return f"status={ml.get('status')!r}"
+    if ml.get("valid_for_futures") is not True:
+        return "valid_for_futures_not_true"
+    if ml.get("ml_stale") is not False:
+        return "ml_stale_not_false"
+    if ml.get("frozen_filtered") is True:
+        return "frozen_filtered"
+    return None
+
+
 def _build_quant(event_data: dict) -> dict:
     """Constrói seção quantitativa (ML) — FIX 2: flag extreme predictions; neutralizado se stale."""
     ml = event_data.get("ml_prediction", {}) or event_data.get("quant_prediction", {})
     if not ml:
-        return {"pu": 0.5, "c": 0.0, "ml_stale": True}
+        return {"ml_stale": True, "reason": "missing_prediction"}
+
+    ineligible = _eligible_ml(ml)
+    ml_stale = ml.get("ml_stale")
+    if ml_stale is None:
+        if "valid_for_futures" in ml:
+            ml_stale = not bool(ml.get("valid_for_futures"))
+        else:
+            ml_stale = True
+
+    if ineligible is not None:
+        # P1-C3: inelegível nunca emite pu/c como evidência (nem 0.5 artificial).
+        return {"ml_stale": True, "reason": ineligible}
 
     prob_up = ml.get("prob_up", 0.5)
     confidence = ml.get("confidence", 0)
@@ -797,13 +830,6 @@ def _build_quant(event_data: dict) -> dict:
         or prob_up > _ML_EXTREME_HIGH
         or prob_up < _ML_EXTREME_LOW
     )
-
-    ml_stale = ml.get("ml_stale")
-    if ml_stale is None:
-        if "valid_for_futures" in ml:
-            ml_stale = not bool(ml.get("valid_for_futures"))
-        else:
-            ml_stale = True
 
     quant: dict[str, Any] = {
         "pu": round(prob_up, 2),

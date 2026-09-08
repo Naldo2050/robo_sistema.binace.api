@@ -12,7 +12,7 @@ from ml.hybrid_decision import HybridDecisionMaker
 
 def test_build_quant_includes_ml_stale():
     """Testa se o bloco quant/ML do compact payload inclui ml_stale: True."""
-    # Com ml_prediction preenchido
+    # P1-C3: ok SEM metadata de elegibilidade => inelegível (sem pu/c).
     event_with_ml = {
         "ml_prediction": {
             "status": "ok",
@@ -22,14 +22,24 @@ def test_build_quant_includes_ml_stale():
     }
     quant = _build_quant(event_with_ml)
     assert quant.get("ml_stale") is True
-    assert quant.get("pu") == 0.75
-    assert quant.get("c") == 0.80
+    assert "pu" not in quant
+    assert quant.get("reason") == "valid_for_futures_not_true"
 
-    # Sem ml_prediction (stub default)
+    # Elegível emite pu/c normalmente.
+    event_ok = {"ml_prediction": {"status": "ok", "prob_up": 0.75,
+                                  "confidence": 0.80,
+                                  "valid_for_futures": True,
+                                  "ml_stale": False}}
+    quant_ok = _build_quant(event_ok)
+    assert quant_ok.get("ml_stale") is False
+    assert quant_ok.get("pu") == 0.75
+    assert quant_ok.get("c") == 0.80
+
+    # Sem ml_prediction (stub default: sem pu artificial)
     event_empty = {}
     quant_empty = _build_quant(event_empty)
     assert quant_empty.get("ml_stale") is True
-    assert quant_empty.get("pu") == 0.5
+    assert "pu" not in quant_empty
 
 
 def test_hybrid_decision_ignores_ml_when_ml_stale():

@@ -68,6 +68,36 @@ def score_to_action(score: float, threshold: float = 0.3) -> str:
         return "flat"
 
 
+def eligibility_reason(pred: object) -> Optional[str]:
+    """Por que uma predição NÃO pode virar evidência (None = elegível).
+
+    P1-C3 fail-closed: metadata ausente != condição satisfeita. Exige,
+    explicitamente: status == "ok", valid_for_futures is True,
+    ml_stale is False. `frozen` vive no estado da instância
+    (HybridDecisionMaker._last_model_prob) e chega ao dict como
+    `frozen_filtered` carimbado pelo próprio fuse — respeitado aqui;
+    `hybrid_disabled` existe só como status do engine (coberto pelo
+    `status == "ok"`). prob_up == 0.5 com tudo elegível é previsão
+    neutra REAL (distinguível pelo chamador via este None + status ok).
+    """
+    if not isinstance(pred, dict):
+        return "not_a_dict"
+    if pred.get("status") != "ok":
+        return f"status={pred.get('status')!r}"
+    if pred.get("valid_for_futures") is not True:
+        return "valid_for_futures_not_true"
+    if pred.get("ml_stale") is not False:
+        return "ml_stale_not_false"
+    if pred.get("frozen_filtered") is True:
+        return "frozen_filtered"
+    return None
+
+
+def is_eligible_prediction(pred: object) -> bool:
+    """True somente se a predição pode virar evidência para a IA."""
+    return eligibility_reason(pred) is None
+
+
 @dataclass
 class DecisionResult:
     """Resultado da decisão híbrida."""

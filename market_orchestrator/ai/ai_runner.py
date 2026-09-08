@@ -51,12 +51,20 @@ try:
     from ml.hybrid_decision import (
         fuse_decisions,
         decision_to_ai_result,
+        eligibility_reason,
+        is_eligible_prediction,
     )
     HYBRID_AVAILABLE = True
 except ImportError:
     HYBRID_AVAILABLE = False
     fuse_decisions = None
     decision_to_ai_result = None
+
+    def eligibility_reason(pred):
+        return "hybrid_unavailable"
+
+    def is_eligible_prediction(pred):
+        return False
 
 
 class AIRunner:
@@ -475,7 +483,7 @@ def run_ai_analysis_threaded(
                         try:
                             ml_prediction = ml_engine.predict(event_data)
 
-                            if ml_prediction.get("status") == "ok":
+                            if is_eligible_prediction(ml_prediction):
                                 prob = ml_prediction.get("prob_up", 0.5)
                                 confidence = ml_prediction.get("confidence", 0.0)
 
@@ -501,11 +509,23 @@ def run_ai_analysis_threaded(
                                     )
                                 except Exception:
                                     pass
-
                             elif ml_prediction.get("status") == "hybrid_disabled":
                                 logging.debug("ML skip: hybrid_disabled")
                             else:
-                                logging.warning(f"⚠️ ML Engine retornou status: {ml_prediction.get('status')}")
+                                # P1-C3: inelegível (stale/spot/metadata ausente)
+                                # nunca vira direção/probabilidade como evidência.
+                                logging.info(
+                                    "ML prediction neutralizada (%s); "
+                                    "sem viés no prompt da IA.",
+                                    eligibility_reason(ml_prediction),
+                                )
+                                event_data["ml_prediction"] = {
+                                    "status": "neutralized",
+                                    "reason": eligibility_reason(ml_prediction),
+                                    "ml_stale": ml_prediction.get("ml_stale"),
+                                    "valid_for_futures": ml_prediction.get(
+                                        "valid_for_futures"),
+                                }
                         except Exception as e:
                             logging.error(f"❌ Erro na inferência ML: {e}", exc_info=True)
                             ml_prediction = {"status": "error", "msg": str(e)}
@@ -598,7 +618,9 @@ def run_ai_analysis_threaded(
                         ai_payload = _get_ai_runner(bot).build_payload(event_data)
 
                         # Preencher quant model com ML prediction real
-                        if ml_prediction.get("status") == "ok":
+                        # P1-C3: só evidência elegível (status ok + futuros +
+                        # não-stale); nunca 0.5 artificial.
+                        if is_eligible_prediction(ml_prediction):
                             ai_payload["quant"] = {
                                 "pu": round(float(ml_prediction.get("prob_up", 0.5)), 2),
                                 "c": round(float(ml_prediction.get("confidence", 0.0)), 2),
