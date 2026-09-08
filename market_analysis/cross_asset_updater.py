@@ -129,16 +129,37 @@ class CrossAssetUpdater:
         logger.info("✅ CrossAssetUpdater iniciado (refresh a cada %.0fs)",
                     self.policy.refresh_interval_s)
 
-    def stop(self, timeout: float = 10.0) -> None:
+    def stop(self, timeout: float = 10.0) -> Dict[str, Any]:
+        """PF-S2: shutdown cooperativo + join bounded, sem matar thread.
+
+        Marca stop_requested (nenhuma nova operação externa começa) e aguarda
+        no máximo `timeout`. I/O sync já em andamento pode terminar no próprio
+        timeout; nesse caso retorna clean=False (honesto, nunca finge).
+        Join NÃO foi aumentado para 60/180s como solução.
+        Idempotente: stop duplo / nunca iniciado não quebra.
+        """
+        start = self._monotonic_fn()
         self._stop_requested.set()
         thread, self._thread = self._thread, None
+        alive = False
         if thread is not None and thread.is_alive():
-            thread.join(timeout=timeout)
-            if thread.is_alive():
-                logger.warning("⚠️ CrossAssetUpdater thread não parou em %.1fs",
-                               timeout)
+            if thread is not threading.current_thread():
+                thread.join(timeout=timeout)
+                alive = thread.is_alive()
             else:
-                logger.info("🛑 CrossAssetUpdater parado")
+                alive = True
+        elapsed_ms = int((self._monotonic_fn() - start) * 1000)
+        clean = not alive
+        if thread is not None:
+            if alive:
+                logger.warning("⚠️ CrossAssetUpdater thread não parou em %.1fs "
+                               "(elapsed=%dms, I/O sync em andamento até "
+                               "próprio timeout)", timeout, elapsed_ms)
+            else:
+                logger.info("🛑 CrossAssetUpdater parado (elapsed=%dms)",
+                            elapsed_ms)
+        return {"clean_shutdown": clean, "thread_alive": alive,
+                "elapsed_ms": elapsed_ms}
 
     def _run(self) -> None:
         try:
@@ -156,19 +177,29 @@ class CrossAssetUpdater:
 
     # -- refresh --------------------------------------------------------
     def _refresh_once(self) -> bool:
-        """Uma tentativa. True só com snapshot completo novo publicado."""
+        """Uma tentativa. True só com snapshot completo novo publicado.
+
+        PF-S2: propaga stop_event para os fetches; "cancelled" preserva o
+        snapshot anterior (como parcial), sem iniciar nova operação externa.
+        """
         from market_analysis.cross_asset_correlations import (
             get_enhanced_cross_asset_correlations,
         )
 
         start = self._monotonic_fn()
         try:
-            result = get_enhanced_cross_asset_correlations()
+            result = get_enhanced_cross_asset_correlations(
+                stop_event=self._stop_requested)
         except Exception as e:
             self.failures_total += 1
             self.last_duration_s = self._monotonic_fn() - start
             self.last_error = str(e)[:200]
             logger.warning(f"⚠️ CrossAsset refresh falhou (mantido anterior): {e}")
+            return False
+        if isinstance(result, dict) and result.get("status") == "cancelled":
+            # Stop pedido no meio do refresh: sem snapshot novo, sem erro.
+            self.last_duration_s = self._monotonic_fn() - start
+            logger.debug("CrossAsset refresh cancelado por stop (mantido anterior)")
             return False
         if not isinstance(result, dict) or result.get("status") != "ok":
             # Parcial/falha: NÃO publica mistura; anterior envelhece sozinho.

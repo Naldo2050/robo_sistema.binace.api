@@ -91,7 +91,7 @@ def test_2_slow_updater_does_not_block_window(no_net):
 
     orig = ca.get_enhanced_cross_asset_correlations
 
-    def _slow(now_utc=None):
+    def _slow(now_utc=None, stop_event=None):
         time.sleep(10.0)
         return {"status": "ok"}
 
@@ -168,7 +168,7 @@ def test_6_partial_failed_preserves_last_complete(no_net, monkeypatch):
     before = updater.read_view()
     monkeypatch.setattr(
         ca, "get_enhanced_cross_asset_correlations",
-        lambda now_utc=None: {"status": "partial", "btc_eth_corr_7d": 0.5},
+        lambda now_utc=None, stop_event=None: {"status": "partial", "btc_eth_corr_7d": 0.5},
     )
     assert updater._refresh_once() is False
     after = updater.read_view()
@@ -183,7 +183,7 @@ def test_7_reader_never_sees_partial(no_net, monkeypatch):
 
     calls = {"n": 0}
 
-    def _flip(now_utc=None):
+    def _flip(now_utc=None, stop_event=None):
         calls["n"] += 1
         time.sleep(0.02)  # alarga a janela de corrida p/ os leitores
         if calls["n"] % 2 == 0:

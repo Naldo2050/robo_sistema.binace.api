@@ -24,10 +24,10 @@ def test_producer_omits_unmeasured_key(monkeypatch):
     import market_analysis.cross_asset_correlations as ca
 
     monkeypatch.setattr(
-        ca, "get_btc_eth_correlations", lambda now_utc=None: {"status": "ok"}
+        ca, "get_btc_eth_correlations", lambda now_utc=None, stop_event=None: {"status": "ok"}
     )
     monkeypatch.setattr(
-        ca, "get_btc_macro_correlations", lambda now_utc=None: {"status": "ok"}
+        ca, "get_btc_macro_correlations", lambda now_utc=None, stop_event=None: {"status": "ok"}
     )
     monkeypatch.setattr(
         ca, "_run_async_safely", lambda coro, timeout=30.0: {"gold": 4000.0}

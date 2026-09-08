@@ -55,7 +55,7 @@ def test_period_parser():
 
 
 def _mock_three(monkeypatch, btc_f, dxy_f, ndx_f, seen):
-    def _fake(name, period="90d", interval="1d"):
+    def _fake(name, period="90d", interval="1d", stop_event=None):
         seen.append((name, period))
         return {"BTC-USD": btc_f, "DXY": dxy_f, "NDX": ndx_f}[name]
     monkeypatch.setattr(ca, "_fetch_with_instrument", _fake)
@@ -218,7 +218,7 @@ def _klines(n, start="2026-08-01 00:00+00:00", seed=0):
 def test_klines_single_fetch_reaches_720(monkeypatch):
     seen = {}
 
-    def _fake(sym, interval="1h", limit=720):
+    def _fake(sym, interval="1h", limit=720, stop_event=None):
         seen[sym] = limit
         return _klines(limit, seed=7 if sym == "BTCUSDT" else 8)
 

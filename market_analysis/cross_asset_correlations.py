@@ -242,6 +242,29 @@ def intraday_join_corr(btc_df: pd.DataFrame, eth_df: pd.DataFrame,
                 "last": None, "pairs": []}
 
 
+# PF-S2: shutdown cooperativo. stop_event (threading.Event do updater)
+# é checado ENTRE estágios externos; nenhuma nova operação de rede começa
+# após stop_requested. I/O sync já em andamento termina no próprio timeout;
+# stop() faz join bounded e retorna clean=False se ainda viva. Sem matar thread.
+def _stopped(stop_event) -> bool:
+    try:
+        return stop_event is not None and stop_event.is_set()
+    except Exception:
+        return False
+
+
+def _sleep_coop(seconds: float, stop_event) -> bool:
+    """Sleep interrompível por stop. Retorna True se stop foi pedido."""
+    end = time.monotonic() + max(0.0, float(seconds))
+    while True:
+        if _stopped(stop_event):
+            return True
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return _stopped(stop_event)
+        time.sleep(min(0.2, remaining))
+
+
 # F5-C7: dimensionamento da aquisição (sem magic number).
 # target_returns -> closes necessários -> dias corridos com margem explícita:
 #   sessões = target + 2 (+1 close p/ returns, +1 sessão comida pela exclusão
@@ -273,13 +296,15 @@ def _period_to_start_end(period: str) -> Optional[Tuple[str, str]]:
 
 
 def _fetch_with_instrument(name: str, period: str = "90d",
-                           interval: str = "1d"):
+                           interval: str = "1d", stop_event=None):
     """Busca com fallbacks + instrumento efetivo. (df, ticker_ou_None)."""
     # Mesma ordem de tentativa de _fetch_yfinance_data_with_fallbacks,
     # expondo o ticker vencedor (instrumento efetivo p/ metadata).
     candidates = _FALLBACK_TICKERS.get(name, [name])
     range_se = _period_to_start_end(period)
     for ticker in candidates:
+        if _stopped(stop_event):
+            break
         try:
             import yfinance as yf
             from concurrent.futures import ThreadPoolExecutor
@@ -320,7 +345,8 @@ def _fetch_with_instrument(name: str, period: str = "90d",
 # Funções de coleta de dados
 # ===============================
 
-def _fetch_binance_klines(symbol: str, interval: str = "1h", limit: int = 720) -> pd.DataFrame:
+def _fetch_binance_klines(symbol: str, interval: str = "1h", limit: int = 720,
+                          stop_event=None) -> pd.DataFrame:
     """
     Busca velas da Binance usando a API REST.
     
@@ -328,6 +354,8 @@ def _fetch_binance_klines(symbol: str, interval: str = "1h", limit: int = 720) -
         symbol: Par de trading (ex: BTCUSDT)
         interval: Intervalo das velas (1h, 4h, 1d, etc.)
         limit: Número de velas a buscar (máx 1000)
+        stop_event: threading.Event opcional; se setado, nenhum retry novo
+            começa e o backoff é abortado (retorna vazio).
         
     Returns:
         DataFrame com colunas: open_time, open, high, low, close, volume
@@ -344,6 +372,8 @@ def _fetch_binance_klines(symbol: str, interval: str = "1h", limit: int = 720) -
     
     max_retries = 3
     for attempt in range(max_retries):
+        if _stopped(stop_event):
+            break
         try:
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
@@ -370,7 +400,8 @@ def _fetch_binance_klines(symbol: str, interval: str = "1h", limit: int = 720) -
         except requests.exceptions.RequestException as e:
             logger.warning(f"Tentativa {attempt + 1}/{max_retries} falhou: {e}")
             if attempt < max_retries - 1:
-                time.sleep(1 * (attempt + 1))
+                if _sleep_coop(1 * (attempt + 1), stop_event):
+                    break
         except Exception as e:
             logger.error(f"Erro inesperado: {e}")
             return pd.DataFrame()
@@ -387,7 +418,8 @@ _FALLBACK_TICKERS: Dict[str, list[str]] = {
 }
 
 
-def _fetch_yfinance_data_with_fallbacks(name: str, period: str = "90d", interval: str = "1d") -> pd.DataFrame:
+def _fetch_yfinance_data_with_fallbacks(name: str, period: str = "90d", interval: str = "1d",
+                                          stop_event=None) -> pd.DataFrame:
     """
     Busca dados históricos do yfinance com fallbacks robustos.
     
@@ -395,16 +427,19 @@ def _fetch_yfinance_data_with_fallbacks(name: str, period: str = "90d", interval
         name: Nome do ativo (BTC-USD, DXY, NDX, SPX)
         period: Período de dados (ex: 30d, 90d, 1y)
         interval: Intervalo (1d, 1wk, 1mo)
+        stop_event: ver _fetch_binance_klines (nenhum ticker novo após stop).
         
     Returns:
         DataFrame com dados históricos
     """
     # Delega (fonte única da lógica de retry/timeout); instrumento descartado.
-    df, _ticker = _fetch_with_instrument(name, period=period, interval=interval)
+    df, _ticker = _fetch_with_instrument(name, period=period, interval=interval,
+                                         stop_event=stop_event)
     return df
 
 
-def _fetch_yfinance_data(ticker: str, period: str = "30d", interval: str = "1d") -> pd.DataFrame:
+def _fetch_yfinance_data(ticker: str, period: str = "30d", interval: str = "1d",
+                         stop_event=None) -> pd.DataFrame:
     """
     Busca dados históricos do yfinance (compatibilidade com versão anterior).
     
@@ -424,27 +459,33 @@ def _fetch_yfinance_data(ticker: str, period: str = "30d", interval: str = "1d")
     }
     
     name = ticker_mapping.get(ticker, ticker)
-    return _fetch_yfinance_data_with_fallbacks(name, period, interval)
+    return _fetch_yfinance_data_with_fallbacks(name, period, interval,
+                                               stop_event=stop_event)
 
 
 # ===============================
 # Funções principais de correlação
 # ===============================
 
-def get_btc_eth_correlations(now_utc: Optional[datetime] = None) -> Dict[str, Any]:
+def get_btc_eth_correlations(now_utc: Optional[datetime] = None,
+                             stop_event=None) -> Dict[str, Any]:
     """
     Calcula correlações entre BTCUSDT e ETHUSDT usando velas 1h da Binance.
     
     Args:
         now_utc: Timestamp atual em UTC (opcional)
+        stop_event: ver _fetch_binance_klines (nenhum fetch novo após stop;
+            retorna status "cancelled").
         
     Returns:
         Dict com:
         - btc_eth_corr_7d: correlação dos últimos 7 dias (7*24 pontos)
         - btc_eth_corr_30d: correlação dos últimos 30 dias (30*24 pontos)
-        - status: ok ou failed
+        - status: ok, failed ou cancelled
         - error: mensagem de erro (se aplicável)
     """
+    if _stopped(stop_event):
+        return {"status": "cancelled"}
     result: Dict[str, Any] = {
         "status": "ok",
         "btc_eth_corr_7d": float("nan"),
@@ -458,8 +499,12 @@ def get_btc_eth_correlations(now_utc: Optional[datetime] = None) -> Dict[str, An
         # F5-C7: UM fetch alimenta 7d e 30d. Limite = alvo (720 retornos) +1
         # close +1 candle aberto (excluído) +2 folga de borda (<=1000 da API).
         klines_limit = 24 * 30 + 4
-        btc_df = _fetch_binance_klines("BTCUSDT", "1h", klines_limit)
-        eth_df = _fetch_binance_klines("ETHUSDT", "1h", klines_limit)
+        btc_df = _fetch_binance_klines("BTCUSDT", "1h", klines_limit,
+                                       stop_event=stop_event)
+        if _stopped(stop_event):
+            return {"status": "cancelled"}
+        eth_df = _fetch_binance_klines("ETHUSDT", "1h", klines_limit,
+                                       stop_event=stop_event)
 
         if btc_df.empty or eth_df.empty:
             raise ValueError("Dados insuficientes da Binance")
@@ -491,12 +536,15 @@ def get_btc_eth_correlations(now_utc: Optional[datetime] = None) -> Dict[str, An
     return result
 
 
-def get_btc_macro_correlations(now_utc: Optional[datetime] = None) -> Dict[str, Any]:
+def get_btc_macro_correlations(now_utc: Optional[datetime] = None,
+                               stop_event=None) -> Dict[str, Any]:
     """
     Calcula correlações entre BTC e ativos macro (DXY, NDX) usando yfinance.
     
     Args:
         now_utc: Timestamp atual em UTC (opcional)
+        stop_event: ver _fetch_binance_klines (nenhum fetch novo após stop;
+            retorna status "cancelled").
         
     Returns:
         Dict com:
@@ -505,9 +553,11 @@ def get_btc_macro_correlations(now_utc: Optional[datetime] = None) -> Dict[str, 
         - btc_ndx_corr_30d: correlação BTC x NDX (30 dias)
         - dxy_return_5d: retorno DXY nos últimos 5 dias
         - dxy_return_20d: retorno DXY nos últimos 20 dias
-        - status: ok ou failed
+        - status: ok, failed ou cancelled
         - error: mensagem de erro (se aplicável)
     """
+    if _stopped(stop_event):
+        return {"status": "cancelled"}
     result: Dict[str, Any] = {
         "status": "ok",
         "btc_dxy_corr_30d": float("nan"),
@@ -524,9 +574,16 @@ def get_btc_macro_correlations(now_utc: Optional[datetime] = None) -> Dict[str, 
         # Profundidade derivada do maior alvo (90 retornos -> "141d"); a janela
         # efetiva continua sendo o tail (30/31 ou 90/91 closes compartilhados).
         lookback = _fetch_calendar_lookback(90)
-        btc_df, _btc_ticker = _fetch_with_instrument("BTC-USD", period=lookback)
-        dxy_df, dxy_ticker = _fetch_with_instrument("DXY", period=lookback)
-        ndx_df, ndx_ticker = _fetch_with_instrument("NDX", period=lookback)
+        btc_df, _btc_ticker = _fetch_with_instrument("BTC-USD", period=lookback,
+                                                     stop_event=stop_event)
+        if _stopped(stop_event):
+            return {"status": "cancelled"}
+        dxy_df, dxy_ticker = _fetch_with_instrument("DXY", period=lookback,
+                                                    stop_event=stop_event)
+        if _stopped(stop_event):
+            return {"status": "cancelled"}
+        ndx_df, ndx_ticker = _fetch_with_instrument("NDX", period=lookback,
+                                                    stop_event=stop_event)
 
         result["btc_dxy_instrument"] = dxy_ticker
         result["nasdaq_instrument"] = ndx_ticker
@@ -746,7 +803,8 @@ def _run_async_safely(coro: Any, timeout: float = 5.0) -> Optional[Dict[str, Any
         return None
 
 
-def get_enhanced_cross_asset_correlations(now_utc: Optional[datetime] = None) -> Dict[str, Any]:
+def get_enhanced_cross_asset_correlations(now_utc: Optional[datetime] = None,
+                                            stop_event=None) -> Dict[str, Any]:
     """
     Calcula correlações cross-asset ENHANCED com todas as novas métricas.
     
@@ -759,10 +817,14 @@ def get_enhanced_cross_asset_correlations(now_utc: Optional[datetime] = None) ->
     
     Args:
         now_utc: Timestamp atual em UTC (opcional)
+        stop_event: ver _fetch_binance_klines. Após stop, nenhuma nova
+            operação externa começa; retorna status "cancelled".
         
     Returns:
         Dict com todas as métricas cross-asset enhanced
     """
+    if _stopped(stop_event):
+        return {"status": "cancelled"}
     result: Dict[str, Any] = {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat() if now_utc is None else now_utc.isoformat()
@@ -770,7 +832,9 @@ def get_enhanced_cross_asset_correlations(now_utc: Optional[datetime] = None) ->
     
     # 1. CORRELAÇÕES TRADICIONAIS
     # Crypto (Binance)
-    crypto_corr = get_btc_eth_correlations(now_utc)
+    crypto_corr = get_btc_eth_correlations(now_utc, stop_event=stop_event)
+    if crypto_corr.get("status") == "cancelled" or _stopped(stop_event):
+        return {"status": "cancelled"}
     if crypto_corr.get("status") == "ok":
         result.update(crypto_corr)
     else:
@@ -778,7 +842,9 @@ def get_enhanced_cross_asset_correlations(now_utc: Optional[datetime] = None) ->
         result["crypto_error"] = crypto_corr.get("error")
     
     # Macro tradicional (yfinance)
-    macro_corr = get_btc_macro_correlations(now_utc)
+    macro_corr = get_btc_macro_correlations(now_utc, stop_event=stop_event)
+    if macro_corr.get("status") == "cancelled" or _stopped(stop_event):
+        return {"status": "cancelled"}
     if macro_corr.get("status") == "ok":
         result.update(macro_corr)
     else:
@@ -786,6 +852,8 @@ def get_enhanced_cross_asset_correlations(now_utc: Optional[datetime] = None) ->
         result["macro_error"] = macro_corr.get("error")
     
     # 2. NOVAS MÉTRICAS CROSS-ASSET via MacroDataProvider
+    if _stopped(stop_event):
+        return {"status": "cancelled"}
     if _MACRO_DATA_OK:
         try:
             # CORREÇÃO: Usar abordagem segura que detecta contexto
@@ -856,9 +924,10 @@ def get_enhanced_cross_asset_correlations(now_utc: Optional[datetime] = None) ->
             btc_returns: Optional[pd.Series] = None
             
             # BTC x VIX correlation (se dados disponíveis)
-            if vix_value is not None:
+            if vix_value is not None and not _stopped(stop_event):
                 try:
-                    btc_df = _fetch_yfinance_data("BTC-USD", period="30d")
+                    btc_df = _fetch_yfinance_data("BTC-USD", period="30d",
+                                                  stop_event=stop_event)
                     if not btc_df.empty:
                         btc_returns = _log_returns(btc_df['close'])
                         result["btc_vix_corr_30d"] = None  # Placeholder
@@ -866,10 +935,11 @@ def get_enhanced_cross_asset_correlations(now_utc: Optional[datetime] = None) ->
                     pass
             
             # BTC x Gold correlation
-            if gold_value is not None:
+            if gold_value is not None and not _stopped(stop_event):
                 if btc_returns is None:
                     try:
-                        btc_df = _fetch_yfinance_data("BTC-USD", period="30d")
+                        btc_df = _fetch_yfinance_data("BTC-USD", period="30d",
+                                                      stop_event=stop_event)
                         if not btc_df.empty:
                             btc_returns = _log_returns(btc_df['close'])
                     except Exception:

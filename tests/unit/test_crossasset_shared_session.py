@@ -197,7 +197,7 @@ def test_metadata_method_n_instrument(monkeypatch):
     btc = _daily(_biz(), _closes_from_rets(100.0, np.linspace(-0.01, 0.01, 6)))
     dxy = _daily(_biz(), _closes_from_rets(99.0, np.linspace(-0.005, 0.005, 6)))
     ndx = _daily(_biz(), _closes_from_rets(700.0, np.linspace(-0.01, 0.01, 6)))
-    monkeypatch.setattr(ca, "_fetch_with_instrument", lambda name, period="90d", interval="1d": {
+    monkeypatch.setattr(ca, "_fetch_with_instrument", lambda name, period="90d", interval="1d", stop_event=None: {
         "BTC-USD": (btc.to_frame("close"), "BTC-USD"),
         "DXY": (dxy.to_frame("close"), "DX-Y.NYB"),
         "NDX": (ndx.to_frame("close"), "QQQ"),
@@ -218,7 +218,7 @@ def test_no_pair_uses_availability_after_decision(monkeypatch):
     btc = _daily(_biz(), _closes_from_rets(100.0, np.linspace(-0.01, 0.01, 6)))
     dxy = _daily(_biz(), _closes_from_rets(99.0, np.linspace(-0.005, 0.005, 6)))
     ndx = _daily(_biz(), _closes_from_rets(700.0, np.linspace(-0.01, 0.01, 6)))
-    monkeypatch.setattr(ca, "_fetch_with_instrument", lambda name, period="90d", interval="1d": {
+    monkeypatch.setattr(ca, "_fetch_with_instrument", lambda name, period="90d", interval="1d", stop_event=None: {
         "BTC-USD": (btc.to_frame("close"), "BTC-USD"),
         "DXY": (dxy.to_frame("close"), "DX-Y.NYB"),
         "NDX": (ndx.to_frame("close"), "QQQ"),
