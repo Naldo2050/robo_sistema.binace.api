@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "provenance": "composed_from_production_shapes",
+  "sources": [
+    "tests/fixtures/sample_analysis_trigger.json",
+    "tests/payload/test_build_compact_payload_snapshot.py::make_canonical_event"
+  ],
+  "symbol": "BTCUSDT",
+  "frozen_now_ms": 1788880000000,
+  "expected_contract_version": 2,
+  "price_base": 66875.0,
+  "trades": {
+    "mode": "interleaved",
+    "n_buy": 60,
+    "n_sell": 60,
+    "qty_buy": 0.02,
+    "qty_sell": 0.02,
+    "price_flat": 66875.0,
+    "t0_ms": 1788880000000,
+    "step_ms": 500
+  },
+  "orderbook": {
+    "bid_depth_usd": 800000.0,
+    "ask_depth_usd": 780000.0,
+    "imbalance": 0.02,
+    "spread_bps": 1.1,
+    "is_valid": true,
+    "data_source": "live"
+  },
+  "derivatives": {
+    "BTCUSDT": {
+      "funding_rate_percent": 0.01,
+      "open_interest": 90101.906,
+      "long_short_ratio": 1.02
+    }
+  },
+  "macro_external": {
+    "DXY": {"preco_atual": 98.9, "source": "yfinance"},
+    "SP500": {"preco_atual": 5800.0, "source": "yfinance"},
+    "VIX": {"preco_atual": 14.2, "source": "yfinance"},
+    "FEAR_GREED": {"preco_atual": 72, "classification": "Greed"}
+  },
+  "onchain": {
+    "mode": "fresh",
+    "age_s": 10,
+    "fast": {"fees_fastest_sat_vb": 12, "mempool_size": 45000},
+    "slow": {"difficulty": 110000000000000.0, "active_addresses": 800000}
+  },
+  "cross": {
+    "mode": "fresh",
+    "age_s": 10,
+    "values": {
+      "status": "ok",
+      "btc_eth_corr_7d": 0.92,
+      "btc_dxy_corr_30d": -0.41,
+      "correlation_method": "shared_session_returns_v2",
+      "correlation_contract_version": 2,
+      "btc_eth_corr_7d_n": 168,
+      "btc_eth_corr_30d_n": 720,
+      "btc_dxy_corr_30d_n": 30,
+      "btc_dxy_corr_90d_n": 90,
+      "btc_ndx_corr_30d_n": 30,
+      "btc_dxy_instrument": "DX-Y.NYB",
+      "nasdaq_instrument": "QQQ",
+      "nasdaq_role": "nasdaq_proxy",
+      "btc_eth_instrument": "BINANCE:BTCUSDT/ETHUSDT_1h"
+    }
+  }
+}

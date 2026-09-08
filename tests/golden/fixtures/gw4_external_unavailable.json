@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "provenance": "composed_from_production_shapes",
+  "sources": [
+    "tests/fixtures/sample_analysis_trigger.json",
+    "tests/payload/test_build_compact_payload_snapshot.py::make_canonical_event"
+  ],
+  "symbol": "BTCUSDT",
+  "frozen_now_ms": 1788880000000,
+  "expected_contract_version": 2,
+  "price_base": 66875.0,
+  "trades": {
+    "mode": "interleaved",
+    "n_buy": 60,
+    "n_sell": 60,
+    "qty_buy": 0.02,
+    "qty_sell": 0.02,
+    "price_flat": 66875.0,
+    "t0_ms": 1788880000000,
+    "step_ms": 500
+  },
+  "orderbook": {
+    "bid_depth_usd": 800000.0,
+    "ask_depth_usd": 780000.0,
+    "imbalance": 0.02,
+    "spread_bps": 1.1,
+    "is_valid": true,
+    "data_source": "live"
+  },
+  "onchain": {
+    "mode": "unavailable"
+  },
+  "cross": {
+    "mode": "warming"
+  }
+}

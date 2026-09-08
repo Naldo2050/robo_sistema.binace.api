@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "provenance": "composed_from_production_shapes",
+  "sources": [
+    "market_analysis/cross_asset_correlations.py::shared_session_corr",
+    "Temp/opencode/f5c_btc.csv+f5c_dxy.csv (amostra real 08/09, mesma estrutura)"
+  ],
+  "symbol": "BTCUSDT",
+  "frozen_now_ms": 1788880000000,
+  "expected_contract_version": 2,
+  "target_returns": 30,
+  "btc_calendar": {
+    "start": "2026-07-27",
+    "end": "2026-09-08",
+    "note": "todos os dias corridos, INCLUINDO fins de semana (excluidos pelo join)"
+  },
+  "tradfi_weekdays": {
+    "start": "2026-07-27",
+    "end": "2026-09-08",
+    "exclusions": ["2026-09-07"],
+    "note": "dias uteis; 09-07 Labor Day sem observacao; fins de semana sem observacao"
+  },
+  "closes_formula": {
+    "btc_start": 78600.0,
+    "tradfi_start": 98.9,
+    "daily_drift": 0.0008,
+    "weekend_drift": 0.0015,
+    "note": "deterministico, sem RNG: close[d] = start * (1+drift)^idx_corridos"
+  },
+  "shared_sessions": 31,
+  "decision_ms": 1788915600000,
+  "short_case": {
+    "shared_dates": [
+      "2026-09-01",
+      "2026-09-02",
+      "2026-09-03",
+      "2026-09-04",
+      "2026-09-08",
+      "2026-09-09",
+      "2026-09-10",
+      "2026-09-11",
+      "2026-09-14"
+    ],
+    "shared_sessions": 9,
+    "expected_n": 8,
+    "note": "insufficient: NaN + short-window log, nunca 0"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "provenance": "composed_from_production_shapes",
+  "sources": [
+    "tests/fixtures/sample_analysis_trigger.json",
+    "market_analysis/liquidity_heatmap.py::LiquidityHeatmap(window_size=2000)"
+  ],
+  "symbol": "BTCUSDT",
+  "frozen_now_ms": 1788880000000,
+  "expected_contract_version": 2,
+  "price_base": 65000.0,
+  "trades": {
+    "mode": "sine",
+    "n": 1500,
+    "price_base": 65000.0,
+    "amp": 30.0,
+    "period": 50.0,
+    "qty": 0.01,
+    "t0_ms": 1788880000000,
+    "step_ms": 100
+  },
+  "note": "faixa estreita (+-30 USD, 1 cluster) com throttle 100ms: cenario adversarial O(N^3) original (~80s); budget generoso pos-fix"
+}
