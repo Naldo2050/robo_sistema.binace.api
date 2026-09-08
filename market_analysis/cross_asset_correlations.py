@@ -33,10 +33,12 @@ CONTRATO TEMPORAL v2 (F5-C; shared-session):
 
 import logging
 import asyncio
+import math
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from typing import Dict, Any, Optional, Union
-from datetime import datetime, timezone
+from typing import Dict, Any, Optional, Tuple, Union
+from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 
@@ -240,18 +242,54 @@ def intraday_join_corr(btc_df: pd.DataFrame, eth_df: pd.DataFrame,
                 "last": None, "pairs": []}
 
 
+# F5-C7: dimensionamento da aquisição (sem magic number).
+# target_returns -> closes necessários -> dias corridos com margem explícita:
+#   sessões = target + 2 (+1 close p/ returns, +1 sessão comida pela exclusão
+#   do dia da decisão); corridos = ceil(sessões * 7/5) [semana útil] +
+#   HOLIDAY_MARGIN_DAYS [US ~9 feriados/ano; 12 dias ≈ 8-9 sessões cobre o
+#   cluster Natal/Ano-Novo + dispersos em qualquer janela de ~4,5 meses].
+# O fetch maior NÃO garante n=target; o contrato segue n=min(target, real).
+TRADING_WEEK_RATIO = 7 / 5
+HOLIDAY_MARGIN_DAYS = 12
+
+
+def _fetch_calendar_lookback(target_returns: int) -> str:
+    """Lookback 'Nd' derivado do alvo: 30->57d, 90->141d."""
+    sessions_needed = int(target_returns) + 2
+    calendar_days = math.ceil(sessions_needed * TRADING_WEEK_RATIO)
+    return f"{calendar_days + HOLIDAY_MARGIN_DAYS}d"
+
+
+def _period_to_start_end(period: str) -> Optional[Tuple[str, str]]:
+    """'Nd' -> (start, end) ISO p/ yfinance (aceita range arbitrário,
+    ao contrário de period que só admite valores fechados)."""
+    m = re.fullmatch(r"\s*(\d+)\s*d\s*", period or "")
+    if not m:
+        return None
+    days = int(m.group(1))
+    end = datetime.now(timezone.utc).date() + timedelta(days=1)
+    start = end - timedelta(days=days)
+    return start.isoformat(), end.isoformat()
+
+
 def _fetch_with_instrument(name: str, period: str = "90d",
                            interval: str = "1d"):
     """Busca com fallbacks + instrumento efetivo. (df, ticker_ou_None)."""
     # Mesma ordem de tentativa de _fetch_yfinance_data_with_fallbacks,
     # expondo o ticker vencedor (instrumento efetivo p/ metadata).
     candidates = _FALLBACK_TICKERS.get(name, [name])
+    range_se = _period_to_start_end(period)
     for ticker in candidates:
         try:
             import yfinance as yf
             from concurrent.futures import ThreadPoolExecutor
 
             def _fetch(t=ticker):
+                if range_se is not None:
+                    return yf.Ticker(t).history(
+                        start=range_se[0], end=range_se[1],
+                        interval=interval, raise_errors=False,
+                    )
                 return yf.Ticker(t).history(
                     period=period, interval=interval, raise_errors=False
                 )
@@ -417,9 +455,11 @@ def get_btc_eth_correlations(now_utc: Optional[datetime] = None) -> Dict[str, An
     }
 
     try:
-        # Busca dados da Binance
-        btc_df = _fetch_binance_klines("BTCUSDT", "1h", 30 * 24)
-        eth_df = _fetch_binance_klines("ETHUSDT", "1h", 30 * 24)
+        # F5-C7: UM fetch alimenta 7d e 30d. Limite = alvo (720 retornos) +1
+        # close +1 candle aberto (excluído) +2 folga de borda (<=1000 da API).
+        klines_limit = 24 * 30 + 4
+        btc_df = _fetch_binance_klines("BTCUSDT", "1h", klines_limit)
+        eth_df = _fetch_binance_klines("ETHUSDT", "1h", klines_limit)
 
         if btc_df.empty or eth_df.empty:
             raise ValueError("Dados insuficientes da Binance")
@@ -474,10 +514,13 @@ def get_btc_macro_correlations(now_utc: Optional[datetime] = None) -> Dict[str, 
     }
 
     try:
-        # Busca dados do yfinance (instrumento efetivo registrado; NDX é proxy).
-        btc_df, _btc_ticker = _fetch_with_instrument("BTC-USD", period="90d")
-        dxy_df, dxy_ticker = _fetch_with_instrument("DXY", period="90d")
-        ndx_df, ndx_ticker = _fetch_with_instrument("NDX", period="90d")
+        # F5-C7: UM fetch conservador por ativo alimenta 30 e 90 (sem rede dupla).
+        # Profundidade derivada do maior alvo (90 retornos -> "141d"); a janela
+        # efetiva continua sendo o tail (30/31 ou 90/91 closes compartilhados).
+        lookback = _fetch_calendar_lookback(90)
+        btc_df, _btc_ticker = _fetch_with_instrument("BTC-USD", period=lookback)
+        dxy_df, dxy_ticker = _fetch_with_instrument("DXY", period=lookback)
+        ndx_df, ndx_ticker = _fetch_with_instrument("NDX", period=lookback)
 
         result["btc_dxy_instrument"] = dxy_ticker
         result["nasdaq_instrument"] = ndx_ticker
