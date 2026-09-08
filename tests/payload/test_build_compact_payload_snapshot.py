@@ -320,7 +320,9 @@ OPTIONAL_FLOW_KEYS      = {"d5", "d15", "cvd_4h", "ab", "bsr", "pa", "conv",
                            "delta", "vol", "buy_pct",
                            "q"}  # q = integridade temporal por janela (opcional; legado não emite)
 OPTIONAL_PRICE_KEYS     = {"o", "h", "l", "vw", "sh", "auc",
-                           "ph", "pl", "brk_risk"}
+                           "ph", "pl", "brk_risk",
+                           "fr"}  # P0.1 funding canônico (fração decimal; ver
+# _build_price/_extract_canonical_funding_rate + test_funding_rate_pipeline_p0)
 OPTIONAL_EXT_KEYS       = {"cci", "stoch", "wr", "garch", "hurst",
                            "entropy", "fd", "kalman", "reg", "mc",
                            "cycles", "smc", "fib"}
