@@ -24,9 +24,12 @@
     "btc_start": 78600.0,
     "tradfi_start": 98.9,
     "daily_drift": 0.0008,
-    "weekend_drift": 0.0015,
-    "note": "deterministico, sem RNG: close[d] = start * (1+drift)^idx_corridos"
+    "weekend_drift": 0.0,
+    "drift_mode": "rampa por dia util compartilhado (mesmo k nos dois lados; feriado consome k so no BTC)",
+    "note": "deterministico, sem RNG"
   },
+  "expected_corr_full": 0.8306,
+  "expected_note": "nao e +1.0 de proposito: o retorno de 09-08 (terca pos-feriado) diverge porque o BTC operou na segunda e o TradFi nao — prova que feriados nao sofrem forward-fill. Qualquer regressao no join/returns/availability muda este valor",
   "shared_sessions": 31,
   "decision_ms": 1788915600000,
   "short_case": {
