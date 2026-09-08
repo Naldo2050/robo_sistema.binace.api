@@ -183,6 +183,25 @@ def test_no_future_values_with_deep_history(monkeypatch):
     assert r["n"] == 90
 
 
+def test_short_window_logs_warning(monkeypatch, caplog):
+    import logging
+
+    dates = _cal(30)
+    biz = [d for d in dates if pd.Timestamp(d).weekday() < 5]
+    bc, _ = _closes(len(dates), seed=61)
+    dc, _ = _closes(len(biz), seed=62)
+    seen = []
+    _mock_three(monkeypatch,
+                (_frame(dates, bc), "BTC-USD"),
+                (_frame(biz, dc), "DX-Y.NYB"),
+                (_frame(biz, dc), "QQQ"), seen)
+    with caplog.at_level(logging.WARNING, logger="CrossAssetCorrelations"):
+        out = ca.get_btc_macro_correlations(DEC)
+    assert out["btc_dxy_corr_90d_n"] < 90
+    assert any("corr window short: btc_dxy_corr_90d" in r.message
+               for r in caplog.records)
+
+
 def _klines(n, start="2026-08-01 00:00+00:00", seed=0):
     rng = np.random.RandomState(seed)
     rets = 0.0005 + rng.randn(n) * 0.002

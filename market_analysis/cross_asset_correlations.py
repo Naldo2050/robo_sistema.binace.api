@@ -474,6 +474,12 @@ def get_btc_eth_correlations(now_utc: Optional[datetime] = None) -> Dict[str, An
         result["btc_eth_corr_30d"] = r30["corr"]
         result["btc_eth_corr_7d_n"] = r7["n"]
         result["btc_eth_corr_30d_n"] = r30["n"]
+        # Observabilidade da heurística de lookback (sem alterar o cálculo).
+        for _label, _r, _t in (("btc_eth_corr_7d", r7, 24 * 7),
+                               ("btc_eth_corr_30d", r30, 24 * 30)):
+            if _r["n"] < _t:
+                logger.warning("corr window short: %s n=%d target=%d",
+                               _label, _r["n"], _t)
 
         logger.info(f"Correlações BTC/ETH calculadas: 7d={result['btc_eth_corr_7d']:.4f} (n={r7['n']}), 30d={result['btc_eth_corr_30d']:.4f} (n={r30['n']})")
         
@@ -541,6 +547,12 @@ def get_btc_macro_correlations(now_utc: Optional[datetime] = None) -> Dict[str, 
         result["btc_dxy_corr_90d"] = r90["corr"]
         result["btc_dxy_corr_30d_n"] = r30["n"]
         result["btc_dxy_corr_90d_n"] = r90["n"]
+        # Observabilidade da heurística de lookback (sem alterar o cálculo).
+        for _label, _r, _t in (("btc_dxy_corr_30d", r30, 30),
+                               ("btc_dxy_corr_90d", r90, 90)):
+            if _r["n"] < _t:
+                logger.warning("corr window short: %s n=%d target=%d",
+                               _label, _r["n"], _t)
 
         # Retornos DXY sobre closes FECHADOS (barra do dia da decisão excluída).
         dxy_closed = _daily_by_date(dxy_df['close'])
@@ -559,6 +571,9 @@ def get_btc_macro_correlations(now_utc: Optional[datetime] = None) -> Dict[str, 
                                      decision_date=dec_date)
             result["btc_ndx_corr_30d"] = rn["corr"]
             result["btc_ndx_corr_30d_n"] = rn["n"]
+            if rn["n"] < 30:
+                logger.warning("corr window short: btc_ndx_corr_30d n=%d target=30",
+                               rn["n"])
 
         logger.info(f"Correlações macro calculadas: DXY 30d={result['btc_dxy_corr_30d']:.4f} (n={r30['n']}), 90d={result['btc_dxy_corr_90d']:.4f} (n={r90['n']})")
         
