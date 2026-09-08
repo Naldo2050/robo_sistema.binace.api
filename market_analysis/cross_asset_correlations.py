@@ -11,13 +11,23 @@ Fontes de dados:
 - Binance (velas 1h): BTCUSDT, ETHUSDT
 - yfinance (diário): BTC-USD, DXY, ^NDX
 
-DÍVIDA TEMPORAL P0/P1 (E4 futura; NÃO corrigir a matemática aqui):
-- O Pearson usa tail POSICIONAL entre séries com calendários distintos
-  (BTC 24/7 vs DXY/NDX dias úteis), sem join por timestamp, e pode incluir
-  candle/sessão ainda aberta; timezones não são normalizados.
-- Features cross-asset NÃO APROVADAS para treinamento ML
-  (ver CROSS_ASSET_TEMPORAL_AUDIT="pending" em cross_asset_updater.py).
-- `btc_dominance_change_7d=0.0` abaixo NÃO é observação real (placeholder);
+CONTRATO TEMPORAL v2 (F5-C; shared-session):
+- BTC x TradFi: closes nas mesmas DATAS (join por data UTC, nunca timestamp
+  exato — barras diárias têm tz/hora de close distintos) e retornos calculados
+  DEPOIS do alinhamento, sobre os mesmos endpoints temporais. Ex.: segunda usa
+  BTC_seg/BTC_sex e TradFi_seg/TradFi_sex (nunca BTC_seg/BTC_dom).
+- Somente sessões com availability_time <= decision_time. Conservador: barras
+  com data >= data da decisão são proibidas (sessão ainda aberta ou parcial);
+  não hardcodamos delay de fonte (market closed != source available).
+- Sem forward-fill e sem ASOF para Pearson (carregar sexta p/ fds fabrica
+  retornos zero). Weekends/holidays excluídos naturalmente pela interseção.
+- BTC x ETH (1h, mesma exchange): inner join por open_time, candle ainda
+  aberto (close_time > decision) excluído, retornos após alinhamento.
+- N contado APÓS os retornos; N < CORR_MIN_POINTS => NaN/insufficient, nunca 0.
+- Método/instrumento/N persistidos junto da feature (method/instrument/n);
+  linhas antigas sem a chave = positional_v1 (não misturar em treino).
+- Features cross-asset CONTINUAM BLOQUEADAS para treinamento ML.
+- `btc_dominance_change_7d` NÃO é observação real (placeholder omitido);
   nunca confundir com dado medido.
 """
 
@@ -46,6 +56,11 @@ logger = logging.getLogger("CrossAssetCorrelations")
 # ===============================
 
 CORR_MIN_POINTS = 10  # Mínimo de pontos para correlação confiável
+# DÍVIDA ESTATÍSTICA (F5-C): 10 é convenção herdada, não calibração.
+# Não alterar aqui; `n` real chega à IA/payload para ponderar confiança.
+
+CORR_METHOD = "shared_session_returns_v2"
+CORR_CONTRACT_VERSION = 2  # 1 = positional_v1 legado (linhas sem a chave)
 
 # Tipo para valores do resultado (pode ser str, float, int, None, etc.)
 ResultValue = Union[str, float, int, None]
@@ -90,6 +105,177 @@ def _corr_last_window(series_a: pd.Series,
     corr = a.corr(b)
 
     return float(round(corr, 4)) if not pd.isna(corr) else float("nan")
+
+
+# ===============================
+# Alinhamento temporal v2 (F5-C)
+# ===============================
+
+def _decision_date(now_utc: Optional[datetime]) -> Any:
+    """Data de decisão (UTC). Naive é interpretado como UTC (convenção local)."""
+    if now_utc is None:
+        return datetime.now(timezone.utc).date()
+    if now_utc.tzinfo is None:
+        return now_utc.replace(tzinfo=timezone.utc).date()
+    return now_utc.astimezone(timezone.utc).date()
+
+
+def _decision_ms(now_utc: Optional[datetime]) -> int:
+    """Decisão em epoch ms (para klines intradiários)."""
+    if now_utc is None:
+        return int(datetime.now(timezone.utc).timestamp() * 1000)
+    if now_utc.tzinfo is None:
+        return int(now_utc.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    return int(now_utc.timestamp() * 1000)
+
+
+def _daily_by_date(close: pd.Series) -> Dict[Any, float]:
+    """Closes diários indexados por DATA (UTC). Dedup keep-last, ordenado fora.
+
+    Barras diárias de fontes distintas têm tz/hora de close distintos
+    (BTC 00:00 UTC vs TradFi 00:00 ET = 04:00 UTC); join por timestamp exato
+    seria vazio. A data é a chave correta para sessão diária.
+    """
+    series = close.dropna()
+    series = series[~series.index.duplicated(keep="last")]
+    out: Dict[Any, float] = {}
+    for ts, val in series.items():
+        try:
+            t = pd.Timestamp(ts)
+            if t.tzinfo is None:
+                t = t.tz_localize("UTC")  # naive = UTC (convenção local)
+            else:
+                t = t.tz_convert("UTC")
+            day = t.date()
+        except (TypeError, ValueError):
+            continue
+        try:
+            out[day] = float(val)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def shared_session_corr(a_close: pd.Series, b_close: pd.Series,
+                        window: int,
+                        decision_date: Optional[Any] = None) -> Dict[str, Any]:
+    """Pearson sobre retornos de SESSÕES COMPARTILHADAS (F5-C).
+
+    1. interseção de datas com availability <= decision (data < decision_date);
+    2. closes nessas datas; 3. retornos DEPOIS do alinhamento (mesmos endpoints).
+    N contado após os retornos; insuficiente => NaN (nunca 0).
+    """
+    try:
+        ma = _daily_by_date(a_close)
+        mb = _daily_by_date(b_close)
+        shared = sorted(set(ma) & set(mb))
+        if decision_date is not None:
+            shared = [d for d in shared if d < decision_date]
+        tail = shared[-(window + 1):] if window else shared
+        n_ret = len(tail) - 1
+        if n_ret < CORR_MIN_POINTS:
+            return {"corr": float("nan"), "n": max(n_ret, 0),
+                    "first": tail[0].isoformat() if tail else None,
+                    "last": tail[-1].isoformat() if tail else None,
+                    "pairs": [(d.isoformat(), d.isoformat()) for d in tail[:5]]}
+        av = pd.Series([ma[d] for d in tail])
+        bv = pd.Series([mb[d] for d in tail])
+        ra = _log_returns(av.reset_index(drop=True))
+        rb = _log_returns(bv.reset_index(drop=True))
+        corr = _corr_last_window(ra, rb, len(ra))
+        return {"corr": corr, "n": len(ra),
+                "first": tail[0].isoformat(), "last": tail[-1].isoformat(),
+                "pairs": [(tail[i].isoformat(), tail[i].isoformat())
+                          for i in range(1, min(6, len(tail)))]}
+    except Exception as e:
+        logger.debug(f"shared_session_corr falhou: {e}")
+        return {"corr": float("nan"), "n": 0, "first": None,
+                "last": None, "pairs": []}
+
+
+def intraday_join_corr(btc_df: pd.DataFrame, eth_df: pd.DataFrame,
+                       window: int,
+                       decision_ms: Optional[int] = None) -> Dict[str, Any]:
+    """BTC x ETH 1h: inner join por timestamp, sem candle aberto (F5-C).
+
+    Remove velas com close_time > decision (ainda abertas), join interno por
+    open_time compartilhado, retornos DEPOIS do alinhamento. Gaps excluídos
+    naturalmente. N contado após os retornos; insuficiente => NaN.
+    """
+    try:
+        b = btc_df.copy()
+        e = eth_df.copy()
+        for df in (b, e):
+            df["close_time_ms"] = pd.to_numeric(df["close_time"], errors="coerce")
+        if decision_ms is not None:
+            b = b[b["close_time_ms"] <= decision_ms]
+            e = e[e["close_time_ms"] <= decision_ms]
+        b = b[~b.index.duplicated(keep="last")].sort_index()
+        e = e[~e.index.duplicated(keep="last")].sort_index()
+        idx = b.index.intersection(e.index).sort_values()
+        tail = idx[-(window + 1):] if window else idx
+        n_ret = len(tail) - 1
+        if n_ret < CORR_MIN_POINTS:
+            return {"corr": float("nan"), "n": max(n_ret, 0),
+                    "first": tail[0].isoformat() if len(tail) else None,
+                    "last": tail[-1].isoformat() if len(tail) else None,
+                    "pairs": []}
+        av = pd.to_numeric(b.loc[tail, "close"], errors="coerce").dropna()
+        bv = pd.to_numeric(e.loc[tail, "close"], errors="coerce").dropna()
+        common_n = min(len(av), len(bv))
+        if common_n - 1 < CORR_MIN_POINTS:
+            return {"corr": float("nan"), "n": max(common_n - 1, 0),
+                    "first": None, "last": None, "pairs": []}
+        av = av.tail(common_n).reset_index(drop=True)
+        bv = bv.tail(common_n).reset_index(drop=True)
+        ra = _log_returns(av)
+        rb = _log_returns(bv)
+        corr = _corr_last_window(ra, rb, len(ra))
+        return {"corr": corr, "n": len(ra),
+                "first": tail[0].isoformat(), "last": tail[-1].isoformat(),
+                "pairs": [(t.isoformat(), t.isoformat()) for t in list(tail[1:6])]}
+    except Exception as e:
+        logger.debug(f"intraday_join_corr falhou: {e}")
+        return {"corr": float("nan"), "n": 0, "first": None,
+                "last": None, "pairs": []}
+
+
+def _fetch_with_instrument(name: str, period: str = "90d",
+                           interval: str = "1d"):
+    """Busca com fallbacks + instrumento efetivo. (df, ticker_ou_None)."""
+    # Mesma ordem de tentativa de _fetch_yfinance_data_with_fallbacks,
+    # expondo o ticker vencedor (instrumento efetivo p/ metadata).
+    candidates = _FALLBACK_TICKERS.get(name, [name])
+    for ticker in candidates:
+        try:
+            import yfinance as yf
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _fetch(t=ticker):
+                return yf.Ticker(t).history(
+                    period=period, interval=interval, raise_errors=False
+                )
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_fetch)
+                try:
+                    df = future.result(timeout=15)
+                except FuturesTimeoutError:
+                    logger.warning(f"⏰ Timeout (15s) ao buscar {ticker} para {name}")
+                    continue
+            if df is None or df.empty:
+                continue
+            if 'Close' not in df.columns or df['Close'].isna().all():
+                continue
+            out = df.rename(columns={'Close': 'close'})[['close']].dropna()
+            if len(out) >= 5:
+                logger.info(f"✅ Sucesso: {ticker} forneceu {len(out)} pontos para {name}")
+                return out, ticker
+        except Exception as e:
+            logger.debug(f"Erro ao buscar {ticker}: {e}")
+            continue
+    logger.warning(f"❌ Falha: nenhum ticker funcionou para {name} (candidatos={candidates})")
+    return pd.DataFrame(), None
 
 
 # ===============================
@@ -175,52 +361,9 @@ def _fetch_yfinance_data_with_fallbacks(name: str, period: str = "90d", interval
     Returns:
         DataFrame com dados históricos
     """
-    candidates = _FALLBACK_TICKERS.get(name, [name])
-    
-    for ticker in candidates:
-        try:
-            import yfinance as yf
-            logger.debug(f"Tentando buscar {ticker} para {name}...")
-
-            def _fetch(t=ticker):
-                return yf.Ticker(t).history(
-                    period=period, interval=interval, raise_errors=False
-                )
-
-            # Hard timeout de 15s (yfinance timeout param nao funciona no v1.0)
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_fetch)
-                try:
-                    df = future.result(timeout=15)
-                except FuturesTimeoutError:
-                    logger.warning(f"⏰ Timeout (15s) ao buscar {ticker} para {name}")
-                    continue
-
-            if df is None or df.empty:
-                logger.debug(f"Dados vazios para {ticker}")
-                continue
-
-            # Verifica se tem dados válidos
-            if 'Close' not in df.columns or df['Close'].isna().all():
-                logger.debug(f"Coluna Close inválida para {ticker}")
-                continue
-
-            # Normaliza colunas
-            df = df.rename(columns={'Close': 'close'})
-            result_df = df[['close']].dropna()
-
-            if len(result_df) >= 5:  # Pelo menos 5 pontos de dados
-                logger.info(f"✅ Sucesso: {ticker} forneceu {len(result_df)} pontos para {name}")
-                return result_df
-            else:
-                logger.debug(f"Dados insuficientes em {ticker}: {len(result_df)} pontos")
-
-        except Exception as e:
-            logger.debug(f"Erro ao buscar {ticker}: {e}")
-            continue
-    
-    logger.warning(f"❌ Falha: nenhum ticker funcionou para {name} (candidatos={candidates})")
-    return pd.DataFrame()
+    # Delega (fonte única da lógica de retry/timeout); instrumento descartado.
+    df, _ticker = _fetch_with_instrument(name, period=period, interval=interval)
+    return df
 
 
 def _fetch_yfinance_data(ticker: str, period: str = "30d", interval: str = "1d") -> pd.DataFrame:
@@ -267,29 +410,32 @@ def get_btc_eth_correlations(now_utc: Optional[datetime] = None) -> Dict[str, An
     result: Dict[str, Any] = {
         "status": "ok",
         "btc_eth_corr_7d": float("nan"),
-        "btc_eth_corr_30d": float("nan")
+        "btc_eth_corr_30d": float("nan"),
+        "correlation_method": CORR_METHOD,
+        "correlation_contract_version": CORR_CONTRACT_VERSION,
+        "btc_eth_instrument": "BINANCE:BTCUSDT/ETHUSDT_1h",
     }
-    
+
     try:
         # Busca dados da Binance
         btc_df = _fetch_binance_klines("BTCUSDT", "1h", 30 * 24)
         eth_df = _fetch_binance_klines("ETHUSDT", "1h", 30 * 24)
-        
+
         if btc_df.empty or eth_df.empty:
             raise ValueError("Dados insuficientes da Binance")
-        
-        # Calcula retornos logarítmicos
-        btc_returns = _log_returns(btc_df['close'])
-        eth_returns = _log_returns(eth_df['close'])
-        
-        if len(btc_returns) < 24 * 7 or len(eth_returns) < 24 * 7:
-            raise ValueError("Dados insuficientes para cálculo")
-        
-        # Calcula correlações
-        result["btc_eth_corr_7d"] = _corr_last_window(btc_returns, eth_returns, 24 * 7)
-        result["btc_eth_corr_30d"] = _corr_last_window(btc_returns, eth_returns, 24 * 30)
-        
-        logger.info(f"Correlações BTC/ETH calculadas: 7d={result['btc_eth_corr_7d']:.4f}, 30d={result['btc_eth_corr_30d']:.4f}")
+
+        # F5-C: join por timestamp compartilhado, sem candle aberto,
+        # retornos calculados DEPOIS do alinhamento (nunca positional cego).
+        dec_ms = _decision_ms(now_utc)
+        r7 = intraday_join_corr(btc_df, eth_df, 24 * 7, decision_ms=dec_ms)
+        r30 = intraday_join_corr(btc_df, eth_df, 24 * 30, decision_ms=dec_ms)
+
+        result["btc_eth_corr_7d"] = r7["corr"]
+        result["btc_eth_corr_30d"] = r30["corr"]
+        result["btc_eth_corr_7d_n"] = r7["n"]
+        result["btc_eth_corr_30d_n"] = r30["n"]
+
+        logger.info(f"Correlações BTC/ETH calculadas: 7d={result['btc_eth_corr_7d']:.4f} (n={r7['n']}), 30d={result['btc_eth_corr_30d']:.4f} (n={r30['n']})")
         
     except Exception as e:
         result["status"] = "failed"
@@ -322,38 +468,56 @@ def get_btc_macro_correlations(now_utc: Optional[datetime] = None) -> Dict[str, 
         "btc_dxy_corr_90d": float("nan"),
         "btc_ndx_corr_30d": float("nan"),
         "dxy_return_5d": float("nan"),
-        "dxy_return_20d": float("nan")
+        "dxy_return_20d": float("nan"),
+        "correlation_method": CORR_METHOD,
+        "correlation_contract_version": CORR_CONTRACT_VERSION,
     }
-    
+
     try:
-        # Busca dados do yfinance
-        btc_df = _fetch_yfinance_data("BTC-USD", period="90d")
-        dxy_df = _fetch_yfinance_data("DXY", period="90d")
-        ndx_df = _fetch_yfinance_data("^NDX", period="90d")
-        
+        # Busca dados do yfinance (instrumento efetivo registrado; NDX é proxy).
+        btc_df, _btc_ticker = _fetch_with_instrument("BTC-USD", period="90d")
+        dxy_df, dxy_ticker = _fetch_with_instrument("DXY", period="90d")
+        ndx_df, ndx_ticker = _fetch_with_instrument("NDX", period="90d")
+
+        result["btc_dxy_instrument"] = dxy_ticker
+        result["nasdaq_instrument"] = ndx_ticker
+        result["nasdaq_role"] = "nasdaq_proxy"
+
         if btc_df.empty or dxy_df.empty:
             raise ValueError("Dados insuficientes do yfinance")
-        
-        # Calcula retornos logarítmicos
-        btc_returns = _log_returns(btc_df['close'])
-        dxy_returns = _log_returns(dxy_df['close'])
-        
-        # Calcula correlações DXY
-        result["btc_dxy_corr_30d"] = _corr_last_window(btc_returns, dxy_returns, 30)
-        result["btc_dxy_corr_90d"] = _corr_last_window(btc_returns, dxy_returns, 90)
-        
-        # Calcula retornos DXY
-        if len(dxy_df) >= 5:
-            result["dxy_return_5d"] = float((dxy_df['close'].iloc[-1] / dxy_df['close'].iloc[-5] - 1) * 100)
-        if len(dxy_df) >= 20:
-            result["dxy_return_20d"] = float((dxy_df['close'].iloc[-1] / dxy_df['close'].iloc[-20] - 1) * 100)
-        
-        # Calcula correlação NDX se dados disponíveis
+
+        # F5-C: shared-session (closes nas mesmas datas, só sessões com
+        # availability <= decision; retornos DEPOIS do alinhamento).
+        dec_date = _decision_date(now_utc)
+        r30 = shared_session_corr(btc_df['close'], dxy_df['close'], 30,
+                                  decision_date=dec_date)
+        r90 = shared_session_corr(btc_df['close'], dxy_df['close'], 90,
+                                  decision_date=dec_date)
+
+        result["btc_dxy_corr_30d"] = r30["corr"]
+        result["btc_dxy_corr_90d"] = r90["corr"]
+        result["btc_dxy_corr_30d_n"] = r30["n"]
+        result["btc_dxy_corr_90d_n"] = r90["n"]
+
+        # Retornos DXY sobre closes FECHADOS (barra do dia da decisão excluída).
+        dxy_closed = _daily_by_date(dxy_df['close'])
+        dxy_days = sorted(d for d in dxy_closed if d < dec_date)
+        if len(dxy_days) >= 5:
+            result["dxy_return_5d"] = float(
+                (dxy_closed[dxy_days[-1]] / dxy_closed[dxy_days[-5]] - 1) * 100)
+        if len(dxy_days) >= 20:
+            result["dxy_return_20d"] = float(
+                (dxy_closed[dxy_days[-1]] / dxy_closed[dxy_days[-20]] - 1) * 100)
+
+        # Calcula correlação NASDAQ-proxy se dados disponíveis
+        # (campo mantido por compatibilidade; instrumento real em metadata).
         if not ndx_df.empty:
-            ndx_returns = _log_returns(ndx_df['close'])
-            result["btc_ndx_corr_30d"] = _corr_last_window(btc_returns, ndx_returns, 30)
-        
-        logger.info(f"Correlações macro calculadas: DXY 30d={result['btc_dxy_corr_30d']:.4f}, 90d={result['btc_dxy_corr_90d']:.4f}")
+            rn = shared_session_corr(btc_df['close'], ndx_df['close'], 30,
+                                     decision_date=dec_date)
+            result["btc_ndx_corr_30d"] = rn["corr"]
+            result["btc_ndx_corr_30d_n"] = rn["n"]
+
+        logger.info(f"Correlações macro calculadas: DXY 30d={result['btc_dxy_corr_30d']:.4f} (n={r30['n']}), 90d={result['btc_dxy_corr_90d']:.4f} (n={r90['n']})")
         
     except Exception as e:
         result["status"] = "failed"
