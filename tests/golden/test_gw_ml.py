@@ -64,7 +64,8 @@ def test_mlgw1_ready_end_to_end(frozen_state, tmp_path, monkeypatch):
     from ml.train_model import ModelTrainer
     trainer = ModelTrainer.__new__(ModelTrainer)
     kept, report = trainer._apply_provenance_gate(df)
-    assert len(kept) == len(df) and report["schema_mismatch"] == 0
+    assert len(kept) == len(df) and report["schema_mismatch_rows"] == 0
+    assert report["eligible_rows"] == len(df) and report["unversioned_rows"] == 0
 
 
 def test_mlgw2_warmup_stored_but_gated(frozen_state, tmp_path, monkeypatch):
