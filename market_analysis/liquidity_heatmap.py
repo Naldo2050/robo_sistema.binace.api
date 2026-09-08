@@ -144,6 +144,8 @@ class LiquidityHeatmap:
 
                 if current is None:
                     # Inicia novo cluster
+                    # H3: price_sum/price_count sustentam o centro em O(1);
+                    # `prices` mantida para low/high/finalização (semântica intacta).
                     current = {
                         "prices": [price],
                         "volumes": [volume],
@@ -153,10 +155,14 @@ class LiquidityHeatmap:
                         "sell_volume": volume if side == "sell" else 0.0,
                         "first_seen_ms": ts,
                         "last_seen_ms": ts,
+                        "price_sum": float(price),
+                        "price_count": 1,
                     }
                 else:
                     # Verifica se o preço atual está dentro do threshold do cluster (baseado no centro corrente)
-                    center = float(np.mean(current["prices"]))
+                    # H3: centro incremental O(1); equivale a mean(prices) a menos de
+                    # erro de arredondamento (~1e-12 relativo << threshold ~1e2 USD).
+                    center = current["price_sum"] / current["price_count"]
                     price_threshold = max(0.01, center * self.cluster_threshold_pct)
                     if abs(price - center) <= price_threshold:
                         # Agrega no cluster atual
@@ -164,6 +170,8 @@ class LiquidityHeatmap:
                         current["volumes"].append(volume)
                         current["sides"].append(side)
                         current["timestamps"].append(ts)
+                        current["price_sum"] += float(price)
+                        current["price_count"] += 1
                         if side == "buy":
                             current["buy_volume"] += volume
                         else:
@@ -189,6 +197,8 @@ class LiquidityHeatmap:
                             "sell_volume": volume if side == "sell" else 0.0,
                             "first_seen_ms": ts,
                             "last_seen_ms": ts,
+                            "price_sum": float(price),
+                            "price_count": 1,
                         }
 
             # Finaliza último cluster
