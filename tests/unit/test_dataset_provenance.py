@@ -59,10 +59,69 @@ def test_roundtrip_collector_parquet_loader(tmp_path, monkeypatch):
     from ml.train_model import ModelTrainer
     trainer = ModelTrainer.__new__(ModelTrainer)  # gate puro, sem I/O
     kept, report = trainer._apply_provenance_gate(df)
-    assert report["ready"] == 16 and report["legacy_missing_column"] is False
-    assert report["schema_mismatch"] == 0
+    assert report["eligible_rows"] == 16
+    assert report["legacy_missing_column"] is False
+    assert report["schema_mismatch_rows"] == 0
+    assert report["unversioned_rows"] == 0
     assert len(kept) == 16
     assert (kept["feature_ready"] == True).all()  # noqa: E712
+
+
+@pytest.mark.parametrize("ready,ver,keep", [
+    (True, 1, True),          # ready + v1 -> KEEP
+    (True, 99, False),        # versão incompatível -> DROP
+    (True, None, False),      # versão ausente -> DROP unversioned
+    (True, float("nan"), False),
+    (False, 1, False),        # not ready -> DROP
+    (None, 1, False),
+    (1, 1, False),            # int 1 NÃO é True explícito
+    ("True", 1, False),       # string NÃO é True explícito
+])
+def test_gate_per_row_types(ready, ver, keep):
+    import numpy as np
+
+    from ml.train_model import ModelTrainer
+
+    df = pd.DataFrame([{"price_close": 100.0, "feature_ready": ready,
+                        "feature_schema_version": ver}])
+    trainer = ModelTrainer.__new__(ModelTrainer)
+    kept, report = trainer._apply_provenance_gate(df)
+    assert (len(kept) == 1) is keep
+    assert (report["eligible_rows"] == 1) is keep
+
+
+def test_gate_mixed_frame_keeps_only_ready_v1():
+    import numpy as np
+
+    from ml.train_model import ModelTrainer
+
+    df = pd.DataFrame([
+        {"price_close": 100.0, "feature_ready": True, "feature_schema_version": 1},
+        {"price_close": 101.0, "feature_ready": True, "feature_schema_version": None},
+        {"price_close": 102.0, "feature_ready": True, "feature_schema_version": 99},
+        {"price_close": 103.0, "feature_ready": False, "feature_schema_version": 1},
+    ])
+    trainer = ModelTrainer.__new__(ModelTrainer)
+    kept, report = trainer._apply_provenance_gate(df)
+    assert report["input_rows"] == 4
+    assert report["eligible_rows"] == 1
+    assert report["unversioned_rows"] == 1
+    assert report["schema_mismatch_rows"] == 1
+    assert report["not_ready_rows"] == 3
+    assert list(kept["price_close"]) == [100.0]
+
+
+def test_gate_numpy_bool_accepted():
+    import numpy as np
+
+    from ml.train_model import ModelTrainer
+
+    df = pd.DataFrame([{"price_close": 100.0,
+                        "feature_ready": np.bool_(True),
+                        "feature_schema_version": np.int64(1)}])
+    trainer = ModelTrainer.__new__(ModelTrainer)
+    kept, _ = trainer._apply_provenance_gate(df)
+    assert len(kept) == 1
 
 
 def test_legacy_loader_aborts_clearly(tmp_path):
@@ -87,8 +146,8 @@ def test_legacy_dataset_aborts_clearly():
     from ml.train_model import ModelTrainer
     trainer = ModelTrainer.__new__(ModelTrainer)
     kept, report = trainer._apply_provenance_gate(df)
-    assert report == {"total": 30, "ready": 0, "not_ready": 30,
-                      "legacy_missing_column": True, "schema_mismatch": 0,
-                      "unversioned_kept": 0}
+    assert report == {"input_rows": 30, "eligible_rows": 0,
+                      "not_ready_rows": 30, "unversioned_rows": 0,
+                      "schema_mismatch_rows": 0, "legacy_missing_column": True}
     assert len(kept) == 0
     assert len(kept) < trainer._min_ready_rows()  # treino aborta, sem relaxar

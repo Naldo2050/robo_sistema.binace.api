@@ -196,9 +196,12 @@ class ModelTrainer:
         # Dataset legado sem a coluna NUNCA vira ready (provenance desconhecida).
         full_df, _gate_report = self._apply_provenance_gate(full_df)
         logger.info(
-            "Provenance gate: total=%d ready=%d not_ready=%d legacy_sem_coluna=%s",
-            _gate_report["total"], _gate_report["ready"],
-            _gate_report["not_ready"], _gate_report["legacy_missing_column"],
+            "Provenance gate: input=%d eligible=%d not_ready=%d "
+            "unversioned=%d mismatch=%d legacy_sem_coluna=%s",
+            _gate_report["input_rows"], _gate_report["eligible_rows"],
+            _gate_report["not_ready_rows"], _gate_report["unversioned_rows"],
+            _gate_report["schema_mismatch_rows"],
+            _gate_report["legacy_missing_column"],
         )
         if len(full_df) < self._min_ready_rows():
             logger.error(
@@ -237,37 +240,47 @@ class ModelTrainer:
         return 100
 
     def _apply_provenance_gate(self, df: pd.DataFrame):
-        """Filtra linhas sem provenance (fail-closed) e schema divergente.
+        """Elegibilidade POR LINHA, fail-closed (TS-1).
 
-        Returns:
-            (df_filtrado, report {total, ready, not_ready,
-             legacy_missing_column, schema_mismatch})
+        training_eligible = feature_ready explicitamente True
+            AND feature_schema_version presente na linha
+            AND == CURRENT. Strings ("True"), inteiros arbitrários e truthy
+        genérico NUNCA viram ready: só bool/boolean verdadeiro. NaN/None,
+        versão ausente/incompatível => fora (unversioned/mismatch).
         """
+        import numpy as _np
+
         from ml.dataset_collector import FEATURE_SCHEMA_VERSION
+
+        def _is_true(value) -> bool:
+            return isinstance(value, (bool, _np.bool_)) and bool(value)
 
         total = len(df)
         if self.READY_COLUMN not in df.columns:
             return df.iloc[0:0], {
-                "total": total, "ready": 0, "not_ready": total,
-                "legacy_missing_column": True, "schema_mismatch": 0,
-                "unversioned_kept": 0,
+                "input_rows": total, "eligible_rows": 0,
+                "not_ready_rows": total, "unversioned_rows": 0,
+                "schema_mismatch_rows": 0, "legacy_missing_column": True,
             }
-        ready_mask = df[self.READY_COLUMN] == True  # noqa: E712
+        ready_mask = df[self.READY_COLUMN].map(_is_true)
         if self.SCHEMA_COLUMN in df.columns:
-            ver = df[self.SCHEMA_COLUMN]
-            mismatch_mask = ready_mask & ver.notna() & (ver != FEATURE_SCHEMA_VERSION)
-            unversioned = ready_mask & ver.isna()
+            ver = pd.to_numeric(df[self.SCHEMA_COLUMN], errors="coerce")
+            version_present = ver.notna()
+            version_ok = version_present & (ver == FEATURE_SCHEMA_VERSION)
+            mismatch_mask = ready_mask & version_present & ~version_ok
         else:
+            version_ok = ready_mask & False
             mismatch_mask = ready_mask & False
-            unversioned = ready_mask
-        keep_mask = ready_mask & ~mismatch_mask
+            version_present = ready_mask & False
+        unversioned_mask = ready_mask & ~version_present
+        keep_mask = ready_mask & version_ok
         kept = df[keep_mask]
         return kept, {
-            "total": total, "ready": int(keep_mask.sum()),
-            "not_ready": int(total - keep_mask.sum()),
+            "input_rows": total, "eligible_rows": int(keep_mask.sum()),
+            "not_ready_rows": int(total - keep_mask.sum()),
+            "unversioned_rows": int(unversioned_mask.sum()),
+            "schema_mismatch_rows": int(mismatch_mask.sum()),
             "legacy_missing_column": False,
-            "schema_mismatch": int(mismatch_mask.sum()),
-            "unversioned_kept": int(unversioned.sum()),
         }
 
     def _validate_data(self, df: pd.DataFrame) -> Dict[str, Any]:
