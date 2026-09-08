@@ -231,28 +231,43 @@ class ModelTrainer:
         return df_clean
     
     READY_COLUMN = "feature_ready"
+    SCHEMA_COLUMN = "feature_schema_version"
 
     def _min_ready_rows(self) -> int:
         return 100
 
     def _apply_provenance_gate(self, df: pd.DataFrame):
-        """Filtra linhas sem provenance de elegibilidade (fail-closed).
+        """Filtra linhas sem provenance (fail-closed) e schema divergente.
 
         Returns:
-            (df_filtrado, report {total, ready, not_ready, legacy_missing_column})
+            (df_filtrado, report {total, ready, not_ready,
+             legacy_missing_column, schema_mismatch})
         """
+        from ml.dataset_collector import FEATURE_SCHEMA_VERSION
+
         total = len(df)
         if self.READY_COLUMN not in df.columns:
             return df.iloc[0:0], {
                 "total": total, "ready": 0, "not_ready": total,
-                "legacy_missing_column": True,
+                "legacy_missing_column": True, "schema_mismatch": 0,
+                "unversioned_kept": 0,
             }
-        mask = df[self.READY_COLUMN] == True  # noqa: E712 — NaN/None/False fora
-        kept = df[mask]
+        ready_mask = df[self.READY_COLUMN] == True  # noqa: E712
+        if self.SCHEMA_COLUMN in df.columns:
+            ver = df[self.SCHEMA_COLUMN]
+            mismatch_mask = ready_mask & ver.notna() & (ver != FEATURE_SCHEMA_VERSION)
+            unversioned = ready_mask & ver.isna()
+        else:
+            mismatch_mask = ready_mask & False
+            unversioned = ready_mask
+        keep_mask = ready_mask & ~mismatch_mask
+        kept = df[keep_mask]
         return kept, {
-            "total": total, "ready": int(mask.sum()),
-            "not_ready": int(total - mask.sum()),
+            "total": total, "ready": int(keep_mask.sum()),
+            "not_ready": int(total - keep_mask.sum()),
             "legacy_missing_column": False,
+            "schema_mismatch": int(mismatch_mask.sum()),
+            "unversioned_kept": int(unversioned.sum()),
         }
 
     def _validate_data(self, df: pd.DataFrame) -> Dict[str, Any]:
