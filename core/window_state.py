@@ -132,9 +132,11 @@ class OrderBookData:
 class FlowData:
     """Dados de fluxo — escritos APENAS pelo FlowAnalyzer"""
     cvd: float = 0.0
-    flow_imbalance: float = 0.0
-    buy_sell_ratio: float = 1.0
-    pressure_label: str = "NEUTRAL"  # SLIGHT_BUY, SLIGHT_SELL, etc.
+    # P0-3b: ausência permanece None (nunca 0.0/1.0/NEUTRAL fabricado).
+    # 0.0 e 1.0 legítimos observados são preservados pelo writer.
+    flow_imbalance: Optional[float] = None
+    buy_sell_ratio: Optional[float] = None
+    pressure_label: Optional[str] = None  # SLIGHT_BUY, SLIGHT_SELL, etc.
 
     # Setores
     retail_buy: float = 0.0
@@ -152,6 +154,35 @@ class FlowData:
     absorption_label: str = "Neutra"
     buyer_strength: float = 0.0
     seller_exhaustion: float = 0.0
+
+    def validate(self) -> List[str]:
+        # P0-3b: None = ausente (explícito, válido). Só valida quando observado.
+        errors: List[str] = []
+        if self.flow_imbalance is not None:
+            v = self.flow_imbalance
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                errors.append(f"FLOW_IMBALANCE_INVALID_TYPE: {v!r}")
+            else:
+                fv = float(v)
+                if fv != fv or fv in (float("inf"), float("-inf")):
+                    errors.append(f"FLOW_IMBALANCE_NON_FINITE: {v!r}")
+                elif abs(fv) > 1.0:
+                    errors.append(f"FLOW_IMBALANCE_OUT_OF_RANGE: {v}")
+        if self.buy_sell_ratio is not None:
+            v = self.buy_sell_ratio
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                errors.append(f"BUY_SELL_RATIO_INVALID_TYPE: {v!r}")
+            else:
+                fv = float(v)
+                if fv != fv or fv in (float("inf"), float("-inf")):
+                    errors.append(f"BUY_SELL_RATIO_NON_FINITE: {v!r}")
+                elif fv < 0:
+                    errors.append(f"BUY_SELL_RATIO_NEGATIVE: {v}")
+        if self.pressure_label is not None:
+            v = self.pressure_label
+            if not isinstance(v, str) or not v:
+                errors.append(f"PRESSURE_LABEL_INVALID: {v!r}")
+        return errors
 
 
 @dataclass
@@ -202,13 +233,61 @@ class MacroData:
 @dataclass
 class DerivativesData:
     """Dados de derivativos — escritos APENAS pelo DerivativesCollector"""
-    btc_open_interest: float = 0.0
-    btc_open_interest_usd: float = 0.0
+    # P0-3b: ausência permanece None (nunca 0.0/1.0 fabricado).
+    # 0.0 e 1.0 legítimos observados são preservados pelo writer.
+    btc_open_interest: Optional[float] = None
+    btc_open_interest_usd: Optional[float] = None
     btc_funding_rate: Optional[float] = None
-    btc_long_short_ratio: float = 1.0
-    eth_open_interest: float = 0.0
+    btc_long_short_ratio: Optional[float] = None
+    eth_open_interest: Optional[float] = None
     eth_funding_rate: Optional[float] = None
-    eth_long_short_ratio: float = 1.0
+    eth_long_short_ratio: Optional[float] = None
+
+    def validate(self) -> List[str]:
+        # P0-3b: None = ausente (explícito, válido). Só valida quando observado.
+        errors: List[str] = []
+        for name in ("btc_open_interest", "btc_open_interest_usd",
+                     "eth_open_interest"):
+            v = getattr(self, name)
+            if v is None:
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                errors.append(f"{name.upper()}_INVALID_TYPE: {v!r}")
+                continue
+            fv = float(v)
+            if fv != fv or fv in (float("inf"), float("-inf")):
+                errors.append(f"{name.upper()}_NON_FINITE: {v!r}")
+            elif fv < 0:
+                errors.append(f"{name.upper()}_NEGATIVE: {v}")
+        for name in ("btc_long_short_ratio", "eth_long_short_ratio"):
+            v = getattr(self, name)
+            if v is None:
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                errors.append(f"{name.upper()}_INVALID_TYPE: {v!r}")
+                continue
+            fv = float(v)
+            if fv != fv or fv in (float("inf"), float("-inf")):
+                errors.append(f"{name.upper()}_NON_FINITE: {v!r}")
+            elif fv < 0:
+                errors.append(f"{name.upper()}_NEGATIVE: {v}")
+        if self.btc_funding_rate is not None:
+            v = self.btc_funding_rate
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                errors.append(f"BTC_FUNDING_RATE_INVALID_TYPE: {v!r}")
+            else:
+                fv = float(v)
+                if fv != fv or fv in (float("inf"), float("-inf")):
+                    errors.append(f"BTC_FUNDING_RATE_NON_FINITE: {v!r}")
+        if self.eth_funding_rate is not None:
+            v = self.eth_funding_rate
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                errors.append(f"ETH_FUNDING_RATE_INVALID_TYPE: {v!r}")
+            else:
+                fv = float(v)
+                if fv != fv or fv in (float("inf"), float("-inf")):
+                    errors.append(f"ETH_FUNDING_RATE_NON_FINITE: {v!r}")
+        return errors
 
 
 @dataclass
@@ -316,6 +395,8 @@ class WindowState:
         all_errors.extend(self.volume.validate())
         all_errors.extend(self.indicators.validate())
         all_errors.extend(self.orderbook.validate())
+        all_errors.extend(self.flow.validate())
+        all_errors.extend(self.derivatives.validate())
         all_errors.extend(self.macro.validate())
         all_errors.extend(self.onchain.validate())
 
