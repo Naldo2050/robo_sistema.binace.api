@@ -534,7 +534,10 @@ def run_ai_analysis_threaded(
 
                     # ── Coleta contínua de dados para retreino (independe de ML ativo) ──
                     try:
-                        from ml.dataset_collector import get_dataset_collector
+                        from ml.dataset_collector import (
+                            get_dataset_collector,
+                            provenance_fields,
+                        )
                         _price = float(
                             event_data.get("preco_fechamento")
                             or event_data.get("enriched_snapshot", {}).get("ohlc", {}).get("close", 0)
@@ -548,6 +551,10 @@ def run_ai_analysis_threaded(
                                     for _k, _v in _vals.items():
                                         if isinstance(_v, (int, float)):
                                             _flat_feats[f"{_sec}.{_k}"] = _v
+                            # P1-C1: provenance da elegibilidade junto da linha.
+                            # Ausência aqui = provenance desconhecida (nunca ready).
+                            _flat_feats.update(
+                                provenance_fields(ml_prediction))
                             get_dataset_collector().collect_window(
                                 features=_flat_feats,
                                 price_close=_price,

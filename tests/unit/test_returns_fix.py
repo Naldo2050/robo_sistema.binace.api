@@ -22,7 +22,7 @@ class TestReturnsValidator:
         prices = np.array([100.0])
         ret, valid, reason = ReturnsValidator.validate_return(101.0, prices, 1)
         assert ret == 0.0
-        assert valid is True
+        assert valid is False  # P1-C1: warmup não é observação
         assert reason == "WARMUP"
 
     def test_return_5_adaptive_window_short(self):
@@ -51,7 +51,7 @@ class TestReturnsValidator:
         prices = np.array([])
         ret, valid, reason = ReturnsValidator.validate_return(100.0, prices, 1)
         assert ret == 0.0
-        assert valid is True
+        assert valid is False  # P1-C1: vazio não é observação
         assert reason == "EMPTY"
 
     def test_invalid_current_price_nan(self):

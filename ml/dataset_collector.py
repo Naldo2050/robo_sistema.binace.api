@@ -29,6 +29,32 @@ BUFFER_PATH = Path("ml/datasets/collection_buffer.parquet")
 DEFAULT_HORIZON = 15
 DEFAULT_THRESHOLD = 0.002
 
+# Colunas de provenance (P1-C1). feature_ready True SOMENTE com elegibilidade
+# explícita; ausência = provenance desconhecida (nunca ready).
+PROVENANCE_COLUMNS = (
+    "ml_usable",
+    "ml_stale",
+    "valid_for_futures",
+    "features_valid_count",
+    "feature_ready",
+)
+
+
+def provenance_fields(ml_prediction) -> dict:
+    """Deriva campos de provenance de um dict de predição (puro, testável)."""
+    mp = ml_prediction if isinstance(ml_prediction, dict) else {}
+    return {
+        "ml_usable": mp.get("_ml_usable"),
+        "ml_stale": mp.get("ml_stale"),
+        "valid_for_futures": mp.get("valid_for_futures"),
+        "features_valid_count": mp.get("_features_real_count"),
+        "feature_ready": bool(
+            mp.get("_ml_usable") is True
+            and mp.get("ml_stale") is False
+            and mp.get("valid_for_futures") is True
+        ),
+    }
+
 
 class DatasetCollector:
     """Coleta contínua de dados para treino futuro."""

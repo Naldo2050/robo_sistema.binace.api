@@ -36,21 +36,23 @@ class ReturnsValidator:
             prices_array = np.asarray(prices, dtype=float)
             n = len(prices_array)
 
+            # P1-C1: sem histórico não há observação; o valor numérico
+            # permanece 0.0 por compat, mas is_valid=False (provenance).
             if n < 1:
-                return 0.0, True, "EMPTY"
+                return 0.0, False, "EMPTY"
 
             if n < 2 and window == 1:
-                return 0.0, True, "WARMUP"
+                return 0.0, False, "WARMUP"
 
             # Janela adaptiva: min(window, len(prices)-1)
             adaptive_window = min(window, n - 1) if n > 1 else 1
 
             if adaptive_window < 1:
-                return 0.0, True, "WARMUP"
+                return 0.0, False, "WARMUP"
 
             price_idx = -adaptive_window
             if price_idx < -n:
-                return 0.0, True, "WARMUP"
+                return 0.0, False, "WARMUP"
 
             past_price = float(prices_array[price_idx])
 

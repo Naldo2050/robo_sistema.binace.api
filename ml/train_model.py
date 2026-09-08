@@ -191,7 +191,23 @@ class ModelTrainer:
         
         full_df = pd.concat(dfs, ignore_index=True)
         logger.info(f"Dados brutos: {len(full_df)} linhas, {len(full_df.columns)} colunas")
-        
+
+        # P1-C1: gate de provenance — só linhas feature_ready entram no treino.
+        # Dataset legado sem a coluna NUNCA vira ready (provenance desconhecida).
+        full_df, _gate_report = self._apply_provenance_gate(full_df)
+        logger.info(
+            "Provenance gate: total=%d ready=%d not_ready=%d legacy_sem_coluna=%s",
+            _gate_report["total"], _gate_report["ready"],
+            _gate_report["not_ready"], _gate_report["legacy_missing_column"],
+        )
+        if len(full_df) < self._min_ready_rows():
+            logger.error(
+                "Treino abortado: %d linhas feature_ready (mínimo: %d). "
+                "Não fabricar dados e não relaxar o gate.",
+                len(full_df), self._min_ready_rows(),
+            )
+            return None
+
         # Validação de dados
         validation_result = self._validate_data(full_df)
         if not validation_result["valid"]:
@@ -214,6 +230,31 @@ class ModelTrainer:
         logger.info(f"Dados limpos: {len(df_clean)} linhas")
         return df_clean
     
+    READY_COLUMN = "feature_ready"
+
+    def _min_ready_rows(self) -> int:
+        return 100
+
+    def _apply_provenance_gate(self, df: pd.DataFrame):
+        """Filtra linhas sem provenance de elegibilidade (fail-closed).
+
+        Returns:
+            (df_filtrado, report {total, ready, not_ready, legacy_missing_column})
+        """
+        total = len(df)
+        if self.READY_COLUMN not in df.columns:
+            return df.iloc[0:0], {
+                "total": total, "ready": 0, "not_ready": total,
+                "legacy_missing_column": True,
+            }
+        mask = df[self.READY_COLUMN] == True  # noqa: E712 — NaN/None/False fora
+        kept = df[mask]
+        return kept, {
+            "total": total, "ready": int(mask.sum()),
+            "not_ready": int(total - mask.sum()),
+            "legacy_missing_column": False,
+        }
+
     def _validate_data(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Valida qualidade dos dados."""
         errors = []
