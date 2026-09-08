@@ -83,6 +83,8 @@ class InstitutionalEventBridge:
         self.confluence = ConfluenceEngine()
 
         self._events_processed: int = 0
+        # Contador de avaliações COT (stateless; sem data_points no analisador)
+        self._cot_analyses: int = 0
 
     @property
     def events_processed(self) -> int:
@@ -140,17 +142,33 @@ class InstitutionalEventBridge:
             )
             self.smart_money.add_candle(candle)
 
-        # --- 5. Atualizar Crypto COT ---
+        # --- 5. Avaliar Crypto COT (stateless; sem add_data) ---
+        # F5-A2: repara chamada à API morta. Mapeamento explícito e fail-closed:
+        # long_short_ratio do evento alimenta global_account_ratio (escopo
+        # aproximado); top-trader ausente no evento => analyze retorna PARTIAL
+        # (nunca se fabrica 1.0/0 como o código antigo fazia nos defaults).
+        # Bridge segue fora do caminho de produção (sem consumidor produtivo).
         derivatives = event.get("derivatives", {}).get("BTCUSDT", {})
+        cot_result = None
         if derivatives:
-            self.cot.add_data(
-                timestamp=timestamp,
-                funding_rate=derivatives.get("funding_rate_percent", 0) / 100,
-                open_interest=derivatives.get("open_interest", 0),
-                long_short_ratio=derivatives.get("long_short_ratio", 1.0),
-                top_trader_ls_ratio=1.0,  # Não disponível no evento
-                price=price,
+            fr_pct = derivatives.get("funding_rate_percent")
+            positioning_data = {
+                "global_account_ratio": derivatives.get("long_short_ratio"),
+                "top_account_ratio": None,  # Não disponível no evento
+                "top_position_ratio": None,  # Não disponível no evento
+                "open_interest": derivatives.get("open_interest"),
+                "funding_rate": (fr_pct / 100
+                                 if isinstance(fr_pct, (int, float)) and not isinstance(fr_pct, bool)
+                                 else None),
+                "is_available": True,
+                "is_stale": False,
+            }
+            cot_analysis = self.cot.analyze(
+                positioning_data,
+                symbol=event.get("symbol", "BTCUSDT"),
             )
+            cot_result = self.cot.to_legacy_analysis_result(cot_analysis)
+            self._cot_analyses += 1
 
         # --- 6. Atualizar Whale Detector com trade resumo ---
         buy_notional = event.get("buy_notional_usdt", 0)
@@ -194,7 +212,8 @@ class InstitutionalEventBridge:
         results.append(self.smart_money.analyze())
         results.append(self.vwap_twap.analyze(price))
         results.append(self.whale.analyze())
-        results.append(self.cot.analyze())
+        if cot_result is not None:
+            results.append(cot_result)
         results.append(self.entropy.analyze())
         results.append(self.fourier.analyze())
         results.append(self.mean_rev.analyze())
@@ -266,7 +285,7 @@ class InstitutionalEventBridge:
             "smart_money_candles": self.smart_money.candle_count,
             "vwap_data_points": self.vwap_twap.vwap.data_points,
             "whale_events": len(self.whale.events),
-            "cot_data_points": self.cot.data_points,
+            "cot_data_points": self._cot_analyses,
             "entropy_current": self.entropy.current_entropy,
             "fourier_data_points": self.fourier.data_points,
             "mean_rev_data_points": self.mean_rev.data_points,
@@ -288,7 +307,8 @@ class InstitutionalEventBridge:
         self.garch.reset()
         self.hmm.reset()
         self.whale.reset()
-        self.cot.reset()
+        # self.cot é stateless (sem reset); zera só o contador local
+        self._cot_analyses = 0
         self.entropy.reset()
         self.fourier.reset()
         self.mean_rev.reset()
