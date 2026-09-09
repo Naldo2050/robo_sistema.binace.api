@@ -365,15 +365,44 @@ class MacroDataProvider:
                 await session.close()
     
     async def close_all_sessions(self) -> None:
-        """Fecha todas as sessions"""
-        for loop_id, session in list(self._sessions.items()):
-            if not session.closed:
+        """Fecha todas as sessions. Idempotente; tolera sessão já fechada;
+        sempre esvazia o registry; nunca deixa wrong-event-loop estourar
+        (cada close é isolado em try/except e o clear é garantido)."""
+        try:
+            for loop_id, session in list(self._sessions.items()):
+                self._sessions.pop(loop_id, None)
                 try:
-                    await session.close()
+                    if session is not None and not session.closed:
+                        await session.close()
                 except Exception:
                     pass
-        self._sessions.clear()
+        finally:
+            self._sessions.clear()
         logger.info("🔌 Todas as HTTP sessions fechadas")
+
+    async def close_sessions_for_current_loop(self) -> int:
+        """PF-M2: fecha SOMENTE a(s) sessão(ões) do loop em execução.
+
+        Recursos usados por loop efêmero (ex: asyncio.run por refresh do
+        CrossAssetUpdater) são fechados antes desse loop terminar, sem tocar
+        sessões de outros loops (ex: MacroUpdateService). Sem loop em
+        execução: no-op (retorna 0). Idempotente.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            loop_id = id(loop)
+        except RuntimeError:
+            return 0
+        closed = 0
+        session = self._sessions.pop(loop_id, None)
+        if session is not None:
+            try:
+                if not session.closed:
+                    await session.close()
+                    closed = 1
+            except Exception:
+                pass
+        return closed
     
     async def close(self) -> None:
         """Fecha HTTP session do loop atual"""

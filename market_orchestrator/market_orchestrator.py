@@ -2539,6 +2539,23 @@ class EnhancedMarketBot:
         except Exception:
             pass
 
+        # PF-M3: ownership explícito das sessões MacroDataProvider.
+        # Consumidores (onchain/cross/context) já parados acima; para o
+        # MacroUpdateService e SÓ ENTÃO fecha as sessões. close_all_sessions
+        # é idempotente, tolera sessão já fechada, esvazia o registry e
+        # recria sob demanda (_get_session) se houver fetch tardio.
+        try:
+            from fetchers.macro_update_service import stop_macro_service
+            await stop_macro_service()
+        except Exception:
+            pass
+
+        try:
+            from fetchers.macro_data_provider import get_macro_provider
+            await get_macro_provider().close_all_sessions()
+        except Exception:
+            pass
+
         try:
             if hasattr(self, "event_bus") and self.event_bus:
                 self.event_bus.shutdown()

@@ -756,13 +756,25 @@ def _get_macro_data_sync() -> Dict[str, Any]:
 
 
 async def _get_macro_data_async() -> Dict[str, Any]:
-    """Função auxiliar para executar MacroDataProvider de forma assíncrona."""
+    """Função auxiliar para executar MacroDataProvider de forma assíncrona.
+
+    PF-M2: fecha as sessões do loop efêmero antes dele terminar (opção A).
+    Fecha SOMENTE o loop atual — nunca sessões de outros loops (ex:
+    MacroUpdateService) — e nunca cria sessão em um loop para fechar/usar
+    em outro: tudo acontece dentro deste mesmo loop efêmero.
+    """
     if not _MACRO_DATA_OK:
         return {}
-    
+
     try:
         provider = MacroDataProvider()
-        return await provider.get_all_macro_data()
+        try:
+            return await provider.get_all_macro_data()
+        finally:
+            try:
+                await provider.close_sessions_for_current_loop()
+            except Exception:
+                pass
     except Exception as e:
         logger.warning(f"Erro ao obter macro data async: {e}")
         return {}
