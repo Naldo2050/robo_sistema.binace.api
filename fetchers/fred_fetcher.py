@@ -15,10 +15,12 @@ from typing import Optional, Dict, List
 from datetime import datetime, timedelta, timezone
 
 # ============================================================================
-# ⚠️ IMPORTANTE: CARREGAR .env ANTES DE TUDO
+# PF-D4: .env via política central (LOAD_DOTENV/OBSERVATION_MODE) — mesma
+# política de config/settings.py. Carregamento direto foi removido para que
+# observation mode nunca reintroduza credenciais por este import.
 # ============================================================================
-from dotenv import load_dotenv
-load_dotenv()  # ← Esta linha DEVE estar aqui!
+from config.env_policy import maybe_load_dotenv
+maybe_load_dotenv()
 
 logger = logging.getLogger("FREDFetcher")
 

@@ -63,7 +63,7 @@ import logging
 import asyncio
 import traceback
 
-from dotenv import load_dotenv
+from config.env_policy import maybe_load_dotenv
 
 # 🔧 INSTRUMENTAÇÃO PARA DEBUG DE asyncio.create_task (opcional)
 if os.getenv("DEBUG_CREATE_TASK") == "1":
@@ -76,8 +76,9 @@ if os.getenv("DEBUG_CREATE_TASK") == "1":
 
     asyncio.create_task = traced_create_task
 
-# Carrega variáveis de ambiente do .env
-load_dotenv()
+# PF-D4: mesma política de config/settings.py — LOAD_DOTENV=0 ou
+# OBSERVATION_MODE=1 => NÃO carrega (observation nunca carrega).
+maybe_load_dotenv()
 
 # Silenciar logs de nível HTTP (httpx/httpcore aparecem a cada chamada Groq)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -319,6 +320,13 @@ async def main() -> int:
         # ✅ Validação rigorosa de parâmetros obrigatórios usados no construtor
         _validate_required_config()
 
+        # PF-D3: observation guard — aborta startup ANTES do bot e de qualquer
+        # side effect de rede quando OBSERVATION_MODE=1 e o processo estiver
+        # inseguro (credenciais/IA/hybrid/execução). No-op com modo desligado.
+        from config.env_policy import assert_observation_safe
+        import config.settings as _settings_for_guard
+        assert_observation_safe(_settings_for_guard)
+
         # Iniciar heartbeat manager
         await heartbeat.start()
 
@@ -347,6 +355,24 @@ async def main() -> int:
         except Exception as e:
             logging.warning(f"⚠️ Erro ao iniciar MacroUpdateService: {e}")
 
+        # ✅ Suporte a flags CLI (ex: --dump-raw-trades para coleta contínua do Item 8)
+        import argparse
+        cli_parser = argparse.ArgumentParser(description="Enhanced Market Bot v2.3.2", add_help=False)
+        cli_parser.add_argument(
+            "--dump-raw-trades",
+            nargs="?",
+            const="dados/trades_collect_2h.jsonl",
+            default=os.getenv("DUMP_RAW_TRADES", None),
+            help="Caminho do arquivo para dump contínuo de trades brutos em JSONL",
+        )
+        cli_parser.add_argument(
+            "--duration-seconds",
+            type=int,
+            default=int(os.getenv("BOT_DURATION_SECONDS", 0)),
+            help="Duração máxima em segundos antes do shutdown automático gracioso (0 = infinito)",
+        )
+        cli_args, _ = cli_parser.parse_known_args()
+
         # 1. Criar o bot (sem inicializar tasks)
         bot = EnhancedMarketBot(
             stream_url=config.STREAM_URL,
@@ -358,6 +384,7 @@ async def main() -> int:
             context_sma_period=config.CONTEXT_SMA_PERIOD,
             liquidity_flow_alert_percentage=config.LIQUIDITY_FLOW_ALERT_PERCENTAGE,
             wall_std_dev_factor=config.WALL_STD_DEV_FACTOR,
+            dump_raw_trades=cli_args.dump_raw_trades,
         )
 
         # ✅ Integrar HeartbeatManager com HealthMonitor do bot
@@ -398,8 +425,17 @@ async def main() -> int:
 
         try:
             # 4. Executar o bot
-            await bot.run()
-            return 0
+            if cli_args.duration_seconds and cli_args.duration_seconds > 0:
+                logging.info(f"⏱️ Execução com temporizador: {cli_args.duration_seconds} segundos...")
+                try:
+                    await asyncio.wait_for(bot.run(), timeout=float(cli_args.duration_seconds))
+                except asyncio.TimeoutError:
+                    logging.info(f"⏱️ Tempo limite de {cli_args.duration_seconds}s atingido. Iniciando graceful shutdown...")
+                    await bot.shutdown()
+                    return 0
+            else:
+                await bot.run()
+                return 0
         finally:
             heartbeat_task.cancel()
             try:

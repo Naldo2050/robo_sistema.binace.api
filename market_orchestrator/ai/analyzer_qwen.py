@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
-from dotenv import load_dotenv
+from config.env_policy import maybe_load_dotenv
 
 # Compact payload shape helpers
 try:
@@ -102,10 +102,10 @@ except ImportError:
     logging.info("ai_field_legend not available — AI will not have field reference")
 
 # ========================
-# CARREGAR .env
+# CARREGAR .env (PF-D4: política central — observation nunca carrega)
 # ========================
 
-load_dotenv()
+maybe_load_dotenv()
 
 # ========================
 # IMPORTS LOCAIS COM FALLBACK

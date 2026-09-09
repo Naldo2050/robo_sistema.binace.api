@@ -1,8 +1,10 @@
 import os
-from dotenv import load_dotenv
+from config.env_policy import maybe_load_dotenv
 
-# Carrega as variáveis do arquivo .env
-load_dotenv()
+# PF-D: carregamento .env centralizado e desabilitável. LOAD_DOTENV=0 ou
+# OBSERVATION_MODE=1 => NÃO carrega (observation nunca carrega). Default
+# True = compatibilidade com desenvolvimento normal.
+maybe_load_dotenv()
 
 # ===== 🆕 CONFIGURAÇÕES DE CIRCUIT BREAKER (ORDERBOOK) =====
 # CONFIGURAÇÃO OTIMIZADA PARA MAIOR RESILIÊNCIA
@@ -209,7 +211,7 @@ AI_SKIP_VOLUME_THRESHOLD = 100_000  # USD - threshold para pular IA em sideways
 
 # ===== ML / HYBRID DECISION =====
 HYBRID_ENABLED = False          # Desativado até dataset ter 500+ amostras balanceadas
-ML_STALE = True                 # Modelo treinado em spot; neutralizado em futures até retreino
+# NOTA: O estado de ML obsoleto é controlado na fonte via ml/models/model_metadata_latest.json
 HYBRID_MODE = "llm_primary"
 HYBRID_MODEL_WEIGHT = 0.6
 HYBRID_LLM_WEIGHT = 0.4
