@@ -730,8 +730,12 @@ def _build_orderbook(event_data: dict) -> dict:
     mi = event_data.get("market_impact", {}).get("slippage_matrix", {})
     s100 = mi.get("100k_usd", {})
     if s100:
-        ob["slip_b"] = round(s100.get("buy", 0) * 100, 2)
-        ob["slip_s"] = round(s100.get("sell", 0) * 100, 2)
+        b_val = s100.get("buy")
+        s_val = s100.get("sell")
+        if b_val is not None:
+            ob["slip_b"] = round(b_val * 100, 2)
+        if s_val is not None:
+            ob["slip_s"] = round(s_val * 100, 2)
 
     return ob
 

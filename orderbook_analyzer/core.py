@@ -196,27 +196,46 @@ def _simulate_market_impact(
     side: str,
     mid: Optional[float]
 ) -> Dict[str, Any]:
-    """Simula impacto de ordem de mercado."""
+    """Simula impacto de ordem de mercado com distinção canônica entre VWAP slippage e terminal move."""
     if not levels or usd_amount <= 0:
         insufficient = usd_amount > 0
         return {
             "usd": usd_amount,
-            "move_usd": 0.0,
-            "bps": 0.0,
+            "execution_vwap": None,
+            "execution_slippage_usd": None if insufficient else 0.0,
+            "execution_slippage_bps": None if insufficient else 0.0,
+            "terminal_price": None,
+            "terminal_move_usd": None if insufficient else 0.0,
+            "terminal_move_bps": None if insufficient else 0.0,
+            "observed_execution_vwap": None,
+            "observed_execution_slippage_usd": None if insufficient else 0.0,
+            "observed_execution_slippage_bps": None if insufficient else 0.0,
+            "observed_terminal_price": None,
+            "observed_terminal_move_usd": None if insufficient else 0.0,
+            "observed_terminal_move_bps": None if insufficient else 0.0,
+            # Legacy aliases
+            "move_usd": None if insufficient else 0.0,
+            "observed_move_usd": None if insufficient else 0.0,
+            "bps": None if insufficient else 0.0,
+            "observed_bps": None if insufficient else 0.0,
             "levels": 0,
             "vwap": None,
+            "final_price": None,
             "insufficient_liquidity": insufficient,
             "fill_ratio": 0.0 if insufficient else 1.0,
             "usd_filled": 0.0,
+            "full_fill": not insufficient,
         }
 
     spent = 0.0
     filled_qty = 0.0
     vwap_numer = 0.0
     levels_crossed = 0
-    terminal_price = levels[-1][0] if side == "buy" else levels[0][0]
+    terminal_price = None
 
     for i, (price, qty) in enumerate(levels):
+        if price <= 0 or qty <= 0:
+            continue
         level_usd = price * qty
         if spent + level_usd >= usd_amount:
             remaining = usd_amount - spent
@@ -234,30 +253,94 @@ def _simulate_market_impact(
             terminal_price = price
             levels_crossed = i + 1
 
-    vwap = vwap_numer / filled_qty if filled_qty > 0 else None
-    move_usd = 0.0
-    bps = 0.0
+    if spent <= 0.0 or filled_qty <= 0.0 or terminal_price is None or not mid or mid <= 0:
+        insufficient = usd_amount > 0
+        return {
+            "usd": usd_amount,
+            "execution_vwap": None,
+            "execution_slippage_usd": None if insufficient else 0.0,
+            "execution_slippage_bps": None if insufficient else 0.0,
+            "terminal_price": None,
+            "terminal_move_usd": None if insufficient else 0.0,
+            "terminal_move_bps": None if insufficient else 0.0,
+            "observed_execution_vwap": None,
+            "observed_execution_slippage_usd": None if insufficient else 0.0,
+            "observed_execution_slippage_bps": None if insufficient else 0.0,
+            "observed_terminal_price": None,
+            "observed_terminal_move_usd": None if insufficient else 0.0,
+            "observed_terminal_move_bps": None if insufficient else 0.0,
+            # Legacy aliases
+            "move_usd": None if insufficient else 0.0,
+            "observed_move_usd": None if insufficient else 0.0,
+            "bps": None if insufficient else 0.0,
+            "observed_bps": None if insufficient else 0.0,
+            "levels": levels_crossed,
+            "vwap": None,
+            "final_price": None,
+            "insufficient_liquidity": insufficient,
+            "fill_ratio": 0.0 if insufficient else 1.0,
+            "usd_filled": 0.0,
+            "full_fill": not insufficient,
+        }
 
-    if mid and terminal_price and mid > 0:
-        if side == "buy":
-            move_usd = max(0.0, terminal_price - mid)
-        else:
-            move_usd = max(0.0, mid - terminal_price)
-        bps = (move_usd / mid) * 10000.0
+    obs_vwap = vwap_numer / filled_qty
+    if side == "buy":
+        obs_terminal_move_usd = max(0.0, terminal_price - mid)
+        obs_execution_slippage_usd = max(0.0, obs_vwap - mid)
+    else:
+        obs_terminal_move_usd = max(0.0, mid - terminal_price)
+        obs_execution_slippage_usd = max(0.0, mid - obs_vwap)
 
-    insufficient = spent < usd_amount
+    obs_terminal_move_bps = (obs_terminal_move_usd / mid) * 10000.0
+    obs_execution_slippage_bps = (obs_execution_slippage_usd / mid) * 10000.0
+
+    insufficient = spent < (usd_amount - 1e-6)
     fill_ratio = round(spent / usd_amount, 4) if insufficient else 1.0
+    usd_filled = round(spent, 4)
+
+    # Full fill vs Partial fill
+    exec_vwap = round(obs_vwap, 4) if not insufficient else None
+    exec_slippage_usd = round(obs_execution_slippage_usd, 4) if not insufficient else None
+    exec_slippage_bps = round(obs_execution_slippage_bps, 4) if not insufficient else None
+
+    term_price = round(terminal_price, 4) if not insufficient else None
+    term_move_usd = round(obs_terminal_move_usd, 4) if not insufficient else None
+    term_move_bps = round(obs_terminal_move_bps, 4) if not insufficient else None
+
+    obs_exec_vwap = round(obs_vwap, 4)
+    obs_exec_slip_usd = round(obs_execution_slippage_usd, 4)
+    obs_exec_slip_bps = round(obs_execution_slippage_bps, 4)
+
+    obs_term_price = round(terminal_price, 4)
+    obs_term_move_usd_round = round(obs_terminal_move_usd, 4)
+    obs_term_move_bps_round = round(obs_terminal_move_bps, 4)
 
     return {
         "usd": usd_amount,
-        "move_usd": round(move_usd, 4),
-        "bps": round(bps, 4),
+        "execution_vwap": exec_vwap,
+        "execution_slippage_usd": exec_slippage_usd,
+        "execution_slippage_bps": exec_slippage_bps,
+        "terminal_price": term_price,
+        "terminal_move_usd": term_move_usd,
+        "terminal_move_bps": term_move_bps,
+        "observed_execution_vwap": obs_exec_vwap,
+        "observed_execution_slippage_usd": obs_exec_slip_usd,
+        "observed_execution_slippage_bps": obs_exec_slip_bps,
+        "observed_terminal_price": obs_term_price,
+        "observed_terminal_move_usd": obs_term_move_usd_round,
+        "observed_terminal_move_bps": obs_term_move_bps_round,
+        # Legacy aliases (move_usd/bps mapeiam para terminal_move histórico)
+        "move_usd": term_move_usd,
+        "observed_move_usd": obs_term_move_usd_round,
+        "bps": term_move_bps,
+        "observed_bps": obs_term_move_bps_round,
         "levels": levels_crossed,
-        "vwap": vwap,
-        "final_price": terminal_price,
+        "vwap": obs_exec_vwap,
+        "final_price": obs_term_price,
         "insufficient_liquidity": insufficient,
         "fill_ratio": fill_ratio,
-        "usd_filled": spent,
+        "usd_filled": usd_filled,
+        "full_fill": not insufficient,
     }
 
 

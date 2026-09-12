@@ -1537,110 +1537,7 @@ class EnhancedMarketBot:
         if defense_zones_data:
             signal["defense_zones"] = defense_zones_data
 
-        # ------- Orderbook + métricas avançadas -------
-        if ob_event and isinstance(ob_event, dict) and ob_event.get(
-            "is_valid", False
-        ):
-            if "orderbook_data" in ob_event:
-                signal["orderbook_data"] = ob_event["orderbook_data"]
-            elif "orderbook_data" not in signal:
-                signal["orderbook_data"] = ob_event
-
-            if "order_book_depth" in ob_event:
-                signal["order_book_depth"] = ob_event["order_book_depth"]
-
-            # FIX 3.4: Consolidar spread_analysis e orderbook_data_quality
-            # dentro de orderbook_data (evita seções separadas duplicadas)
-            if isinstance(signal.get("orderbook_data"), dict):
-                signal["orderbook_data"] = signal["orderbook_data"].copy()
-                # Garantir presença de timestamps, source e snapshot_offset_ms
-                for k in ("timestamps", "source", "source_type", "snapshot_offset_ms"):
-                    val = ob_event.get(k)
-                    if val is not None and k not in signal["orderbook_data"]:
-                        signal["orderbook_data"][k] = val
-                # Mover spread_bps de spread_analysis para orderbook_data
-                sa = ob_event.get("spread_analysis") or {}
-                if sa.get("current_spread_bps"):
-                    signal["orderbook_data"]["spread_bps"] = sa["current_spread_bps"]
-                # FIX 7B: depth_metrics NOT copied here — order_book_depth (L1-L25)
-                # is the canonical source. Keeping both duplicates the data.
-
-            if isinstance(signal.get("raw_event"), dict):
-                signal["raw_event"]["orderbook_data"] = signal.get("orderbook_data")
-
-            dq = ob_event.get("data_quality") or {}
-            if dq:
-                # FIX 3.4: Consolidar quality dentro de orderbook_data
-                if isinstance(signal.get("orderbook_data"), dict):
-                    signal["orderbook_data"]["is_valid"] = dq.get("is_valid", True)
-                    signal["orderbook_data"]["data_source"] = dq.get("data_source", "unknown")
-                # FIX (ETAPA 3): origem NÃO-live não pode virar "live".
-                # O orderbook_analyzer sinaliza data_source="stale" (snapshot
-                # antigo via fallback), "fallback_rest", "circuit_open",
-                # "external" e "unknown" (estado inicial). Antes, o else
-                # colapsava TODAS para orderbook_quality="live" — dado stale
-                # renderia reliability_score plena e confiança plena na IA.
-                # FIX (AJUSTE FINAL): ordem estritamente fail-closed — SOMENTE
-                # match exato com "live" produz "live". Qualquer origem não
-                # mapeada explicitamente (inclusive valores futuros/novos)
-                # cai no else -> tier "unknown" (mesmo peso -1.5 do tier
-                # degradado no enricher). A origem real NUNCA é perdida:
-                # orderbook_data.data_source acima preserva o valor original,
-                # que o payload_builder_compact propaga como qual["src"].
-                src = dq.get("data_source") or "unknown"
-                if src == "live":
-                    signal["orderbook_quality"] = "live"
-                elif src == "emergency":
-                    signal["orderbook_quality"] = "emergency"
-                else:
-                    signal["orderbook_quality"] = "unknown"
-
-            try:
-                mi_buy = ob_event.get("market_impact_buy", {}) or {}
-                mi_sell = ob_event.get("market_impact_sell", {}) or {}
-
-                def _get_move(mi_dict, key):
-                    d = mi_dict.get(key, {}) or {}
-                    return d.get("move_usd")
-
-                slippage_matrix = {
-                    "1k_usd":   {"buy": _get_move(mi_buy,  "1k"),  "sell": _get_move(mi_sell,  "1k")},
-                    "10k_usd":  {"buy": _get_move(mi_buy, "10k"),  "sell": _get_move(mi_sell, "10k")},
-                    "100k_usd": {"buy": _get_move(mi_buy,"100k"),  "sell": _get_move(mi_sell,"100k")},
-                    "1m_usd":   {"buy": _get_move(mi_buy,  "1M"),  "sell": _get_move(mi_sell,  "1M")},
-                }
-
-                bps_100k_buy = (mi_buy.get("100k") or {}).get("bps")
-                bps_100k_sell = (mi_sell.get("100k") or {}).get("bps")
-                bps_list = [
-                    v for v in (bps_100k_buy, bps_100k_sell)
-                    if isinstance(v, (int, float))
-                ]
-                if bps_list:
-                    avg_bps = float(sum(bps_list) / len(bps_list))
-                    liquidity_score = max(0.0, min(10.0, 10.0 - avg_bps / 5.0))
-                else:
-                    liquidity_score = None
-
-                if liquidity_score is not None:
-                    if liquidity_score >= 8:
-                        execution_quality = "EXCELLENT"
-                    elif liquidity_score >= 6:
-                        execution_quality = "GOOD"
-                    elif liquidity_score >= 4:
-                        execution_quality = "FAIR"
-                    else:
-                        execution_quality = "POOR"
-                else:
-                    execution_quality = None
-
-                signal["market_impact"] = {
-                    "slippage_matrix": slippage_matrix,
-                    "liquidity_score": liquidity_score,
-                    "execution_quality": execution_quality,
-                }
-            except Exception as e:
-                logging.debug(f"Falha ao construir market_impact: {e}")
+        EnhancedMarketBot._enrich_orderbook_metrics(signal, ob_event)
 
         # ====== Institutional Analytics ======
         if self.institutional_analytics is not None:
@@ -1844,6 +1741,174 @@ class EnhancedMarketBot:
                     logging.debug(f"Outcome confidence falhou: {e}")
 
         self._log_event(signal)
+
+    # ========================================
+    # ENRIQUECIMENTO DE ORDERBOOK E MARKET IMPACT
+    # ========================================
+    @staticmethod
+    def _enrich_orderbook_metrics(signal: Dict[str, Any], ob_event: Dict[str, Any]) -> None:
+        """Enriquece o sinal com métricas de orderbook e market impact de forma modular."""
+        if not (ob_event and isinstance(ob_event, dict) and ob_event.get("is_valid", False)):
+            return
+
+        if "orderbook_data" in ob_event:
+            signal["orderbook_data"] = ob_event["orderbook_data"]
+        elif "orderbook_data" not in signal:
+            signal["orderbook_data"] = ob_event
+
+        if "order_book_depth" in ob_event:
+            signal["order_book_depth"] = ob_event["order_book_depth"]
+
+        # FIX 3.4: Consolidar spread_analysis e orderbook_data_quality
+        # dentro de orderbook_data (evita seções separadas duplicadas)
+        if isinstance(signal.get("orderbook_data"), dict):
+            signal["orderbook_data"] = signal["orderbook_data"].copy()
+            # Garantir presença de timestamps, source e snapshot_offset_ms
+            for k in ("timestamps", "source", "source_type", "snapshot_offset_ms"):
+                val = ob_event.get(k)
+                if val is not None and k not in signal["orderbook_data"]:
+                    signal["orderbook_data"][k] = val
+            # Mover spread_bps de spread_analysis para orderbook_data
+            sa = ob_event.get("spread_analysis") or {}
+            if sa.get("current_spread_bps"):
+                signal["orderbook_data"]["spread_bps"] = sa["current_spread_bps"]
+            # FIX 7B: depth_metrics NOT copied here — order_book_depth (L1-L25)
+            # is the canonical source. Keeping both duplicates the data.
+
+        if isinstance(signal.get("raw_event"), dict):
+            signal["raw_event"]["orderbook_data"] = signal.get("orderbook_data")
+
+        dq = ob_event.get("data_quality") or {}
+        if dq:
+            if isinstance(signal.get("orderbook_data"), dict):
+                signal["orderbook_data"]["is_valid"] = dq.get("is_valid", True)
+                signal["orderbook_data"]["data_source"] = dq.get("data_source", "unknown")
+            src = dq.get("data_source") or "unknown"
+            if src == "live":
+                signal["orderbook_quality"] = "live"
+            elif src == "emergency":
+                signal["orderbook_quality"] = "emergency"
+            else:
+                signal["orderbook_quality"] = "unknown"
+
+        try:
+            mi_buy = ob_event.get("market_impact_buy", {}) or {}
+            mi_sell = ob_event.get("market_impact_sell", {}) or {}
+
+            def _get_slippage(mi_dict, key):
+                d = mi_dict.get(key, {}) or {}
+                if "execution_slippage_usd" in d:
+                    return d.get("execution_slippage_usd")
+                return d.get("move_usd")
+
+            def _get_observed_slippage(mi_dict, key):
+                d = mi_dict.get(key, {}) or {}
+                if "observed_execution_slippage_usd" in d:
+                    return d.get("observed_execution_slippage_usd")
+                return d.get("observed_move_usd") if "observed_move_usd" in d else d.get("move_usd")
+
+            def _get_terminal_move(mi_dict, key):
+                d = mi_dict.get(key, {}) or {}
+                if "terminal_move_usd" in d:
+                    return d.get("terminal_move_usd")
+                return d.get("move_usd")
+
+            def _get_observed_terminal_move(mi_dict, key):
+                d = mi_dict.get(key, {}) or {}
+                if "observed_terminal_move_usd" in d:
+                    return d.get("observed_terminal_move_usd")
+                return d.get("observed_move_usd") if "observed_move_usd" in d else d.get("move_usd")
+
+            def _get_fill_ratio(mi_dict, key):
+                d = mi_dict.get(key, {}) or {}
+                return d.get("fill_ratio", 1.0 if d else 0.0)
+
+            def _get_insufficient(mi_dict, key):
+                d = mi_dict.get(key, {}) or {}
+                return d.get("insufficient_liquidity", False)
+
+            slippage_matrix = {
+                "1k_usd":   {"buy": _get_slippage(mi_buy,  "1k"),  "sell": _get_slippage(mi_sell,  "1k")},
+                "10k_usd":  {"buy": _get_slippage(mi_buy, "10k"),  "sell": _get_slippage(mi_sell, "10k")},
+                "100k_usd": {"buy": _get_slippage(mi_buy,"100k"),  "sell": _get_slippage(mi_sell,"100k")},
+                "1m_usd":   {"buy": _get_slippage(mi_buy,  "1M"),  "sell": _get_slippage(mi_sell,  "1M")},
+            }
+
+            observed_partial_slippage_matrix = {
+                "1k_usd":   {"buy": _get_observed_slippage(mi_buy,  "1k"),  "sell": _get_observed_slippage(mi_sell,  "1k")},
+                "10k_usd":  {"buy": _get_observed_slippage(mi_buy, "10k"),  "sell": _get_observed_slippage(mi_sell, "10k")},
+                "100k_usd": {"buy": _get_observed_slippage(mi_buy,"100k"),  "sell": _get_observed_slippage(mi_sell,"100k")},
+                "1m_usd":   {"buy": _get_observed_slippage(mi_buy,  "1M"),  "sell": _get_observed_slippage(mi_sell,  "1M")},
+            }
+
+            terminal_move_matrix = {
+                "1k_usd":   {"buy": _get_terminal_move(mi_buy,  "1k"),  "sell": _get_terminal_move(mi_sell,  "1k")},
+                "10k_usd":  {"buy": _get_terminal_move(mi_buy, "10k"),  "sell": _get_terminal_move(mi_sell, "10k")},
+                "100k_usd": {"buy": _get_terminal_move(mi_buy,"100k"),  "sell": _get_terminal_move(mi_sell,"100k")},
+                "1m_usd":   {"buy": _get_terminal_move(mi_buy,  "1M"),  "sell": _get_terminal_move(mi_sell,  "1M")},
+            }
+
+            observed_terminal_move_matrix = {
+                "1k_usd":   {"buy": _get_observed_terminal_move(mi_buy,  "1k"),  "sell": _get_observed_terminal_move(mi_sell,  "1k")},
+                "10k_usd":  {"buy": _get_observed_terminal_move(mi_buy, "10k"),  "sell": _get_observed_terminal_move(mi_sell, "10k")},
+                "100k_usd": {"buy": _get_observed_terminal_move(mi_buy,"100k"),  "sell": _get_observed_terminal_move(mi_sell,"100k")},
+                "1m_usd":   {"buy": _get_observed_terminal_move(mi_buy,  "1M"),  "sell": _get_observed_terminal_move(mi_sell,  "1M")},
+            }
+
+            fill_ratio_matrix = {
+                "100k_usd": {"buy": _get_fill_ratio(mi_buy, "100k"), "sell": _get_fill_ratio(mi_sell, "100k")},
+                "1m_usd":   {"buy": _get_fill_ratio(mi_buy, "1M"),   "sell": _get_fill_ratio(mi_sell, "1M")},
+            }
+
+            insufficient_liquidity = {
+                "100k_usd": {"buy": _get_insufficient(mi_buy, "100k"), "sell": _get_insufficient(mi_sell, "100k")},
+                "1m_usd":   {"buy": _get_insufficient(mi_buy, "1M"),   "sell": _get_insufficient(mi_sell, "1M")},
+            }
+
+            insuf_100k_buy = _get_insufficient(mi_buy, "100k")
+            insuf_100k_sell = _get_insufficient(mi_sell, "100k")
+
+            if insuf_100k_buy or insuf_100k_sell:
+                liquidity_score = None
+            else:
+                bps_100k_buy = (mi_buy.get("100k") or {}).get("bps")
+                bps_100k_sell = (mi_sell.get("100k") or {}).get("bps")
+                bps_list = [
+                    v for v in (bps_100k_buy, bps_100k_sell)
+                    if isinstance(v, (int, float))
+                ]
+                if bps_list:
+                    avg_bps = float(sum(bps_list) / len(bps_list))
+                    liquidity_score = max(0.0, min(10.0, 10.0 - avg_bps / 5.0))
+                else:
+                    liquidity_score = None
+
+            insuf_1m = _get_insufficient(mi_buy, "1M") or _get_insufficient(mi_sell, "1M")
+            if liquidity_score is not None:
+                if liquidity_score >= 8:
+                    execution_quality = "PARTIAL_1M" if insuf_1m else "EXCELLENT"
+                elif liquidity_score >= 6:
+                    execution_quality = "GOOD"
+                elif liquidity_score >= 4:
+                    execution_quality = "FAIR"
+                else:
+                    execution_quality = "POOR"
+            else:
+                execution_quality = "INSUFFICIENT" if (insuf_100k_buy or insuf_100k_sell) else None
+
+            signal["market_impact"] = {
+                "slippage_matrix": slippage_matrix,
+                "observed_partial_matrix": observed_partial_slippage_matrix,
+                "observed_partial_slippage_matrix": observed_partial_slippage_matrix,
+                "terminal_move_matrix": terminal_move_matrix,
+                "observed_terminal_move_matrix": observed_terminal_move_matrix,
+                "fill_ratio_matrix": fill_ratio_matrix,
+                "insufficient_liquidity": insufficient_liquidity,
+                "liquidity_score": liquidity_score,
+                "execution_quality": execution_quality,
+            }
+        except Exception as e:
+            logging.debug(f"Falha ao construir market_impact: {e}")
 
     # ========================================
     # BUILDER DE EVENTO INSTITUCIONAL

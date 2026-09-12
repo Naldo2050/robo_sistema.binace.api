@@ -358,11 +358,30 @@ def _compress_orderbook(payload: dict) -> dict:
     impact = payload.get("market_impact", {})
     if impact:
         result["liq_score"] = _r(impact.get("liquidity_score"), "ratio")
-        result["exec_qual"] = impact.get("execution_quality", "")[:5]
+        eq = impact.get("execution_quality")
+        if eq == "PARTIAL_1M":
+            result["exec_qual"] = "P1M"
+        elif eq:
+            result["exec_qual"] = eq[:5]
         slippage = impact.get("slippage_matrix", {})
         if slippage:
-            result["slip_100k"] = slippage.get("100k_usd", {})
-            result["slip_1m"] = slippage.get("1m_usd", {})
+            s100 = dict(slippage.get("100k_usd", {}) or {})
+            fr_100 = (impact.get("fill_ratio_matrix", {}) or {}).get("100k_usd", {})
+            if fr_100:
+                if fr_100.get("buy", 1.0) < 1.0:
+                    s100["bf"] = fr_100.get("buy")
+                if fr_100.get("sell", 1.0) < 1.0:
+                    s100["sf"] = fr_100.get("sell")
+            result["slip_100k"] = s100
+
+            s1m = dict(slippage.get("1m_usd", {}) or {})
+            fr_1m = (impact.get("fill_ratio_matrix", {}) or {}).get("1m_usd", {})
+            if fr_1m:
+                if fr_1m.get("buy", 1.0) < 1.0:
+                    s1m["bf"] = fr_1m.get("buy")
+                if fr_1m.get("sell", 1.0) < 1.0:
+                    s1m["sf"] = fr_1m.get("sell")
+            result["slip_1m"] = s1m
 
     # Spread analysis
     spread = payload.get("spread_analysis", {})
