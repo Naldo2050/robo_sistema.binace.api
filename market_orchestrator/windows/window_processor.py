@@ -997,6 +997,45 @@ def process_window_snapshot(
                 )
             except Exception:
                 pass
+            # FORENSIC-AUDIT: captura janela física 1m (observacional, seção 7)
+            try:
+                from audit_live.hooks import on_window as _fwin
+
+                _ohlc = (enriched.get("ohlc", {}) or {}) if isinstance(enriched, dict) else {}
+                _Ts = [int(t.get("T", 0)) for t in valid_window_data if t.get("T")]
+                # CVD: arquitetura atual só expõe estado FINAL (flow_metrics pós-janela).
+                # NÃO inventar BEFORE: registra AFTER + null/NOT_OBSERVED (seção 3).
+                _cvd_after = (flow_metrics.get("cvd") if isinstance(flow_metrics, dict) else None)
+                _fwin({
+                    "window_number": bot.window_count,
+                    "symbol": getattr(bot, "symbol", "BTCUSDT"),
+                    "window_start_ms": close_ms - 60000,
+                    "window_end_ms": close_ms,
+                    "first_normalized_T": min(_Ts) if _Ts else None,
+                    "last_normalized_T": max(_Ts) if _Ts else None,
+                    "raw_trade_count": None,
+                    "normalized_trade_count": len(valid_window_data),
+                    "open": _ohlc.get("open"),
+                    "high": _ohlc.get("high"),
+                    "low": _ohlc.get("low"),
+                    "close": _ohlc.get("close"),
+                    "buy_base": float(total_buy_volume),
+                    "sell_base": float(total_sell_volume),
+                    "total_base": float(total_volume),
+                    "delta_base": float(total_buy_volume) - float(total_sell_volume),
+                    "enriched": enriched,
+                    "CVD_before": None,
+                    "cvd_before_status": "NOT_OBSERVED",
+                    "CVD_after": _cvd_after,
+                    "flow_metrics_ref": {
+                        "cvd": _cvd_after,
+                        "net_flow_1m": ((flow_metrics.get("order_flow", {}) or {}).get("net_flow_1m") if isinstance(flow_metrics, dict) else None),
+                    },
+                    "t_end_wall_ms": t_end_wall_ms,
+                    "pipeline_processing_ms": pipeline_processing_ms,
+                })
+            except Exception as _fe:
+                logging.warning("FORENSIC on_window falhou: %s", _fe, exc_info=True)
 
         except Exception as e:
             logging.error(

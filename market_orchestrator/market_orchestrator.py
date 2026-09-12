@@ -762,6 +762,14 @@ class EnhancedMarketBot:
         # 1) Decodificação de JSON
         try:
             raw = json.loads(message)
+            # FORENSIC-AUDIT (observacional, sem efeito na lógica): captura RAW Binance
+            # antes de normalização/clamp/drop. Ativo só se FORENSIC_CAPTURE=1.
+            try:
+                from audit_live.hooks import on_raw_message as _forensic_raw
+
+                _forensic_raw(message, raw)
+            except Exception as _fe:
+                logging.warning("FORENSIC hook on_raw_message falhou: %s", _fe, exc_info=True)
         except json.JSONDecodeError as e:
             self._invalid_json_count += 1
             step = self._invalid_json_log_step or 100
@@ -827,6 +835,13 @@ class EnhancedMarketBot:
                 self._missing_field_counts["T"] += 1
 
             if missing:
+                # FORENSIC-AUDIT: registra descarte por campo ausente (não altera fluxo)
+                try:
+                    from audit_live.hooks import on_normalized as _forensic_norm
+
+                    _forensic_norm(None, drop_reason="missing_" + ",".join(missing))
+                except Exception as _fe:
+                    logging.warning("FORENSIC hook on_normalized(missing) falhou: %s", _fe, exc_info=True)
                 total_missing = sum(
                     self._missing_field_counts[k] for k in ("p", "q", "T")
                 )
@@ -852,6 +867,13 @@ class EnhancedMarketBot:
                 T = int(T)
             except (TypeError, ValueError):
                 self._invalid_trade_count += 1
+                # FORENSIC-AUDIT: descarte por tipo inválido
+                try:
+                    from audit_live.hooks import on_normalized as _forensic_norm2
+
+                    _forensic_norm2(None, drop_reason="invalid_type")
+                except Exception as _fe:
+                    logging.warning("FORENSIC hook on_normalized(type) falhou: %s", _fe, exc_info=True)
                 step = self._invalid_trade_log_step or 100
                 if step > 0 and self._invalid_trade_count % step == 0:
                     logging.error(
@@ -865,6 +887,13 @@ class EnhancedMarketBot:
             # 5) Validação básica
             if p <= 0 or q <= 0 or T <= 0:
                 self._invalid_trade_count += 1
+                # FORENSIC-AUDIT: descarte por valor não positivo
+                try:
+                    from audit_live.hooks import on_normalized as _forensic_norm3
+
+                    _forensic_norm3(None, drop_reason="non_positive")
+                except Exception as _fe:
+                    logging.warning("FORENSIC hook on_normalized(non_positive) falhou: %s", _fe, exc_info=True)
                 step = self._invalid_trade_log_step or 100
                 if step > 0 and self._invalid_trade_count % step == 0:
                     logging.warning(
@@ -923,6 +952,13 @@ class EnhancedMarketBot:
                 "source": source,
                 "trade_id": trade_id,
             }
+            # FORENSIC-AUDIT: captura trade normalizado (observacional)
+            try:
+                from audit_live.hooks import on_normalized as _forensic_norm_ok
+
+                _forensic_norm_ok(norm)
+            except Exception as _fe:
+                logging.warning("FORENSIC hook on_normalized(ok) falhou: %s", _fe, exc_info=True)
 
             # Adiciona trade ao buffer assíncrono
             def process_trade_sync(trade):
@@ -934,6 +970,13 @@ class EnhancedMarketBot:
             
             if not success:
                 logging.warning(f"⚠️ Trade descartado por buffer overflow")
+                # FORENSIC-AUDIT: contabiliza drop de buffer (observacional)
+                try:
+                    from audit_live.forensic_context import CTX as _fctx
+
+                    _fctx.inc("trade_buffer_drops")
+                except Exception as _fe:
+                    logging.warning("FORENSIC buffer drop count falhou: %s", _fe, exc_info=True)
 
             if success:
                 if not getattr(self, "_first_trade_logged", False):

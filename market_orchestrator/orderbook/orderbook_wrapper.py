@@ -199,6 +199,23 @@ def fetch_orderbook_with_retry(
                     except Exception:
                         pass
                 logging.debug(f"✅ Orderbook LIVE SYNC OK - Janela #{getattr(bot, 'window_count', '?')} (offset={snapshot_offset_ms}ms)")
+                # FORENSIC-AUDIT: captura snapshot REST (observacional, sem mudar retorno)
+                try:
+                    from audit_live.hooks import on_orderbook_record as _fob
+
+                    _fob({
+                        "record_type": "REST_SNAPSHOT",
+                        "close_ms": close_ms,
+                        "exchange_ms": exchange_ms,
+                        "snapshot_offset_ms": snapshot_offset_ms,
+                        "bid_depth_usd": bid_depth,
+                        "ask_depth_usd": ask_depth,
+                        "source": "live_sync",
+                        "requested_at_ms": close_ms,
+                        "received_at_ms": int(time.time() * 1000),
+                    })
+                except Exception as _fe:
+                    logging.warning("FORENSIC orderbook hook falhou: %s", _fe, exc_info=True)
 
                 # Logger estruturado
                 slog = StructuredLogger("orderbook_wrapper", getattr(bot, "symbol", "UNKNOWN"))

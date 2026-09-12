@@ -376,6 +376,27 @@ class RobustConnectionManager:
         self.is_connected = False
         self.reconnect_count += 1
         self.total_reconnects += 1
+        # FORENSIC-AUDIT: contabiliza reconnect sem mudar backoff
+        try:
+            import os as _os
+
+            if _os.getenv("FORENSIC_CAPTURE", "0") == "1":
+                from audit_live.forensic_context import CTX as _fctx
+                from audit_live.hooks import on_orderbook_record as _fob_r
+
+                _fctx.inc("reconnections")
+                try:
+                    _fob_r({"record_type": "RECONNECT",
+                            "reconnect_count": self.reconnect_count,
+                            "total_reconnects": self.total_reconnects})
+                except Exception as _fe2:
+                    import logging as _lg
+
+                    _lg.warning("FORENSIC reconnect hook falhou: %s", _fe2, exc_info=True)
+        except Exception as _fe:
+            import logging as _lg2
+
+            _lg2.warning("FORENSIC reconnect count falhou: %s", _fe, exc_info=True)
 
         try:
             self.slog.warning(

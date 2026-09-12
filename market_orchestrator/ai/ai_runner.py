@@ -271,6 +271,15 @@ def run_ai_analysis_threaded(
     Equivalente ao método EnhancedMarketBot._run_ai_analysis_threaded original.
     """
 
+    # FORENSIC-AUDIT: kill-switch explícito — nunca transmitir à IA durante captura
+    try:
+        import os as _os
+
+        if _os.getenv("FORENSIC_NO_LLM", "0") == "1":
+            logging.warning("FORENSIC_NO_LLM=1: análise IA suprimida (payload será capturado localmente, llm_transmitted=false)")
+            return
+    except Exception as _fe:
+        logging.warning("FORENSIC_NO_LLM guard falhou: %s", _fe, exc_info=True)
     if not bot.ai_analyzer or not bot.ai_test_passed or bot.should_stop:
         if bot.ai_analyzer and not bot.ai_test_passed:
             logging.warning(

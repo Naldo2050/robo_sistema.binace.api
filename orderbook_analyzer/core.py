@@ -1194,6 +1194,38 @@ class OrderBookAnalyzer:
 
                     # PATCH A-02: Não retornar o MESMO objeto armazenado no cache
                     result = self._snapshot_copy(safe_copy)
+                    # FORENSIC-AUDIT: captura snapshot REST completo p/ replay (observacional)
+                    try:
+                        import os as _os
+
+                        if _os.getenv("FORENSIC_CAPTURE", "0") == "1":
+                            from audit_live.hooks import on_orderbook_record as _fob_snap
+
+                            import copy as _copy2
+                            import time as _time2
+
+                            try:
+                                _bids_full = _copy2.deepcopy(converted.get("bids"))
+                                _asks_full = _copy2.deepcopy(converted.get("asks"))
+                            except Exception:
+                                _bids_full = None
+                                _asks_full = None
+                            _fob_snap({
+                                "record_type": "REST_SNAPSHOT",
+                                "symbol": self.symbol,
+                                "url": url,
+                                "http_status": 200,
+                                "lastUpdateId": converted.get("lastUpdateId"),
+                                "E": converted.get("E"),
+                                "T": converted.get("T"),
+                                "bids": _bids_full,
+                                "asks": _asks_full,
+                                "requested_at_ms": int((fetch_start) * 1000) if "fetch_start" in locals() else None,
+                                "received_at_ms": int(_time2.time() * 1000),
+                                "limit": lim,
+                            })
+                    except Exception as _fe_snap:
+                        logging.warning("FORENSIC snapshot hook falhou: %s", _fe_snap, exc_info=True)
                     
                     # 2.5) Registrar sucesso do circuito (record_success)
                     self._circuit_breaker.record_success()

@@ -245,15 +245,60 @@ class OnchainFetcher:
                                 status[f"fees.{dst}"] = _classify_present(v)
                         if not data["fees"]:
                             del data["fees"]
+                    # FORENSIC-AUDIT: observa API externa sem alterar retorno
+                    try:
+                        import os as _os
+
+                        if _os.getenv("FORENSIC_CAPTURE", "0") == "1":
+                            from audit_live.hooks import on_external_api as _fext
+
+                            _fext({"source": "mempool.space/fees/recommended",
+                                   "requested_at": _req_at, "received_at": _recv_at,
+                                   "http_status": _status, "success": True,
+                                   "raw_value": fees, "normalized_value": data.get("fees"),
+                                   "fallback_used": False, "cache_used": False,
+                                   "classification": "VALID" if fees else "MISSING"})
+                    except Exception as _fe:
+                        logger.warning("FORENSIC ext fees hook falhou: %s", _fe, exc_info=True)
                 else:
                     # P04: HTTP != 200 = API_ERROR (ausência, nunca 0)
                     status["fees"] = "API_ERROR"
+                    # FORENSIC-AUDIT: HTTP não-200 observado
+                    try:
+                        import os as _os2
+
+                        if _os2.getenv("FORENSIC_CAPTURE", "0") == "1":
+                            from audit_live.hooks import on_external_api as _fext2
+
+                            _fext2({"source": "mempool.space/fees/recommended",
+                                    "requested_at": _req_at, "received_at": _recv_at,
+                                    "http_status": _status, "success": False,
+                                    "raw_value": None, "normalized_value": None,
+                                    "fallback_used": True, "cache_used": False,
+                                    "classification": "API_ERROR"})
+                    except Exception as _fe2:
+                        logger.warning("FORENSIC ext fees err hook falhou: %s", _fe2, exc_info=True)
         except Exception as e:
             # P04: exceção de rede = API_ERROR para todos os campos de fees
             for _dst in ("fastest_sat_vb", "half_hour_sat_vb", "hour_sat_vb",
                          "economy_sat_vb", "minimum_sat_vb"):
                 status.setdefault(f"fees.{_dst}", "API_ERROR")
             status.setdefault("fees", "API_ERROR")
+            # FORENSIC-AUDIT: exceção de rede observada
+            try:
+                import os as _os3
+
+                if _os3.getenv("FORENSIC_CAPTURE", "0") == "1":
+                    from audit_live.hooks import on_external_api as _fext3
+
+                    _fext3({"source": "mempool.space/fees/recommended",
+                            "requested_at": int(time.time() * 1000), "received_at": int(time.time() * 1000),
+                            "http_status": None, "success": False,
+                            "raw_value": None, "normalized_value": None,
+                            "fallback_used": True, "cache_used": False,
+                            "classification": "API_ERROR", "error": str(e)[:300]})
+            except Exception as _fe3:
+                logger.warning("FORENSIC ext fees exc hook falhou: %s", _fe3, exc_info=True)
             logger.debug(f"mempool.space fees falhou: {e}")
 
         # Mempool stats
@@ -292,14 +337,66 @@ class OnchainFetcher:
                             status["mempool.total_fee_btc"] = _classify_present(_f)
                         if not data["mempool"]:
                             del data["mempool"]
+                    try:
+                        import os as _os4
+
+                        if _os4.getenv("FORENSIC_CAPTURE", "0") == "1":
+                            from audit_live.hooks import on_external_api as _fext4
+
+                            _cls = "VALID"
+                            try:
+                                _c = mempool.get("count", None)
+                                _v = mempool.get("vsize", None)
+                                if _c is None:
+                                    _cls = "MISSING"
+                                elif _c == 0 and _v == 0:
+                                    _cls = "MISSING"
+                            except Exception:
+                                _cls = "VALID"
+                            _fext4({"source": "mempool.space/mempool",
+                                    "requested_at": _req_at2, "received_at": _recv_at2,
+                                    "http_status": _status2, "success": True,
+                                    "raw_value": mempool, "normalized_value": data.get("mempool"),
+                                    "fallback_used": False, "cache_used": False,
+                                    "classification": _cls})
+                    except Exception as _fe4:
+                        logger.warning("FORENSIC ext mempool hook falhou: %s", _fe4, exc_info=True)
                 else:
                     # P04: HTTP != 200 = API_ERROR
                     status["mempool"] = "API_ERROR"
+                    try:
+                        import os as _os5
+
+                        if _os5.getenv("FORENSIC_CAPTURE", "0") == "1":
+                            from audit_live.hooks import on_external_api as _fext5
+
+                            _fext5({"source": "mempool.space/mempool",
+                                    "requested_at": _req_at2, "received_at": _recv_at2,
+                                    "http_status": _status2, "success": False,
+                                    "raw_value": None, "normalized_value": None,
+                                    "fallback_used": True, "cache_used": False,
+                                    "classification": "API_ERROR"})
+                    except Exception as _fe5:
+                        logger.warning("FORENSIC ext mempool err hook falhou: %s", _fe5, exc_info=True)
         except Exception as e:
             # P04: exceção = API_ERROR para campos do mempool
             for _dst in ("mempool.count", "mempool.vsize_bytes", "mempool.total_fee_btc"):
                 status.setdefault(_dst, "API_ERROR")
             status.setdefault("mempool", "API_ERROR")
+            try:
+                import os as _os6
+
+                if _os6.getenv("FORENSIC_CAPTURE", "0") == "1":
+                    from audit_live.hooks import on_external_api as _fext6
+
+                    _fext6({"source": "mempool.space/mempool",
+                            "requested_at": int(time.time() * 1000), "received_at": int(time.time() * 1000),
+                            "http_status": None, "success": False,
+                            "raw_value": None, "normalized_value": None,
+                            "fallback_used": True, "cache_used": False,
+                            "classification": "API_ERROR", "error": str(e)[:300]})
+            except Exception as _fe6:
+                logger.warning("FORENSIC ext mempool exc hook falhou: %s", _fe6, exc_info=True)
             logger.debug(f"mempool.space mempool falhou: {e}")
 
         # Difficulty adjustment

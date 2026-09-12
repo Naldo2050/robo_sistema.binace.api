@@ -294,3 +294,33 @@ def process_signals(
     bot._process_institutional_alerts(enriched, pipeline)
     bot._log_health_check()
     bot._log_window_summary(enriched, historical_profile, macro_context)
+    # FORENSIC-AUDIT: captura triggers + constrói payload futuro SEM transmitir à IA
+    # (seções 13-14; llm_transmitted=false; ativo só se FORENSIC_CAPTURE=1)
+    try:
+        from audit_live.hooks import on_trigger as _ftrig
+
+        for _sig in signals:
+            try:
+                _ftrig(_sig)
+            except Exception as _fe2:
+                import logging as _lg
+
+                _lg.warning("FORENSIC on_trigger item falhou: %s", _fe2, exc_info=True)
+        try:
+            from audit_live.forensic_payload import build_and_capture_future_payload as _fpay
+
+            for _sig in signals:
+                try:
+                    _fpay(_sig)
+                except Exception as _fe3:
+                    import logging as _lg2
+
+                    _lg2.warning("FORENSIC build payload falhou: %s", _fe3, exc_info=True)
+        except Exception as _fe:
+            import logging as _lg3
+
+            _lg3.warning("FORENSIC payload stage falhou: %s", _fe, exc_info=True)
+    except Exception as _fe0:
+        import logging as _lg0
+
+        _lg0.warning("FORENSIC trigger/payload hook falhou: %s", _fe0, exc_info=True)

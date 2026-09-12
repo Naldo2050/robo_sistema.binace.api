@@ -3599,6 +3599,15 @@ class AIAnalyzer:
         self, prompt: str, event_data: Dict[str, Any]
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
         """Chama o provedor atual e sempre retorna JSON válido ou fallback JSON."""
+        # FORENSIC-AUDIT: bloqueio rígido de transmissão LLM durante captura
+        try:
+            import os as _os
+
+            if _os.getenv("FORENSIC_NO_LLM", "0") == "1":
+                logging.warning("FORENSIC_NO_LLM=1: _call_model bloqueado, retornando fallback sem HTTP")
+                return self._build_fallback_payload("forensic_no_llm")
+        except Exception as _fe:
+            logging.warning("FORENSIC _call_model guard falhou: %s", _fe, exc_info=True)
         if self.mode in ("openai", "groq") and self.client is not None:
             text, error_reason = self._call_openai_compatible(prompt)
             if error_reason is not None:

@@ -171,6 +171,41 @@ class InstitutionalAnalyticsEngine:
             "computed_at_ms": int(time.time() * 1000),
             "errors": [],
         }
+        # FORENSIC-AUDIT: registra inputs dos indicadores para provar lag (seção 11)
+        try:
+            import os as _os
+
+            if _os.getenv("FORENSIC_CAPTURE", "0") == "1":
+                from audit_live.hooks import on_indicator_inputs as _find
+
+                try:
+                    _closes = None
+                    _last_hist = None
+                    _last_hist_ts = None
+                    try:
+                        if candles_df is not None and hasattr(candles_df, "empty") and not candles_df.empty:
+                            _close_col = None
+                            for _c in list(candles_df.columns):
+                                _cl = str(_c).lower()
+                                if _cl in ("close", "c"):
+                                    _close_col = _c
+                                    break
+                            if _close_col is not None:
+                                _closes = candles_df[_close_col].tolist()
+                                _last_hist = float(_closes[-1]) if _closes else None
+                    except Exception:
+                        _last_hist = None
+                    _find({
+                        "window_close_ms": window_close_ms,
+                        "current_market_price": current_price,
+                        "input_last_price": _last_hist,
+                        "history_last_close": _last_hist,
+                        "candles_len": len(candles_df) if candles_df is not None and hasattr(candles_df, "__len__") else None,
+                    })
+                except Exception as _fe:
+                    logger.warning("FORENSIC indicator inputs falhou: %s", _fe, exc_info=True)
+        except Exception as _fe0:
+            logger.warning("FORENSIC indicator hook outer falhou: %s", _fe0, exc_info=True)
 
         # ═══════════════════════════════════════
         # SEÇÃO 1: INDICADORES TÉCNICOS EXTRAS

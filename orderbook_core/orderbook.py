@@ -376,6 +376,49 @@ class OrderBook:
 
     def _apply_websocket_delta(self, ws_data: Dict[str, Any]) -> bool:
         """Apply a Binance WebSocket delta update."""
+        # FORENSIC-AUDIT: captura diff bruto COMPLETO para replay (observacional)
+        # Preserva arrays b/a reais, não só lens. Ativo só se FORENSIC_CAPTURE=1.
+        try:
+            import os as _os
+            import logging as _logging
+
+            if _os.getenv("FORENSIC_CAPTURE", "0") == "1":
+                from audit_live.hooks import on_orderbook_record as _fob2
+
+                try:
+                    _b = ws_data.get("b")
+                    _a = ws_data.get("a")
+                    # Deep-copy defensivo limitado (depth20 => <=40 níveis, seguro)
+                    import copy as _copy
+
+                    _b_copy = _copy.deepcopy(_b) if _b is not None else None
+                    _a_copy = _copy.deepcopy(_a) if _a is not None else None
+                except Exception as _fe_c:
+                    _logging.warning("FORENSIC ws deepcopy falhou: %s", _fe_c, exc_info=True)
+                    _b_copy = None
+                    _a_copy = None
+                _fob2({
+                    "record_type": "WS_DEPTH_UPDATE",
+                    "e": ws_data.get("e"),
+                    "E": ws_data.get("E"),
+                    "T": ws_data.get("T"),
+                    "s": ws_data.get("s"),
+                    "U": ws_data.get("U"),
+                    "u": ws_data.get("u"),
+                    "pu": ws_data.get("pu"),
+                    "b": _b_copy,
+                    "a": _a_copy,
+                    "b_len": len(_b_copy) if isinstance(_b_copy, list) else None,
+                    "a_len": len(_a_copy) if isinstance(_a_copy, list) else None,
+                    "last_update_id_before": getattr(self, "last_update_id", None),
+                })
+        except Exception as _fe:
+            try:
+                import logging as _logging2
+
+                _logging2.warning("FORENSIC ws delta hook falhou: %s", _fe, exc_info=True)
+            except Exception:
+                pass
         update_id = ws_data.get('U', ws_data.get('u', 0))
         if update_id <= self.last_update_id:
             return False
