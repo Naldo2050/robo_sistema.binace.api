@@ -210,3 +210,15 @@ def test_invariant_real_zero_equals_valid():
         "fees_fastest_sat_vb": 0}
     assert (_meta(ev_a)["completeness_pct"]
             == _meta(ev_b)["completeness_pct"] == 100.0)
+
+
+# Pin S3: PIPELINE_PENDING é utilizável como PARTIAL (regra genérica,
+# sem pesos alterados; scoring P05 intacto).
+def test_pipeline_pending_usable_like_partial():
+    ev = _base_event()
+    ev["institutional_analytics"]["session_vwap"] = {
+        "is_valid": True, "status": "PIPELINE_PENDING"}
+    m = _meta(ev)
+    assert m["quality_components"]["session_vwap"]["usable"] is True
+    assert m["completeness_pct"] == 100.0
+    assert "reliability:session_vwap_stale_or_invalid" not in m["quality_reasons"]

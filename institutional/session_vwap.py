@@ -43,6 +43,9 @@ class SessionVWAPStatus(str, Enum):
     ERROR = "ERROR"
     # Cobertura incompleta mas fresca: valor utilizável, NÃO rotular de sessão cheia.
     PARTIAL = "PARTIAL"
+    # Único ausente é exatamente o último minuto fechado, ainda não transferido
+    # ao tracker pela ordem do pipeline (enrich antes de update). Não é perda.
+    PIPELINE_PENDING = "PIPELINE_PENDING"
 
 
 @dataclass
@@ -70,6 +73,10 @@ class SessionVWAPSnapshot:
     missing_bars: int = 0
     coverage_pct: Optional[float] = None
     coverage_status: str = "UNAVAILABLE"  # FULL | PARTIAL | UNAVAILABLE
+    # Minutos ausentes (ordenados, capados) para identidade exata do gap.
+    # Permite distinguir pendência estrutural (só o último fechado) de perda real.
+    missing_minutes: list = field(default_factory=list)
+    missing_minutes_truncated: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialização amigável em JSON."""
@@ -319,23 +326,31 @@ class SessionVWAPTracker:
         Esperado = minutos fechados em [session_start, último minuto fechado].
         O minuto corrente (ainda aberto) nunca conta como esperado.
         Retorna dict com expected_bars, missing_bars, coverage_pct,
-        coverage_status (FULL|PARTIAL|UNAVAILABLE) e first_candle_ms.
+        coverage_status (FULL|PARTIAL|UNAVAILABLE), first_candle_ms e
+        missing_minutes (lista ordenada, capada em 32 + flag de truncamento).
         """
         last_closed = (now_ms // 60000 - 1) * 60000
         if last_closed < self._session_start_ms:
             return {"expected_bars": 0, "missing_bars": 0, "coverage_pct": None,
-                    "coverage_status": "UNAVAILABLE", "first_candle_ms": None}
+                    "coverage_status": "UNAVAILABLE", "first_candle_ms": None,
+                    "missing_minutes": [], "missing_minutes_truncated": False,
+                    "last_closed_ms": last_closed}
         expected = (last_closed - self._session_start_ms) // 60000 + 1
         seen = {m for m in self._seen_minutes
                 if self._session_start_ms <= m * 60000 <= last_closed}
-        received = len(seen)
-        missing = expected - received
+        missing = sorted(m * 60000 for m in range(
+            self._session_start_ms // 60000, last_closed // 60000 + 1)
+            if m not in seen)
+        received = expected - len(missing)
         return {
             "expected_bars": expected,
-            "missing_bars": missing,
+            "missing_bars": len(missing),
             "coverage_pct": round(received / expected * 100, 1),
-            "coverage_status": "FULL" if missing == 0 else "PARTIAL",
+            "coverage_status": "FULL" if not missing else "PARTIAL",
             "first_candle_ms": min(seen) * 60000 if seen else None,
+            "missing_minutes": missing[:32],
+            "missing_minutes_truncated": len(missing) > 32,
+            "last_closed_ms": last_closed,
         }
 
     def get_snapshot(self, current_price: Optional[float] = None,
@@ -363,12 +378,23 @@ class SessionVWAPTracker:
         # WARMING_UP (sem barras) e ERROR/STALE permanecem como estão.
         cov = self._coverage(now_ms)
         if status == SessionVWAPStatus.VALID and cov["coverage_status"] == "PARTIAL":
-            status = SessionVWAPStatus.PARTIAL
+            # PIPELINE_PENDING somente se o ÚNICO ausente for exatamente o
+            # último minuto fechado (candle recém-fechada ainda não transferida
+            # ao tracker pela ordem enrich-antes-de-update). Qualquer outro
+            # padrão (gap antigo, múltiplos) permanece PARTIAL — nunca inferir
+            # a partir de contagem (missing==1 sozinho NÃO basta).
+            if (not cov["missing_minutes_truncated"]
+                    and cov["missing_minutes"] == [cov["last_closed_ms"]]):
+                status = SessionVWAPStatus.PIPELINE_PENDING
+            else:
+                status = SessionVWAPStatus.PARTIAL
 
         # Cálculo de distância fracionária: (P - VWAP) / VWAP
         dist_fraction = None
         side = "UNKNOWN"
-        is_valid = (status in (SessionVWAPStatus.VALID, SessionVWAPStatus.PARTIAL)
+        is_valid = (status in (SessionVWAPStatus.VALID,
+                               SessionVWAPStatus.PARTIAL,
+                               SessionVWAPStatus.PIPELINE_PENDING)
                     ) and (vwap_val is not None)
 
         if vwap_val and current_price and math.isfinite(current_price) and current_price > 0:
@@ -406,4 +432,6 @@ class SessionVWAPTracker:
             missing_bars=cov["missing_bars"],
             coverage_pct=cov["coverage_pct"],
             coverage_status=cov["coverage_status"],
+            missing_minutes=cov["missing_minutes"],
+            missing_minutes_truncated=cov["missing_minutes_truncated"],
         )

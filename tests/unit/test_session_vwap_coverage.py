@@ -261,5 +261,123 @@ class TestBootstrapPagination(unittest.TestCase):
         self.assertEqual(len(bot.pattern_ohlc_history), 0)
 
 
+class TestPipelinePending(unittest.TestCase):
+    """S3: missing == {last_closed} exatamente => PIPELINE_PENDING."""
+
+    def test_only_last_closed_missing_is_pending(self):
+        tr = SessionVWAPTracker(symbol="BTCUSDT")
+        tr.reset_session(DAY)
+        # 00:00..00:04 presentes; snapshot com last_closed=00:05 -> falta só 00:05
+        for i in range(5):
+            tr.update_candle(DAY + i * 60000, 100.0, 99.0, 99.5, 5.0)
+        snap = tr.get_snapshot(current_price=99.5, now_ms=DAY + 6 * 60000)
+        self.assertEqual(snap.missing_bars, 1)
+        self.assertEqual(snap.missing_minutes, [DAY + 5 * 60000])
+        self.assertEqual(snap.coverage_status, "PARTIAL")
+        self.assertEqual(snap.status, SessionVWAPStatus.PIPELINE_PENDING)
+        self.assertTrue(snap.is_valid)
+
+    def test_old_missing_is_partial(self):
+        tr = SessionVWAPTracker(symbol="BTCUSDT")
+        tr.reset_session(DAY)
+        # falta 00:01 (antiga); 00:05 presente
+        for i in (0, 2, 3, 4, 5):
+            tr.update_candle(DAY + i * 60000, 100.0, 99.0, 99.5, 5.0)
+        snap = tr.get_snapshot(current_price=99.5, now_ms=DAY + 6 * 60000)
+        self.assertEqual(snap.missing_minutes, [DAY + 60000])
+        self.assertEqual(snap.status, SessionVWAPStatus.PARTIAL)
+        self.assertTrue(snap.is_valid)
+
+    def test_gap_plus_pending_is_partial(self):
+        tr = SessionVWAPTracker(symbol="BTCUSDT")
+        tr.reset_session(DAY)
+        for i in (0, 2, 3, 4):  # faltam 00:01 (gap) e 00:05 (pending)
+            tr.update_candle(DAY + i * 60000, 100.0, 99.0, 99.5, 5.0)
+        snap = tr.get_snapshot(current_price=99.5, now_ms=DAY + 6 * 60000)
+        self.assertEqual(snap.missing_bars, 2)
+        self.assertEqual(snap.status, SessionVWAPStatus.PARTIAL)
+
+    def test_false_positive_single_old_gap(self):
+        # missing_count==1 NÃO basta: falta antiga com last_closed presente => PARTIAL
+        tr = SessionVWAPTracker(symbol="BTCUSDT")
+        tr.reset_session(DAY)
+        for i in (0, 2, 3, 4, 5):  # 00:01 ausente, 00:05 presente
+            tr.update_candle(DAY + i * 60000, 100.0, 99.0, 99.5, 5.0)
+        snap = tr.get_snapshot(current_price=99.5, now_ms=DAY + 6 * 60000)
+        self.assertEqual(snap.missing_bars, 1)
+        self.assertNotEqual(snap.status, SessionVWAPStatus.PIPELINE_PENDING)
+        self.assertEqual(snap.status, SessionVWAPStatus.PARTIAL)
+
+    def test_cycle_proof_pending_then_incorporated(self):
+        tr = SessionVWAPTracker(symbol="BTCUSDT")
+        tr.reset_session(DAY)
+        for i in range(5):
+            tr.update_candle(DAY + i * 60000, 100.0, 99.0, 99.5, 5.0)
+        s_n = tr.get_snapshot(current_price=99.5, now_ms=DAY + 6 * 60000)
+        self.assertEqual(s_n.status, SessionVWAPStatus.PIPELINE_PENDING)
+        # ciclo N+1: a candle entra; pendente passa a ser a seguinte
+        tr.update_candle(DAY + 5 * 60000, 100.0, 99.0, 99.5, 5.0)
+        s_n1 = tr.get_snapshot(current_price=99.5, now_ms=DAY + 7 * 60000)
+        self.assertEqual(s_n1.status, SessionVWAPStatus.PIPELINE_PENDING)
+        self.assertEqual(s_n1.missing_minutes, [DAY + 6 * 60000])
+        self.assertEqual(s_n1.bars_count, 6)
+        # ausência verdadeira em N+1 => PARTIAL (não acumula como pending)
+        s_gap = tr.get_snapshot(current_price=99.5, now_ms=DAY + 9 * 60000)
+        # faltam 00:07 e 00:08 (02 ausentes, um deles é last_closed)
+        self.assertEqual(s_gap.status, SessionVWAPStatus.PARTIAL)
+
+
+class TestUnavailableAndStale(unittest.TestCase):
+    def test_no_closed_minute_yet_unavailable(self):
+        tr = SessionVWAPTracker(symbol="BTCUSDT")
+        tr.reset_session(DAY)
+        snap = tr.get_snapshot(current_price=100.0, now_ms=DAY + 30000)
+        self.assertEqual(snap.coverage_status, "UNAVAILABLE")
+        self.assertEqual(snap.expected_bars, 0)
+
+    def test_frozen_tracker_goes_stale(self):
+        tr = SessionVWAPTracker(symbol="BTCUSDT")
+        tr.reset_session(DAY)
+        for i in range(10):
+            tr.update_candle(DAY + i * 60000, 100.0, 99.0, 99.5, 5.0)
+        snap = tr.get_snapshot(current_price=99.5, now_ms=DAY + 3600 * 1000)
+        self.assertEqual(snap.status, SessionVWAPStatus.STALE)
+        self.assertFalse(snap.is_valid)
+
+    def test_bootstrap_prime_reaches_full(self):
+        # Simula o prime do prefetch: batch completo da sessão até o último fechado.
+        tr = SessionVWAPTracker(symbol="BTCUSDT")
+        tr.reset_session(DAY)
+        tr.update_batch([
+            {"open_time": DAY + i * 60000, "high": 100.0, "low": 99.0,
+             "close": 99.5, "volume": 5.0}
+            for i in range(120)
+        ])
+        snap = tr.get_snapshot(current_price=99.5, now_ms=DAY + 120 * 60000 + 30000)
+        self.assertEqual(snap.coverage_status, "FULL")
+        self.assertEqual(snap.status, SessionVWAPStatus.VALID)
+        self.assertEqual(snap.bars_count, 120)
+
+
+class TestPayloadCoverageToken(unittest.TestCase):
+    def test_pipeline_pending_reaches_compact_payload(self):
+        from market_orchestrator.ai.payload_builder_compact import _build_vwap_context
+        ctx = _build_vwap_context({"institutional_analytics": {"session_vwap": {
+            "is_valid": True, "session_vwap": 77400.0, "distance_fraction": 0.001,
+            "side": "ABOVE", "coverage_status": "PIPELINE_PENDING", "coverage_pct": 99.3,
+        }}})
+        self.assertEqual(ctx["m"], "session_utc")
+        self.assertEqual(ctx["cov"], "PIPELINE_PENDING")
+        self.assertEqual(ctx["cov_pct"], 99.3)
+
+    def test_full_token_preserved(self):
+        from market_orchestrator.ai.payload_builder_compact import _build_vwap_context
+        ctx = _build_vwap_context({"institutional_analytics": {"session_vwap": {
+            "is_valid": True, "session_vwap": 77400.0, "distance_fraction": 0.001,
+            "side": "ABOVE", "coverage_status": "FULL", "coverage_pct": 100.0,
+        }}})
+        self.assertEqual(ctx["cov"], "FULL")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

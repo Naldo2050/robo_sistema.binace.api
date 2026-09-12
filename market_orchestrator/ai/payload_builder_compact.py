@@ -1313,7 +1313,7 @@ def _build_vwap_context(event_data: dict) -> dict:
             }
             # Cobertura da sessão (FULL|PARTIAL): parcial nunca se passa por cheia.
             cov = svw_data.get("coverage_status")
-            if cov in ("FULL", "PARTIAL"):
+            if cov in ("FULL", "PARTIAL", "PIPELINE_PENDING"):
                 out["cov"] = cov
                 if svw_data.get("coverage_pct") is not None:
                     out["cov_pct"] = svw_data.get("coverage_pct")
