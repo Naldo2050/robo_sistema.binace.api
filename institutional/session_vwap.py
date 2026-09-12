@@ -41,6 +41,8 @@ class SessionVWAPStatus(str, Enum):
     WARMING_UP = "WARMING_UP"
     STALE = "STALE"
     ERROR = "ERROR"
+    # Cobertura incompleta mas fresca: valor utilizável, NÃO rotular de sessão cheia.
+    PARTIAL = "PARTIAL"
 
 
 @dataclass
@@ -62,6 +64,12 @@ class SessionVWAPSnapshot:
     last_candle_ms: Optional[int] = None
     age_seconds: Optional[float] = None
     is_valid: bool = False
+    # Cobertura da sessão (minutos distintos recebidos vs esperados).
+    first_candle_ms: Optional[int] = None
+    expected_bars: int = 0
+    missing_bars: int = 0
+    coverage_pct: Optional[float] = None
+    coverage_status: str = "UNAVAILABLE"  # FULL | PARTIAL | UNAVAILABLE
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialização amigável em JSON."""
@@ -102,6 +110,9 @@ class SessionVWAPTracker:
         self._bars_count: int = 0
         self._last_candle_ms: Optional[int] = None
         self._status: SessionVWAPStatus = SessionVWAPStatus.WARMING_UP
+        # Minutos distintos (ts // 60000) aceitos na sessão atual.
+        # Base da cobertura FULL/PARTIAL; limitado a ~1440/dia, limpo no reset.
+        self._seen_minutes: set = set()
         self._lock = asyncio.Lock()
 
     @property
@@ -125,6 +136,7 @@ class SessionVWAPTracker:
         self._sum_vol = 0.0
         self._bars_count = 0
         self._last_candle_ms = None
+        self._seen_minutes = set()
         self._status = SessionVWAPStatus.WARMING_UP
         logger.info(
             f"Session VWAP resetado para nova sessão UTC: "
@@ -154,7 +166,7 @@ class SessionVWAPTracker:
         if not (math.isfinite(high) and math.isfinite(low) and math.isfinite(close) and math.isfinite(volume)):
             return self.current_vwap
 
-        if high <= 0 or low <= 0 or close <= 0 or volume <= 0 or high < low:
+        if high <= 0 or low <= 0 or close <= 0 or high < low:
             return self.current_vwap
 
         # Checagem de fronteira de sessão UTC
@@ -168,6 +180,12 @@ class SessionVWAPTracker:
         if self._last_candle_ms is not None and timestamp_ms <= self._last_candle_ms:
             return self.current_vwap
 
+        # Minuto vazio genuíno (OHLC válido, volume zero): peso zero no VWAP,
+        # mas conta para cobertura (não é dado ausente).
+        if volume <= 0:
+            self._seen_minutes.add(timestamp_ms // 60000)
+            return self.current_vwap
+
         typical_price = (high + low + close) / 3.0
         pv = typical_price * volume
 
@@ -175,6 +193,7 @@ class SessionVWAPTracker:
         self._sum_vol += volume
         self._bars_count += 1
         self._last_candle_ms = timestamp_ms
+        self._seen_minutes.add(timestamp_ms // 60000)
 
         if self._bars_count > 0 and self._status == SessionVWAPStatus.WARMING_UP:
             self._status = SessionVWAPStatus.VALID
@@ -294,13 +313,40 @@ class SessionVWAPTracker:
                 if own_session and session:
                     await session.close()
 
-    def get_snapshot(self, current_price: Optional[float] = None) -> SessionVWAPSnapshot:
+    def _coverage(self, now_ms: int) -> Dict[str, Any]:
+        """Cobertura da sessão em minutos distintos recebidos vs esperados.
+
+        Esperado = minutos fechados em [session_start, último minuto fechado].
+        O minuto corrente (ainda aberto) nunca conta como esperado.
+        Retorna dict com expected_bars, missing_bars, coverage_pct,
+        coverage_status (FULL|PARTIAL|UNAVAILABLE) e first_candle_ms.
+        """
+        last_closed = (now_ms // 60000 - 1) * 60000
+        if last_closed < self._session_start_ms:
+            return {"expected_bars": 0, "missing_bars": 0, "coverage_pct": None,
+                    "coverage_status": "UNAVAILABLE", "first_candle_ms": None}
+        expected = (last_closed - self._session_start_ms) // 60000 + 1
+        seen = {m for m in self._seen_minutes
+                if self._session_start_ms <= m * 60000 <= last_closed}
+        received = len(seen)
+        missing = expected - received
+        return {
+            "expected_bars": expected,
+            "missing_bars": missing,
+            "coverage_pct": round(received / expected * 100, 1),
+            "coverage_status": "FULL" if missing == 0 else "PARTIAL",
+            "first_candle_ms": min(seen) * 60000 if seen else None,
+        }
+
+    def get_snapshot(self, current_price: Optional[float] = None,
+                     now_ms: Optional[int] = None) -> SessionVWAPSnapshot:
         """
         Gera snapshot com métricas de distância, lado e frescor.
         """
-        now = time.time()
-        now_ms = int(now * 1000)
-        
+        now_wall = time.time()
+        if now_ms is None:
+            now_ms = int(now_wall * 1000)
+
         # Checagem de virada de dia se o relógio passou de 00:00 UTC sem candles
         self._check_session_boundary(now_ms)
 
@@ -309,14 +355,21 @@ class SessionVWAPTracker:
         status = self._status
 
         if self._last_candle_ms is not None:
-            age_seconds = max(0.0, round(now - (self._last_candle_ms / 1000.0), 1))
+            age_seconds = max(0.0, round(now_ms / 1000.0 - (self._last_candle_ms / 1000.0), 1))
             if age_seconds > self.max_stale_seconds and status == SessionVWAPStatus.VALID:
                 status = SessionVWAPStatus.STALE
+
+        # Completude: fresca mas incompleta => PARTIAL (nunca FULL silencioso).
+        # WARMING_UP (sem barras) e ERROR/STALE permanecem como estão.
+        cov = self._coverage(now_ms)
+        if status == SessionVWAPStatus.VALID and cov["coverage_status"] == "PARTIAL":
+            status = SessionVWAPStatus.PARTIAL
 
         # Cálculo de distância fracionária: (P - VWAP) / VWAP
         dist_fraction = None
         side = "UNKNOWN"
-        is_valid = (status == SessionVWAPStatus.VALID) and (vwap_val is not None)
+        is_valid = (status in (SessionVWAPStatus.VALID, SessionVWAPStatus.PARTIAL)
+                    ) and (vwap_val is not None)
 
         if vwap_val and current_price and math.isfinite(current_price) and current_price > 0:
             dist_fraction = round((current_price - vwap_val) / vwap_val, 4)
@@ -344,8 +397,13 @@ class SessionVWAPTracker:
             bars_count=self._bars_count,
             status=status,
             method="ohlcv_1m_typical_price",
-            observed_at=now,
+            observed_at=now_wall,
             last_candle_ms=self._last_candle_ms,
             age_seconds=age_seconds,
             is_valid=is_valid,
+            first_candle_ms=cov["first_candle_ms"],
+            expected_bars=cov["expected_bars"],
+            missing_bars=cov["missing_bars"],
+            coverage_pct=cov["coverage_pct"],
+            coverage_status=cov["coverage_status"],
         )

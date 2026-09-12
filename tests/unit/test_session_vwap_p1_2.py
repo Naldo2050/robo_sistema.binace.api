@@ -280,8 +280,11 @@ class TestSessionVWAPIntegrationAndPayload(unittest.TestCase):
 
         res = engine.compute_all(current_price=77600.0)
         self.assertIn("session_vwap", res)
-        self.assertEqual(res["session_vwap"]["status"], "VALID")
+        # Contrato de cobertura: 1 candle numa sessão inteira é PARTIAL
+        # (fresco e utilizável), nunca FULL silencioso.
+        self.assertEqual(res["session_vwap"]["status"], "PARTIAL")
         self.assertTrue(res["session_vwap"]["is_valid"])
+        self.assertEqual(res["session_vwap"]["coverage_status"], "PARTIAL")
         self.assertEqual(res["session_vwap"]["method"], "ohlcv_1m_typical_price")
 
         # Injeta no evento e constrói payload

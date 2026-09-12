@@ -2076,6 +2076,15 @@ class EnhancedMarketBot:
             if ohlc:
                 ts_open = int(ohlc.get("open_time") or ohlc.get("timestamp") or (time.time() * 1000))
                 ts_close = int(ohlc.get("close_time") or (ts_open + 60000))
+                # Volume canônico da candle: calculate_ohlc NÃO emite chave
+                # "volume" (vive em volume_metrics.volume_total, base BTC).
+                # Usar ohlc.get("volume", 0.0) aqui zerava todas as linhas e o
+                # SessionVWAPTracker as rejeitava (volume<=0) — history parado.
+                candle_volume = enriched.get("volume_total", 0.0)
+                try:
+                    candle_volume = float(candle_volume)
+                except (TypeError, ValueError):
+                    candle_volume = 0.0
                 with self._history_lock:
                     self.pattern_ohlc_history.append(
                         {
@@ -2086,7 +2095,7 @@ class EnhancedMarketBot:
                             "high": float(ohlc.get("high", 0.0)),
                             "low": float(ohlc.get("low", 0.0)),
                             "close": float(ohlc.get("close", 0.0)),
-                            "volume": float(ohlc.get("volume", 0.0)),
+                            "volume": candle_volume,
                             "timeframe": "1m",
                             "is_closed": True,
                         }
@@ -2474,37 +2483,86 @@ class EnhancedMarketBot:
 
     async def _prefetch_ohlc_history(self) -> None:
         """
-        Pré-carrega pattern_ohlc_history com 200 klines de 1m do Binance.
+        Pré-carrega pattern_ohlc_history com klines de 1m do Binance Futures
+        desde 00:00 UTC (sessão completa, paginado) + últimos 200 no deque.
         Habilita Hurst, Kalman, Shannon, Regressão, Fourier, Fractal, Monte Carlo
         imediatamente (sem aguardar acumulação orgânica de 100-200 janelas).
-        Falha silenciosamente — indicadores ficam disponíveis após warmup orgânico.
+        Também alimenta o SessionVWAPTracker com a sessão (dedup interno
+        impede duplicação quando as janelas reenviarem as mesmas barras).
+        Candle ainda aberto NUNCA entra como fechado. Falha parcial resulta
+        em sessão PARTIAL (nunca FULL silencioso); falha total mantém o
+        comportamento legado (warmup orgânico).
         """
         import aiohttp as _aiohttp
+        from institutional.session_vwap import get_utc_session_start_ms
         url = "https://fapi.binance.com/fapi/v1/klines"
-        params = {"symbol": self.symbol, "interval": "1m", "limit": 200}
         try:
+            now_ms = int(time.time() * 1000)
+            session_start = get_utc_session_start_ms(now_ms)
+            # Último minuto FECHADO (o minuto corrente ainda está formando).
+            last_closed_open = (now_ms // 60000 - 1) * 60000
+            all_klines: list = []
             async with _aiohttp.ClientSession() as _sess:
-                async with _sess.get(url, params=params,
-                                     timeout=_aiohttp.ClientTimeout(total=15)) as resp:
-                    if resp.status == 200:
+                cursor = session_start
+                # Paginação limit=1000: 1 request até ~16h40, 2 requests/dia máx.
+                while cursor <= last_closed_open:
+                    params = {"symbol": self.symbol, "interval": "1m",
+                              "startTime": cursor, "endTime": last_closed_open + 59999,
+                              "limit": 1000}
+                    async with _sess.get(url, params=params,
+                                         timeout=_aiohttp.ClientTimeout(total=15)) as resp:
+                        if resp.status != 200:
+                            logging.warning(
+                                "⚠️  OHLC prefetch HTTP %s (parcial com %d barras)",
+                                resp.status, len(all_klines),
+                            )
+                            break
                         data = await resp.json()
-                        for k in data:
-                            self.pattern_ohlc_history.append({
-                                "timestamp": int(k[0]),
-                                "open_time": int(k[0]),
-                                "close_time": int(k[6]),
-                                "open": float(k[1]),
-                                "high": float(k[2]),
-                                "low": float(k[3]),
-                                "close": float(k[4]),
-                                "volume": float(k[5]),
-                                "timeframe": "1m",
-                                "is_closed": True,
-                            })
-                        logging.info(
-                            "✅ OHLC history pré-carregado: %d barras 1m (indicadores avançados e market structure ativos)",
-                            len(self.pattern_ohlc_history),
-                        )
+                    if not isinstance(data, list) or not data:
+                        break
+                    # Nunca incluir candle ainda aberto como fechado.
+                    all_klines.extend([k for k in data if int(k[0]) <= last_closed_open])
+                    last_ts = int(data[-1][0])
+                    if last_ts <= cursor or len(data) < 1000:
+                        break
+                    cursor = last_ts + 60000
+            for k in all_klines:
+                self.pattern_ohlc_history.append({
+                    "timestamp": int(k[0]),
+                    "open_time": int(k[0]),
+                    "close_time": int(k[6]),
+                    "open": float(k[1]),
+                    "high": float(k[2]),
+                    "low": float(k[3]),
+                    "close": float(k[4]),
+                    "volume": float(k[5]),
+                    "timeframe": "1m",
+                    "is_closed": True,
+                })
+            logging.info(
+                "✅ OHLC history pré-carregado: %d barras 1m desde 00:00 UTC "
+                "(deque: últimas %d; indicadores avançados e market structure ativos)",
+                len(all_klines), len(self.pattern_ohlc_history),
+            )
+            # Prepara o tracker da sessão (idempotente via dedup por timestamp).
+            try:
+                tracker = getattr(
+                    getattr(self, "institutional_analytics", None),
+                    "session_vwap_tracker", None,
+                )
+                if tracker is not None and all_klines:
+                    tracker.update_batch([
+                        {"open_time": int(k[0]), "high": float(k[2]),
+                         "low": float(k[3]), "close": float(k[4]),
+                         "volume": float(k[5])}
+                        for k in all_klines
+                    ])
+                    logging.info(
+                        "✅ Session VWAP bootstrap: %d barras desde 00:00 UTC",
+                        len(all_klines),
+                    )
+            except Exception as _e2:
+                logging.warning("⚠️  Session VWAP bootstrap falhou (não-crítico): %s", _e2)
         except Exception as _e:
             logging.warning("⚠️  OHLC prefetch falhou (não-crítico): %s", _e)
 

@@ -1305,12 +1305,19 @@ def _build_vwap_context(event_data: dict) -> dict:
         dist = svw_data.get("distance_fraction")
         side = svw_data.get("side", "UNKNOWN")
         if svw_val is not None and dist is not None:
-            return {
+            out = {
                 "svw": svw_val,
                 "dist": dist,
                 "side": side.lower(),
                 "m": "session_utc",
             }
+            # Cobertura da sessão (FULL|PARTIAL): parcial nunca se passa por cheia.
+            cov = svw_data.get("coverage_status")
+            if cov in ("FULL", "PARTIAL"):
+                out["cov"] = cov
+                if svw_data.get("coverage_pct") is not None:
+                    out["cov_pct"] = svw_data.get("coverage_pct")
+            return out
 
     # Fallback: rolling window vwap da janela atual
     close = event_data.get("preco_fechamento", 0) or 0
