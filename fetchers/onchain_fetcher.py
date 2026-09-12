@@ -25,6 +25,20 @@ _CACHE_TTL = 300  # 5 minutos (alinhado com janelas)
 _REQUEST_TIMEOUT = 10  # segundos
 
 
+# P04: proveniência por campo. Estados NUNCA colapsam em 0:
+#   VALID      = API respondeu valor numérico (0 explícito => REAL_ZERO por _zero_ok)
+#   MISSING    = HTTP 200 + JSON válido, campo ausente/não-numérico
+#   API_ERROR  = exceção / HTTP != 200 / JSON inválido
+# Ausência é None (nunca 0). Status viajam em data["_status"] (interno,
+# consumido por _merge_metrics; nunca é campo de evidência).
+def _classify_present(value: Any) -> str:
+    """VALID ou REAL_ZERO para valor presente (0 explícito é dado real)."""
+    try:
+        return "REAL_ZERO" if float(value) == 0.0 else "VALID"
+    except (TypeError, ValueError):
+        return "VALID"
+
+
 class OnchainFetcher:
     """
     Coleta métricas on-chain reais de APIs públicas gratuitas.
@@ -97,6 +111,7 @@ class OnchainFetcher:
         base = "https://blockchain.info"
         timeout = aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT)
         data: Dict[str, Any] = {}
+        status: Dict[str, str] = {}
 
         endpoints = {
             "hash_rate": "/q/hashrate",
@@ -109,33 +124,75 @@ class OnchainFetcher:
             try:
                 async with session.get(f"{base}{path}", timeout=timeout) as resp:
                     if resp.status == 200:
-                        text = await resp.text()
-                        val = float(text.strip())
+                        try:
+                            text = await resp.text()
+                            val = float(text.strip())
+                        except (TypeError, ValueError):
+                            # P04: 200 com corpo inválido = MISSING, não 0
+                            status[key] = "MISSING"
+                            continue
                         if key == "hash_rate":
                             val = val / 1e6  # Converter de GH/s para EH/s
                         data[key] = val
+                        status[key] = _classify_present(val)
                     else:
+                        # P04: HTTP != 200 = API_ERROR (ausência, nunca 0)
+                        status[key] = "API_ERROR"
                         logger.debug(f"blockchain.info {key}: HTTP {resp.status}")
             except Exception as e:
+                status[key] = "API_ERROR"
                 logger.debug(f"blockchain.info {key} falhou: {e}")
 
         # Buscar stats gerais (1 request para múltiplos dados)
         try:
             async with session.get(f"{base}/stats?format=json", timeout=timeout) as resp:
                 if resp.status == 200:
-                    stats = await resp.json()
-                    data["hash_rate_eh"] = stats.get("hash_rate", 0) / 1e18  # H/s -> EH/s
-                    data["total_btc_sent_24h"] = stats.get("total_btc_sent", 0) / 1e8  # satoshi -> BTC
-                    data["n_tx_24h"] = stats.get("n_tx", 0)
-                    data["minutes_between_blocks"] = stats.get("minutes_between_blocks", 0)
-                    data["market_price_usd"] = stats.get("market_price_usd", 0)
-                    data["trade_volume_btc_24h"] = stats.get("trade_volume_btc", 0)
-                    data["miners_revenue_btc_24h"] = stats.get("miners_revenue_btc", 0) / 1e8
-                    raw_fees = stats.get("total_fees_btc", 0) / 1e8
-                    data["total_fees_btc_24h"] = raw_fees if raw_fees >= 0 else 0.0
+                    try:
+                        stats = await resp.json()
+                    except Exception:
+                        stats = None
+                    if not isinstance(stats, dict):
+                        status["stats"] = "API_ERROR"
+                    else:
+                        status["stats"] = "VALID"
+
+                        def _stat_num(raw: Any, scale: float = 1.0) -> Optional[float]:
+                            # P04: campo ausente/não-numérico => None (MISSING)
+                            if raw is None or isinstance(raw, bool):
+                                return None
+                            try:
+                                return float(raw) / scale
+                            except (TypeError, ValueError):
+                                return None
+
+                        _stat_fields = {
+                            "hash_rate_eh": ("hash_rate", 1e18),  # H/s -> EH/s
+                            "total_btc_sent_24h": ("total_btc_sent", 1e8),  # satoshi -> BTC
+                            "n_tx_24h": ("n_tx", 1.0),
+                            "minutes_between_blocks": ("minutes_between_blocks", 1.0),
+                            "market_price_usd": ("market_price_usd", 1.0),
+                            "trade_volume_btc_24h": ("trade_volume_btc", 1.0),
+                            "miners_revenue_btc_24h": ("miners_revenue_btc", 1e8),
+                            "total_fees_btc_24h": ("total_fees_btc", 1e8),
+                        }
+                        for dst, (src, scale) in _stat_fields.items():
+                            v = _stat_num(stats.get(src), scale)
+                            if v is None:
+                                # total_fees negativo é inválido; demais: ausente
+                                status[dst] = "MISSING"
+                                continue
+                            if dst == "total_fees_btc_24h" and v < 0:
+                                status[dst] = "MISSING"
+                                continue
+                            data[dst] = v
+                            status[dst] = _classify_present(v)
+                else:
+                    status["stats"] = "API_ERROR"
         except Exception as e:
+            status["stats"] = "API_ERROR"
             logger.debug(f"blockchain.info stats falhou: {e}")
 
+        data["_status"] = status
         return data
 
     async def _fetch_mempool_space(self, session: aiohttp.ClientSession) -> Dict[str, Any]:
@@ -149,50 +206,139 @@ class OnchainFetcher:
         base = "https://mempool.space"
         timeout = aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT)
         data: Dict[str, Any] = {}
+        status: Dict[str, str] = {}
+
+        def _opt_num(raw: Any, scale: float = 1.0) -> Optional[float]:
+            # P04: ausente/não-numérico => None (MISSING); nunca 0 fabricado
+            if raw is None or isinstance(raw, bool):
+                return None
+            try:
+                return float(raw) / scale
+            except (TypeError, ValueError):
+                return None
 
         # Fees recomendadas
         try:
+            _req_at = int(time.time() * 1000)
             async with session.get(f"{base}/api/v1/fees/recommended", timeout=timeout) as resp:
+                _recv_at = int(time.time() * 1000)
+                _status = resp.status
                 if resp.status == 200:
-                    fees = await resp.json()
-                    data["fees"] = {
-                        "fastest_sat_vb": fees.get("fastestFee", 0),
-                        "half_hour_sat_vb": fees.get("halfHourFee", 0),
-                        "hour_sat_vb": fees.get("hourFee", 0),
-                        "economy_sat_vb": fees.get("economyFee", 0),
-                        "minimum_sat_vb": fees.get("minimumFee", 0),
-                    }
+                    try:
+                        fees = await resp.json()
+                    except Exception:
+                        fees = None
+                    if not isinstance(fees, dict):
+                        status["fees"] = "API_ERROR"
+                    else:
+                        data["fees"] = {}
+                        for dst, src in (("fastest_sat_vb", "fastestFee"),
+                                         ("half_hour_sat_vb", "halfHourFee"),
+                                         ("hour_sat_vb", "hourFee"),
+                                         ("economy_sat_vb", "economyFee"),
+                                         ("minimum_sat_vb", "minimumFee")):
+                            v = _opt_num(fees.get(src))
+                            if v is None:
+                                status[f"fees.{dst}"] = "MISSING"
+                            else:
+                                data["fees"][dst] = v
+                                status[f"fees.{dst}"] = _classify_present(v)
+                        if not data["fees"]:
+                            del data["fees"]
+                else:
+                    # P04: HTTP != 200 = API_ERROR (ausência, nunca 0)
+                    status["fees"] = "API_ERROR"
         except Exception as e:
+            # P04: exceção de rede = API_ERROR para todos os campos de fees
+            for _dst in ("fastest_sat_vb", "half_hour_sat_vb", "hour_sat_vb",
+                         "economy_sat_vb", "minimum_sat_vb"):
+                status.setdefault(f"fees.{_dst}", "API_ERROR")
+            status.setdefault("fees", "API_ERROR")
             logger.debug(f"mempool.space fees falhou: {e}")
 
         # Mempool stats
         try:
+            _req_at2 = int(time.time() * 1000)
             async with session.get(f"{base}/api/mempool", timeout=timeout) as resp:
+                _recv_at2 = int(time.time() * 1000)
+                _status2 = resp.status
                 if resp.status == 200:
-                    mempool = await resp.json()
-                    data["mempool"] = {
-                        "count": mempool.get("count", 0),
-                        "vsize_bytes": mempool.get("vsize", 0),
-                        "total_fee_btc": mempool.get("total_fee", 0) / 1e8,
-                    }
+                    try:
+                        mempool = await resp.json()
+                    except Exception:
+                        mempool = None
+                    if not isinstance(mempool, dict):
+                        status["mempool"] = "API_ERROR"
+                        mempool = {}
+                    else:
+                        data["mempool"] = {}
+                        _c = _opt_num(mempool.get("count"))
+                        if _c is None:
+                            status["mempool.count"] = "MISSING"
+                        else:
+                            data["mempool"]["count"] = _c
+                            status["mempool.count"] = _classify_present(_c)
+                        _v = _opt_num(mempool.get("vsize"))
+                        if _v is None:
+                            status["mempool.vsize_bytes"] = "MISSING"
+                        else:
+                            data["mempool"]["vsize_bytes"] = _v
+                            status["mempool.vsize_bytes"] = _classify_present(_v)
+                        _f = _opt_num(mempool.get("total_fee"), 1e8)
+                        if _f is None:
+                            status["mempool.total_fee_btc"] = "MISSING"
+                        else:
+                            data["mempool"]["total_fee_btc"] = _f
+                            status["mempool.total_fee_btc"] = _classify_present(_f)
+                        if not data["mempool"]:
+                            del data["mempool"]
+                else:
+                    # P04: HTTP != 200 = API_ERROR
+                    status["mempool"] = "API_ERROR"
         except Exception as e:
+            # P04: exceção = API_ERROR para campos do mempool
+            for _dst in ("mempool.count", "mempool.vsize_bytes", "mempool.total_fee_btc"):
+                status.setdefault(_dst, "API_ERROR")
+            status.setdefault("mempool", "API_ERROR")
             logger.debug(f"mempool.space mempool falhou: {e}")
 
         # Difficulty adjustment
         try:
             async with session.get(f"{base}/api/v1/difficulty-adjustment", timeout=timeout) as resp:
                 if resp.status == 200:
-                    diff = await resp.json()
-                    data["difficulty_adjustment"] = {
-                        "progress_pct": round(diff.get("progressPercent", 0), 2),
-                        "estimated_change_pct": round(diff.get("difficultyChange", 0), 2),
-                        "remaining_blocks": diff.get("remainingBlocks", 0),
-                        "remaining_time_ms": diff.get("remainingTime", 0),
-                        "previous_retarget_pct": round(diff.get("previousRetarget", 0), 2),
-                    }
+                    try:
+                        diff = await resp.json()
+                    except Exception:
+                        diff = None
+                    if not isinstance(diff, dict):
+                        status["difficulty_adjustment"] = "API_ERROR"
+                    else:
+                        data["difficulty_adjustment"] = {}
+                        for dst, src, nd in (("progress_pct", "progressPercent", 2),
+                                             ("estimated_change_pct", "difficultyChange", 2),
+                                             ("remaining_blocks", "remainingBlocks", None),
+                                             ("remaining_time_ms", "remainingTime", None),
+                                             ("previous_retarget_pct", "previousRetarget", 2)):
+                            raw_v = diff.get(src)
+                            if raw_v is None or isinstance(raw_v, bool):
+                                status[f"difficulty_adjustment.{dst}"] = "MISSING"
+                                continue
+                            try:
+                                v = round(float(raw_v), nd) if nd is not None else int(raw_v)
+                            except (TypeError, ValueError):
+                                status[f"difficulty_adjustment.{dst}"] = "MISSING"
+                                continue
+                            data["difficulty_adjustment"][dst] = v
+                            status[f"difficulty_adjustment.{dst}"] = _classify_present(v)
+                        if not data["difficulty_adjustment"]:
+                            del data["difficulty_adjustment"]
+                else:
+                    status["difficulty_adjustment"] = "API_ERROR"
         except Exception as e:
+            status.setdefault("difficulty_adjustment", "API_ERROR")
             logger.debug(f"mempool.space difficulty falhou: {e}")
 
+        data["_status"] = status
         return data
 
     def _merge_metrics(
@@ -201,50 +347,136 @@ class OnchainFetcher:
         """
         Consolida dados das duas fontes no formato esperado pelo sistema.
         Mantém compatibilidade com o schema de onchain_metrics existente.
+
+        P04: ausência/erro é None + status em "_field_status" (VALID /
+        REAL_ZERO / MISSING / API_ERROR). NUNCA fabrica 0 para campo sem
+        fonte — exceto os campos pagos documentados (exchange_netflow,
+        whale_transactions, exchange_reserves, sopr), que seguem marcados
+        em requires_paid_api e são removidos pelo updater (NEVER_EVIDENCE).
         """
-        hash_rate = blockchain.get("hash_rate_eh", blockchain.get("hash_rate", 0))
-        difficulty = blockchain.get("difficulty", 0)
-        unconfirmed = blockchain.get("unconfirmed_txs", 0)
+        def _num(v: Any) -> Optional[float]:
+            if v is None or isinstance(v, bool):
+                return None
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return None
+            return f
 
-        mempool_data = mempool.get("mempool", {})
-        fees_data = mempool.get("fees", {})
-        diff_adj = mempool.get("difficulty_adjustment", {})
+        def _st(v: Any, fallback: str) -> str:
+            # P04: 0 explícito é REAL_ZERO (dado real); ausência herda o
+            # status da fonte (API_ERROR se a fonte falhou, senão MISSING).
+            if v is None:
+                return fallback
+            return _classify_present(v)
 
-        return {
-            # Campos compatíveis com o schema atual do sistema
-            "hash_rate": round(hash_rate, 2),
-            "difficulty": round(difficulty / 1e12, 2) if difficulty > 1e10 else round(difficulty, 2),
-            "active_addresses": blockchain.get("n_tx_24h", 0),  # proxy: tx count 24h
-            "exchange_netflow": 0.0,  # Requer API paga (Glassnode/CryptoQuant)
-            "whale_transactions": 0,  # Requer API paga (Whale Alert)
-            "miner_flows": round(blockchain.get("miners_revenue_btc_24h", 0), 4),
-            "exchange_reserves": 0.0,  # Requer API paga
-            "sopr": 0.0,  # Requer API paga (Glassnode)
+        b_status: Dict[str, str] = dict(blockchain.get("_status") or {})
+        m_status: Dict[str, str] = dict(mempool.get("_status") or {})
+        field_status: Dict[str, str] = {}
 
-            # Dados extras disponíveis gratuitamente
-            "mempool_size": mempool_data.get("count", unconfirmed),
-            "mempool_vsize_mb": round(mempool_data.get("vsize_bytes", 0) / 1e6, 2),
-            "mempool_total_fee_btc": round(mempool_data.get("total_fee_btc", 0), 6),
+        def _b_src(*names: str) -> str:
+            for n in names:
+                s = b_status.get(n)
+                if s in ("API_ERROR", "MISSING"):
+                    return s
+            return "MISSING"
 
-            "fees_fastest_sat_vb": fees_data.get("fastest_sat_vb", 0),
-            "fees_half_hour_sat_vb": fees_data.get("half_hour_sat_vb", 0),
-            "fees_hour_sat_vb": fees_data.get("hour_sat_vb", 0),
-            "fees_economy_sat_vb": fees_data.get("economy_sat_vb", 0),
+        def _m_src(*names: str) -> str:
+            for n in names:
+                s = m_status.get(n)
+                if s in ("API_ERROR", "MISSING"):
+                    return s
+            return "MISSING"
 
-            "difficulty_adjustment": diff_adj,
+        hash_rate = _num(blockchain.get("hash_rate_eh", blockchain.get("hash_rate")))
+        difficulty = _num(blockchain.get("difficulty"))
+        unconfirmed = _num(blockchain.get("unconfirmed_txs"))
 
-            "minutes_between_blocks": blockchain.get("minutes_between_blocks", 0),
-            "total_btc_sent_24h": round(blockchain.get("total_btc_sent_24h", 0), 2),
-            "total_fees_btc_24h": round(blockchain.get("total_fees_btc_24h", 0), 6),
-            "trade_volume_btc_24h": round(blockchain.get("trade_volume_btc_24h", 0), 2),
+        mempool_data = mempool.get("mempool", {}) or {}
+        fees_data = mempool.get("fees", {}) or {}
+        diff_adj = mempool.get("difficulty_adjustment", {}) or {}
 
-            # Metadata
-            "data_source": "blockchain.info+mempool.space",
-            "is_real_data": True,
-            "requires_paid_api": [
-                "exchange_netflow",
-                "whale_transactions",
-                "exchange_reserves",
-                "sopr",
-            ],
-        }
+        def _r2(v: Optional[float]) -> Optional[float]:
+            return round(v, 2) if v is not None else None
+
+        def _r4(v: Optional[float]) -> Optional[float]:
+            return round(v, 4) if v is not None else None
+
+        def _r6(v: Optional[float]) -> Optional[float]:
+            return round(v, 6) if v is not None else None
+
+        out: Dict[str, Any] = {}
+        out["hash_rate"] = _r2(hash_rate)
+        # difficulty: blockchain.info retorna H; escala p/ T quando magnitude indicar
+        if difficulty is None:
+            out["difficulty"] = None
+        else:
+            out["difficulty"] = _r2(difficulty / 1e12) if difficulty > 1e10 else _r2(difficulty)
+        out["active_addresses"] = _num(blockchain.get("n_tx_24h"))  # proxy: tx count 24h
+        out["exchange_netflow"] = 0.0  # Requer API paga (Glassnode/CryptoQuant)
+        out["whale_transactions"] = 0  # Requer API paga (Whale Alert)
+        out["miner_flows"] = _r4(_num(blockchain.get("miners_revenue_btc_24h")))
+        out["exchange_reserves"] = 0.0  # Requer API paga
+        out["sopr"] = 0.0  # Requer API paga (Glassnode)
+
+        # P04 (seção 6): objeto PARCIAL por fonte. mempool_size prefere
+        # mempool.space(count); cai para blockchain.info(unconfirmed_txs) com
+        # status da fonte que realmente forneceu o valor.
+        _count = _num(mempool_data.get("count"))
+        if _count is not None:
+            out["mempool_size"] = _count
+            field_status["mempool_size"] = _st(_count, _m_src("mempool.count", "mempool"))
+        elif unconfirmed is not None:
+            out["mempool_size"] = unconfirmed
+            field_status["mempool_size"] = _st(unconfirmed, _b_src("unconfirmed_txs"))
+        else:
+            out["mempool_size"] = None
+            field_status["mempool_size"] = _m_src("mempool.count", "mempool") \
+                if "mempool.count" in m_status or "mempool" in m_status \
+                else _b_src("unconfirmed_txs")
+
+        _vsize = _num(mempool_data.get("vsize_bytes"))
+        out["mempool_vsize_mb"] = _r2(_vsize / 1e6) if _vsize is not None else None
+        _tfee = _num(mempool_data.get("total_fee_btc"))
+        out["mempool_total_fee_btc"] = _r6(_tfee) if _tfee is not None else None
+
+        for dst, src in (("fees_fastest_sat_vb", "fastest_sat_vb"),
+                         ("fees_half_hour_sat_vb", "half_hour_sat_vb"),
+                         ("fees_hour_sat_vb", "hour_sat_vb"),
+                         ("fees_economy_sat_vb", "economy_sat_vb")):
+            out[dst] = _num(fees_data.get(src))
+
+        out["difficulty_adjustment"] = diff_adj if isinstance(diff_adj, dict) else {}
+
+        out["minutes_between_blocks"] = _num(blockchain.get("minutes_between_blocks"))
+        out["total_btc_sent_24h"] = _r2(_num(blockchain.get("total_btc_sent_24h")))
+        out["total_fees_btc_24h"] = _r6(_num(blockchain.get("total_fees_btc_24h")))
+        out["trade_volume_btc_24h"] = _r2(_num(blockchain.get("trade_volume_btc_24h")))
+
+        for _f, _s in (("hash_rate", _b_src("hash_rate_eh", "hash_rate", "stats")),
+                       ("difficulty", _b_src("difficulty")),
+                       ("active_addresses", _b_src("n_tx_24h", "stats")),
+                       ("miner_flows", _b_src("miners_revenue_btc_24h", "stats")),
+                       ("mempool_vsize_mb", _m_src("mempool.vsize_bytes", "mempool")),
+                       ("mempool_total_fee_btc", _m_src("mempool.total_fee_btc", "mempool")),
+                       ("fees_fastest_sat_vb", _m_src("fees.fastest_sat_vb", "fees")),
+                       ("fees_half_hour_sat_vb", _m_src("fees.half_hour_sat_vb", "fees")),
+                       ("fees_hour_sat_vb", _m_src("fees.hour_sat_vb", "fees")),
+                       ("fees_economy_sat_vb", _m_src("fees.economy_sat_vb", "fees")),
+                       ("minutes_between_blocks", _b_src("minutes_between_blocks", "stats")),
+                       ("total_btc_sent_24h", _b_src("total_btc_sent_24h", "stats")),
+                       ("total_fees_btc_24h", _b_src("total_fees_btc_24h", "stats")),
+                       ("trade_volume_btc_24h", _b_src("trade_volume_btc_24h", "stats"))):
+            field_status[_f] = _st(out.get(_f), _s)
+
+        # Metadata
+        out["data_source"] = "blockchain.info+mempool.space"
+        out["is_real_data"] = True
+        out["requires_paid_api"] = [
+            "exchange_netflow",
+            "whale_transactions",
+            "exchange_reserves",
+            "sopr",
+        ]
+        out["_field_status"] = field_status
+        return out

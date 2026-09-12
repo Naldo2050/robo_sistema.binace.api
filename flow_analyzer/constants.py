@@ -21,6 +21,20 @@ DEFAULT_NET_FLOW_WINDOWS_MIN = [1, 5, 15]
 DEFAULT_ABSORCAO_DELTA_EPS = 1.0
 DEFAULT_ABSORCAO_GUARD_MODE = "warn"
 DEFAULT_FLOW_TRADES_MAXLEN = 100_000
+# P06: margem de retenção além da maior janela consultável.
+# O prune do histórico roda a cada trade com cutoff ancorado no relógio de
+# chegada, enquanto as janelas são calculadas com cutoff ancorado no
+# logical close (get_flow_metrics(reference_epoch_ms)). Como o processamento
+# da janela ocorre APÓS o close (fila + pipeline: p50 ~550ms / p95 ~1400ms /
+# max ~4000ms observados; mais rajadas pós-close e tolerância a reconnect),
+# um prune sem margem amputa o prefixo da janela antes do cálculo
+# (caso real: 4 trades / -$133k no 15m com delay de ~1.3s).
+# 120s = 30x o maior delay observado, com custo de memória ~= rate*120s
+# (a ~7-30 tps reais: <4k trades extras). Configurável via FLOW_RETENTION_GRACE_MS.
+# A margem NUNCA entra no cálculo (filtros das janelas inalterados); serve
+# apenas para impedir destruição prematura. Atraso além da margem => TRUNCATED
+# (fail-closed em _get_flow_window_integrity), nunca FULL silencioso.
+DEFAULT_FLOW_RETENTION_GRACE_MS = 120_000
 DEFAULT_FLOW_LOG_PERF = False
 DEFAULT_FLOW_LOG_DETAILED = False
 DEFAULT_FLOW_TIME_BUDGET_MS = 500.0

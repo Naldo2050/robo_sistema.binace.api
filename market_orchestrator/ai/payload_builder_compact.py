@@ -1945,6 +1945,11 @@ def build_compact_payload(
             qual["holiday"] = holiday_name[:25]
         if ob_src and ob_src != "live":
             qual["src"] = ob_src
+        # P05: completude de evidência utilizável (0-100) para a IA distinguir
+        # GOOD/PARTIAL/STALE sem inferir de um número opaco. ~4B no payload.
+        _comp = event_data.get("completeness_pct")
+        if isinstance(_comp, (int, float)) and _comp == _comp:
+            qual["comp"] = int(round(_comp))
         if qual:
             payload["qual"] = qual
 

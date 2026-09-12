@@ -289,6 +289,11 @@ class DataEnricher:
             advanced_analysis["onchain_age_seconds"] = _oc_status["age_seconds"]
             advanced_analysis["onchain_freshness"] = _oc_status["groups"]
             advanced_analysis["onchain_source"] = _oc_status["source"]
+            # P04: proveniência por campo (VALID/REAL_ZERO/MISSING/API_ERROR).
+            # Permite distinguir 0 real de ausência/erro sem tocar o score global.
+            _oc_field_status = ((self._last_onchain_view or {}).get("field_status") or {})
+            if isinstance(_oc_field_status, dict) and _oc_field_status:
+                advanced_analysis["onchain_field_status"] = dict(_oc_field_status)
             # FIX 4.1: Só incluir options_metrics se tiver dados reais
             if _options and _options.get("is_real_data"):
                 advanced_analysis["options_metrics"] = _options

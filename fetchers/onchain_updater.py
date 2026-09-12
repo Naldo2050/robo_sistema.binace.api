@@ -131,6 +131,9 @@ class OnchainSnapshot:
     fast_fetched_monotonic: Optional[float] = None
     slow_fetched_monotonic: Optional[float] = None
     last_error: Optional[str] = None
+    # P04: proveniência por campo (VALID/REAL_ZERO/MISSING/API_ERROR).
+    # Interno como last_error (nunca número); exposto na view para o evento.
+    field_status: Dict[str, str] = field(default_factory=dict)
 
 
 def _classify(age_s: Optional[float], fresh_s: float, usable_s: float) -> str:
@@ -331,10 +334,16 @@ class OnchainUpdater:
     def _store_snapshot_from_merged(self, merged: Dict[str, Any]) -> None:
         fast = {k: v for k, v in merged.items() if k in FAST_FIELDS}
         slow = {k: v for k, v in merged.items() if k in SLOW_FIELDS}
-        self._store_snapshot(fast, slow)
+        # P04: preserva proveniência por campo (fora de FAST/SLOW por desenho).
+        field_status = merged.get("_field_status")
+        self._store_snapshot(
+            fast, slow,
+            field_status=dict(field_status) if isinstance(field_status, dict) else {},
+        )
 
     def _store_snapshot(self, fast: Dict[str, Any],
-                        slow: Dict[str, Any]) -> None:
+                        slow: Dict[str, Any],
+                        field_status: Optional[Dict[str, str]] = None) -> None:
         wall_ms = int(time.time() * 1000)
         mono = self._monotonic_fn()
         snap = OnchainSnapshot(
@@ -345,6 +354,7 @@ class OnchainUpdater:
             fast_fetched_monotonic=mono,
             slow_fetched_monotonic=mono,
             last_error=None,
+            field_status=dict(field_status or {}),
         )
         with self._lock:
             self._snapshot = snap
@@ -377,6 +387,8 @@ class OnchainUpdater:
             "fetched_at_ms": (snap.fast_fetched_at_ms if snap else None),
             "capabilities": {f: NEVER_EVIDENCE_REASON
                              for f in sorted(NEVER_EVIDENCE_FIELDS)},
+            # P04: proveniência por campo (não é evidência numérica).
+            "field_status": dict(snap.field_status) if snap and snap.field_status else {},
         }
 
     def get_metrics(self) -> Dict[str, Any]:

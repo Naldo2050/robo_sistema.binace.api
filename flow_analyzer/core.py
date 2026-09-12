@@ -40,6 +40,7 @@ from .constants import (
     DEFAULT_ABSORCAO_GUARD_MODE,
     TIMESTAMP_JITTER_TOLERANCE_MS,
     MAX_BATCH_LATE_MS,
+    DEFAULT_FLOW_RETENTION_GRACE_MS,
     DEFAULT_ROLLING_AGGREGATE_TARGET_TPS,
     DEFAULT_ROLLING_AGGREGATE_ABSOLUTE_MAX_TRADES,
 )
@@ -235,9 +236,23 @@ class FlowAnalyzer(IFlowAnalyzer):
         self.flow_trades_maxlen = _get_config("FLOW_TRADES_MAXLEN", DEFAULT_FLOW_TRADES_MAXLEN)
         if self.flow_trades_maxlen <= 0:
             raise ValueError("FLOW_TRADES_MAXLEN must be greater than 0")
+        # P06: margem de retenção além da maior janela (ver constants).
+        # Configurável via FLOW_RETENTION_GRACE_MS; <0 vira 0 (sem margem).
+        try:
+            self.flow_retention_grace_ms = int(
+                _get_config("FLOW_RETENTION_GRACE_MS", DEFAULT_FLOW_RETENTION_GRACE_MS)
+            )
+        except (TypeError, ValueError):
+            self.flow_retention_grace_ms = int(DEFAULT_FLOW_RETENTION_GRACE_MS)
+        if self.flow_retention_grace_ms < 0:
+            self.flow_retention_grace_ms = 0
         self.flow_trades: deque = deque()
         self._flow_trades_capacity_evictions_total = 0
         self._flow_trades_last_capacity_eviction_ts = 0
+        # P06: maior ts já removido pelo prune temporal (None = nenhum).
+        # Permite distinguir prefixo destruído (TRUNCATED) de mercado parado
+        # ou cold start (WARMING_UP). Resetado junto no _reset_metrics.
+        self._time_pruned_max_ts: Optional[int] = None
         self._last_flow_trades_capacity_log_ms = 0
         # 0 is the sentinel for no observed trade; production epoch_ms is positive.
         self._flow_first_trade_ts = 0
@@ -749,21 +764,47 @@ class FlowAnalyzer(IFlowAnalyzer):
     # HELPERS INTERNOS
     # ==========================================================================
     
+    def _retention_horizon_ms(self) -> int:
+        """Horizonte de retenção = maior janela + margem (P06).
+
+        O prune nunca remove trades mais novos que now - horizonte.
+        A margem NÃO entra nos filtros das janelas (cálculo inalterado).
+        """
+        max_window = max(self.net_flow_windows_min) if self.net_flow_windows_min else 60
+        return max_window * 60 * 1000 + max(0, int(self.flow_retention_grace_ms))
+
     def _prune_flow_history(self, now_ms: int) -> None:
-        """Remove trades antigos."""
+        """Remove trades antigos, preservando a margem de retenção (P06).
+
+        Cutoff = now_ms - (max_window + grace). Sem a margem, o prune
+        ancorado na chegada amputava o prefixo da maior janela quando o
+        cálculo (ancorado no close) rodava com atraso — caso real 1273ms.
+        """
         if not self.net_flow_windows_min:
             return
-        
-        max_window = max(self.net_flow_windows_min)
-        cutoff_ms = now_ms - max_window * 60 * 1000
+
+        cutoff_ms = now_ms - self._retention_horizon_ms()
         
         if not self._out_of_order_seen:
+            removed_max_ts = None
             while self.flow_trades and self.flow_trades[0]['ts'] < cutoff_ms:
+                removed_max_ts = self.flow_trades[0]['ts']
                 self.flow_trades.popleft()
+            if removed_max_ts is not None and (
+                self._time_pruned_max_ts is None
+                or removed_max_ts > self._time_pruned_max_ts
+            ):
+                self._time_pruned_max_ts = removed_max_ts
         else:
-            self.flow_trades = deque(
-                (t for t in self.flow_trades if t['ts'] >= cutoff_ms)
-            )
+            removed_max_ts = self._time_pruned_max_ts
+            kept: List[Dict[str, Any]] = []
+            for t in self.flow_trades:
+                if t['ts'] >= cutoff_ms:
+                    kept.append(t)
+                elif removed_max_ts is None or t['ts'] > removed_max_ts:
+                    removed_max_ts = t['ts']
+            self.flow_trades = deque(kept)
+            self._time_pruned_max_ts = removed_max_ts
             self._out_of_order_seen = False
     
     def _update_bursts(self, ts_ms: int, qty: float) -> None:
@@ -824,6 +865,7 @@ class FlowAnalyzer(IFlowAnalyzer):
         self.flow_trades.clear()
         self._flow_trades_capacity_evictions_total = 0
         self._flow_trades_last_capacity_eviction_ts = 0
+        self._time_pruned_max_ts = None  # P06: marcador de prune acompanha o reset
         self._last_flow_trades_capacity_log_ms = 0
         self._flow_first_trade_ts = 0
         self._price_at_reset = self._last_price
@@ -899,6 +941,7 @@ class FlowAnalyzer(IFlowAnalyzer):
                 '_flow_first_trade_ts': self._flow_first_trade_ts,
                 '_flow_trades_capacity_evictions_total': self._flow_trades_capacity_evictions_total,
                 '_flow_trades_last_capacity_eviction_ts': self._flow_trades_last_capacity_eviction_ts,
+                '_time_pruned_max_ts': self._time_pruned_max_ts,
             }
             
             # Contadores thread-safe
@@ -1031,6 +1074,21 @@ class FlowAnalyzer(IFlowAnalyzer):
                 else:
                     status = "WARMING_UP"
 
+                # P06 (fail-closed): prefixo amputado por retenção insuficiente
+                # nunca é FULL — nem WARMING_UP silencioso. Se o trade mais
+                # antigo disponível é mais novo que o início da janela E já
+                # existia histórico até lá (first_trade_ts <= start) E o prune
+                # temporal destruiu dados dentro da janela (max removido >=
+                # start), houve perda real: TRUNCATED. Sem destruição provada
+                # (mercado parado, cold start, gap de feed), mantém WARMING_UP.
+                # Span >= 99% sozinho NÃO basta (caso real: 99.8% com 4 trades
+                # / -$133k amputados do prefixo).
+                _pruned_max = snapshot.get("_time_pruned_max_ts")
+                if (status != "CAPACITY_TRUNCATED" and oldest_ts > start_ms
+                        and first_trade_ts and first_trade_ts <= start_ms
+                        and _pruned_max is not None and _pruned_max >= start_ms):
+                    status = "TRUNCATED"
+
             result[f"{window_min}m"] = {
                 "status": status,
                 "effective_coverage_pct": round(
@@ -1124,6 +1182,8 @@ class FlowAnalyzer(IFlowAnalyzer):
          order_flow = {}
          absorcao_por_janela = {}
          smallest_window = min(self.net_flow_windows_min)
+         # P01: totais USD por janela para imbalance normalizado (net_X/total_X).
+         window_totals_usd: Dict[int, float] = {}
          
          for window_min in self.net_flow_windows_min:
              if not self._check_time_budget(start_time, f"window_{window_min}"):
@@ -1152,6 +1212,12 @@ class FlowAnalyzer(IFlowAnalyzer):
              # Net flow
              key_net = f"net_flow_{window_min}m"
              order_flow[key_net] = decimal_round(total_delta_usd, 4)
+
+             # P01: total USD da própria janela (buy+sell), mesma população do net.
+             w_buy_usd, w_sell_usd = self._sum_window_sides(
+                 snapshot['flow_trades'], start_ms, now_ms
+             )
+             window_totals_usd[window_min] = w_buy_usd + w_sell_usd
              
              # Absorção
              rotulo = self._absorption_classifier.classify(
@@ -1184,6 +1250,12 @@ class FlowAnalyzer(IFlowAnalyzer):
              for window_min in self.net_flow_windows_min:
                  key_net = f"net_flow_{window_min}m"
                  flow_data[key_net] = order_flow.get(key_net, 0)
+
+             # P01: totais por janela (denominador próprio de cada imbalance).
+             for window_min in self.net_flow_windows_min:
+                 tot = window_totals_usd.get(window_min)
+                 if tot is not None:
+                     flow_data[f"total_volume_{window_min}m"] = tot
              
              # Add sector flow
              sector_flow = {}
@@ -1222,6 +1294,43 @@ class FlowAnalyzer(IFlowAnalyzer):
         delta_btc = sum(t['delta_btc'] for t in relevant)
         
         return delta_usd, delta_btc, ohlc
+
+    def _sum_window_sides(
+        self,
+        trades: List[Dict[str, Any]],
+        start_ms: int,
+        end_ms: int,
+    ) -> Tuple[float, float]:
+        """Soma buy/sell USD na janela [start_ms, end_ms] (P01: denominador próprio).
+
+        Usa a mesma população de _calc_from_trades (side + |delta_usd|).
+        Não altera nenhum outro cálculo; só alimenta total_volume_{1,5,15}m.
+        """
+        buy_usd = 0.0
+        sell_usd = 0.0
+        for t in trades:
+            ts = t.get('ts')
+            if ts is None or ts < start_ms or ts > end_ms:
+                continue
+            try:
+                amount = abs(float(t.get('delta_usd', 0.0)))
+            except (TypeError, ValueError):
+                continue
+            side = t.get('side')
+            if side == 'buy':
+                buy_usd += amount
+            elif side == 'sell':
+                sell_usd += amount
+            else:
+                try:
+                    raw = float(t.get('delta_usd', 0.0))
+                except (TypeError, ValueError):
+                    continue
+                if raw >= 0:
+                    buy_usd += amount
+                else:
+                    sell_usd += amount
+        return buy_usd, sell_usd
     
     def _compute_detailed_window(
         self,
@@ -1457,12 +1566,25 @@ class FlowAnalyzer(IFlowAnalyzer):
     def _get_observability_metrics(self, start_time: float) -> Dict[str, Any]:
         """Retorna métricas de observabilidade."""
         perf_stats = self.perf_monitor.get_stats()
-        
+
+        # P06: limites da retenção (best-effort; deque pode mutar concorrentemente).
+        try:
+            _ts_list = [t["ts"] for t in list(self.flow_trades)]
+            _oldest_ts = min(_ts_list) if _ts_list else None
+            _newest_ts = max(_ts_list) if _ts_list else None
+        except Exception:
+            _oldest_ts, _newest_ts = None, None
+
         return {
             "processing_times_ms": perf_stats,
             "memory": {
                 "flow_trades_size": len(self.flow_trades),
                 "flow_trades_capacity": self.flow_trades_maxlen,
+                "oldest_trade_ts": _oldest_ts,
+                "newest_trade_ts": _newest_ts,
+                "retention_horizon_ms": self._retention_horizon_ms(),
+                "retention_grace_ms": max(0, int(self.flow_retention_grace_ms)),
+                "time_pruned_max_ts": self._time_pruned_max_ts,
             },
             "circuit_breaker": self._circuit_breaker.get_stats(),
         }

@@ -487,19 +487,38 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
     net_flow_15m = _finite_volume(flow_data.get("net_flow_15m"))
     total_volume = flow_data.get("total_volume", 0) or flow_data.get("total_volume_btc", 0)
 
-    # Calcular ratios por janela usando net_flow
+    # P01: imbalance normalizado usa o total da PRÓPRIA janela (paridade com metrics).
+    def _total_for_window(window_min: int):
+        for key in (f"total_volume_{window_min}m", f"total_{window_min}m"):
+            v = _finite_volume(flow_data.get(key))
+            if v is not None:
+                return v
+        if window_min == 1:
+            return total_volume
+        return None
+
+    # Calcular ratios por janela usando net_flow da própria janela
     # net_flow > 0 = mais compra, net_flow < 0 = mais venda
     ratios = {
         "current": main_ratio,
     }
 
-    # Imbalance por janela (normalizado); chave omitida se net ausente
-    if total_volume and total_volume > 0:
-        for key, net_flow in (("imbalance_1m", net_flow_1m),
-                              ("imbalance_5m", net_flow_5m),
-                              ("imbalance_15m", net_flow_15m)):
-            if net_flow is not None:
-                ratios[key] = round(net_flow / total_volume, 4)
+    # Imbalance por janela (normalizado); chave omitida se net ou total ausente/<=0
+    for key, net_flow, window_min in (("imbalance_1m", net_flow_1m, 1),
+                                      ("imbalance_5m", net_flow_5m, 5),
+                                      ("imbalance_15m", net_flow_15m, 15)):
+        if net_flow is None:
+            continue
+        window_total = _total_for_window(window_min)
+        if window_total is None or not window_total > 0:
+            continue
+        raw_imbalance = net_flow / window_total  # sem arredondar antes da divisão
+        # Proteção documentada só contra epsilon numérico (não clamp de erro):
+        if raw_imbalance > 1.0 and raw_imbalance <= 1.0 + 1e-9:
+            raw_imbalance = 1.0
+        elif raw_imbalance < -1.0 and raw_imbalance >= -1.0 - 1e-9:
+            raw_imbalance = -1.0
+        ratios[key] = round(raw_imbalance, 4)
 
     # Sector ratios (se disponível; mesma regra: só com ambos finitos)
     sector_flow = flow_data.get("sector_flow", {})

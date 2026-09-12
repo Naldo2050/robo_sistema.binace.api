@@ -31,6 +31,59 @@ ALLOWED_TOP_LEVEL = {
     "tf",  # alias compactado para multi_tf
 }
 
+# P00: contrato único do schema compacto (fonte de verdade = common.ai_payload_types).
+# O compressor antigo só conhecia o schema verboso (*_context) e descartava
+# silenciosamente as keys compactas (price/flow/ob/...), reduzindo 2688B → 81B.
+# Import preguiçoso dentro da função para evitar ciclo; fallback = set literal
+# espelhado de COMPACT_AI_ALLOWED_ROOT_KEYS (manter sincronizado).
+try:
+    from common.ai_payload_types import (
+        COMPACT_AI_ALLOWED_ROOT_KEYS as _COMPACT_KEYS,
+    )
+    from common.ai_payload_types import (
+        is_compact_ai_payload as _is_compact,
+    )
+except Exception:  # pragma: no cover - ai_payload_types é stdlib-only
+    _COMPACT_KEYS = frozenset(
+        {
+            "symbol", "epoch_ms", "trigger", "tipo_evento", "descricao",
+            "ativo", "window", "price", "regime", "flow", "ob", "tf",
+            "sr", "qual", "w", "ctx", "ext", "alerts", "quant", "ofi",
+            "vwap", "liq", "liq_scope", "onchain", "cross", "sm",
+            "cvd_div", "mr", "iceberg", "summary", "_v", "_compacted",
+        }
+    )
+
+    def _is_compact(payload: object, **kwargs: object) -> bool:
+        return isinstance(payload, dict) and "price" in payload
+
+    _is_compact = _is_compact  # type: ignore[assignment]
+
+# Ordem de poda opcional para schema compacto quando exceder max_bytes.
+# Nunca remove identidade (symbol/epoch_ms/trigger) nem primárias (price/flow/ob/tf/sr).
+_COMPACT_OPTIONAL_DROP_ORDER = (
+    "cross",
+    "macro_context",
+    "technical_indicators",
+    "historical_stats",
+    "ext",
+    "ctx",
+    "ms",
+    "mr",
+    "sm",
+    "cvd_div",
+    "iceberg",
+    "liq_scope",
+    "liq",
+    "vwap",
+    "ofi",
+    "quant",
+    "alerts",
+    "w",
+    "qual",
+    "sr",
+)
+
 FORBIDDEN_KEYS = {
     "raw_event",
     "observability",
@@ -284,6 +337,34 @@ def _normalize_timestamps(payload: Dict[str, Any]) -> Tuple[int | None, Dict[str
     return epoch_ms, cleaned
 
 
+def _compress_compact_payload(payload: Dict[str, Any], max_bytes: int = 6144) -> Dict[str, Any]:
+    """Preserva schema compacto legítimo (P00). Não restaura proibidas."""
+    compacted: Dict[str, Any] = {}
+    for key, val in payload.items():
+        if key in _COMPACT_KEYS or (isinstance(key, str) and key.startswith("_")):
+            if isinstance(val, dict):
+                compacted[key] = _trim_known_lists(val, payload.get("epoch_ms"))
+            else:
+                compacted[key] = val
+        # Keys fora do contrato compacto são descartadas (log debug, sem raw_event).
+
+    epoch_ms, compacted = _normalize_timestamps(compacted)
+    compacted["_v"] = 2
+
+    def _size_ok(d: Dict[str, Any]) -> bool:
+        try:
+            return _json_bytes(d) <= max_bytes
+        except Exception:
+            return False
+
+    # Poda opcional compacta somente se exceder budget (nunca identidade/primárias).
+    if not _size_ok(compacted):
+        for opt in _COMPACT_OPTIONAL_DROP_ORDER:
+            if opt in compacted and not _size_ok(compacted):
+                compacted.pop(opt, None)
+    return compacted
+
+
 def compress_payload(payload: Dict[str, Any], max_bytes: int = 6144) -> Dict[str, Any]:
     """
     Gera uma versão reduzida do payload para envio à LLM.
@@ -292,13 +373,24 @@ def compress_payload(payload: Dict[str, Any], max_bytes: int = 6144) -> Dict[str
     - Remove blocos de observabilidade/debug.
     - Normaliza timestamps para epoch_ms.
     - Tenta manter-se abaixo de max_bytes (best-effort).
+    - P00: preserva schema compacto (price/flow/ob/...) via contrato único
+      common.ai_payload_types.COMPACT_AI_ALLOWED_ROOT_KEYS.
     """
     base = copy.deepcopy(payload) if isinstance(payload, dict) else {}
 
-    # Remove chaves proibidas antecipadamente
+    # Remove chaves proibidas antecipadamente (vale para ambos os schemas).
+    # NUNCA restaura raw_event/contextual_snapshot/historical_vp (seção 3).
     for k in list(base.keys()):
         if k in FORBIDDEN_KEYS:
             base.pop(k, None)
+
+    # P00: caminho compacto — não aplicar allowlist verbosa.
+    try:
+        _compact = bool(_is_compact(base))
+    except Exception:
+        _compact = isinstance(base, dict) and "price" in base
+    if _compact:
+        return _compress_compact_payload(base, max_bytes=max_bytes)
 
     # Prepara orçamentos escalados conforme max_bytes
     scale = max_bytes / 6144 if max_bytes else 1

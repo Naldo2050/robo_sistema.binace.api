@@ -77,12 +77,31 @@ def test_missing_keys_ratio_none(calc):
 
 @pytest.mark.parametrize("calc", CALCS)
 def test_normal_ratio_unchanged(calc):
+    # P01: imbalance usa o total da PRÓPRIA janela (net_X/total_X em [-1,+1]).
+    # OLD EXPECTATION (bug): net_flow_1m=10/total_volume=5 -> 2.0 (impossível
+    # para imbalance normalizado; misturava populações).
+    # NEW EXPECTATION: totais por janela; 1m: 2/5=0.4; 5m omitido sem total_5m.
     out = calc({"buy_volume_btc": 3.0, "sell_volume_btc": 2.0,
-                "net_flow_1m": 10.0, "net_flow_5m": 5.0,
+                "net_flow_1m": 2.0, "net_flow_5m": 5.0,
                 "total_volume": 5.0})
     assert out["buy_sell_ratio"] == 1.5
     assert out["ratio_state"] == "two_sided"
-    assert out["ratios"]["imbalance_1m"] == 2.0
+    assert out["ratios"]["imbalance_1m"] == 0.4
+    assert "imbalance_5m" not in out["ratios"], "sem total_5m não há fallback p/ total 1m (P01)"
+    _no_sentinels(out)
+
+
+@pytest.mark.parametrize("calc", CALCS)
+def test_per_window_totals_produce_bounded_imbalances(calc):
+    # Contrato P01: cada janela normalizada pelo próprio total.
+    out = calc({"buy_volume_btc": 3.0, "sell_volume_btc": 2.0,
+                "net_flow_1m": 2.0, "net_flow_5m": 5.0, "net_flow_15m": -3.0,
+                "total_volume_1m": 5.0, "total_volume_5m": 25.0, "total_volume_15m": 15.0})
+    assert out["ratios"]["imbalance_1m"] == 0.4
+    assert out["ratios"]["imbalance_5m"] == 0.2
+    assert out["ratios"]["imbalance_15m"] == -0.2
+    for key in ("imbalance_1m", "imbalance_5m", "imbalance_15m"):
+        assert -1.0 <= out["ratios"][key] <= 1.0
     _no_sentinels(out)
 
 

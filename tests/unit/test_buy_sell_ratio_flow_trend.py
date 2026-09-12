@@ -14,6 +14,9 @@ class TestFlowTrendImbalanceNormalizado:
             "net_flow_5m": -296.0,
             "net_flow_15m": 0.0,
             "total_volume": 1000.0,
+            # P01: totais próprios por janela (contrato net_X/total_X)
+            "total_volume_5m": 1000.0,
+            "total_volume_15m": 1000.0,
         }
         result = calc(flow_data)
         assert result["flow_trend"] == "decelerating_selling"
@@ -26,6 +29,8 @@ class TestFlowTrendImbalanceNormalizado:
             "net_flow_5m": -200.0,
             "net_flow_15m": 0.0,
             "total_volume": 1000.0,
+            "total_volume_5m": 1000.0,
+            "total_volume_15m": 1000.0,
         }
         result = calc(flow_data)
         assert result["flow_trend"] == "accelerating_selling"
@@ -38,6 +43,8 @@ class TestFlowTrendImbalanceNormalizado:
             "net_flow_5m": -200.0,
             "net_flow_15m": 0.0,
             "total_volume": 1000.0,
+            "total_volume_5m": 1000.0,
+            "total_volume_15m": 1000.0,
         }
         result = calc(flow_data)
         assert result["flow_trend"] == "stable_selling"
@@ -50,6 +57,8 @@ class TestFlowTrendImbalanceNormalizado:
             "net_flow_5m": 350.0,
             "net_flow_15m": 0.0,
             "total_volume": 1000.0,
+            "total_volume_5m": 1000.0,
+            "total_volume_15m": 1000.0,
         }
         result = calc(flow_data)
         assert result["flow_trend"] == "decelerating_buying"
@@ -62,6 +71,8 @@ class TestFlowTrendImbalanceNormalizado:
             "net_flow_5m": -200.0,
             "net_flow_15m": 0.0,
             "total_volume": 1000.0,
+            "total_volume_5m": 1000.0,
+            "total_volume_15m": 1000.0,
         }
         result = calc(flow_data)
         assert result["flow_trend"] == "stable_selling"
@@ -98,6 +109,9 @@ class TestFlowTrendImbalanceNormalizado:
             "net_flow_5m": -296.0,
             "net_flow_15m": -444.0,
             "total_volume": 1000.0,
+            # P01: cada janela normalizada pelo próprio total
+            "total_volume_5m": 1000.0,
+            "total_volume_15m": 1000.0,
         }
         result = calc(flow_data)
         assert result["ratios"]["imbalance_1m"] == -0.074
@@ -114,6 +128,8 @@ class TestPressureNeutralZoneComFlowTrend:
             "net_flow_5m": 200.0,
             "net_flow_15m": 0.0,
             "total_volume": 1000.0,
+            "total_volume_5m": 1000.0,
+            "total_volume_15m": 1000.0,
         }
         result = metrics_calc(flow_data)
         assert result["pressure"] == "SLIGHT_BUY"
@@ -126,6 +142,8 @@ class TestPressureNeutralZoneComFlowTrend:
             "net_flow_5m": -200.0,
             "net_flow_15m": 0.0,
             "total_volume": 1000.0,
+            "total_volume_5m": 1000.0,
+            "total_volume_15m": 1000.0,
         }
         result = metrics_calc(flow_data)
         assert result["pressure"] == "SLIGHT_SELL"
@@ -138,6 +156,8 @@ class TestPressureNeutralZoneComFlowTrend:
             "net_flow_5m": 20.0,
             "net_flow_15m": 0.0,
             "total_volume": 1000.0,
+            "total_volume_5m": 1000.0,
+            "total_volume_15m": 1000.0,
         }
         result = metrics_calc(flow_data)
         assert result["pressure"] == "NEUTRAL"

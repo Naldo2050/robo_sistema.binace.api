@@ -132,6 +132,158 @@ def _count_present_fields(event: dict, required_fields: list) -> float:
 
 
 # ---------------------------------------------------------------------------
+# P05: presença != validade. completeness = % ponderado de features UTILIZÁVEIS.
+# ---------------------------------------------------------------------------
+# Contrato:
+#   PRESENCE  = container/chave existe (is not None).
+#   VALIDITY  = dado existe E é semanticamente utilizável (regras por feature).
+#   FRESHNESS = idade dentro do TTL (status fresh/stale/unavailable/warming_up).
+#   SOURCE HEALTH = fonte respondeu (P04 field_status VALID/REAL_ZERO vs
+#                 MISSING/API_ERROR).
+#   FALLBACK/WARMUP = cache/fallback ou cobertura parcial (não equivale a FULL).
+# Pesos preservam a escala histórica (soma 10; REQUIRED w2, CONDITIONAL w1,
+# OPTIONAL w0 — rastreado sem penalizar). Container vazio ({}), 0 inválido,
+# None, STALE/is_valid=0/is_available=0, WARMING_UP sem FULL => não utilizável.
+_USABILITY_WEIGHTS = {
+    "price": 2, "flow_1m": 2, "orderbook": 2,
+    "flow_5m": 1, "flow_15m": 1, "session_vwap": 1, "onchain": 1,
+    "positioning": 0, "options": 0,
+}
+_USABILITY_TOTAL_WEIGHT = 10
+
+
+def _is_usable_number(v) -> bool:
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v))
+
+
+def _flow_window_usable(event: dict, window_min: int) -> tuple:
+    """(usable: bool, reason: str|None) para flow_{1,5,15}m."""
+    key = f"{window_min}m"
+    integrity = _get_nested(event, "fluxo_continuo", "flow_window_integrity") or {}
+    info = integrity.get(key)
+    if isinstance(info, dict):
+        if info.get("status") == "FULL" or info.get("is_temporal_coverage_valid"):
+            return True, None
+        return False, f"flow_{window_min}m_{str(info.get('status', 'unknown')).lower()}"
+    # Legado (sem bloco de integridade): presença de volumes da janela.
+    of = _get_nested(event, "fluxo_continuo", "order_flow") or {}
+    if window_min == min(1, 5, 15):
+        if of.get("buy_volume_btc") is not None and of.get("sell_volume_btc") is not None:
+            return True, None
+        return False, "flow_1m_missing_volumes"
+    if of.get(f"net_flow_{window_min}m") is not None:
+        return True, None
+    return False, f"flow_{window_min}m_missing"
+
+
+def _score_usability(event: dict):
+    """Retorna (components: dict, reasons: list[str], earned: float).
+
+    components[name] = {"weight": w, "usable": bool, "required": bool}.
+    Monotônico: tornar válido→missing nunca aumenta; inválido→válido nunca reduz.
+    REAL_ZERO conta como válido (regra por validade, nunca `if value`).
+    """
+    components: dict = {}
+    reasons: list = []
+
+    def _put(name: str, weight: int, usable: bool, reason=None, required=False,
+             inform=False):
+        components[name] = {"weight": weight, "usable": bool(usable),
+                            "required": bool(required)}
+        if reason and (not usable or inform):
+            reasons.append(reason)
+
+    # price (REQUIRED): número finito > 0 (mesma cadeia do close efetivo).
+    _px = _get_nested(event, "preco_fechamento")
+    if _px is None:
+        _px = _get_nested(event, "contextual_snapshot", "ohlc", "close")
+    _put("price", 2, _is_usable_number(_px) and _px > 0,
+         None if (_is_usable_number(_px) and _px > 0) else "price_missing_or_invalid",
+         required=True)
+
+    # flow 1m/5m/15m.
+    _u1, _r1 = _flow_window_usable(event, 1)
+    _put("flow_1m", 2, _u1, _r1, required=True)
+    _u5, _r5 = _flow_window_usable(event, 5)
+    _put("flow_5m", 1, _u5, _r5)
+    _u15, _r15 = _flow_window_usable(event, 15)
+    _put("flow_15m", 1, _u15, _r15)
+
+    # orderbook (REQUIRED): is_valid + profundidades + fonte não-emergency.
+    ob = event.get("orderbook_data") or {}
+    if "is_valid" in ob:
+        _ob_ok = bool(ob.get("is_valid"))
+        _ob_reason = None if _ob_ok else "orderbook_invalid"
+    else:
+        _ob_ok = ob.get("mid") is not None  # legado: sem flag, usa presença do mid
+        _ob_reason = None if _ob_ok else "orderbook_missing"
+    if _ob_ok:
+        _bid = ob.get("bid_depth_usd")
+        _ask = ob.get("ask_depth_usd")
+        if ((_bid is not None or _ask is not None)
+                and not ((_bid or 0) > 0 and (_ask or 0) > 0)):
+            _ob_ok, _ob_reason = False, "orderbook_zero_depth"
+    if _ob_ok:
+        _src = ob.get("data_source") or ob.get("source") or ""
+        if str(_src).lower() == "emergency":
+            _ob_ok, _ob_reason = False, "orderbook_emergency_source"
+    _put("orderbook", 2, _ob_ok, _ob_reason, required=True)
+
+    # session_vwap (CONDITIONAL): is_valid + status fora de STALE/ERROR.
+    sv = _get_nested(event, "institutional_analytics", "session_vwap") or {}
+    if "is_valid" in sv or "status" in sv:
+        _sv_ok = (bool(sv.get("is_valid"))
+                  and str(sv.get("status", "")).upper() not in ("STALE", "ERROR", "INVALID"))
+        _sv_reason = None if _sv_ok else "session_vwap_stale_or_invalid"
+    elif sv:
+        _sv_ok, _sv_reason = True, None  # legado: seção presente sem flags
+    else:
+        _sv_ok, _sv_reason = False, "session_vwap_missing"
+    _put("session_vwap", 1, _sv_ok, _sv_reason)
+
+    # onchain (CONDITIONAL, consome P04): algum campo VALID/REAL_ZERO.
+    _aa = _get_nested(event, "raw_event", "advanced_analysis") or {}
+    _fs = _aa.get("onchain_field_status")
+    if isinstance(_fs, dict) and _fs:
+        _valid_fields = [k for k, s in _fs.items() if s in ("VALID", "REAL_ZERO")]
+        _oc_ok = bool(_valid_fields)
+        if _oc_ok:
+            _n_bad = sum(1 for s in _fs.values() if s in ("MISSING", "API_ERROR"))
+            _oc_reason = f"onchain_partial({len(_valid_fields)}/{len(_fs)} valid)" if _n_bad else None
+        else:
+            _oc_reason = "onchain_unavailable"
+    else:
+        # Legado (pré-P04, sem field_status): status fresh + ≥1 valor real.
+        # Limitação documentada: 0 fabricado pré-P04 é indistinguível aqui;
+        # o replay de auditoria usa external_apis.jsonl (UNKNOWN se ambíguo).
+        _ocm = _aa.get("onchain_metrics") or {}
+        _real_vals = [k for k in ("mempool_size", "mempool_vsize_mb",
+                                  "fees_fastest_sat_vb", "fees_half_hour_sat_vb",
+                                  "fees_hour_sat_vb", "difficulty", "active_addresses")
+                      if _ocm.get(k) is not None]
+        _oc_ok = bool(_real_vals) and _aa.get("onchain_status") == "fresh"
+        _oc_reason = None if _oc_ok else "onchain_unavailable_or_unverifiable"
+    _put("onchain", 1, _oc_ok, _oc_reason, inform=True)
+
+    # positioning (OPTIONAL w0): rastreado, nunca penaliza.
+    _pos = _get_nested(event, "institutional_analytics", "positioning") or {}
+    _pos_ok = bool(_pos.get("is_available"))
+    _put("positioning", 0, _pos_ok,
+         None if _pos_ok else "positioning_unavailable")
+
+    # options (OPTIONAL w0): rastreado, nunca penaliza.
+    _has_opt = bool(_get_nested(event, "data_reliability", "has_options_data"))
+    if not _has_opt:
+        _has_opt = bool((_aa.get("options_metrics") or {}).get("is_real_data"))
+    _put("options", 0, _has_opt,
+         None if _has_opt else "options_unavailable")
+
+    earned = sum(c["weight"] for c in components.values() if c["usable"])
+    return components, reasons, earned
+
+
+# ---------------------------------------------------------------------------
 # ONDA 1 — Campos de Metadados e Qualidade
 # ---------------------------------------------------------------------------
 
@@ -215,15 +367,15 @@ def _build_metadata_fields(
     """
     _STATE.sequence_counter += 1
 
-    # Campos obrigatórios para completeness
-    REQUIRED = [
-        "preco_fechamento", "epoch_ms", "fluxo_continuo", "orderbook_data",
-        "ml_features", "multi_tf", "historical_vp", "derivatives",
-        "institutional_analytics", "market_context", "market_environment",
-    ]
-    completeness = _count_present_fields(event, REQUIRED)
+    # P05: completeness = % ponderado de features UTILIZÁVEIS (presence != validity).
+    # Substitui a contagem de containers (dict {} contava como presente).
+    # Pesos: soma 10 (escala histórica preservada em espírito; ver _USABILITY_WEIGHTS).
+    _components, _reasons, _earned = _score_usability(event)
+    completeness = round(_earned / _USABILITY_TOTAL_WEIGHT * 100, 1)
 
-    # Reliability: penaliza dados stale / ausência de OB / ausência de fluxo
+    # Reliability: operacional (pipeline health) + penalidade documentada de
+    # validade quando a seção existe mas está inválida/stale. Ausência de seção
+    # NÃO penaliza reliability (é papel da completeness).
     reliability = 10.0
     # FIX (ETAPA 3): default fail-closed com rótulo honesto. Antes
     # `event.get("orderbook_quality", "live")` promovia ausência de
@@ -258,6 +410,16 @@ def _build_metadata_fields(
     elif anomaly_sev == "MEDIUM":
         reliability -= 0.5
 
+    # P05: session_vwap presente-mas-inválida/stale reduz reliability (-0.5).
+    # Ausente => sem penalidade aqui (completeness já debita). Peso preservado
+    # na ordem das penalidades operacionais existentes; sem thresholds novos.
+    _sv_rel = _get_nested(event, "institutional_analytics", "session_vwap") or {}
+    if "is_valid" in _sv_rel or "status" in _sv_rel:
+        if (not _sv_rel.get("is_valid")
+                or str(_sv_rel.get("status", "")).upper() in ("STALE", "ERROR", "INVALID")):
+            reliability -= 0.5
+            _reasons.append("reliability:session_vwap_stale_or_invalid")
+
     reliability = max(0.0, min(10.0, reliability))
 
     # Data quality score: combinação de completeness + reliability
@@ -277,6 +439,9 @@ def _build_metadata_fields(
         "data_quality_score": data_quality_score,
         "completeness_pct": completeness,
         "reliability_score": round(reliability, 2),
+        # P05: componentes explícitos — explicam o score (seção 11).
+        "quality_components": _components,
+        "quality_reasons": list(_reasons),
     }
 
     if exchange_timestamp:
@@ -2138,6 +2303,8 @@ def enrich_signal(
         event.setdefault("data_quality_score", meta["data_quality_score"])
         event.setdefault("completeness_pct", meta["completeness_pct"])
         event.setdefault("reliability_score", meta["reliability_score"])
+        event.setdefault("quality_components", meta["quality_components"])
+        event.setdefault("quality_reasons", meta["quality_reasons"])
 
         # ------------------------------------------------------------------
         # ONDA 1: is_holiday no market_context
