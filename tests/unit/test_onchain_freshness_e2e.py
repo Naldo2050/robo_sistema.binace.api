@@ -11,7 +11,8 @@ Exige:
   - stale_usable: valor aparece MAS marcado stale + idade;
   - unavailable/além do usable: nenhum valor como evidência atual;
   - last_error / fetched_monotonic NUNCA no evento/payload;
-  - institutional coverage não declara 'full' quando stale/unavailable.
+  - PFIX-LOW: coverage deriva de field_status (P04), nunca de freshness
+    (fresh/stale com mesma field_status => mesma coverage).
 """
 
 import time
@@ -24,7 +25,7 @@ from market_orchestrator.ai.llm_payload_guardrail import guardrail_rewrap
 from market_orchestrator.ai.payload_builder_compact import build_compact_payload
 
 
-def _updater_with_ages(fast_age_s, slow_age_s):
+def _updater_with_ages(fast_age_s, slow_age_s, field_status=None):
     """Updater com snapshot envelhecido por grupo, sem rede."""
     base_mono = time.monotonic()
     wall_ms = int(time.time() * 1000)
@@ -37,6 +38,7 @@ def _updater_with_ages(fast_age_s, slow_age_s):
         fast_fetched_monotonic=base_mono - fast_age_s,
         slow_fetched_monotonic=base_mono - slow_age_s,
         last_error=None,
+        field_status=dict(field_status) if field_status else {},
     )
     return updater
 
@@ -114,11 +116,22 @@ def test_unavailable_has_no_values_as_evidence():
     assert "mempool_sz" not in final.get("onchain", {})
 
 
-def test_coverage_not_full_when_stale():
-    event = _enrich(_updater_with_ages(400.0, 100.0))
+def test_coverage_derives_from_field_status_not_freshness():
+    # PFIX-LOW: mesma field_status parcial => mesma coverage, fresh ou stale.
+    # field_status cobre só os campos do snapshot; demais contam como ausentes.
+    fs = {"mempool_size": "VALID", "fees_fastest_sat_vb": "API_ERROR",
+          "difficulty": "VALID", "hash_rate": "REAL_ZERO"}
+    event = _enrich(_updater_with_ages(400.0, 100.0, field_status=fs))
     out = enrich_signal(event)
-    assert out["data_reliability"]["onchain_coverage"] != "full"
+    assert out["data_reliability"]["onchain_coverage"] == "partial"
 
+    event = _enrich(_updater_with_ages(10.0, 100.0, field_status=fs))
+    out = enrich_signal(event)
+    assert out["data_reliability"]["onchain_coverage"] == "partial"
+    assert out["data_reliability"]["onchain_coverage_pct"] == round(
+        3 / 15 * 100, 1)
+
+    # Sem field_status (legado): UNKNOWN, nunca "full" silencioso.
     event = _enrich(_updater_with_ages(10.0, 100.0))
     out = enrich_signal(event)
-    assert out["data_reliability"]["onchain_coverage"] == "full"
+    assert out["data_reliability"]["onchain_coverage"] == "unknown"

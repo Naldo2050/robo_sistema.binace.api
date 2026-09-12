@@ -34,6 +34,8 @@ from collections import deque
 from datetime import datetime, timezone, date
 from typing import Any, Dict, List, Optional, Tuple
 
+from fetchers.onchain_fetcher import SUPPORTED_ONCHAIN_FIELDS, USABLE_ONCHAIN_STATES
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -281,6 +283,36 @@ def _score_usability(event: dict):
 
     earned = sum(c["weight"] for c in components.values() if c["usable"])
     return components, reasons, earned
+
+
+# ---------------------------------------------------------------------------
+# PFIX-LOW: coverage onchain deriva de field_status (P04), nunca de freshness.
+# ---------------------------------------------------------------------------
+# Contrato:
+#   fonte exclusiva: advanced_analysis.onchain_field_status (quando presente).
+#   usable = status in USABLE_ONCHAIN_STATES; denominador = SUPPORTED_ONCHAIN_FIELDS.
+#   labels em minúsculas (estilo existente de data_reliability).
+#   freshness (onchain_status/age) é ORTOGONAL: não entra aqui, não é alterada aqui.
+def _derive_onchain_coverage(field_status) -> Tuple[str, Optional[float], int, int]:
+    """Retorna (label, pct|None, usable_count, total_supported).
+
+    field_status ausente/vazio => ("unknown", None, 0, total).
+    Itera sobre SUPPORTED_ONCHAIN_FIELDS (não sobre as chaves recebidas):
+    chaves paid/metadata extras nunca alteram o denominador.
+    """
+    total = len(SUPPORTED_ONCHAIN_FIELDS)
+    if not isinstance(field_status, dict) or not field_status:
+        return "unknown", None, 0, total
+    usable = sum(1 for f in SUPPORTED_ONCHAIN_FIELDS
+                 if field_status.get(f) in USABLE_ONCHAIN_STATES)
+    pct = round(usable / total * 100, 1) if total else 0.0
+    if usable >= total:
+        label = "full"
+    elif usable > 0:
+        label = "partial"
+    else:
+        label = "none"
+    return label, pct, usable, total
 
 
 # ---------------------------------------------------------------------------
@@ -2514,24 +2546,21 @@ def enrich_signal(
         _aa = _get_nested(event, "raw_event", "advanced_analysis") or {}
         _latency = _get_nested(event, "institutional_analytics", "quality", "latency") or {}
         _latency_known = bool(_latency) and _latency.get("latency_ms") is not None
-        # FASE C: coverage deriva do STATUS (stale/unavailable nunca é "full").
-        # Legado sem status: mantém regra antiga (flag is_real_data).
-        _oc_status = _aa.get("onchain_status")
-        if _oc_status is None:
-            _oc_coverage = ("full" if _aa.get("onchain_metrics", {}).get("is_real_data")
-                            else "partial")
-        elif _oc_status == "fresh":
-            _oc_coverage = "full"
-        elif _oc_status == "stale":
-            _oc_coverage = "stale"
-        else:
-            _oc_coverage = "partial"
+        # PFIX-LOW: coverage deriva EXCLUSIVAMENTE de onchain_field_status
+        # (P04). Freshness (fresh/stale/...) responde "quão recente é o
+        # snapshot"; coverage responde "quanto do conjunto suportado está
+        # utilizável". Ortogonais por desenho: mesma field_status com status
+        # fresh ou stale gera a MESMA coverage.
+        _fs_cov = _aa.get("onchain_field_status")
+        _oc_coverage, _oc_coverage_pct, _, _ = _derive_onchain_coverage(_fs_cov)
         event["data_reliability"] = {
             "has_options_data": bool(_aa.get("options_metrics", {}).get("is_real_data")),
             "onchain_coverage": _oc_coverage,
             "latency_acceptable": bool(_latency.get("is_acceptable")) if _latency_known else False,
             "price_targets_available": "price_targets" in event,
         }
+        if _oc_coverage_pct is not None:
+            event["data_reliability"]["onchain_coverage_pct"] = _oc_coverage_pct
 
     except Exception as exc:
         logger.error(

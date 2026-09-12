@@ -39,6 +39,38 @@ def _classify_present(value: Any) -> str:
         return "VALID"
 
 
+# PFIX-LOW — contrato único de cobertura onchain (fonte canônica do denominador).
+# `_merge_metrics` sempre emite exatamente estas 15 chaves em `_field_status`.
+# Excluídos de propósito: NEVER_EVIDENCE pagos (exchange_netflow,
+# whale_transactions, exchange_reserves, sopr — ver NEVER_EVIDENCE_FIELDS em
+# fetchers/onchain_updater.py), metadata (data_source/is_real_data) e
+# difficulty_adjustment (dict sem proveniência por campo). Consumido por
+# institutional/enricher.py (data_reliability.onchain_coverage/_pct).
+# NÃO ampliar sem atualizar o teste de paridade
+# (tests/unit/test_onchain_coverage_derived.py).
+SUPPORTED_ONCHAIN_FIELDS = frozenset({
+    "hash_rate",
+    "difficulty",
+    "active_addresses",
+    "miner_flows",
+    "mempool_size",
+    "mempool_vsize_mb",
+    "mempool_total_fee_btc",
+    "fees_fastest_sat_vb",
+    "fees_half_hour_sat_vb",
+    "fees_hour_sat_vb",
+    "fees_economy_sat_vb",
+    "minutes_between_blocks",
+    "total_btc_sent_24h",
+    "total_fees_btc_24h",
+    "trade_volume_btc_24h",
+})
+
+# Estados de field_status que contam como utilizáveis (P04: 0 explícito é
+# REAL_ZERO = dado real; P05 usa o mesmo conjunto).
+USABLE_ONCHAIN_STATES = frozenset({"VALID", "REAL_ZERO"})
+
+
 class OnchainFetcher:
     """
     Coleta métricas on-chain reais de APIs públicas gratuitas.
