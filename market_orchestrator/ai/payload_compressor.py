@@ -48,7 +48,7 @@ except Exception:  # pragma: no cover - ai_payload_types é stdlib-only
         {
             "symbol", "epoch_ms", "trigger", "tipo_evento", "descricao",
             "ativo", "window", "price", "regime", "flow", "ob", "tf",
-            "sr", "qual", "w", "ctx", "ext", "alerts", "quant", "ofi",
+            "sr", "qual", "w", "ctx", "ext", "alerts", "quant", "trade_bar_flow", "ofi",
             "vwap", "liq", "liq_scope", "onchain", "cross", "sm",
             "cvd_div", "mr", "iceberg", "summary", "_v", "_compacted",
         }
@@ -76,6 +76,7 @@ _COMPACT_OPTIONAL_DROP_ORDER = (
     "liq_scope",
     "liq",
     "vwap",
+    "trade_bar_flow",
     "ofi",
     "quant",
     "alerts",

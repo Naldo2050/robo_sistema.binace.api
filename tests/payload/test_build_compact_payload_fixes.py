@@ -569,38 +569,46 @@ class TestMrThreshold:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# FIX 3e — ofi usa order_flow como fonte secundária
+# P02 — trade_bar_flow: apenas institucional real, sem fallback espúrio
 # ═══════════════════════════════════════════════════════════════════
 
 class TestOfiOrderFlowSource:
 
-    def test_ofi_uses_order_flow_flow_imbalance(self):
+    def test_trade_bar_flow_omitted_when_no_institutional(self):
+        """P02: ausência de sinal institucional deve continuar ausência (sem fallback de order_flow)."""
         payload = bcp.build_compact_payload(make_production_event())
+        assert "trade_bar_flow" not in payload, "trade_bar_flow deve ser omitido sem dados institucionais"
+        assert "ofi" not in payload, "ofi não deve ser gerado via fallback de order_flow"
 
-        assert "ofi" in payload, "ofi ausente"
-        ofi = payload["ofi"]
-
-        assert ofi["score"] == round(-0.1563, 3)
-        assert ofi["dir"] == "SELL"
-        assert ofi.get("src") == "order_flow"
-
-    def test_ofi_direction_sell_when_negative(self):
+    def test_trade_bar_flow_populated_when_institutional_present(self):
+        """P02: quando institucional real existe, deve preencher score e dir."""
         event = make_production_event()
-        event["fluxo_continuo"]["order_flow"]["flow_imbalance"] = -0.45
+        event["institutional_analytics"]["order_flow_imbalance"] = {
+            "score": -0.42,
+            "direction": "SELL",
+        }
         payload = bcp.build_compact_payload(event)
-        assert payload["ofi"]["dir"] == "SELL"
+        assert "trade_bar_flow" in payload
+        assert payload["trade_bar_flow"]["score"] == -0.42
+        assert payload["trade_bar_flow"]["dir"] == "SELL"
 
-    def test_ofi_direction_buy_when_positive(self):
+    def test_trade_bar_flow_direction_buy_when_positive(self):
         event = make_production_event()
-        event["fluxo_continuo"]["order_flow"]["flow_imbalance"] = 0.35
+        event["institutional_analytics"]["order_flow_imbalance"] = {
+            "score": 0.35,
+            "direction": "BUY",
+        }
         payload = bcp.build_compact_payload(event)
-        assert payload["ofi"]["dir"] == "BUY"
+        assert payload["trade_bar_flow"]["dir"] == "BUY"
 
-    def test_ofi_direction_neu_when_near_zero(self):
+    def test_trade_bar_flow_direction_neu_when_near_zero(self):
         event = make_production_event()
-        event["fluxo_continuo"]["order_flow"]["flow_imbalance"] = 0.02
+        event["institutional_analytics"]["order_flow_imbalance"] = {
+            "score": 0.02,
+            "direction": "NEU",
+        }
         payload = bcp.build_compact_payload(event)
-        assert payload["ofi"]["dir"] == "NEU"
+        assert payload["trade_bar_flow"]["dir"] == "NEU"
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -615,8 +623,13 @@ class TestProductionEventIntegration:
         assert payload["price"]["c"] == 66810
 
     def test_production_event_has_all_expected_gaps(self):
-        payload = bcp.build_compact_payload(make_production_event())
-        assert "ofi" in payload
+        event = make_production_event()
+        event["institutional_analytics"]["order_flow_imbalance"] = {
+            "score": -0.156,
+            "direction": "SELL",
+        }
+        payload = bcp.build_compact_payload(event)
+        assert "trade_bar_flow" in payload
         assert "vwap" in payload
         assert "mr" in payload
 

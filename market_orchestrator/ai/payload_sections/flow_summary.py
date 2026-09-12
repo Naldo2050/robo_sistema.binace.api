@@ -89,7 +89,7 @@ def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
     bias = _PA_SIGNAL_BIAS.get(pa_signal, "NEUTRAL")
 
     # --- Confirmar bias via imbalance ---
-    imb = flow.get("imb", 0.0) or 0.0
+    imb = flow.get("trade_imb", flow.get("imb", 0.0)) or 0.0
     if abs(imb) >= 0.25 and bias == "NEUTRAL":
         bias = "BUY" if imb > 0 else "SELL"
 

@@ -638,7 +638,7 @@ def _build_flow(event_data: dict) -> dict:
         flow["cvd_4h"] = round(cvd, 1)
 
     imb = of.get("flow_imbalance", 0)
-    flow["imb"] = round(imb, 2)
+    flow["trade_imb"] = round(imb, 2)
 
     ab = of.get("aggressive_buy_pct")
     if ab is not None:
@@ -705,7 +705,7 @@ def _build_orderbook(event_data: dict) -> dict:
     ob: dict[str, Any] = {
         "b": compact_number(bid, force_sign=False),
         "a": compact_number(ask, force_sign=False),
-        "imb": imb_val,
+        "depth_imb": imb_val,
         "bias": "BUY" if imb_val > 0.1 else "SELL" if imb_val < -0.1 else "NEUT",
     }
 
@@ -713,7 +713,7 @@ def _build_orderbook(event_data: dict) -> dict:
     if t5_imb is None:
         t5_imb = depth.get("L5", {}).get("imbalance")
     if t5_imb is not None:
-        ob["t5"] = round(t5_imb, 2)
+        ob["depth_t5"] = round(t5_imb, 2)
 
     # FIX #8: Extrair spread_percent do orderbook_data
     spread_percent = ob_data.get("spread_percent")
@@ -1247,12 +1247,17 @@ def _build_static_context(event_data: dict) -> dict:
 # BUILDERS DOS GAPS CRÍTICOS
 # ============================================================
 
-def _build_ofi(event_data: dict) -> dict:
+def _build_trade_bar_flow(event_data: dict) -> dict:
     """
-    Order Flow Imbalance — pressão líquida no livro.
-    Fonte 1: institutional_analytics.order_flow_imbalance
-    Fonte 2: fluxo_continuo.order_flow.flow_imbalance (mais confiável)
-    Fonte 3: ml_features.microstructure.flow_imbalance
+    Trade Bar Flow — score institucional de dominância direcional de barras de trades.
+    Contrato P02:
+    - source: executed trades agrupados em barras de 30s
+    - lookback: 5 barras discretas de 30s (~150s nominal)
+    - score: dominância direcional entre barras [-1.0 sell, +1.0 buy]
+    - dir: direção ("BUY", "SELL", "NEU")
+    - Não implementa OFI L2/orderbook clássico.
+    - Se institutional trade-bar score não existir: NÃO copiar flow_imbalance 1m
+      ou microstructure como fallback. Ausência deve continuar ausência.
     """
     ia = event_data.get("institutional_analytics", {})
     ofi_raw = ia.get("order_flow_imbalance", {})
@@ -1263,34 +1268,13 @@ def _build_ofi(event_data: dict) -> dict:
         if score is not None:
             return {
                 "score": round(float(score), 3),
-                "dir": str(direction)[:4].upper() or "N",
+                "dir": str(direction)[:4].upper() or "NEU",
             }
 
-    # FIX 3e: usar order_flow como fonte secundária (mais rico que microstructure)
-    fluxo = event_data.get("fluxo_continuo", {})
-    of = fluxo.get("order_flow", {})
-    fi_of = of.get("flow_imbalance")
-
-    if fi_of is not None:
-        direction = "BUY" if fi_of > 0.05 else "SELL" if fi_of < -0.05 else "NEU"
-        return {
-            "score": round(float(fi_of), 3),
-            "dir": direction,
-            "src": "order_flow",
-        }
-
-    # Fallback final: microstructure
-    micro = event_data.get("ml_features", {}).get("microstructure", {})
-    fi = micro.get("flow_imbalance")
-    if fi is not None:
-        direction = "BUY" if fi > 0.05 else "SELL" if fi < -0.05 else "NEU"
-        return {
-            "score": round(float(fi), 3),
-            "dir": direction,
-            "src": "micro",
-        }
-
     return {}
+
+
+_build_ofi = _build_trade_bar_flow  # Alias retrocompatível
 
 
 def _build_vwap_context(event_data: dict) -> dict:
@@ -2027,9 +2011,9 @@ def build_compact_payload(
     # Injetados ANTES do summary para que os builders possam usá-los
     # ═══════════════════════════════════════════════════════════
 
-    ofi = _build_ofi(event_data)
-    if ofi:
-        payload["ofi"] = ofi
+    tbf = _build_trade_bar_flow(event_data)
+    if tbf:
+        payload["trade_bar_flow"] = tbf
 
     vwap_ctx = _build_vwap_context(event_data)
     if vwap_ctx:
@@ -2131,7 +2115,7 @@ def build_compact_payload(
     estimated_tokens = payload_size // 4
     tf_keys = list(tf_section.keys()) if tf_section else "NONE"
     summary_keys = list(summary.keys()) if summary else "NONE"
-    gaps_added = [k for k in ("ofi", "vwap", "iceberg", "liq", "sm", "cvd_div", "mr")
+    gaps_added = [k for k in ("trade_bar_flow", "ofi", "vwap", "iceberg", "liq", "sm", "cvd_div", "mr")
                   if k in payload]
 
     logger.info(

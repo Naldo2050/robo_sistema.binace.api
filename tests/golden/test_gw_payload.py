@@ -91,7 +91,7 @@ def test_gw1_payload_preserves_critical_metadata(frozen_state):
     compact, _, final = _full_chain(_event(spec, fm, trades, ml_cross, status, age))
     assert compact["price"]["c"] == int(trades[-1]["p"])
     assert compact["price"]["fr"] == pytest.approx(0.0001)  # P0.1 funding
-    assert compact["flow"]["imb"] == pytest.approx(0.0, abs=0.05)
+    assert compact["flow"]["trade_imb"] == pytest.approx(0.0, abs=0.05)
     # P1-B: observed 50/50 chega como observado (mudança contratual)
     assert compact["flow"]["ab"] == pytest.approx(50.0)
     assert compact["flow"]["ab_s"] == "observed"
@@ -112,7 +112,7 @@ def test_gw1_payload_deterministic_double_run(frozen_state):
         ml_cross, status, age = _ml_cross(spec)
         compact, _, final = _full_chain(_event(spec, fm, trades, ml_cross, status, age))
         return {"c": compact["price"]["c"], "fr": compact["price"].get("fr"),
-                "imb": compact["flow"]["imb"], "method": compact["cross"]["method"],
+                "trade_imb": compact["flow"]["trade_imb"], "method": compact["cross"]["method"],
                 "n": compact["cross"]["n"], "f_st": final["cross"]["st"],
                 "f_method": final["cross"]["method"]}
 

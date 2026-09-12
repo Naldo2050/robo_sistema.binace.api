@@ -308,8 +308,8 @@ FORBIDDEN_ROOT_KEYS = {
 # Chaves obrigatórias em cada seção
 REQUIRED_PRICE_KEYS     = {"c"}
 REQUIRED_REGIME_KEYS    = {"cs", "cf", "v", "mode"}
-REQUIRED_FLOW_KEYS      = {"d1", "imb"}
-REQUIRED_OB_KEYS        = {"b", "a", "imb", "bias"}
+REQUIRED_FLOW_KEYS      = {"d1", "trade_imb"}
+REQUIRED_OB_KEYS        = {"b", "a", "depth_imb", "bias"}
 REQUIRED_CTX_KEYS       = {"ses", "poc", "val", "vah", "lsr"}
 REQUIRED_SR_KEYS        = {"r1", "s1"}
 
@@ -380,7 +380,7 @@ def test_snapshot_flow_section_structure():
 
     assert isinstance(flow["d1"], str)
     assert flow["d1"].startswith(("+", "-")) or flow["d1"] == "0"
-    assert isinstance(flow["imb"], float)
+    assert isinstance(flow["trade_imb"], float)
 
 
 def test_snapshot_orderbook_section_structure():
@@ -393,7 +393,7 @@ def test_snapshot_orderbook_section_structure():
     assert ob["bias"] in {"BUY", "SELL", "NEUT"}
     assert isinstance(ob["b"], str)
     assert isinstance(ob["a"], str)
-    assert isinstance(ob["imb"], float)
+    assert isinstance(ob["depth_imb"], float)
 
 
 def test_snapshot_ctx_section_structure():

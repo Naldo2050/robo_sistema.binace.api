@@ -1018,7 +1018,7 @@ def _build_market_summary(payload: Dict[str, Any]) -> str:
 
     # 3. Orderbook bias
     ob = payload.get("ob") or {}
-    ob_imb = ob.get("imb")
+    ob_imb = ob.get("depth_imb", ob.get("imb"))
     if ob_imb is not None:
         if ob_imb < -0.3:
             parts.append("OB_bear")
@@ -1561,8 +1561,8 @@ class AIAnalyzer:
                 return {
                     "bid_depth_usd": float(bid or 0),
                     "ask_depth_usd": float(ask or 0),
-                    "imbalance": float(ob_compact.get("imb", ob_compact.get("imbalance", 0))),
-                    "depth_imbalance": float(ob_compact.get("top5_imb", ob_compact.get("depth_imbalance", 0))),
+                    "imbalance": float(ob_compact.get("depth_imb", ob_compact.get("imb", ob_compact.get("imbalance", 0)))),
+                    "depth_imbalance": float(ob_compact.get("depth_t5", ob_compact.get("top5_imb", ob_compact.get("depth_imbalance", 0)))),
                     "spread": float(ob_compact.get("spread", ob_compact.get("spread_bps", 0))),
                     "volume_ratio": float(ob_compact.get("vol_ratio", ob_compact.get("volume_ratio", 0))),
                     "pressure": float(ob_compact.get("pressure", 0)),
@@ -1743,11 +1743,11 @@ class AIAnalyzer:
             if r:
                 out["r"] = r
 
-        # FLOW: d1/d5/d15/cvd_4h/imb/ab/bsr/pa/conv
+        # FLOW: d1/d5/d15/cvd_4h/trade_imb/imb/ab/bsr/pa/conv
         flow = payload.get("flow") or {}
         if flow:
             f = {}
-            for key in ("d1", "d5", "d15", "cvd_4h", "imb", "ab", "bsr", "pa", "conv",
+            for key in ("d1", "d5", "d15", "cvd_4h", "trade_imb", "imb", "ab", "bsr", "pa", "conv",
                          # Compat com v1/v2 keys
                          "n1", "n5", "n15", "net_1m", "net_5m", "net_15m", "agg_buy"):
                 if key in flow:
@@ -1755,11 +1755,11 @@ class AIAnalyzer:
             if f:
                 out["f"] = f
 
-        # OB: b/a/imb/t5/bias (ja compactado)
+        # OB: b/a/depth_imb/depth_t5/imb/t5/bias (ja compactado)
         ob = payload.get("ob") or {}
         if ob:
             ob_out = {}
-            for key in ("b", "a", "imb", "t5", "bias",
+            for key in ("b", "a", "depth_imb", "depth_t5", "imb", "t5", "bias",
                          # Compat com v1 keys
                          "bid", "ask", "top5_imb"):
                 if key in ob:
@@ -1838,7 +1838,7 @@ class AIAnalyzer:
         # FIX 5: pass-through de seções adicionadas em v3.1+ (incluindo pos da P1.1 e ms da P1.3)
         # Estas seções eram descartadas pelo groq summary, causando
         # perda de ~60% do payload antes de chegar na IA.
-        for passthrough_key in ("ofi", "vwap", "liq", "liq_scope", "onchain", "cross", "mr", "sm",
+        for passthrough_key in ("trade_bar_flow", "ofi", "vwap", "liq", "liq_scope", "onchain", "cross", "mr", "sm",
                                 "cvd_div", "iceberg", "qual", "summary", "pos", "ms"):
             val = payload.get(passthrough_key)
             if val is not None and val not in ({}, [], ""):

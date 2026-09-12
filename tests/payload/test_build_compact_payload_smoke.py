@@ -274,7 +274,7 @@ def test_flow_and_orderbook_include_execution_signals():
     assert payload["flow"]["d1"] == "+16K"
     assert payload["flow"]["d5"] == "+16K"
     assert payload["flow"]["d15"] == "+16K"
-    assert payload["flow"]["imb"] == 0.18
+    assert payload["flow"]["trade_imb"] == 0.18
     assert payload["flow"]["ab"] == 59
     assert payload["flow"]["bsr"] == 1.44
     assert payload["flow"]["pa"] == "buy_absorp"
@@ -283,8 +283,8 @@ def test_flow_and_orderbook_include_execution_signals():
     assert payload["flow"]["abs_sell_exh"] == 1.8
 
     assert payload["ob"]["bias"] == "SELL"
-    assert payload["ob"]["imb"] == -0.7
-    assert payload["ob"]["t5"] == -0.96
+    assert payload["ob"]["depth_imb"] == -0.7
+    assert payload["ob"]["depth_t5"] == -0.96
     assert payload["ob"]["slip_b"] == 5.0
     assert payload["ob"]["slip_s"] == 6.0
 

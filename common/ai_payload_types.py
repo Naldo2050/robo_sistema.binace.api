@@ -42,6 +42,7 @@ class CompactAIPayload(TypedDict, total=False):
     summary: PayloadSection
 
     # Gaps opcionais
+    trade_bar_flow: PayloadSection
     ofi: PayloadSection
     vwap: PayloadSection
     liq: PayloadSection
@@ -93,6 +94,7 @@ COMPACT_AI_ALLOWED_ROOT_KEYS: frozenset[str] = frozenset(
         "ext",
         "alerts",
         "quant",
+        "trade_bar_flow",
         "ofi",
         "vwap",
         "liq",
