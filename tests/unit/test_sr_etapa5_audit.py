@@ -49,30 +49,54 @@ def _zone_with(result, source):
 
 
 # ---------------------------------------------------------------------------
-# FASE 5/7/9 — Reprodução exata da J4 (documenta fórmulas, passa antes e depois)
+# FASE 5/7/9 — Reprodução J4 SOB NOVO CONTRATO (fix provenance 2026-09).
+# O contrato antigo projetava current_price*1.001 sob o rótulo
+# orderbook_ask_wall (center=64771.92 = média da projeção 64806.84 com o
+# hvn 64737.0). Isso era mislabeling: imbalance global não é wall.
+# Novo contrato: source orderbook_*_wall SÓ existe com walls observadas
+# (ob_data["walls"]) e center = wall.price (âncora observada).
 # ---------------------------------------------------------------------------
+
+ASK_WALL_J4 = {"side": "ask", "price": 64780.0, "qty": 2.0, "limit_threshold": 1.0}
+BID_WALL_J4 = {"side": "bid", "price": 64705.0, "qty": 2.0, "limit_threshold": 1.0}
+
 
 class TestJ4Reproduction:
     def test_j4_zone_arithmetic_exact(self):
         res = _run(
-            orderbook_data={"bid_depth_usd": 50000, "ask_depth_usd": 100000, "imbalance": -0.25},
+            orderbook_data={
+                "bid_depth_usd": 50000, "ask_depth_usd": 100000, "imbalance": -0.25,
+                "walls": {"bids": [], "asks": [dict(ASK_WALL_J4)]},
+            },
             vp_data={"poc": 0, "vah": 0, "val": 0, "hvns": [64737.0]},
         )
         zone = _zone_with(res, "orderbook_ask_wall")
         assert zone is not None
-        assert zone["center"] == 64771.92
+        # Âncora observada: center = wall.price (não média com o hvn).
+        assert zone["center"] == 64780.0
         assert zone["range_low"] == 64688.44
-        assert zone["range_high"] == 64855.40
-        assert zone["strength"] == 52
+        assert zone["range_high"] == 64828.56
+        # Força por evidência: wall 20 (ratio 2.0) + hvn 25 → 22.5×1.6 = 36.
+        assert zone["strength"] == 36
         assert zone["source_count"] == 2
         assert zone["signals_in_zone"] == 2
         assert zone["type"] == "cluster"
-        assert zone["distance_from_price"] == 29.82
+        assert zone["distance_from_price"] == 37.9
         assert set(zone["sources"]) == {"orderbook_ask_wall", "vp_hvn"}
+        # Provenance da observação.
+        assert zone["observed"] is True
+        assert zone["projected"] is False
+        assert zone["center_origin"] == "observed_wall_price"
+        assert zone["snapshot_only"] is True
+        assert zone["persistence_confirmed"] is False
+        assert zone["wall_prices"] == [64780.0]
 
     def test_j4_zone_above_price_is_not_buy_defense(self):
         res = _run(
-            orderbook_data={"bid_depth_usd": 50000, "ask_depth_usd": 100000, "imbalance": -0.25},
+            orderbook_data={
+                "bid_depth_usd": 50000, "ask_depth_usd": 100000, "imbalance": -0.25,
+                "walls": {"bids": [], "asks": [dict(ASK_WALL_J4)]},
+            },
             vp_data={"poc": 0, "vah": 0, "val": 0, "hvns": [64737.0]},
         )
         zone = _zone_with(res, "orderbook_ask_wall")
@@ -84,21 +108,37 @@ class TestJ4Reproduction:
 
     def test_ask_wall_alone_is_sell(self):
         res = _run(
-            orderbook_data={"bid_depth_usd": 50000, "ask_depth_usd": 100000, "imbalance": -0.3},
+            orderbook_data={
+                "bid_depth_usd": 50000, "ask_depth_usd": 100000, "imbalance": -0.3,
+                "walls": {"bids": [], "asks": [dict(ASK_WALL_J4)]},
+            },
         )
         zone = _zone_with(res, "orderbook_ask_wall")
         assert zone is not None
         assert zone["side"] == "sell"
+        assert zone["center"] == 64780.0
 
     def test_bid_wall_below_price_is_buy(self):
         res = _run(
-            orderbook_data={"bid_depth_usd": 100000, "ask_depth_usd": 50000, "imbalance": 0.25},
+            orderbook_data={
+                "bid_depth_usd": 100000, "ask_depth_usd": 50000, "imbalance": 0.25,
+                "walls": {"bids": [dict(BID_WALL_J4)], "asks": []},
+            },
             vp_data={"poc": 0, "vah": 0, "val": 0, "hvns": [64677.0]},
         )
         zone = _zone_with(res, "orderbook_bid_wall")
         assert zone is not None
         assert zone["side"] == "buy"
         assert zone in res["buy_defense"]
+
+    def test_imbalance_without_walls_produces_no_wall_zone(self):
+        # NO-WALL TEST: imbalance alto mas _detect_walls vazio → nenhuma zona
+        # com source orderbook_*_wall (imbalance não é wall).
+        res = _run(
+            orderbook_data={"bid_depth_usd": 50000, "ask_depth_usd": 100000, "imbalance": -0.3},
+        )
+        assert _zone_with(res, "orderbook_ask_wall") is None
+        assert _zone_with(res, "orderbook_bid_wall") is None
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +213,12 @@ class TestCanonicalSources:
         # por bin com volume acima do threshold). Não colapsam por proximidade
         # — mas também não inflam source_count (mesma fonte canônica).
         res = _run(
-            orderbook_data={"bid_depth_usd": 50000, "ask_depth_usd": 100000, "imbalance": -0.25},
+            orderbook_data={
+                "bid_depth_usd": 50000, "ask_depth_usd": 100000, "imbalance": -0.25,
+                "walls": {"bids": [], "asks": [
+                    {"side": "ask", "price": 64805.0, "qty": 2.0, "limit_threshold": 1.0},
+                ]},
+            },
             vp_data={"poc": 0, "vah": 0, "val": 0, "hvns": [64804.0, 64805.0, 64806.0]},
         )
         zone = _zone_with(res, "orderbook_ask_wall")
@@ -181,6 +226,9 @@ class TestCanonicalSources:
         assert zone["source_count"] == 2
         assert zone["signals_in_zone"] == 4
         assert zone["side"] == "sell"
+        # Âncora observada mesmo com confluência: center = wall.price.
+        assert zone["center"] == 64805.0
+        assert zone["observed"] is True
 
     def test_distinct_hvn_nodes_not_collapsed_by_proximity(self):
         # Caso da auditoria: 64804 e 64890 estão a 86 USD (0.13%) — DENTRO da
@@ -438,3 +486,132 @@ class TestPivotClassicMath:
         }
         for key, val in expected.items():
             assert p[key] == pytest.approx(val, abs=0.01), f"{key} divergente"
+
+
+# ---------------------------------------------------------------------------
+# FIX 2026-09 (wall liquidity) — wall-only não é S/R autônomo.
+# ---------------------------------------------------------------------------
+
+WALL_OB = {
+    "bid_depth_usd": 3360755.38,
+    "ask_depth_usd": 226553.4,
+    "imbalance": 0.8737,
+    "walls": {
+        "bids": [{"side": "bid", "price": 77399.0, "qty": 20.809, "limit_threshold": 7.5033}],
+        "asks": [{"side": "ask", "price": 77399.1, "qty": 1.334, "limit_threshold": 0.3906}],
+    },
+}
+
+
+def _event_with_dz(dz, price=77399.1):
+    return {
+        "preco_fechamento": price,
+        "institutional_analytics": {"sr_analysis": {"defense_zones": dz}},
+    }
+
+
+class TestWallOnlyNotPromoted:
+    def test_wall_only_not_in_immediate_support_or_resistance(self):
+        dz = DefenseZoneDetector().detect(current_price=77399.1, orderbook_data=dict(WALL_OB))
+        assert dz["status"] == "success"
+        # Sanity: walls preservadas no evento completo (observabilidade).
+        assert len(dz["buy_defense"]) == 1
+        assert len(dz["sell_defense"]) == 1
+        sr = _build_pivot_points(_event_with_dz(dz))
+        assert sr.get("immediate_support", []) == []
+        assert sr.get("immediate_resistance", []) == []
+        assert "support_strength" not in sr
+        assert "resistance_strength" not in sr
+
+    def test_multi_wall_same_side_not_promoted(self):
+        dz = DefenseZoneDetector().detect(
+            current_price=77399.1,
+            orderbook_data={
+                "bid_depth_usd": 3360755.38, "ask_depth_usd": 226553.4, "imbalance": 0.5,
+                "walls": {
+                    "bids": [
+                        {"side": "bid", "price": 77399.0, "qty": 20.809, "limit_threshold": 7.5033},
+                        {"side": "bid", "price": 77395.0, "qty": 10.0, "limit_threshold": 7.5033},
+                    ],
+                    "asks": [],
+                },
+            },
+        )
+        assert dz["buy_defense"][0]["signals_in_zone"] == 2
+        assert dz["buy_defense"][0]["liquidity_only"] is True
+        sr = _build_pivot_points(_event_with_dz(dz))
+        assert sr.get("immediate_support", []) == []
+
+    def test_wall_plus_vp_confluence_is_promoted(self):
+        dz = DefenseZoneDetector().detect(
+            current_price=PRICE,
+            orderbook_data={
+                "bid_depth_usd": 100000, "ask_depth_usd": 50000, "imbalance": 0.25,
+                "walls": {"bids": [dict(ASK_WALL_J4, side="bid", price=64690.0)], "asks": []},
+            },
+            vp_data={"poc": 0, "vah": 0, "val": 0, "hvns": [64685.0]},
+        )
+        confl = [z for z in dz["buy_defense"] if z.get("has_structural_confluence")]
+        assert confl, "wall+VP deve formar confluência estrutural"
+        sr = _build_pivot_points({
+            "preco_fechamento": PRICE,
+            "institutional_analytics": {"sr_analysis": {"defense_zones": dz}},
+        })
+        assert round(confl[0]["center"], 2) in sr.get("immediate_support", [])
+
+    def test_wall_plus_pivot_confluence_is_promoted(self):
+        dz = DefenseZoneDetector().detect(
+            current_price=PRICE,
+            orderbook_data={
+                "bid_depth_usd": 100000, "ask_depth_usd": 50000, "imbalance": 0.25,
+                "walls": {"bids": [{"side": "bid", "price": 64696.0, "qty": 2.0,
+                                    "limit_threshold": 1.0}], "asks": []},
+            },
+            pivot_data={"daily": {"s1": 64690.0}},
+        )
+        confl = [z for z in dz["buy_defense"] if z.get("has_structural_confluence")]
+        assert confl, "wall+pivot deve formar confluência estrutural"
+        assert confl[0]["center"] == 64696.0  # âncora: tick observado
+        assert "pivot_daily_s1" in confl[0]["structural_sources"]
+        sr = _build_pivot_points({
+            "preco_fechamento": PRICE,
+            "institutional_analytics": {"sr_analysis": {"defense_zones": dz}},
+        })
+        assert round(confl[0]["center"], 2) in sr.get("immediate_support", [])
+
+    def test_bid_ask_tiny_spread_never_single_zone(self):
+        dz = DefenseZoneDetector().detect(current_price=77399.1, orderbook_data=dict(WALL_OB))
+        all_wall = [z for z in dz["buy_defense"] + dz["sell_defense"]
+                    if "orderbook_bid_wall" in z["sources"] or "orderbook_ask_wall" in z["sources"]]
+        assert len(all_wall) == 2
+        assert {z["side"] for z in all_wall} == {"buy", "sell"}
+
+
+class TestWallOnlyPayloadGating:
+    def test_build_sr_excludes_wall_only(self):
+        from market_orchestrator.ai.payload_builder_compact import _build_sr
+        dz = DefenseZoneDetector().detect(current_price=77399.1, orderbook_data=dict(WALL_OB))
+        sr = _build_sr(_event_with_dz(dz))
+        assert "s1" not in sr
+        assert "r1" not in sr
+        assert "s1_src" not in sr
+        assert "r1_src" not in sr
+
+    def test_build_sr_keeps_structural_confluence_with_obs_token(self):
+        from market_orchestrator.ai.payload_builder_compact import _build_sr
+        dz = DefenseZoneDetector().detect(
+            current_price=PRICE,
+            orderbook_data={
+                "bid_depth_usd": 100000, "ask_depth_usd": 50000, "imbalance": 0.25,
+                "walls": {"bids": [{"side": "bid", "price": 64690.0, "qty": 2.0,
+                                    "limit_threshold": 1.0}], "asks": []},
+            },
+            vp_data={"poc": 0, "vah": 0, "val": 0, "hvns": [64685.0]},
+        )
+        sr = _build_sr({
+            "preco_fechamento": PRICE,
+            "institutional_analytics": {"sr_analysis": {"defense_zones": dz}},
+        })
+        assert "s1" in sr
+        assert sr["s1"][0] == 64690
+        assert sr.get("s1_src") == "OBS_WALL"

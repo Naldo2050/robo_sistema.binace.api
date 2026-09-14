@@ -24,6 +24,52 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+# Fontes derivadas do MESMO snapshot REST L2 (não são estrutura independente).
+# wall+wall (ou wall+cluster/depth do mesmo book) NÃO conta como confluência
+# estrutural: a origem física continua sendo uma única fotografia do book.
+NON_STRUCTURAL_SOURCES = frozenset({
+    "orderbook_bid_wall",
+    "orderbook_ask_wall",
+    "orderbook_cluster",
+    "depth_asymmetry",
+})
+
+# Sources de wall observada (para o teste positivo de wall-only).
+WALL_SOURCES = frozenset({"orderbook_bid_wall", "orderbook_ask_wall"})
+
+
+def is_wall_only_zone(zone: object) -> bool:
+    """Verdadeiro se a zona contém EXCLUSIVAMENTE walls do snapshot L2.
+
+    wall-only = concentração de liquidez passiva observada (SNAPSHOT_LIQUIDITY),
+    não S/R autônomo: não promover a immediate_support/resistance nem sr.s1/r1.
+    Aceita tanto o flag novo (liquidity_only) quanto o teste por sources
+    (compatibilidade com eventos armazenados antes do flag).
+    """
+    if not isinstance(zone, dict):
+        return False
+    if zone.get("liquidity_only") is True:
+        return True
+    sources = zone.get("sources")
+    if isinstance(sources, list) and sources:
+        if all(s in WALL_SOURCES for s in sources):
+            return True
+    return False
+
+
+def has_structural_confluence(zone: object) -> bool:
+    """Verdadeiro se a zona tem ≥1 fonte independente do snapshot L2 atual."""
+    if not isinstance(zone, dict):
+        return False
+    if zone.get("has_structural_confluence") is True:
+        return True
+    sources = zone.get("sources")
+    if isinstance(sources, list) and sources:
+        if any(s not in NON_STRUCTURAL_SOURCES for s in sources):
+            return True
+    return False
+
+
 class DefenseZoneDetector:
     """
     Detecta zonas de defesa institucional combinando múltiplas fontes.
@@ -165,33 +211,100 @@ class DefenseZoneDetector:
             "status": "success",
         }
 
+    @staticmethod
+    def _wall_signal_strength(qty: float, threshold: float) -> float:
+        """HEURISTIC — proeminência relativa da wall, NÃO força calibrada.
+
+        ratio = qty / threshold mede o excesso do nível sobre a distribuição
+        do próprio book (threshold = quantil-90% × multiplicador do detector).
+        Escala conservadora 10–30 (cap abaixo do antigo 40/sinal e abaixo de
+        vp_vah/vp_val=35): single-wall nunca atinge patamar de confluência
+        (composite máximo 30×1.3=39 < antigo 52).
+        NÃO é probabilidade, confiança nem institutional strength: nenhuma
+        calibração contra outcomes. A evidência auditável viaja em
+        wall_ratio/qty_btc/notional_usd — o score é apenas ordinal.
+        Alternativas rejeitadas: constante fixa (perde ordenação entre walls),
+        notional (escala com preço, incomparável entre regimes), distância ao
+        preço (distância ≠ força), fórmula de imbalance (mede outra coisa).
+        """
+        try:
+            ratio = float(qty) / float(threshold) if threshold and threshold > 0 else 1.0
+        except (TypeError, ValueError):
+            ratio = 1.0
+        if ratio < 1.0:
+            ratio = 1.0
+        return min(30.0, 10.0 + 10.0 * min(ratio - 1.0, 2.0))
+
+    @staticmethod
+    def _wall_signal(wall: object, side: str, source: str) -> Optional[dict]:
+        """Constrói um sinal de defesa a partir de UMA wall observada.
+
+        Retorna None se a wall for inválida (nunca projeta preço).
+        """
+        if not isinstance(wall, dict):
+            return None
+        try:
+            price = float(wall.get("price", 0) or 0)
+            qty = float(wall.get("qty", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        if price <= 0 or qty <= 0:
+            return None
+        threshold = wall.get("limit_threshold", 0)
+        try:
+            notional = float(price * qty)
+        except (TypeError, ValueError):
+            notional = 0.0
+        try:
+            wall_ratio = float(qty) / float(threshold) if threshold and float(threshold) > 0 else None
+        except (TypeError, ValueError):
+            wall_ratio = None
+        return {
+            "price": round(price, 2),
+            "source": source,
+            "strength": DefenseZoneDetector._wall_signal_strength(qty, threshold),
+            "side": side,
+            # Provenance da observação (não vai para o payload IA em full,
+            # mas ancora a zona — ver _cluster_signals).
+            "observed": True,
+            "projected": False,
+            "basis": "rest_l2_snapshot",
+            "snapshot_scope": "top50",
+            "snapshot_only": True,
+            "persistence_confirmed": False,
+            "wall_price": float(price),
+            "wall_qty_btc": float(qty),
+            "wall_notional_usd": round(notional, 2),
+            "wall_threshold_qty": float(threshold) if threshold else None,
+            "wall_ratio": round(wall_ratio, 4) if wall_ratio is not None else None,
+        }
+
     def _extract_orderbook_defense(self, ob_data: dict, current_price: float) -> list:
-        """Extrai sinais de defesa do order book."""
+        """Extrai sinais de defesa EXCLUSIVAMENTE de walls observadas no snapshot.
+
+        Contrato de wall observada (fix provenance 2026-09):
+          - center = wall.price (tick exato do book, sem projeção ±0.1%).
+          - source orderbook_bid_wall / orderbook_ask_wall SÓ é emitido aqui,
+            com observed=True / projected=False.
+          - Imbalance global NÃO gera nível: não existe mais projeção
+            current_price*0.999 / *1.001 (removida — era mislabeling).
+          - Toda wall é SNAPSHOT_ONLY (fotografia REST única, sem persistência).
+        """
         signals = []
 
-        # Imbalance geral: se bid > ask, há defesa compradora
-        bid_depth = ob_data.get("bid_depth_usd", 0)
-        ask_depth = ob_data.get("ask_depth_usd", 0)
-        imbalance = ob_data.get("imbalance", 0)
+        walls = (ob_data.get("walls") or {}) if isinstance(ob_data, dict) else {}
+        bid_walls = walls.get("bids", []) if isinstance(walls, dict) else []
+        ask_walls = walls.get("asks", []) if isinstance(walls, dict) else []
 
-        # Bid wall = defesa compradora
-        if bid_depth > 0 and (imbalance > 0.05 or bid_depth > ask_depth * 1.1):
-            # Estimar zona de defesa compradora (próximo ao preço)
-            signals.append({
-                "price": round(current_price * 0.999, 2),  # ~0.1% abaixo
-                "source": "orderbook_bid_wall",
-                "strength": min(40, abs(imbalance) * 200),
-                "side": "buy",
-            })
+        for wall in bid_walls if isinstance(bid_walls, list) else []:
+            sig = self._wall_signal(wall, "buy", "orderbook_bid_wall")
+            if sig is not None:
+                signals.append(sig)
 
-        # Ask wall = defesa vendedora
-        if ask_depth > 0 and (imbalance < -0.05 or ask_depth > bid_depth * 1.1):
-            signals.append({
-                "price": round(current_price * 1.001, 2),  # ~0.1% acima
-                "source": "orderbook_ask_wall",
-                "strength": min(40, abs(imbalance) * 200),
-                "side": "sell",
-            })
+        for wall in ask_walls if isinstance(ask_walls, list) else []:
+            sig = self._wall_signal(wall, "sell", "orderbook_ask_wall")
+            if sig is not None:
+                signals.append(sig)
 
         # Clusters de liquidez se disponíveis
         clusters = ob_data.get("clusters", [])
@@ -446,21 +559,46 @@ class DefenseZoneDetector:
             group = [sig]
             used.add(i)
 
+            # Lados de walls já presentes no grupo: walls observadas de lados
+            # opostos (bid×ask, em geral $0.1–$1 apart no toque) NUNCA se fundem
+            # — a média destruiria a distinção buy/sell e criaria um center que
+            # não é nenhuma wall observada (§5). Confluência wall + sinal
+            # não-wall (VP/pivot/EMA/absorção) continua permitida.
+            group_wall_sides = set()
+            if sig.get("wall_price"):
+                group_wall_sides.add(sig.get("side"))
+
             for j in range(i + 1, len(signals_sorted)):
                 if j in used:
                     continue
                 if abs(signals_sorted[j]["price"] - sig["price"]) <= tolerance:
-                    group.append(signals_sorted[j])
+                    cand = signals_sorted[j]
+                    if (cand.get("wall_price") and group_wall_sides
+                            and cand.get("side") not in group_wall_sides):
+                        continue
+                    group.append(cand)
                     used.add(j)
+                    if cand.get("wall_price"):
+                        group_wall_sides.add(cand.get("side"))
                 else:
                     break
 
             # Construir zona
             prices = [g["price"] for g in group]
-            center = sum(prices) / len(prices)
             sources = list(set(g["source"] for g in group))
             total_strength = sum(g["strength"] for g in group)
             avg_strength = total_strength / len(group)
+
+            # Âncora observada (§5/§8): se o grupo contém wall(s) real(is),
+            # o center é a média dos preços observados (== wall.price no caso
+            # single, o caso forense dominante) — nunca projeção. O range
+            # ao redor permanece faixa derivada.
+            wall_members = [g for g in group if g.get("wall_price")]
+            if wall_members:
+                wall_prices = [float(g["wall_price"]) for g in wall_members]
+                center = sum(wall_prices) / len(wall_prices)
+            else:
+                center = sum(prices) / len(prices)
 
             # Side dominante (empate → posição em relação ao preço atual)
             buy_count = sum(1 for g in group if g["side"] == "buy")
@@ -486,6 +624,34 @@ class DefenseZoneDetector:
                 "signals_in_zone": len(group),
                 "type": "confluence" if len(sources) >= 3 else "cluster" if len(sources) >= 2 else "single",
             })
+            if wall_members:
+                # Provenance da zona: center observado, faixa derivada.
+                # Âncora = preço da wall porque é o único tick point-in-time
+                # observado do grupo; VP/pivot/EMA são bandas históricas ou
+                # derivadas e permanecem cobertas pelo range + structural_sources.
+                nearest_wall = min(
+                    wall_members, key=lambda g: abs(float(g["wall_price"]) - center)
+                )
+                structural = sorted({s for s in sources if s not in NON_STRUCTURAL_SOURCES})
+                zones[-1].update({
+                    "observed": True,
+                    "projected": False,
+                    "basis": "rest_l2_snapshot",
+                    "snapshot_scope": "top50",
+                    "snapshot_only": True,
+                    "persistence_confirmed": False,
+                    "center_origin": "observed_wall_price",
+                    "wall_prices": sorted(set(float(g["wall_price"]) for g in wall_members)),
+                    "wall_qty_btc": nearest_wall.get("wall_qty_btc"),
+                    "wall_notional_usd": nearest_wall.get("wall_notional_usd"),
+                    "wall_threshold_qty": nearest_wall.get("wall_threshold_qty"),
+                    "wall_ratio": nearest_wall.get("wall_ratio"),
+                    # Confluência estrutural: só fontes fora do snapshot L2
+                    # atual contam (wall+wall NÃO é independência estrutural).
+                    "structural_sources": structural,
+                    "has_structural_confluence": bool(structural),
+                    "liquidity_only": not structural,
+                })
 
         zones.sort(key=lambda z: z["strength"], reverse=True)
         return zones

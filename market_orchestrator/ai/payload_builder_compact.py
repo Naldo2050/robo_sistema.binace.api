@@ -1081,10 +1081,38 @@ def _build_alerts(event_data: dict) -> list:
     return result
 
 
+def _is_wall_only_zone(zone: object) -> bool:
+    """Zona wall-only (snapshot liquidity) não é S/R estrutural.
+
+    Espelha is_wall_only_zone() de support_resistance/defense_zones.py sem
+    importar o módulo (evita acoplamento; manter sincronizado).
+    """
+    if not isinstance(zone, dict):
+        return False
+    if zone.get("liquidity_only") is True:
+        return True
+    if zone.get("has_structural_confluence") is True:
+        return False
+    sources = zone.get("sources")
+    if isinstance(sources, list) and sources:
+        return all(s in ("orderbook_bid_wall", "orderbook_ask_wall") for s in sources)
+    return False
+
+
+def _structural_zones(zones: object) -> list:
+    """Filtra zonas wall-only, preservando ordem (força desc)."""
+    if not isinstance(zones, list):
+        return []
+    return [z for z in zones if isinstance(z, dict) and not _is_wall_only_zone(z)]
+
+
 def _build_sr(event_data: dict) -> dict:
     """
     Retorna top 2 suportes e resistências com confluência — P6.
     FIX 3.5: Fonte canônica agora é defense_zones (mais completo que sr_strength).
+    FIX 2026-09 (wall liquidity): zonas wall-only (snapshot liquidity sem fonte
+    estrutural) NÃO entram em s1/r1 — wall snapshot-only não é S/R autônomo.
+    A liquidez do book continua disponível em ob.* (depth_imb/depth_t5/b/a).
     """
     sr_analysis = (
         event_data.get("institutional_analytics", {}).get("sr_analysis", {})
@@ -1101,7 +1129,7 @@ def _build_sr(event_data: dict) -> dict:
     close = event_data.get("preco_fechamento", 0)
 
     # sell_defense = zonas de resistência (acima do preço)
-    for i, zone in enumerate(dz.get("sell_defense", [])[:2]):
+    for i, zone in enumerate(_structural_zones(dz.get("sell_defense", []))[:2]):
         price_r = zone.get("center")
         if price_r is not None:
             key = f"r{i+1}"
@@ -1111,9 +1139,13 @@ def _build_sr(event_data: dict) -> dict:
             sources = zone.get("source_count", zone.get("sources", 0))
             if sources and sources >= 3:
                 sr[f"{key}_conf"] = sources
+            # Provenance mínima (fix 2026-09): zona ancorada em wall L2
+            # observada (snapshot_only) — nunca CONF/PERSISTENT.
+            if zone.get("observed") and zone.get("center_origin") == "observed_wall_price":
+                sr[f"{key}_src"] = "OBS_WALL"
 
     # buy_defense = zonas de suporte (abaixo do preço)
-    for i, zone in enumerate(dz.get("buy_defense", [])[:2]):
+    for i, zone in enumerate(_structural_zones(dz.get("buy_defense", []))[:2]):
         price_s = zone.get("center")
         if price_s is not None:
             key = f"s{i+1}"
@@ -1123,6 +1155,8 @@ def _build_sr(event_data: dict) -> dict:
             sources = zone.get("source_count", zone.get("sources", 0))
             if sources and sources >= 3:
                 sr[f"{key}_conf"] = sources
+            if zone.get("observed") and zone.get("center_origin") == "observed_wall_price":
+                sr[f"{key}_src"] = "OBS_WALL"
 
     defense = dz.get("defense_asymmetry", {})
     bias = defense.get("bias")

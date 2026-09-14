@@ -88,8 +88,16 @@ class TestContractPayloadDoesNotLeakPivots:
 
 class TestContractDefenseStrengthSemantics:
     def test_defense_strength_is_confluence_based(self):
+        # Fix provenance 2026-09: força por evidência (wall ratio + confluência),
+        # nunca mais o antigo min(40,|imb|*200)×1.3=52 do imbalance global.
+        # Wall ratio 2.0 → sinal 20; + hvn 25 → 22.5×1.6 = 36, ancorado na wall.
         res = _detector_event(
-            orderbook_data={"bid_depth_usd": 50000, "ask_depth_usd": 100000, "imbalance": -0.25},
+            orderbook_data={
+                "bid_depth_usd": 50000, "ask_depth_usd": 100000, "imbalance": -0.25,
+                "walls": {"bids": [], "asks": [
+                    {"side": "ask", "price": 64780.0, "qty": 2.0, "limit_threshold": 1.0},
+                ]},
+            },
             vp_data={"poc": 0, "vah": 0, "val": 0, "hvns": [64737.0]},
         )
         zone = None
@@ -97,8 +105,11 @@ class TestContractDefenseStrengthSemantics:
             if "orderbook_ask_wall" in z["sources"]:
                 zone = z
         assert zone is not None
-        assert zone["strength"] == 52
+        assert zone["strength"] == 36
         assert zone["source_count"] == 2
+        assert zone["center"] == 64780.0
+        assert zone["observed"] is True
+        assert zone["snapshot_only"] is True
 
     def test_pivot_hlc_never_become_defense_signals(self):
         pivots_classic = {

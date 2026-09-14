@@ -662,6 +662,21 @@ def _compress_institutional(payload: dict) -> Optional[dict]:
     return {k: v for k, v in result.items() if v is not None and v != ""}
 
 
+def _is_wall_only_zone(zone: object) -> bool:
+    """Zona wall-only (snapshot liquidity) — espelha is_wall_only_zone() de
+    support_resistance/defense_zones.py sem importar o módulo (manter sincronizado)."""
+    if not isinstance(zone, dict):
+        return False
+    if zone.get("liquidity_only") is True:
+        return True
+    if zone.get("has_structural_confluence") is True:
+        return False
+    sources = zone.get("sources")
+    if isinstance(sources, list) and sources:
+        return all(s in ("orderbook_bid_wall", "orderbook_ask_wall") for s in sources)
+    return False
+
+
 def _compress_defense_zones(payload: dict) -> Optional[dict]:
     """
     NOVA SEÇÃO: Zonas de defesa institucional.
@@ -675,8 +690,20 @@ def _compress_defense_zones(payload: dict) -> Optional[dict]:
 
     result: Dict[str, Any] = {}
 
+    # FIX 2026-09 (wall liquidity): prefere zona estrutural; wall-only
+    # (snapshot liquidity) não é apresentada como defesa S/R. Se só houver
+    # wall-only, as chaves sell_*/buy_* são omitidas (total/def_bias ficam).
+    def _pick_structural(zones: object, fallback: object) -> dict:
+        if isinstance(zones, list):
+            for z in zones:
+                if isinstance(z, dict) and not _is_wall_only_zone(z):
+                    return z
+        if isinstance(fallback, dict) and not _is_wall_only_zone(fallback):
+            return fallback
+        return {}
+
     # Zona de venda mais forte
-    sell = defense.get("strongest_sell", {})
+    sell = _pick_structural(defense.get("sell_defense"), defense.get("strongest_sell", {}))
     if sell:
         result["sell_ctr"] = _r(sell.get("center"), "price")
         result["sell_low"] = _r(sell.get("range_low"), "price")
@@ -686,7 +713,7 @@ def _compress_defense_zones(payload: dict) -> Optional[dict]:
         result["sell_sources"] = sell.get("sources", [])
 
     # Zona de compra mais forte
-    buy = defense.get("strongest_buy", {})
+    buy = _pick_structural(defense.get("buy_defense"), defense.get("strongest_buy", {}))
     if buy:
         result["buy_ctr"] = _r(buy.get("center"), "price")
         result["buy_low"] = _r(buy.get("range_low"), "price")

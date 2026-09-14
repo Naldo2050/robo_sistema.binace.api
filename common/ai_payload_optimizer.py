@@ -1828,7 +1828,7 @@ COMPRESSED_KEY_DICTIONARY = (
     "flow: delta cvd imb ab=agr_buy as=agr_sell net abs bv sv bb sb abs_lbl absr sec clust sup\n"
     "tf: trend regime ema=ema21 atr rsi rsi_l macd macd_s adx rvol\n"
     "vp: daily/weekly/monthly poc vah val hvn lvn\n"
-    "sr: r1 r2 s1 s2=[preco,forca] r1_dist r2_dist s1_dist s2_dist conf def_bias (forca=confluencia de defesa 0-100, nao proximidade)\n"
+    "sr: r1 r2 s1 s2=[preco,forca] r1_dist r2_dist s1_dist s2_dist conf def_bias (forca=heuristic composite 0-100, nao probabilidade; conf=n_fontes; OBS_WALL=L2 snapshot liquidity only, nao S/R autonomo, nunca persistente)\n"
     "ctx: ses poc val vah (VP real diario) dxy tnx spy ndx gold wti vix fg lsr oi eth7 dxy30\n"
     "deriv: fr=funding oi oi$ lsr\n"
     "macro: ses=session ph=phase hrs day cls_in vr td ms le rs\n"

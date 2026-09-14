@@ -1759,6 +1759,12 @@ class EnhancedMarketBot:
         if "order_book_depth" in ob_event:
             signal["order_book_depth"] = ob_event["order_book_depth"]
 
+        # FIX provenance 2026-09: propaga walls observadas (price/qty/threshold
+        # por lado, shape nativo {"bids":[...],"asks":[...]}) para dentro de
+        # orderbook_data — único input lido pelo DefenseZoneDetector.
+        # Sem isto, walls reais eram descartadas aqui e o detector projetava
+        # current_price*0.999/1.001 sob o rótulo orderbook_*_wall.
+
         # FIX 3.4: Consolidar spread_analysis e orderbook_data_quality
         # dentro de orderbook_data (evita seções separadas duplicadas)
         if isinstance(signal.get("orderbook_data"), dict):
@@ -1768,6 +1774,9 @@ class EnhancedMarketBot:
                 val = ob_event.get(k)
                 if val is not None and k not in signal["orderbook_data"]:
                     signal["orderbook_data"][k] = val
+            # FIX provenance 2026-09 (cont.): walls observadas viajam junto.
+            if isinstance(ob_event.get("walls"), dict) and "walls" not in signal["orderbook_data"]:
+                signal["orderbook_data"]["walls"] = ob_event["walls"]
             # Mover spread_bps de spread_analysis para orderbook_data
             sa = ob_event.get("spread_analysis") or {}
             if sa.get("current_spread_bps"):

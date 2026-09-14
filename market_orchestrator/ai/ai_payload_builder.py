@@ -320,18 +320,52 @@ def _inject_institutional_analytics(
             sr_context["resistance_sources"] = nearest_res.get("confluence_count", 1)
 
     # Defense Zones — strongest buy/sell defense
+    # FIX 2026-09 (wall liquidity): strongest wall-only (snapshot liquidity sem
+    # fonte estrutural) não é S/R — prefere a primeira zona estrutural da lista;
+    # se só houver wall-only, omite buy/sell defense (def_bias permanece).
+    def _structural(zone: object) -> bool:
+        if not isinstance(zone, dict):
+            return False
+        if zone.get("liquidity_only") is True:
+            return False
+        if zone.get("has_structural_confluence") is True:
+            return True
+        sources = zone.get("sources")
+        if isinstance(sources, list) and sources:
+            return not all(s in ("orderbook_bid_wall", "orderbook_ask_wall") for s in sources)
+        return True
+
+    def _pick_structural(zones: object) -> Optional[Dict[str, Any]]:
+        if not isinstance(zones, list):
+            return None
+        for z in zones:
+            if isinstance(z, dict) and _structural(z):
+                return z
+        return None
+
     dz = sr_data.get("defense_zones", {})
     if dz and dz.get("status") == "success":
-        sb = dz.get("strongest_buy")
-        ss = dz.get("strongest_sell")
+        sb = _pick_structural(dz.get("buy_defense")) or None
+        # Retrocompat: strongest_* legado sem flags é tratado como estrutural.
+        if sb is None and _structural(dz.get("strongest_buy")):
+            sb = dz.get("strongest_buy")
+        ss = _pick_structural(dz.get("sell_defense")) or None
+        if ss is None and _structural(dz.get("strongest_sell")):
+            ss = dz.get("strongest_sell")
         if sb:
             sr_context["buy_defense_price"] = sb.get("center")
             sr_context["buy_defense_strength"] = sb.get("strength")
             sr_context["buy_defense_type"] = sb.get("type")
+            # Provenance mínima (fix 2026-09): OBS_WALL = wall L2 observada,
+            # snapshot_only (sem persistência confirmada).
+            if sb.get("observed") and sb.get("center_origin") == "observed_wall_price":
+                sr_context["buy_defense_src"] = "OBS_WALL"
         if ss:
             sr_context["sell_defense_price"] = ss.get("center")
             sr_context["sell_defense_strength"] = ss.get("strength")
             sr_context["sell_defense_type"] = ss.get("type")
+            if ss.get("observed") and ss.get("center_origin") == "observed_wall_price":
+                sr_context["sell_defense_src"] = "OBS_WALL"
         asym = dz.get("defense_asymmetry", {})
         if asym:
             sr_context["defense_bias"] = asym.get("bias")
