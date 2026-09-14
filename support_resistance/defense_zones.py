@@ -70,6 +70,26 @@ def has_structural_confluence(zone: object) -> bool:
     return False
 
 
+def is_non_structural_zone(zone: object) -> bool:
+    """Verdadeiro se a zona NÃO tem fonte estrutural independente.
+
+    Generalização de is_wall_only_zone (fases anteriores): cobre wall-only
+    (liquidity_only) E heurísticas projetadas puras (projected_only, ex.:
+    depth_asymmetry isolado). Zonas sem flags nem sources (fixtures legados)
+    retornam False — nunca bloquear por falta de metadados.
+    """
+    if not isinstance(zone, dict):
+        return False
+    if zone.get("liquidity_only") is True or zone.get("projected_only") is True:
+        return True
+    if zone.get("has_structural_confluence") is True:
+        return False
+    sources = zone.get("sources")
+    if isinstance(sources, list) and sources:
+        return all(s in NON_STRUCTURAL_SOURCES for s in sources)
+    return False
+
+
 class DefenseZoneDetector:
     """
     Detecta zonas de defesa institucional combinando múltiplas fontes.
@@ -323,7 +343,9 @@ class DefenseZoneDetector:
                             "side": side,
                         })
 
-        # Depth metrics
+        # Depth metrics — PROJECTED_HEURISTIC (não é wall observada):
+        # assimetria global do book projetada em current_price×0.998/1.002.
+        # Provenance explícita; gating de S/R decide via projected_only.
         depth = ob_data.get("depth_metrics", {})
         if isinstance(depth, dict):
             depth_imb = depth.get("depth_imbalance", 0)
@@ -334,6 +356,11 @@ class DefenseZoneDetector:
                     "source": "depth_asymmetry",
                     "strength": min(30, abs(depth_imb) * 100),
                     "side": side,
+                    "observed": False,
+                    "projected": True,
+                    "basis": "depth_asymmetry",
+                    "snapshot_only": True,
+                    "persistence_confirmed": False,
                 })
 
         return signals
@@ -600,6 +627,12 @@ class DefenseZoneDetector:
             else:
                 center = sum(prices) / len(prices)
 
+            # Classificação estrutural (toda zona, não só walls): só fontes
+            # fora do snapshot L2 atual contam como independência estrutural
+            # (wall+wall, wall+depth, depth+cluster NÃO são confluência).
+            structural = sorted({s for s in sources if s not in NON_STRUCTURAL_SOURCES})
+            has_projected = any(g.get("projected") is True for g in group)
+
             # Side dominante (empate → posição em relação ao preço atual)
             buy_count = sum(1 for g in group if g["side"] == "buy")
             sell_count = sum(1 for g in group if g["side"] == "sell")
@@ -623,6 +656,9 @@ class DefenseZoneDetector:
                 "source_count": len(sources),
                 "signals_in_zone": len(group),
                 "type": "confluence" if len(sources) >= 3 else "cluster" if len(sources) >= 2 else "single",
+                "structural_sources": structural,
+                "has_structural_confluence": bool(structural),
+                "has_projected_component": bool(has_projected),
             })
             if wall_members:
                 # Provenance da zona: center observado, faixa derivada.
@@ -632,7 +668,6 @@ class DefenseZoneDetector:
                 nearest_wall = min(
                     wall_members, key=lambda g: abs(float(g["wall_price"]) - center)
                 )
-                structural = sorted({s for s in sources if s not in NON_STRUCTURAL_SOURCES})
                 zones[-1].update({
                     "observed": True,
                     "projected": False,
@@ -648,9 +683,19 @@ class DefenseZoneDetector:
                     "wall_ratio": nearest_wall.get("wall_ratio"),
                     # Confluência estrutural: só fontes fora do snapshot L2
                     # atual contam (wall+wall NÃO é independência estrutural).
-                    "structural_sources": structural,
-                    "has_structural_confluence": bool(structural),
                     "liquidity_only": not structural,
+                })
+            elif not structural:
+                # Zona puramente heurística (ex.: depth_asymmetry isolado):
+                # sem tick observado e sem fonte estrutural — evidência
+                # projetada do snapshot, nunca S/R autônomo.
+                zones[-1].update({
+                    "observed": False,
+                    "projected": True,
+                    "basis": "projected_heuristic",
+                    "snapshot_only": True,
+                    "persistence_confirmed": False,
+                    "projected_only": True,
                 })
 
         zones.sort(key=lambda z: z["strength"], reverse=True)

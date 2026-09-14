@@ -353,6 +353,137 @@ def test_wall_only_helpers_cover_legacy_stored_zones():
     assert has_structural_confluence({"sources": ["orderbook_bid_wall"]}) is False
 
 
+# ---------------------------------------------------------------------------
+# FIX 2026-09 (semantic closure) — depth_asymmetry é PROJECTED_HEURISTIC.
+# ---------------------------------------------------------------------------
+
+DEPTH_OB = {
+    "bid_depth_usd": 1000000,
+    "ask_depth_usd": 1000000,
+    "imbalance": 0.0,
+    "depth_metrics": {"depth_imbalance": -0.5},
+}
+DEPTH_PRICE = round(77399.1 * 1.002, 2)  # 77553.9
+
+
+def _detect_depth(current_price=77399.1, ob=None, **kwargs):
+    return DefenseZoneDetector().detect(
+        current_price=current_price,
+        orderbook_data=dict(DEPTH_OB) if ob is None else ob,
+        **kwargs,
+    )
+
+
+def test_depth_only_signal_carries_projected_provenance():
+    """Sinal depth: observed=False, projected=True, basis=depth_asymmetry."""
+    det = DefenseZoneDetector()
+    signals = det._extract_orderbook_defense(dict(DEPTH_OB), 77399.1)
+    assert len(signals) == 1
+    sig = signals[0]
+    assert sig["source"] == "depth_asymmetry"
+    assert sig["price"] == 77399.1 * 1.002
+    assert sig["observed"] is False
+    assert sig["projected"] is True
+    assert sig["basis"] == "depth_asymmetry"
+    assert sig["snapshot_only"] is True
+    assert sig["persistence_confirmed"] is False
+
+
+def test_depth_only_zone_is_projected_only():
+    """depth-only: zona projected_only, sem tick observado."""
+    from support_resistance.defense_zones import is_non_structural_zone
+    res = _detect_depth()
+    zones = res["sell_defense"]
+    assert len(zones) == 1
+    zone = zones[0]
+    assert zone["center"] == DEPTH_PRICE
+    assert zone["sources"] == ["depth_asymmetry"]
+    assert zone["observed"] is False
+    assert zone["projected"] is True
+    assert zone["projected_only"] is True
+    assert zone["has_structural_confluence"] is False
+    assert zone["structural_sources"] == []
+    assert is_non_structural_zone(zone) is True
+
+
+def test_depth_only_not_promoted_to_immediate_or_sr():
+    """DEPTH-ONLY TEST: sem immediate, sem s1/r1; evidência fica no full."""
+    from institutional.enricher import _build_pivot_points
+    from market_orchestrator.ai.payload_builder_compact import _build_sr
+    res = _detect_depth()
+    assert res["status"] == "success"
+    ev = {"preco_fechamento": 77399.1,
+          "institutional_analytics": {"sr_analysis": {"defense_zones": res}}}
+    sr = _build_pivot_points(ev)
+    assert sr.get("immediate_support", []) == []
+    assert sr.get("immediate_resistance", []) == []
+    compact = _build_sr(ev)
+    assert "s1" not in compact
+    assert "r1" not in compact
+
+
+def test_depth_plus_pivot_confluence_promoted_with_provenance():
+    """DEPTH+PIVOT: confluência permitida; provenance revela projected+structural."""
+    from market_orchestrator.ai.payload_builder_compact import _build_sr
+    res = _detect_depth(pivot_data={"daily": {"r1": 77560.0}})
+    confl = [z for z in res["sell_defense"] if z.get("has_structural_confluence")]
+    assert len(confl) == 1
+    zone = confl[0]
+    assert set(zone["sources"]) == {"depth_asymmetry", "pivot_daily_r1"}
+    assert zone["has_projected_component"] is True
+    assert "pivot_daily_r1" in zone["structural_sources"]
+    assert zone.get("projected_only", False) is False
+    # center é média (sem âncora observada) — documentado, não finge tick.
+    assert zone["center"] == round((DEPTH_PRICE + 77560.0) / 2, 2)
+    ev = {"preco_fechamento": 77399.1,
+          "institutional_analytics": {"sr_analysis": {"defense_zones": res}}}
+    compact = _build_sr(ev)
+    assert "r1" in compact
+    assert compact.get("r1_src") == "PROJECTED_DEPTH"
+
+
+def test_depth_plus_wall_is_not_structural_confluence():
+    """DEPTH+WALL: mesmo snapshot L2 → sem confluência, sem promoção."""
+    from institutional.enricher import _build_pivot_points
+    from market_orchestrator.ai.payload_builder_compact import _build_sr
+    res = DefenseZoneDetector().detect(
+        current_price=77399.1,
+        orderbook_data={
+            "bid_depth_usd": 1000000, "ask_depth_usd": 1000000, "imbalance": 0.0,
+            "depth_metrics": {"depth_imbalance": -0.5},
+            "walls": {"bids": [{"side": "bid", "price": 77399.0, "qty": 20.809,
+                                "limit_threshold": 7.5033}], "asks": []},
+        },
+    )
+    zones = [z for z in res["buy_defense"] + res["sell_defense"]
+             if "depth_asymmetry" in z["sources"] or "orderbook_bid_wall" in z["sources"]]
+    assert len(zones) == 2  # wall buy single + depth sell single, sem fusão
+    for z in zones:
+        assert z.get("has_structural_confluence", False) is False
+    ev = {"preco_fechamento": 77399.1,
+          "institutional_analytics": {"sr_analysis": {"defense_zones": res}}}
+    sr = _build_pivot_points(ev)
+    assert sr.get("immediate_support", []) == []
+    assert sr.get("immediate_resistance", []) == []
+    assert "s1" not in _build_sr(ev) and "r1" not in _build_sr(ev)
+
+
+def test_is_non_structural_zone_legacy_coverage():
+    """Helper unificado cobre flags novas e zones legadas só-com-sources."""
+    from support_resistance.defense_zones import is_non_structural_zone
+    assert is_non_structural_zone({"liquidity_only": True}) is True
+    assert is_non_structural_zone({"projected_only": True}) is True
+    assert is_non_structural_zone({"has_structural_confluence": True}) is False
+    assert is_non_structural_zone({"sources": ["depth_asymmetry"]}) is True
+    assert is_non_structural_zone(
+        {"sources": ["orderbook_bid_wall", "depth_asymmetry"]}) is True
+    assert is_non_structural_zone(
+        {"sources": ["depth_asymmetry", "pivot_daily_r1"]}) is False
+    assert is_non_structural_zone({"sources": ["vp_hvn"]}) is False
+    assert is_non_structural_zone({"center": 1.0}) is False
+    assert is_non_structural_zone(None) is False
+
+
 def test_invalid_walls_are_ignored_never_projected():
     """Walls malformadas (preço/qty inválidos) não geram sinal nem projeção."""
     res = _detect_ob_walls(walls={

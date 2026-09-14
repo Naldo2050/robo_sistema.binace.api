@@ -663,17 +663,32 @@ def _compress_institutional(payload: dict) -> Optional[dict]:
 
 
 def _is_wall_only_zone(zone: object) -> bool:
-    """Zona wall-only (snapshot liquidity) — espelha is_wall_only_zone() de
-    support_resistance/defense_zones.py sem importar o módulo (manter sincronizado)."""
+    """Compat: ver _is_non_structural_zone."""
+    return _is_non_structural_zone(zone)
+
+
+_NON_STRUCTURAL_SOURCES = frozenset({
+    "orderbook_bid_wall",
+    "orderbook_ask_wall",
+    "orderbook_cluster",
+    "depth_asymmetry",
+})
+
+
+def _is_non_structural_zone(zone: object) -> bool:
+    """Zona sem fonte estrutural (wall-only ou heurística projetada pura).
+
+    Espelha is_non_structural_zone() de support_resistance/defense_zones.py
+    sem importar o módulo (manter sincronizado)."""
     if not isinstance(zone, dict):
         return False
-    if zone.get("liquidity_only") is True:
+    if zone.get("liquidity_only") is True or zone.get("projected_only") is True:
         return True
     if zone.get("has_structural_confluence") is True:
         return False
     sources = zone.get("sources")
     if isinstance(sources, list) and sources:
-        return all(s in ("orderbook_bid_wall", "orderbook_ask_wall") for s in sources)
+        return all(s in _NON_STRUCTURAL_SOURCES for s in sources)
     return False
 
 
@@ -690,15 +705,16 @@ def _compress_defense_zones(payload: dict) -> Optional[dict]:
 
     result: Dict[str, Any] = {}
 
-    # FIX 2026-09 (wall liquidity): prefere zona estrutural; wall-only
-    # (snapshot liquidity) não é apresentada como defesa S/R. Se só houver
-    # wall-only, as chaves sell_*/buy_* são omitidas (total/def_bias ficam).
+    # FIX 2026-09 (wall liquidity): prefere zona estrutural; zona sem fonte
+    # estrutural (wall-only ou heurística projetada) não é apresentada como
+    # defesa S/R. Se só houver não-estrutural, as chaves sell_*/buy_* são
+    # omitidas (total/def_bias ficam).
     def _pick_structural(zones: object, fallback: object) -> dict:
         if isinstance(zones, list):
             for z in zones:
-                if isinstance(z, dict) and not _is_wall_only_zone(z):
+                if isinstance(z, dict) and not _is_non_structural_zone(z):
                     return z
-        if isinstance(fallback, dict) and not _is_wall_only_zone(fallback):
+        if isinstance(fallback, dict) and not _is_non_structural_zone(fallback):
             return fallback
         return {}
 

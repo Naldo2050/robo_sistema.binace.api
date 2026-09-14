@@ -1082,28 +1082,41 @@ def _build_alerts(event_data: dict) -> list:
 
 
 def _is_wall_only_zone(zone: object) -> bool:
-    """Zona wall-only (snapshot liquidity) não é S/R estrutural.
+    """Compat: ver _is_non_structural_zone."""
+    return _is_non_structural_zone(zone)
 
-    Espelha is_wall_only_zone() de support_resistance/defense_zones.py sem
-    importar o módulo (evita acoplamento; manter sincronizado).
+
+_NON_STRUCTURAL_SOURCES = frozenset({
+    "orderbook_bid_wall",
+    "orderbook_ask_wall",
+    "orderbook_cluster",
+    "depth_asymmetry",
+})
+
+
+def _is_non_structural_zone(zone: object) -> bool:
+    """Zona sem fonte estrutural independente (wall-only ou heurística pura).
+
+    Espelha is_non_structural_zone() de support_resistance/defense_zones.py
+    sem importar o módulo (evita acoplamento; manter sincronizado).
     """
     if not isinstance(zone, dict):
         return False
-    if zone.get("liquidity_only") is True:
+    if zone.get("liquidity_only") is True or zone.get("projected_only") is True:
         return True
     if zone.get("has_structural_confluence") is True:
         return False
     sources = zone.get("sources")
     if isinstance(sources, list) and sources:
-        return all(s in ("orderbook_bid_wall", "orderbook_ask_wall") for s in sources)
+        return all(s in _NON_STRUCTURAL_SOURCES for s in sources)
     return False
 
 
 def _structural_zones(zones: object) -> list:
-    """Filtra zonas wall-only, preservando ordem (força desc)."""
+    """Filtra zonas sem fonte estrutural, preservando ordem (força desc)."""
     if not isinstance(zones, list):
         return []
-    return [z for z in zones if isinstance(z, dict) and not _is_wall_only_zone(z)]
+    return [z for z in zones if isinstance(z, dict) and not _is_non_structural_zone(z)]
 
 
 def _build_sr(event_data: dict) -> dict:
@@ -1143,6 +1156,9 @@ def _build_sr(event_data: dict) -> dict:
             # observada (snapshot_only) — nunca CONF/PERSISTENT.
             if zone.get("observed") and zone.get("center_origin") == "observed_wall_price":
                 sr[f"{key}_src"] = "OBS_WALL"
+            elif "depth_asymmetry" in (zone.get("sources", []) or []):
+                # Confluência com heurística projetada: preço NÃO observado.
+                sr[f"{key}_src"] = "PROJECTED_DEPTH"
 
     # buy_defense = zonas de suporte (abaixo do preço)
     for i, zone in enumerate(_structural_zones(dz.get("buy_defense", []))[:2]):
@@ -1157,6 +1173,8 @@ def _build_sr(event_data: dict) -> dict:
                 sr[f"{key}_conf"] = sources
             if zone.get("observed") and zone.get("center_origin") == "observed_wall_price":
                 sr[f"{key}_src"] = "OBS_WALL"
+            elif "depth_asymmetry" in (zone.get("sources", []) or []):
+                sr[f"{key}_src"] = "PROJECTED_DEPTH"
 
     defense = dz.get("defense_asymmetry", {})
     bias = defense.get("bias")

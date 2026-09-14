@@ -637,18 +637,20 @@ DADOS DISPONÍVEIS NO PAYLOAD (use TODOS para sua análise):
 - ob.bid/ask = profundidade em USD de cada lado
 - ob.imb = imbalance do book (-1 a +1)
 - ob.top5_imb = imbalance dos 5 melhores níveis
-- defense.sell_zone/buy_zone = zonas de defesa institucional
-- defense.sell_str/buy_str = força da defesa (0-100)
-- defense.bias = viés da defesa (strong_sell_defense, strong_buy_defense)
+- zonas de defesa chegam via sr.s1/sr.r1 (não use chaves defense.* — legado)
 
-📐 NÍVEIS TÉCNICOS (sr):
-- sr.r1/r2 = [preço, força] — resistências institucionais (defense zones)
-- sr.s1/s2 = [preço, força] — suportes institucionais (defense zones)
-- força (0-100) reflete CONFLUÊNCIA de fontes de defesa (orderbook, volume profile, pivots) — NÃO é proximidade
+📐 NÍVEIS TÉCNICOS (sr — contrato S/R):
+- sr.r1/r2 = [preço, força] — resistências (só zonas com fonte estrutural chegam aqui)
+- sr.s1/s2 = [preço, força] — suportes (só zonas com fonte estrutural chegam aqui)
+- STRUCTURAL LEVEL = derivado de VP/pivot/histórico/EMA/absorção (fonte em r*_conf/s*_conf)
+- SNAPSHOT WALL (r*_src/s*_src=OBS_WALL) = liquidez L2 pontual observada — NÃO é S/R autônomo, sem persistência
+- PROJECTED heuristic (src=PROJECTED_DEPTH) = preço projetado de assimetria do book — NÃO observado
+- STRUCTURAL CONFLUENCE = 2+ evidências independentes (source_count/conf)
+- força (0-100) = score heurístico/composto — NÃO é probabilidade, confiança ou persistência
 - sr.r1_dist/r2_dist/s1_dist/s2_dist = distância do preço atual ao nível
 - sr.r1_conf/s2_conf... = fontes que formaram o nível
 - sr.def_bias = viés da defesa (strong_sell_defense / strong_buy_defense)
-- ctx.poc/val/vah = Volume Profile diário REAL (poc=point of control, val/vah=value area low/high)
+- ctx.poc/val/vah = Volume Profile da sessão (parcial intraday, recalculado — não é nível fixo)
 
 🔗 CROSS-ASSET (Correlações):
 - cross.eth_7d/30d = correlação BTC/ETH
@@ -677,9 +679,9 @@ DADOS DISPONÍVEIS NO PAYLOAD (use TODOS para sua análise):
 - ms.tf = Timeframe canônico ("1m")
 * NOTA: BOS indica expansão estrutural e Sweep indica rejeição/reclaim de liquidez. Nenhum deles é sinal isolado de entrada. Usar SEMPRE em confluência com flow, CVD, orderbook e S/R.
 
-🤖 MODELO QUANTITATIVO:
-- quant.prob_up = probabilidade de alta do modelo ML (0-1)
-- quant.conf = confiança do modelo
+🤖 MODELO QUANTITATIVO (scores NÃO calibrados):
+- quant.prob_up = saída do modelo ML (0-1) — NÃO é probabilidade calibrada
+- quant.conf = score de saída do modelo — NÃO é confiança probabilística
 
 ⚠️ ALERTAS E ANOMALIAS:
 - alerts = alertas ativos (WHALE_DISTRIBUTION, VOLUME_SPIKE, RESISTANCE_TEST, etc.)
@@ -723,12 +725,13 @@ Quando: Movimento perde força progressivamente.
   → NÃO VENDER, buscar COMPRA em suporte
 
 🔵 SUPORTE E RESISTÊNCIA:
-- sr.r1/r2 = [preço, força] resistências institucionais (defense zones)
-- sr.s1/s2 = [preço, força] suportes institucionais (defense zones)
-- sr.def_bias = viés da defesa (strong_sell_defense / strong_buy_defense)
+- sr.r1/r2 = [preço, força] resistências; sr.s1/s2 = [preço, força] suportes
+- só zonas com fonte estrutural chegam a sr.* (wall-only e projeções puras ficam em ob.*)
 - Quando preço se aproxima (sr.r1_dist/s1_dist pequena):
-  → Se força > 50: esperar rejeição
-  → Se força fraca: possível rompimento
+  → prefira níveis com confluência estrutural (conf>=2) e confirme com POC/VAL/VAH e fluxo
+  → sem confluência nem confirmação de fluxo: possível rompimento
+- Níveis marcados OBS_WALL/PROJECTED_* são liquidez/projeção — nunca opere como S/R estrutural
+- Força é score heurístico (comparar relativamente entre níveis, nunca ler como probabilidade)
 
 🟢 FIBONACCI:
 - Use os níveis para identificar zonas de retração/extensão
@@ -845,7 +848,7 @@ REGRAS:
 - Retorne APENAS um objeto JSON (comeca com { e termina com })
 - Rationale em portugues, maximo 120 caracteres, citando numeros dos dados
 - Nao escreva texto fora do JSON
-- confidence: 0.1-0.4 (incerto), 0.5-0.7 (moderado), 0.8-1.0 (forte confluencia)
+- confidence: 0.1-0.4 (incerto), 0.5-0.7 (moderado), 0.8-1.0 (alta convicção na leitura — não é probabilidade)
 - Valores em K/M sao SEMPRE USD (nao BTC), exceto cvd que e BTC
 
 Formato:
@@ -897,7 +900,7 @@ EXEMPLO RUIM:
 - Rationale: 2-4 frases em portugues, maximo 500 caracteres
 - Cite SIGNIFICADO dos dados, nao os numeros brutos
 - Se entry_zone existir, SEMPRE defina invalidation_zone
-- confidence: 0.3-0.5 (incerto), 0.6-0.7 (moderado), 0.8+ (forte confluencia)
+- confidence: 0.3-0.5 (incerto), 0.6-0.7 (moderado), 0.8+ (alta convicção na leitura — não é probabilidade)
 - Se mercado confuso: action="wait", explique o que falta para decidir
 """
 
@@ -1698,8 +1701,16 @@ class AIAnalyzer:
             return _COMPRESSED_SYSTEM_PROMPT
 
         # Fallback para prompts originais
+        # NOTA (semantic closure): legacy recebe SOMENTE o schema estendido
+        # antigo (price_context/flow_context via _build_structured_prompt_legacy),
+        # nunca o payload compacto P02 — seu texto S/R é pré-closure e ficará
+        # estagnado por decisão (compatibilidade, sem IA ativa nesse ramo).
         if ai_cfg.get("prompt_style") == "legacy":
             return SYSTEM_PROMPT_LEGACY
+        # Unificação semântica: mesmo payload compacto, mesma legenda canônica
+        # em todos os modos (groq já anexava; non-groq/default agora também).
+        if _FIELD_LEGEND:
+            return SYSTEM_PROMPT.rstrip() + "\n\n" + _FIELD_LEGEND
         return SYSTEM_PROMPT
 
     @staticmethod

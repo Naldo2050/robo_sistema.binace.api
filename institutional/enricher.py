@@ -572,24 +572,39 @@ def _is_vp_degenerate(vp: dict) -> bool:
     return False
 
 
-# Sources de wall observada: zona composta EXCLUSIVAMENTE por elas é snapshot
-# liquidity (não S/R autônomo). Espelha is_wall_only_zone() de
-# support_resistance/defense_zones.py sem importar o módulo (evita acoplamento;
-# manter sincronizado — ver NON_STRUCTURAL_SOURCES lá).
-_WALL_ONLY_SOURCES = frozenset({"orderbook_bid_wall", "orderbook_ask_wall"})
+# Sources derivadas do mesmo snapshot REST L2 (sem independência estrutural).
+# Espelha NON_STRUCTURAL_SOURCES de support_resistance/defense_zones.py sem
+# importar o módulo (evita acoplamento; manter sincronizado).
+_NON_STRUCTURAL_SOURCES = frozenset({
+    "orderbook_bid_wall",
+    "orderbook_ask_wall",
+    "orderbook_cluster",
+    "depth_asymmetry",
+})
 
 
 def _is_wall_only_zone(zone: object) -> bool:
-    """Verdadeiro se a zona é wall-only (sem fonte estrutural independente)."""
+    """Compat: wall-only clássico (ver _is_non_structural_zone)."""
+    return _is_non_structural_zone(zone)
+
+
+def _is_non_structural_zone(zone: object) -> bool:
+    """Verdadeiro se a zona não tem fonte estrutural independente.
+
+    Cobre wall-only (liquidity_only) e heurísticas projetadas puras
+    (projected_only, ex.: depth_asymmetry isolado). Zonas sem flags nem
+    sources (fixtures legados) retornam False — nunca bloquear por falta
+    de metadados.
+    """
     if not isinstance(zone, dict):
         return False
-    if zone.get("liquidity_only") is True:
+    if zone.get("liquidity_only") is True or zone.get("projected_only") is True:
         return True
     if zone.get("has_structural_confluence") is True:
         return False
     sources = zone.get("sources")
     if isinstance(sources, list) and sources:
-        return all(s in _WALL_ONLY_SOURCES for s in sources)
+        return all(s in _NON_STRUCTURAL_SOURCES for s in sources)
     return False
 
 
@@ -768,7 +783,7 @@ def _build_pivot_points(event: dict) -> dict:
         # Guarda wall-only (fix 2026-09): zona de snapshot liquidity sem fonte
         # estrutural independente NÃO vira suporte imediato — wall snapshot-only
         # não é S/R autônomo. Com confluência estrutural, a promoção segue.
-        if _is_wall_only_zone(zone):
+        if _is_non_structural_zone(zone):
             continue
         # Guarda de lado: defesa buy só vira suporte imediato se o centro
         # estiver abaixo/igual ao preço (consistente com o filtro h/pivot/l
@@ -782,7 +797,7 @@ def _build_pivot_points(event: dict) -> dict:
         center = zone.get("center")
         strength = zone.get("strength", 0)  # Já em escala 0-100
         # Guarda wall-only (fix 2026-09): idem para resistência imediata.
-        if _is_wall_only_zone(zone):
+        if _is_non_structural_zone(zone):
             continue
         # Guarda de lado: defesa sell só vira resistência imediata se o
         # centro estiver acima do preço (consistente com h/pivot/l).

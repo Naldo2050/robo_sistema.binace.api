@@ -21,17 +21,25 @@ market_impact (mi/ob): slip_100k/slip_1m={buy,sell}=VWAP_execution_slippage_USD_
 divergence_note: trade_imb and depth_imb measure different phenomena (executed taker aggression vs passive book depth asymmetry); signs may legitimately diverge and divergence alone is NOT automatic absorption (absorption requires additional evidence)
 trade_bar_flow: score=executed_trade_bar_direction_score_5x30s[-1_sell,+1_buy],dir=direction(BUY/SELL/NEU)(source:executed_trades,bars:5_discrete_bars_30s_approx_150s_nominal,directional_dominance_between_bars;omitted_when_unavailable;NOT_L2_orderbook_OFI)
 w=whale_score(-100=strong_distribution,+100=strong_accumulation,0=neutral,whale>=2.0BTC)
-q=quant/ML: pu=probability_up(0-1),c=confidence(0-1)
+q=quant/ML: pu=model_output_0-1_NOT_calibrated_probability,c=model_score_NOT_calibrated
 tf=timeframes: t=trend(DN/UP/SW),rsi(0-100),macd=[line,signal],adx(0-100),atr=avg_true_range,r=regime(RNG=range,ACC=accumulation,TRD=trending,MNP=manipulation)
 ctx=context(sent every 5min): ses=session,dxy/tnx/spx/ndx/gold/wti/vix=market_prices,fg=fear_greed(0-100),poc/val/vah=volume_profile_daily,lsr=btc_long_short_ratio,eth_lsr=eth_long_short_ratio,oi=btc_open_interest_thousands,eth7=btc_eth_corr_7d,dxy30=btc_dxy_corr_30d
 cross=cross_asset(st=fresh/stale/unavailable,method=shared_session_returns_v2|positional_v1[legacy],n=min_returns_used_for_pearson,inst_dxy/inst_ndx=actual_ticker_used;ndx_field_is_QQQ_or_IXIC_PROXY_never_the_index;positional_v1_values_are_NOT_temporally_aligned_do_not_compare_across_methods)
 pivot_points (evento completo, quando presente): Pivot clássico (H+L+C)/3 do período anterior COMPLETO (iloc[-2]); FIXO durante o dia quando source=classic. Quando source=vp_fallback (dados insuficientes p/ clássico), reflete volume profile INTRADAY PARCIAL (dia atual 00:00Z→agora, muda a cada atualização) — não é pivot clássico fixo. pivot_points NÃO é enviado no payload compacto (ver sr.* e ctx.poc/val/vah).
-sr=defense_zones: r1/r2/s1/s2=[preco,forca], forca(0-100)=HEURISTIC composite zone score (media_forca×(1+0.3×n_fontes)), NOT probability/confidence/persistencia; source_count/conf=n_fontes=confluencia; OBS_WALL(when r*_src/s*_src present)=point-in-time REST L2 liquidity concentration (snapshot_only, sem persistencia, NOT standalone support/resistance, nunca CONF/PERSISTENT); r*_dist/s*_dist=distancia ao preco; r*_conf/s*_conf=fontes do nivel; def_bias=viés da defesa. ctx.poc/val/vah = Volume Profile diario REAL.
+sr=defense_zones: r1/r2/s1/s2=[preco,forca] (wall-only e heuristicas puras NUNCA entram aqui; liquidez do book fica em ob.*), forca(0-100)=HEURISTIC composite zone score (media_forca×(1+0.3×n_fontes)), NOT probability/confidence/persistencia; source_count/conf=n_fontes=confluencia; OBS_WALL(when r*_src/s*_src present)=point-in-time REST L2 liquidity concentration em confluencia estrutural (snapshot_only, sem persistencia, nunca CONF/PERSISTENT); PROJECTED_DEPTH(when src present)=preco PROJETADO de assimetria do book (cur×0.998/1.002, NOT observed); r*_dist/s*_dist=distancia ao preco; r*_conf/s*_conf=fontes do nivel; def_bias=viés da defesa. ctx.poc/val/vah = Volume Profile da sessao (parcial intraday, nao fixo).
+vwap=session_vwap(UTC_day_anchor): svw=execution_benchmark,dist=(price-VWAP)/VWAP,side=above/below/at; benchmark_NOT_signal.
+qual=data_quality: lat=latency_cat,liq=expected_liquidity,holiday,src=degraded_source_only(stale/cache/fallback),comp=completeness_0-100; section_absent_means_no_data.
+onchain=BTC_onchain_SLOW_context: st=status,age=seconds,src=source; metrics(active_addr,mempool_sz,fees_fast,trade_vol_24h,df=difficulty,hr=hash_rate); CONTEXT_NOT_trigger.
 Number suffixes: K=thousands,M=millions. Always in USD unless noted as BTC. Signs: +=buy/positive,-=sell/negative.
 When ctx is absent, use the last received context values.
 """.strip()
 
-# Versão ultra-compacta para economizar tokens no prompt (~75 tokens)
+# Versão ultra-compacta — DEPRECATED/DEAD (decisão pré-commit 2026-09):
+# sem consumidores (nenhum modo de _get_system_prompt a referencia) e sem
+# cobertura de sr/OBS_WALL/P02. Mantida apenas como registro; NÃO ressuscitar
+# sem antes sincronizar semanticamente com FIELD_LEGEND (fonte canônica).
+# Teste tests/unit/test_sr_etapa5b_contract.py trava ausência de consumidores.
+# Remoção futura liberada quando nenhum import externo existir.
 FIELD_LEGEND_COMPACT: str = """
 KEYS: t=trigger,p=price(c/o/h/l/vw/sh/auc/ph/pl),r=regime(v/tr/st),f=flow(d1/d5/d15=deltaUSD,cvd_4h=BTC[acc4h],sf_w_4h/sf_r_4h=BTC[acc4h],trade_imb[-1sell+1buy],ab=aggBuy%[observed_only]+ab_s/ab_n,bsr[DERIVED_REDUNDANCY]),ob(b/a=depthUSD,depth_imb[-1ask+1bid],depth_t5),mi(slip_100k/slip_1m=VWAP_slip_USD[null=insuf],bf/sf=fill_ratio,exec_qual[P1M=partial1M/EXCEL/GOOD/FAIR/POOR/INSUF],liq_score[0-10,ref100k,null=insuf]),trade_bar_flow(score[-1+1],dir),w=whaleScore[-100dist+100accum],q(pu=probUp,c=conf),tf(t=trend,rsi,macd,adx,atr,r=regime),ctx(ses,dxy,tnx,spx,ndx,gold,wti,vix,fg,poc,val,vah,lsr,oi,eth7,dxy30),cross(st,method,n,inst;ndx=proxy).K=1000,M=1M.+buy/-sell.USD unless BTC noted.REST_snapshot_NOT_continuous_L2.No ctx=use last.
 """.strip()

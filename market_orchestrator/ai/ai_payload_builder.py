@@ -320,19 +320,25 @@ def _inject_institutional_analytics(
             sr_context["resistance_sources"] = nearest_res.get("confluence_count", 1)
 
     # Defense Zones — strongest buy/sell defense
-    # FIX 2026-09 (wall liquidity): strongest wall-only (snapshot liquidity sem
-    # fonte estrutural) não é S/R — prefere a primeira zona estrutural da lista;
-    # se só houver wall-only, omite buy/sell defense (def_bias permanece).
+    # FIX 2026-09 (wall liquidity): strongest sem fonte estrutural (wall-only
+    # ou heurística projetada pura) não é S/R — prefere a primeira zona
+    # estrutural da lista; se só houver não-estrutural, omite buy/sell defense
+    # (def_bias permanece).
+    _NON_STRUCTURAL_SOURCES = frozenset({
+        "orderbook_bid_wall", "orderbook_ask_wall",
+        "orderbook_cluster", "depth_asymmetry",
+    })
+
     def _structural(zone: object) -> bool:
         if not isinstance(zone, dict):
             return False
-        if zone.get("liquidity_only") is True:
+        if zone.get("liquidity_only") is True or zone.get("projected_only") is True:
             return False
         if zone.get("has_structural_confluence") is True:
             return True
         sources = zone.get("sources")
         if isinstance(sources, list) and sources:
-            return not all(s in ("orderbook_bid_wall", "orderbook_ask_wall") for s in sources)
+            return not all(s in _NON_STRUCTURAL_SOURCES for s in sources)
         return True
 
     def _pick_structural(zones: object) -> Optional[Dict[str, Any]]:
