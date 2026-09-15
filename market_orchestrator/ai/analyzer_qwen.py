@@ -659,13 +659,20 @@ DADOS DISPONÍVEIS NO PAYLOAD (use TODOS para sua análise):
 - cross.ndx_30d = correlação BTC/NASDAQ
 - Macro regime: RISK_ON, RISK_OFF, TRANSITION
 
-📊 POSICIONAMENTO E CRYPTO COT (pos) [CONTEXT-ONLY]:
-- pos.ga = Global Long/Short Account Ratio (% contas compradas / % vendidas no mercado geral)
-- pos.ta = Top Trader Account Ratio (proporção de contas compradas vs vendidas dos top 20% traders com maior margem)
-- pos.tp = Top Trader Position Ratio (volume financeiro nocional alocado em compra vs venda pelos top 20% traders)
+📊 POSICIONAMENTO BINANCE (pos) [CONTEXT-ONLY, intraday — NÃO é o COT oficial CFTC/CME]:
+- pos.ga = Global Long/Short Account Ratio (% contas compradas / % vendidas no mercado geral Binance)
+- pos.ta = Top Trader Account Ratio (proporção de contas compradas vs vendidas da coorte Binance de maior margem — coorte da exchange, NÃO "institucional"/"smart money" como fato)
+- pos.tp = Top Trader Position Ratio (volume financeiro nocional alocado em compra vs venda pela coorte top — coorte da exchange, NÃO direção garantida)
 - pos.od1/od4 = Variação de Open Interest em 1h/4h em fração decimal canônica (ex: 0.0017 = +0.17%, -0.0035 = -0.35%)
-- pos.rg = Regime heurístico de posicionamento (CROWDED_LONG, CROWDED_SHORT, TOP_LONG_DIVERGENCE, TOP_SHORT_DIVERGENCE, SQUEEZE_RISK, NEUTRAL)
+- pos.rg = Regime heurístico de posicionamento (CROWDED_LONG, CROWDED_SHORT, TOP_LONG_DIVERGENCE, TOP_SHORT_DIVERGENCE, SQUEEZE_RISK, PARTIAL, NEUTRAL; PARTIAL = dados incompletos, usar com cautela)
 * NOTA: Posicionamento é contexto estrutural de mercado (crowding/squeeze risk). NÃO é sinal direcional isolado de compra/venda.
+
+📊 CFTC/CME COT SEMANAL OFICIAL (cftc) [CONTEXT-ONLY, ausente por padrão]:
+- cftc.st = status (AVAILABLE/PARTIAL/STALE — PARTIAL/STALE exigem cautela redobrada)
+- cftc.asof = terça de referência do relatório; cftc.age = idade da referência em segundos
+- cftc.oi/oi_wow = open interest total e variação semanal (contratos)
+- cftc.net_dea/net_ass/net_lev/net_oth/net_non = net por categoria oficial (dealer/asset_manager/leveraged/other/nonreportable)
+* NOTA: CFTC COT é contexto semanal agregado e defasado (publicado sexta 15:30 ET). NÃO é ferramenta de timing intraday. NÃO representa posição individual. Categorias CFTC NÃO devem ser chamadas de smart money/varejo. NÃO usar isoladamente para BUY/SELL. Fonte independente do posicionamento Binance (pos).
 
 📍 SESSION VWAP (vwap) [CONTEXT-ONLY]:
 - vwap.svw = Session VWAP canônico ancorado em UTC 00:00:00 (preço médio ponderado por volume acumulado do dia)

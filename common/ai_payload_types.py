@@ -105,6 +105,7 @@ COMPACT_AI_ALLOWED_ROOT_KEYS: frozenset[str] = frozenset(
         "cvd_div",
         "mr",
         "iceberg",
+        "cftc",
         "summary",
         "_v",
         "_compacted",

@@ -91,6 +91,12 @@ from events.event_saver import EventSaver
 from fetchers.context_collector import ContextCollector
 from fetchers.onchain_updater import OnchainUpdater
 from market_analysis.cross_asset_updater import CrossAssetUpdater
+
+# ====== CFTC COT Updater (P6 — opcional, flag-gated, fora do hot path) ======
+try:
+    from fetchers.cftc_cot_updater import CftcCotUpdater
+except Exception:
+    CftcCotUpdater = None
 from flow_analyzer import FlowAnalyzer
 from market_analysis.levels_registry import LevelRegistry
 from data_processing.data_validator import validator
@@ -319,6 +325,19 @@ class EnhancedMarketBot:
 
         # E3-B: bot possui exatamente 1 CrossAssetUpdater (mesmo padrão).
         self.cross_asset_updater = CrossAssetUpdater()
+
+        # P6: CftcCotUpdater existe apenas com ENABLE_CFTC_COT_CONTEXT=1.
+        # Ausência CFTC nunca afeta Binance positioning (fontes independentes).
+        self.cftc_cot_updater = None
+        try:
+            if CftcCotUpdater is not None and bool(
+                getattr(config, "ENABLE_CFTC_COT_CONTEXT", False)
+            ):
+                self.cftc_cot_updater = CftcCotUpdater(symbols=[self.symbol])
+                logging.info("✅ CftcCotUpdater inicializado (flag P6 ativa)")
+        except Exception as e:
+            logging.warning(f"⚠️ CftcCotUpdater indisponível (não-crítico): {e}")
+            self.cftc_cot_updater = None
 
         self._loop = None
         self._initialized = False
@@ -1645,6 +1664,19 @@ class EnhancedMarketBot:
                 signal["institutional_analytics"] = {"status": "error", "error": str(e)}
                 _t_inst_ms = 0.0
 
+        # P6: CFTC COT semanal (flag-gated; read_view µs, sem I/O).
+        # Chave independente "cftc_cot"; ausência nunca altera "pos"/Binance.
+        try:
+            _cftc_updater = getattr(self, "cftc_cot_updater", None)
+            if _cftc_updater is not None and bool(
+                getattr(config, "ENABLE_CFTC_COT_CONTEXT", False)
+            ):
+                _cftc_view = _cftc_updater.read_view(getattr(self, "symbol", "BTCUSDT"))
+                if isinstance(_cftc_view, dict) and _cftc_view:
+                    signal["cftc_cot"] = _cftc_view
+        except Exception as e:
+            logging.debug(f"CftcCot read_view error (não-crítico): {e}")
+
         # ====== Promoção de campos para ANALYSIS_TRIGGER ======
         # Garante que multi_tf, historical_vp, flow_metrics estejam no top-level
         # (iguala a estrutura com eventos de Absorção)
@@ -2545,6 +2577,13 @@ class EnhancedMarketBot:
         except Exception as e:
             logging.warning(f"⚠️ Falha ao iniciar CrossAssetUpdater (não-crítico): {e}")
 
+        # P6: CFTC COT em background (não-bloqueante; janela lê read_view).
+        try:
+            if getattr(self, "cftc_cot_updater", None) is not None:
+                self.cftc_cot_updater.start()
+        except Exception as e:
+            logging.warning(f"⚠️ Falha ao iniciar CftcCotUpdater (não-crítico): {e}")
+
         # Pre-popular histórico OHLC para habilitar indicadores avançados imediatamente
         await self._prefetch_ohlc_history()
 
@@ -2711,6 +2750,12 @@ class EnhancedMarketBot:
         try:
             if getattr(self, "cross_asset_updater", None) is not None:
                 self.cross_asset_updater.stop()
+        except Exception:
+            pass
+
+        try:
+            if getattr(self, "cftc_cot_updater", None) is not None:
+                self.cftc_cot_updater.stop()
         except Exception:
             pass
 

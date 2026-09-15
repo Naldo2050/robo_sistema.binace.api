@@ -1695,6 +1695,11 @@ def _build_positioning(event_data: dict) -> dict:
     if not isinstance(pos, dict) or not pos.get("is_available"):
         return {}
 
+    # PARTIAL chega ao payload como PARTIAL: números parciais nunca são
+    # apresentados como se completos (apenas o status sobrevive).
+    if pos.get("regime") == "PARTIAL":
+        return {"rg": "PARTIAL"}
+
     def _safe_val(v: Any, precision: int = 2) -> Optional[float]:
         if v is None or isinstance(v, bool):
             return None
@@ -1731,6 +1736,72 @@ def _build_positioning(event_data: dict) -> dict:
     if rgm and str(rgm) not in ("UNKNOWN", "PARTIAL", "NEUTRAL"):
         out["rg"] = str(rgm)
 
+    return out
+
+
+def _cftc_enabled() -> bool:
+    """Feature flag P6 (default OFF). Env vence; settings como fallback."""
+    try:
+        if os.getenv("ENABLE_CFTC_COT_CONTEXT") is not None:
+            return os.getenv("ENABLE_CFTC_COT_CONTEXT") == "1"
+        from config import settings as _app_settings
+        return bool(getattr(_app_settings, "ENABLE_CFTC_COT_CONTEXT", False))
+    except Exception:
+        return False
+
+
+def _build_cftc_cot(event_data: dict) -> dict:
+    """
+    Constrói a seção compacta 'cftc' (CFTC/CME COT semanal oficial, TFF).
+    Fase P6 (Arquitetura Context-Only, flag ENABLE_CFTC_COT_CONTEXT).
+
+    Fonte: event_data["cftc_cot"] (snapshot P2 do CftcCotUpdater).
+    Chave independente: nunca dentro de pos/flow/orderbook/execution/risk.
+    PARTIAL/STALE sempre visíveis em 'st'; nunca viram zero.
+    """
+    if not _cftc_enabled():
+        return {}
+    cftc = event_data.get("cftc_cot") or {}
+    if not isinstance(cftc, dict):
+        return {}
+    status = str(cftc.get("status", ""))
+    if status in ("", "UNSUPPORTED", "UNAVAILABLE", "INVALID"):
+        return {}
+
+    def _safe_val(v: Any, precision: int = 2) -> Optional[float]:
+        if v is None or isinstance(v, bool):
+            return None
+        try:
+            f = float(v)
+            if math.isfinite(f):
+                return round(f, precision)
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    out: dict[str, Any] = {"st": status}
+    if cftc.get("report_family"):
+        out["fam"] = str(cftc["report_family"])
+    if cftc.get("report_scope"):
+        out["scope"] = str(cftc["report_scope"])
+    if cftc.get("report_as_of_date"):
+        out["asof"] = str(cftc["report_as_of_date"])
+    age = _safe_val(cftc.get("age_reference_seconds"), 0)
+    if age is not None:
+        out["age"] = age
+    oi = cftc.get("open_interest") or {}
+    oi_total = _safe_val(oi.get("total"), 0)
+    if oi_total is not None:
+        out["oi"] = oi_total
+    oi_wow = _safe_val(oi.get("change_wow"), 0)
+    if oi_wow is not None:
+        out["oi_wow"] = oi_wow
+    positions = cftc.get("positions") or {}
+    for cat in ("dealer", "asset_manager", "leveraged", "other", "nonreportable"):
+        blk = positions.get(cat) or {}
+        net = _safe_val(blk.get("net"), 0)
+        if net is not None:
+            out[f"net_{cat[:3]}"] = net
     return out
 
 
@@ -2120,6 +2191,11 @@ def build_compact_payload(
     ms_ctx = _build_market_structure(event_data)
     if ms_ctx:
         payload["ms"] = ms_ctx
+
+    # P6: CFTC/CME COT semanal oficial (context-only, flag-gated, chave 'cftc')
+    cftc_ctx = _build_cftc_cot(event_data)
+    if cftc_ctx:
+        payload["cftc"] = cftc_ctx
 
     # ═══════════════════════════════════════════════════════════
     # SUMMARY BUILDERS

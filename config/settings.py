@@ -229,6 +229,12 @@ CVD_DIV_MIN_PERIOD_SECONDS = 10   # Período mínimo pós-reset p/ comparar pre�
 # ===== FLOW IMBALANCE (guard de amostra mínima) =====
 FLOW_IMBALANCE_MIN_TRADES = 5     # Abaixo disso, flow_imbalance não é emitido (ruído estatístico)
 
+# ===== CFTC COT CONTEXT (P6 — context-only, default OFF) =====
+# Fonte semanal oficial CFTC/CME (TFF futures-only), separada do positioning
+# Binance. Fora do hot path (CftcCotUpdater em background). Ativar só após
+# P4/P5 aprovados em produção.
+ENABLE_CFTC_COT_CONTEXT = os.getenv("ENABLE_CFTC_COT_CONTEXT", "0") == "1"
+
 # ===== CONFIGURAÇÕES DO PAYLOAD TRIPWIRE =====
 PAYLOAD_TRIPWIRE_GUARDRAIL_MAX = 0.30   # Max 30% de bloqueios (era sem config, default implícito)
 PAYLOAD_TRIPWIRE_ABORT_MAX = 0.02       # Max 2% de aborts
