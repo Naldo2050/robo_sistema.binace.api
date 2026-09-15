@@ -1,0 +1,13 @@
+[Unit]
+Description=Research collector: Binance positioning B2 (15m)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Ajustar WorkingDirectory/User ao host real (repo checkout, NÃO o bot).
+WorkingDirectory=/opt/market-bot
+ExecStart=/usr/bin/python3 scripts/analytics/research_collectors_run.py --job positioning --timeout 900
+TimeoutStartSec=950
+StandardOutput=journal
+StandardError=journal

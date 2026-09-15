@@ -1,0 +1,13 @@
+[Unit]
+Description=Research collectors: status + silent-failure check (daily)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/market-bot
+ExecStart=/usr/bin/python3 scripts/analytics/research_collectors_run.py --job status --timeout 300
+ExecStartPost=/usr/bin/python3 scripts/analytics/research_collectors_check.py
+TimeoutStartSec=650
+StandardOutput=journal
+StandardError=journal

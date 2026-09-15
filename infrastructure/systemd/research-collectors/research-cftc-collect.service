@@ -1,0 +1,12 @@
+[Unit]
+Description=Research collector: CFTC R4 prospective (daily)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/market-bot
+ExecStart=/usr/bin/python3 scripts/analytics/research_collectors_run.py --job cftc-collect --timeout 600
+TimeoutStartSec=650
+StandardOutput=journal
+StandardError=journal

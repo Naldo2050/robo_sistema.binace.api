@@ -48,6 +48,28 @@ OVERLAP_BARS = 60  # 5h de sobreposição por ciclo
 MAX_RECOVERABLE_MS = 30 * 24 * 3600 * 1000
 
 
+def plan_recovery(last_known_ms: int | None, now_ms: int) -> dict:
+    """Regra pura de recuperação (testável, sem I/O).
+
+    overlap: gap <= 5h -> busca com sobreposição;
+    backfill: gap <= 30d -> janela faltante desde (last - overlap);
+    unrecoverable: gap > 30d -> registra, nunca fabrica.
+    """
+    if last_known_ms is None:
+        return {"mode": "overlap",
+                "start_ms": now_ms - OVERLAP_BARS * PERIOD_MS}
+    gap_ms = now_ms - last_known_ms
+    if gap_ms > MAX_RECOVERABLE_MS:
+        return {"mode": "unrecoverable", "start_ms": None, "gap_ms": gap_ms}
+    if gap_ms <= OVERLAP_BARS * PERIOD_MS:
+        return {"mode": "overlap",
+                "start_ms": last_known_ms - OVERLAP_BARS * PERIOD_MS,
+                "gap_ms": gap_ms}
+    return {"mode": "backfill",
+            "start_ms": last_known_ms - OVERLAP_BARS * PERIOD_MS,
+            "gap_ms": gap_ms}
+
+
 async def collect_cycle(symbol: str, store_dir: str) -> dict:
     store = B2Store(store_dir)
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -60,18 +82,14 @@ async def collect_cycle(symbol: str, store_dir: str) -> dict:
         for ep, path in ENDPOINTS.items():
             known = store.raw_series(symbol, ep)
             known_ts = {r["source_timestamp"] for r in known}
-            if known_ts:
-                last = max(known_ts)
-                gap_ms = now_ms - last
-                if gap_ms > MAX_RECOVERABLE_MS:
-                    report["unrecoverable_gaps"].append(
-                        {"endpoint": ep, "last_known": last,
-                         "reason": "gap_beyond_retention"})
-                    report["endpoints"][ep] = {"new": 0, "status": "unrecoverable_gap"}
-                    continue
-                start_ms = last - OVERLAP_BARS * PERIOD_MS
-            else:
-                start_ms = now_ms - OVERLAP_BARS * PERIOD_MS
+            plan = plan_recovery(max(known_ts) if known_ts else None, now_ms)
+            if plan["mode"] == "unrecoverable":
+                report["unrecoverable_gaps"].append(
+                    {"endpoint": ep, "last_known": max(known_ts) if known_ts else None,
+                     "reason": "gap_beyond_retention"})
+                report["endpoints"][ep] = {"new": 0, "status": "unrecoverable_gap"}
+                continue
+            start_ms = plan["start_ms"]
             rows, stats = await fetch_window(session, path, symbol, start_ms, now_ms)
             new, dups, revs = 0, 0, 0
             for r in rows:
