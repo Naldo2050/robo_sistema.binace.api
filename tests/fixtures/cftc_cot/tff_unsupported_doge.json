@@ -1,0 +1,9 @@
+{
+  "symbol": "DOGEUSDT",
+  "expected": {
+    "status": "UNSUPPORTED",
+    "is_available": false,
+    "is_stale": false,
+    "error_code": "unsupported_symbol"
+  }
+}
