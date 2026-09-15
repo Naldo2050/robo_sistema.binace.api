@@ -1,0 +1,21 @@
+{
+  "manifest_version": 1,
+  "freeze_date": "2026-09-15",
+  "hypothesis_id": "H3",
+  "contract": "Micro Bitcoin",
+  "contract_code": "133742",
+  "category": "leveraged_funds",
+  "feature_formula": "net_share_oi = (lev_money_positions_long - lev_money_positions_short) / open_interest_all",
+  "secondary_diagnostic": "H4 = leveraged net_share_pct52 (diagnóstico, NÃO confirmatória independente)",
+  "target_formula": "forward_return_28d = close(exit) / close(entry) - 1",
+  "availability_rule": "feature_available_at = first_seen_at real da primeira observação; calendar fallback PROIBIDO",
+  "price_source": "binance_usdm_futures_klines_1d BTCUSDT",
+  "entry_rule": "primeiro candle diário com open_time ESTRITAMENTE após first_seen_at; entry_timestamp=open_time, entry_price=close",
+  "exit_rule": "primeiro candle com open_time >= entry_timestamp + 28 dias; outcome PENDING até lá, nunca preenchido antes",
+  "quality_rules": ["first_seen obrigatório", "NaN/Inf rejeitados", "revisão nunca reescreve original", "observação duplicada rejeitada", "Binance futuro rejeitado (null+flag)"],
+  "software_commit": "4a214a1ec2c5c31b7e198d2735215de455491bc2",
+  "frozen_metrics": ["Spearman H3 vs return28 (principal)", "Pearson (secundário)", "OLS beta + HAC", "direction consistency", "bootstrap temporal"],
+  "checkpoints": {"N4": "auditoria operacional", "N13": "diagnóstico trimestral, sem conclusão", "N26": "interim research evaluation", "N52": "primeira avaliação confirmatória razoável"},
+  "success_rule": "N>=26: CANDIDATE_CONTINUES se Spearman>0, direção H3, sem dependência de <=2 obs. N>=52: CONFIRMATORY_SUPPORT só com direção+, incerteza adequada, robustez temporal e incremento vs Binance com overlap. Senão NOT_CONFIRMED.",
+  "forbidden": ["threshold em feature", "discretizar H3 em sinal/BUY/SELL", "optional stopping", "métricas post-hoc", "importar 2018-2026 para o R4", "ativar LLM/produção"]
+}
