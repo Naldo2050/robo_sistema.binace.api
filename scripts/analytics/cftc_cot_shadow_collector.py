@@ -68,6 +68,62 @@ def init_db(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def shadow_health(db_path: str = DEFAULT_DB_PATH,
+                  cache_metrics: dict | None = None) -> dict:
+    """Métricas operacionais mínimas do shadow contínuo (sem Prometheus).
+
+    cache_metrics: {"cache_write_errors": int} do fetcher quando disponível;
+    caso contrário null (erros de escrita vivem em memória + logs).
+    """
+    health = {
+        "last_successful_fetch": None,
+        "last_first_seen": None,
+        "current_report_as_of": None,
+        "current_revision": None,
+        "fetch_errors": 0,
+        "schema_errors": 0,
+        "cache_write_errors": None,
+        "shadow_observation_count": 0,
+    }
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM cftc_cot_shadow_dataset")
+            health["shadow_observation_count"] = int(cur.fetchone()[0])
+            cur.execute(
+                "SELECT MAX(collected_at) FROM cftc_cot_shadow_dataset "
+                "WHERE status IN ('AVAILABLE','PARTIAL','STALE')")
+            health["last_successful_fetch"] = cur.fetchone()[0]
+            cur.execute(
+                "SELECT MAX(first_seen_at) FROM cftc_cot_shadow_dataset "
+                "WHERE first_seen_at IS NOT NULL")
+            health["last_first_seen"] = cur.fetchone()[0]
+            cur.execute(
+                "SELECT report_as_of_date, revision FROM cftc_cot_shadow_dataset "
+                "WHERE status IN ('AVAILABLE','PARTIAL','STALE') "
+                "ORDER BY report_as_of_date DESC, revision DESC LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                health["current_report_as_of"] = row[0]
+                health["current_revision"] = row[1]
+            cur.execute(
+                "SELECT COUNT(*) FROM cftc_cot_shadow_dataset "
+                "WHERE status IN ('UNAVAILABLE','ERROR')")
+            health["fetch_errors"] = int(cur.fetchone()[0])
+            cur.execute(
+                "SELECT COUNT(*) FROM cftc_cot_shadow_dataset "
+                "WHERE status = 'INVALID'")
+            health["schema_errors"] = int(cur.fetchone()[0])
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 - saúde nunca quebra o bot
+        health["error"] = str(e)[:200]
+    if cache_metrics is not None:
+        health["cache_write_errors"] = cache_metrics.get("cache_write_errors")
+    return health
+
+
 async def collect(symbols, db_path: str) -> dict:
     fetcher = CftcCotFetcher()
     cot = CftcCot()
@@ -167,6 +223,7 @@ def main() -> None:
     args = ap.parse_args()
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     summary = asyncio.run(collect(symbols, args.db))
+    summary["health"] = shadow_health(args.db)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

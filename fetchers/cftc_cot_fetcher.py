@@ -77,6 +77,90 @@ _INT_FIELDS = (
 
 _DEFAULT_CACHE_PATH = Path("dados/cftc_cot_cache.json")
 
+# Invariante single-writer (MEDIUM-1): produção opera UMA instância do bot
+# por diretório de trabalho. O lock abaixo é defesa em profundidade com
+# stdlib (fcntl/msvcrt, mesmo padrão de events/event_saver.py), sem
+# dependência nova. Segundo writer falha fechado na escrita (retorna False,
+# memória intacta, contador cache_write_errors). Leitores nunca observam
+# JSON parcial (tmp + os.replace mantido).
+
+
+def _try_interprocess_lock(lock_path: Path):
+    """Tenta lock não-bloqueante. Retorna (fh, enforced).
+
+    (None, True) = outro writer detém o lock -> fail closed.
+    (fh, False) = locking indisponível nesta plataforma -> prossegue
+    (documentado; invariante single-writer continua valendo).
+    """
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(lock_path, "w")
+    except OSError:
+        return None, True
+    try:
+        import fcntl  # posix
+
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh, True
+        except (OSError, IOError):
+            fh.close()
+            return None, True
+    except ImportError:
+        pass
+    try:
+        import msvcrt  # win32
+
+        try:
+            fh.write("x")
+            fh.flush()
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            return fh, True
+        except (OSError, IOError):
+            fh.close()
+            return None, True
+    except ImportError:
+        pass
+    return fh, False
+
+
+def _release_interprocess_lock(fh, enforced: bool) -> None:
+    if fh is None:
+        return
+    try:
+        if enforced:
+            try:
+                import fcntl  # posix
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except ImportError:
+                try:
+                    import msvcrt  # win32
+
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                except (ImportError, OSError):
+                    pass
+    finally:
+        try:
+            fh.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _merge_record_lists(base: List[CftcRawRecord],
+                        incoming: List[CftcRawRecord]) -> List[CftcRawRecord]:
+    """União por (revision, content_hash); nunca apaga revisão de outro writer."""
+    seen = {(r.revision, r.content_hash) for r in base}
+    merged = list(base)
+    for r in incoming:
+        if (r.revision, r.content_hash) not in seen:
+            seen.add((r.revision, r.content_hash))
+            merged.append(r)
+    merged.sort(key=lambda r: (r.revision, r.content_hash))
+    return merged
+
 
 def _safe_int(val: Any) -> Optional[int]:
     """Parse defensivo de inteiro Socrata (string numérica)."""
@@ -155,6 +239,8 @@ class CftcCotFetcher:
         # cache: (code, asof) -> CftcRawRecord (todas as revisões preservadas:
         # lista ordenada por revision).
         self._records: Dict[Tuple[str, str], List[CftcRawRecord]] = {}
+        self.cache_write_errors = 0
+        self.cache_lock_contended = 0
         self._load_cache()
 
     # -- throttle ------------------------------------------------------
@@ -309,7 +395,9 @@ class CftcCotFetcher:
             if prev.content_hash == record.content_hash:
                 return prev, None  # duplicata idêntica: sem nova revisão
         record.revision = len(existing)
-        record.first_seen_at = now_iso if not existing else existing[0].first_seen_at
+        # Nova versão (primeira ou revisão): first_seen é ESTE instante.
+        # Revisão nunca herda o first_seen da v0 (cada versão tem o seu).
+        record.first_seen_at = now_iso
         existing.append(record)
         self._records[key] = existing
         self._save_cache()
@@ -328,13 +416,17 @@ class CftcCotFetcher:
         return [rec for _, rec in cands]
 
     # -- cache em disco (append-only) -----------------------------------
-    def _load_cache(self) -> None:
+    def _read_cache_file(self) -> Dict[Tuple[str, str], List[CftcRawRecord]]:
+        """Lê o arquivo sem tocar no estado em memória (para merge)."""
+        result: Dict[Tuple[str, str], List[CftcRawRecord]] = {}
         try:
             if not self.cache_path.exists():
-                return
+                return result
+            # Arquivo .tmp órfão (processo morto durante append) é ignorado:
+            # somente o caminho canônico é lido; tmp nunca é promovido.
             data = json.loads(self.cache_path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
-                return
+                return result
             for key, recs in data.get("records", {}).items():
                 code, asof = key.split("|", 1)
                 loaded = []
@@ -354,12 +446,31 @@ class CftcCotFetcher:
                     except (KeyError, TypeError, ValueError):
                         continue
                 if loaded:
-                    self._records[(code, asof)] = sorted(loaded, key=lambda x: x.revision)
+                    result[(code, asof)] = sorted(loaded, key=lambda x: x.revision)
         except Exception as e:  # noqa: BLE001 - cache corrompido nunca derruba o fetch
             logger.warning("CFTC COT disk cache load failed (ignorado): %s", e)
+        return result
 
-    def _save_cache(self) -> None:
+    def _load_cache(self) -> None:
+        self._records = self._read_cache_file()
+
+    def _save_cache(self) -> bool:
+        """Persiste com lock interprocess + merge. False = fail closed."""
+        lock_path = self.cache_path.with_suffix(".lock")
+        fh, enforced = _try_interprocess_lock(lock_path)
+        if fh is None:
+            self.cache_write_errors += 1
+            self.cache_lock_contended += 1
+            logger.warning("CFTC COT cache lock contended (escrita adiada, memória intacta)")
+            return False
         try:
+            # Merge com o disco: outro writer pode ter avançado desde _load_cache.
+            on_disk = self._read_cache_file()
+            merged: Dict[Tuple[str, str], List[CftcRawRecord]] = {}
+            for key in set(on_disk) | set(self._records):
+                merged[key] = _merge_record_lists(
+                    on_disk.get(key, []), self._records.get(key, []))
+            self._records = merged
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "dataset_id": DATASET_ID,
@@ -372,5 +483,10 @@ class CftcCotFetcher:
             tmp = self.cache_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             tmp.replace(self.cache_path)
+            return True
         except Exception as e:  # noqa: BLE001 - falha de cache nunca é fatal
+            self.cache_write_errors += 1
             logger.warning("CFTC COT disk cache save failed (ignorado): %s", e)
+            return False
+        finally:
+            _release_interprocess_lock(fh, enforced)
