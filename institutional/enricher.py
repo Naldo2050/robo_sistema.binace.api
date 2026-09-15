@@ -1250,7 +1250,12 @@ def _build_passive_flow(event: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _register_large_trades(valid_window_data: List[Dict], current_price: float, epoch_ms: int) -> None:
-    """Filtra e armazena trades grandes para large_orders_1h."""
+    """Filtra e armazena trades grandes para large_orders_1h.
+
+    NOTA DE PROVENIÊNCIA:
+    Trata-se de executed aggressive trades (aggTrades >= 5.0 BTC),
+    NÃO ordens limites descansando no livro (resting limit orders).
+    """
     for trade in valid_window_data:
         qty = float(trade.get("q", 0) or 0)
         if qty >= _LARGE_ORDER_THRESHOLD_BTC:
@@ -1268,10 +1273,17 @@ def _register_large_trades(valid_window_data: List[Dict], current_price: float, 
 def _build_whale_activity(event: dict, epoch_ms: int, current_price: float) -> dict:
     """
     Retorna large_orders_1h, iceberg_activity, hidden_orders_detected.
+
+    NOTA DE PROVENIÊNCIA & CAPABILITY:
+    - large_orders_1h: executed aggressive trades (aggTrades >= 5.0 BTC).
+    - iceberg_activity: heurística experimental de fragmentação de trades (clusters).
+      NÃO representa detecção de iceberg em orderbook e NÃO alimenta o payload de IA.
+    - hidden_orders_detected: heurística experimental baseada em desequilíbrio sem absorção.
+      NÃO suportada como evidência de ordens ocultas reais; NÃO alimentar IA.
     """
     result: dict = {}
 
-    # large_orders_1h: filtrar por última hora + deduplicar
+    # large_orders_1h: filtrar por última hora + deduplicar (executed trades)
     cutoff_1h = epoch_ms - 3600 * 1000
     large_1h_raw = [t for t in _STATE.large_trades if t.get("timestamp_ms", 0) >= cutoff_1h]
     if large_1h_raw:
@@ -1282,10 +1294,11 @@ def _build_whale_activity(event: dict, epoch_ms: int, current_price: float) -> d
             if key not in seen:
                 seen.add(key)
                 large_1h.append(t)
-        result["large_orders_1h"] = large_1h[-20:]  # Últimas 20 ordens grandes (dedup)
+        result["large_orders_1h"] = large_1h[-20:]  # Últimas 20 ordens grandes executadas (dedup)
 
     # Iceberg detection: mesmos preços com muitas execuções fragmentadas
     # Heurística: cluster com trades_count alto + avg_trade_size muito baixo
+    # (NOTA: trade fragmentation pattern, não L2 iceberg replenishment)
     heatmap = _get_nested(event, "fluxo_continuo", "liquidity_heatmap") or {}
     clusters = heatmap.get("clusters", []) or []
     iceberg_detected = False
@@ -1293,20 +1306,20 @@ def _build_whale_activity(event: dict, epoch_ms: int, current_price: float) -> d
         trades_count = cl.get("trades_count", 0) or 0
         avg_size = cl.get("avg_trade_size", 1) or 1
         total_vol = cl.get("total_volume", 0) or 0
-        # Sinal de iceberg: muitos trades pequenos no mesmo nível com volume total relevante
+        # Sinal de fragmentação: muitos trades pequenos no mesmo nível com volume total relevante
         if trades_count > 500 and avg_size < 0.01 and total_vol > 5.0:
             iceberg_detected = True
             break
 
     result["iceberg_activity"] = iceberg_detected
 
-    # Hidden orders: heurística baseada em absorção neutra com delta forte
+    # Hidden orders: heurística experimental baseada em absorção neutra com delta forte (não para IA)
     abs_data = _get_nested(event, "fluxo_continuo", "absorption_analysis", "current_absorption") or {}
     abs_index = abs_data.get("index", 0) or 0
     flow_imb = abs(abs_data.get("flow_imbalance", 0) or 0)
     hidden_orders = 0
     if abs_index < 0.05 and flow_imb > 0.15:
-        # Absorção mínima com desequilíbrio grande → sugestão de ordens ocultas
+        # Absorção mínima com desequilíbrio grande → sugestão heurística (não comprovada)
         hidden_orders = 1
     result["hidden_orders_detected"] = hidden_orders
 

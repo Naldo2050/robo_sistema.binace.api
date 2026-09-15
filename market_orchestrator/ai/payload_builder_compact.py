@@ -1379,9 +1379,19 @@ def _build_vwap_context(event_data: dict) -> dict:
 
 def _build_iceberg(event_data: dict) -> dict:
     """
-    Detecção de ordens iceberg — liquidez oculta.
-    Fonte: institutional_analytics ou whale_activity
+    Iceberg Gate — Avalia disponibilidade de L2 contínuo.
+    Com arquitetura REST snapshot ~60s, detecção de iceberg/replenishment
+    NÃO é suportada com evidência suficiente. Omitido do payload da IA.
+    Clusters de trade fragmentation não são tratados como iceberg de livro.
     """
+    try:
+        from market_orchestrator.capabilities import CONTINUOUS_L2, ICEBERG_DETECTION_SUPPORTED
+        if not CONTINUOUS_L2 or not ICEBERG_DETECTION_SUPPORTED:
+            return {}
+    except ImportError:
+        return {}
+
+    # Preservado para ativação futura com streaming L2 contínuo:
     ia = event_data.get("institutional_analytics", {})
     iceberg_data = ia.get("iceberg_detector", {})
 
@@ -1393,12 +1403,6 @@ def _build_iceberg(event_data: dict) -> dict:
                 "side": str(iceberg_data.get("side", ""))[:4].upper(),
                 "sz": str(iceberg_data.get("estimated_size", ""))[:6],
             }
-        return {}
-
-    # Fallback: whale_activity do payload bruto
-    wa = event_data.get("whale_activity", {})
-    if isinstance(wa, dict) and wa.get("iceberg_activity"):
-        return {"det": 1, "src": "whale_activity"}
 
     return {}
 
