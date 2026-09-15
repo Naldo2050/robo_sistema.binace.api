@@ -9,6 +9,9 @@ Semana canônica: asof terça 2026-09-08, publicação sexta 2026-09-11 15:30 ET
 from datetime import datetime, timezone
 
 from institutional.cftc_cot import (
+    BASIS_CALENDAR_FALLBACK,
+    BASIS_FIRST_SEEN,
+    BASIS_NONE,
     NO_POINT_IN_TIME,
     expected_publication_utc,
     select_point_in_time,
@@ -82,10 +85,31 @@ def test_missing_first_seen_without_fallback_is_unavailable():
 
 
 def test_missing_first_seen_with_calendar_fallback():
+    # Opt-in explícito (P5.1 HIGH-2): default strict não usa calendário.
     rec = {"report_as_of_date": TUE, "source_row_id": "260908133741F"}
-    assert select_point_in_time([rec], _at("2026-09-11T19:00:00+00:00"))["record"] is None
-    sel = select_point_in_time([rec], _at("2026-09-11T22:00:00+00:00"))
+    strict = select_point_in_time([rec], _at("2026-09-11T22:00:00+00:00"))
+    assert strict["record"] is None
+    assert strict["availability_basis"] == BASIS_NONE
+    assert select_point_in_time([rec], _at("2026-09-11T19:00:00+00:00"),
+                                allow_calendar_fallback=True)["record"] is None
+    sel = select_point_in_time([rec], _at("2026-09-11T22:00:00+00:00"),
+                               allow_calendar_fallback=True)
     assert sel["record"] is not None  # calendário + grace 2h
+    assert sel["availability_basis"] == BASIS_CALENDAR_FALLBACK
+    assert sel["first_seen_at"] is None  # nunca fabricado
+    assert sel["calendar_estimated_at"] == "2026-09-11T19:30:00+00:00"
+    # effective = estimado + grace 2h
+    assert sel["effective_available_at"] == "2026-09-11T21:30:00+00:00"
+    assert sel["revision"] is None
+
+
+def test_first_seen_basis_explicit():
+    sel = select_point_in_time([_rec()], _at("2026-09-12T00:00:00+00:00"))
+    assert sel["availability_basis"] == BASIS_FIRST_SEEN
+    assert sel["first_seen_at"] == "2026-09-11T19:45:00+00:00"
+    assert sel["effective_available_at"] == "2026-09-11T19:45:00+00:00"
+    assert sel["calendar_estimated_at"] is None
+    assert sel["report_as_of_date"] == TUE
 
 
 def test_dst_transition_nov2026():

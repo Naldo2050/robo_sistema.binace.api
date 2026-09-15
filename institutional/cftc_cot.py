@@ -48,6 +48,14 @@ STATUSES = ("AVAILABLE", "PARTIAL", "STALE", "UNAVAILABLE", "UNSUPPORTED", "INVA
 # Estado exclusivo de replay sem proveniência de disponibilidade.
 NO_POINT_IN_TIME = "UNAVAILABLE_FOR_POINT_IN_TIME"
 
+# Origem da disponibilidade declarada por select_point_in_time (HIGH-1).
+# OFFICIAL_PUBLICATION existe no contrato mas NUNCA é emitido: a CFTC não
+# publica published_at no dataset, logo não há evidência oficial direta.
+BASIS_FIRST_SEEN = "FIRST_SEEN"
+BASIS_OFFICIAL_PUBLICATION = "OFFICIAL_PUBLICATION"  # reservado, nunca emitido
+BASIS_CALENDAR_FALLBACK = "CALENDAR_FALLBACK"
+BASIS_NONE = "NONE"
+
 # Feriados US que deslocam a publicação de sexta (mesma base do enricher).
 _US_HOLIDAYS_2025_2026 = {
     "2025-01-01", "2025-01-20", "2025-02-17", "2025-05-26", "2025-06-19",
@@ -331,7 +339,10 @@ class CftcCot:
             quality={"missing_fields": sorted(set(missing)),
                      "validation_errors": [],
                      "revision": 0, "is_revision": False,
-                     "weeks_missing_in_window": None},
+                     "weeks_missing_in_window": None,
+                     # MEDIUM-3: sem first_seen real não há evidência do
+                     # momento de disponibilidade; age_available_seconds=None.
+                     "estimated_availability": first_seen_at is None},
             provenance={
                 "dataset_id": "gpe5-46if",
                 "source_row_id": str(raw_row.get("id", "")),
@@ -340,6 +351,25 @@ class CftcCot:
             },
             error_code=None if status in ("AVAILABLE", "PARTIAL", "STALE") else "stale_cache",
         )
+
+
+def select_research_history(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Histórico para PESQUISA (não-backtest): ordenado por asof, sem
+    promessa point-in-time. Nenhum resultado daqui pode ser reportado como
+    backtest livre de look-ahead (usar select_point_in_time strict)."""
+    rows = []
+    for rec in records:
+        asof = _parse_asof(rec.get("report_as_of_date"))
+        if asof is None:
+            continue
+        rows.append((asof.isoformat(), rec))
+    rows.sort(key=lambda kv: kv[0])
+    return {
+        "rows": [rec for _, rec in rows],
+        "point_in_time_guarantee": False,
+        "warning": ("research only: availability time unproven; "
+                    "do not report as look-ahead-free backtest"),
+    }
 
 
 # =====================================================================
@@ -376,40 +406,83 @@ def expected_publication_utc(asof: date) -> datetime:
 def select_point_in_time(
     records: List[Dict[str, Any]],
     at: datetime,
-    allow_calendar_fallback: bool = True,
+    allow_calendar_fallback: bool = False,
+    strict_point_in_time: bool = True,
     calendar_grace_s: float = 7200.0,
 ) -> Dict[str, Any]:
     """Seleciona o registro visível em `at` ou declara indisponibilidade.
 
     Cada record: {report_as_of_date: YYYY-MM-DD, first_seen_at?: ISO,
-    ...}. Retorna {"record": dict|None, "reason": str}. Revisões do mesmo
-    asof competem por first_seen_at: a revisão só vale após ser vista.
+    revision?: int, ...}. Revisões do mesmo asof competem por first_seen_at:
+    a revisão só vale após ser vista.
+
+    Proveniência (HIGH-1) — o retorno sempre contém:
+      record, reason, report_as_of_date, revision, effective_available_at,
+      availability_basis (FIRST_SEEN | CALENDAR_FALLBACK | NONE),
+      first_seen_at (real, quando existir), calendar_estimated_at (somente
+      quando o fallback foi utilizado). calendar_estimated_at NUNCA é
+      escrito em first_seen_at.
+
+    Strict (HIGH-2): com strict_point_in_time=True (default), registro sem
+    first_seen_at real NÃO é elegível, a menos que o chamador habilite
+    explicitamente allow_calendar_fallback=True (somente pesquisa, marcado
+    CALENDAR_FALLBACK, nunca evidência observada; sujeito a atraso de
+    feriado/publicação excepcional — ver expected_publication_utc).
+    Nenhum caminho produtivo/shadow/LLM habilita o fallback.
     """
     if at.tzinfo is None:
         at = at.replace(tzinfo=timezone.utc)
+    use_fallback = bool(allow_calendar_fallback)
     best = None
+    best_meta: Dict[str, Any] = {}
     for rec in records:
         asof = _parse_asof(rec.get("report_as_of_date"))
         if asof is None or asof.weekday() != 1:
             continue
         fs = _utc(rec.get("first_seen_at"))
+        cal_est: Optional[datetime] = None
         if fs is not None:
-            visible = fs <= at
-        elif allow_calendar_fallback:
-            visible = (expected_publication_utc(asof).timestamp()
-                       + calendar_grace_s) <= at.timestamp()
+            if fs > at:
+                continue
+            basis = BASIS_FIRST_SEEN
+            effective = fs
+        elif use_fallback:
+            cal_est = expected_publication_utc(asof)
+            effective = datetime.fromtimestamp(
+                cal_est.timestamp() + calendar_grace_s, tz=timezone.utc)
+            if effective > at:
+                continue
+            basis = BASIS_CALENDAR_FALLBACK
         else:
-            continue
-        if not visible:
             continue
         # Revisão posterior não retroage: desempatar por first_seen_at.
         key = (asof.isoformat(), (fs or datetime.max.replace(tzinfo=timezone.utc)).isoformat())
         if best is None or key > best[0]:
             best = (key, rec)
+            best_meta = {
+                "report_as_of_date": asof.isoformat(),
+                "revision": rec.get("revision"),
+                "effective_available_at": effective.isoformat(),
+                "availability_basis": basis,
+                "first_seen_at": fs.isoformat() if fs is not None else None,
+                "calendar_estimated_at": (
+                    cal_est.isoformat() if basis == BASIS_CALENDAR_FALLBACK else None),
+            }
     if best is None:
         has_unproven = any(rec.get("report_as_of_date") and not rec.get("first_seen_at")
                            for rec in records)
-        if has_unproven and not allow_calendar_fallback:
-            return {"record": None, "reason": NO_POINT_IN_TIME}
-        return {"record": None, "reason": "no_report_visible_at_t"}
-    return {"record": best[1], "reason": "ok"}
+        out: Dict[str, Any] = {
+            "record": None,
+            "report_as_of_date": None,
+            "revision": None,
+            "effective_available_at": None,
+            "availability_basis": BASIS_NONE,
+            "first_seen_at": None,
+            "calendar_estimated_at": None,
+        }
+        if has_unproven and strict_point_in_time and not use_fallback:
+            out["reason"] = NO_POINT_IN_TIME
+        else:
+            out["reason"] = "no_report_visible_at_t"
+        return out
+    return {"record": best[1], "reason": "ok", **best_meta}
