@@ -1,0 +1,252 @@
+{
+  "contracts": {
+    "133741": {
+      "contract_code": "133741",
+      "n_raw_rows": 440,
+      "n_weeks": 440,
+      "first": "2018-04-10",
+      "last": "2026-09-08",
+      "gaps": [],
+      "n_gaps": 0,
+      "duplicate_asofs": [],
+      "n_duplicates": 0,
+      "short_intervals": [
+        {
+          "from": "2018-12-18",
+          "to": "2018-12-24",
+          "days": 6
+        },
+        {
+          "from": "2018-12-31",
+          "to": "2019-01-08",
+          "days": 8
+        },
+        {
+          "from": "2020-12-15",
+          "to": "2020-12-21",
+          "days": 6
+        },
+        {
+          "from": "2020-12-21",
+          "to": "2020-12-29",
+          "days": 8
+        },
+        {
+          "from": "2023-06-27",
+          "to": "2023-07-03",
+          "days": 6
+        },
+        {
+          "from": "2023-07-03",
+          "to": "2023-07-11",
+          "days": 8
+        },
+        {
+          "from": "2025-11-04",
+          "to": "2025-11-10",
+          "days": 6
+        },
+        {
+          "from": "2025-11-10",
+          "to": "2025-11-18",
+          "days": 8
+        }
+      ],
+      "market_names": [
+        "BITCOIN - CHICAGO MERCANTILE EXCHANGE"
+      ],
+      "market_name_changes": false,
+      "quality_flag_counts": {
+        "non_tuesday_asof": 5
+      },
+      "asof_list_url": null
+    },
+    "133742": {
+      "contract_code": "133742",
+      "n_raw_rows": 280,
+      "n_weeks": 280,
+      "first": "2021-05-04",
+      "last": "2026-09-08",
+      "gaps": [],
+      "n_gaps": 0,
+      "duplicate_asofs": [],
+      "n_duplicates": 0,
+      "short_intervals": [
+        {
+          "from": "2023-06-27",
+          "to": "2023-07-03",
+          "days": 6
+        },
+        {
+          "from": "2023-07-03",
+          "to": "2023-07-11",
+          "days": 8
+        },
+        {
+          "from": "2025-11-04",
+          "to": "2025-11-10",
+          "days": 6
+        },
+        {
+          "from": "2025-11-10",
+          "to": "2025-11-18",
+          "days": 8
+        }
+      ],
+      "market_names": [
+        "MICRO BITCOIN - CHICAGO MERCANTILE EXCHANGE"
+      ],
+      "market_name_changes": false,
+      "quality_flag_counts": {
+        "non_tuesday_asof": 2
+      },
+      "asof_list_url": null
+    },
+    "146021": {
+      "contract_code": "146021",
+      "n_raw_rows": 284,
+      "n_weeks": 284,
+      "first": "2021-04-06",
+      "last": "2026-09-08",
+      "gaps": [],
+      "n_gaps": 0,
+      "duplicate_asofs": [],
+      "n_duplicates": 0,
+      "short_intervals": [
+        {
+          "from": "2023-06-27",
+          "to": "2023-07-03",
+          "days": 6
+        },
+        {
+          "from": "2023-07-03",
+          "to": "2023-07-11",
+          "days": 8
+        },
+        {
+          "from": "2025-11-04",
+          "to": "2025-11-10",
+          "days": 6
+        },
+        {
+          "from": "2025-11-10",
+          "to": "2025-11-18",
+          "days": 8
+        }
+      ],
+      "market_names": [
+        "ETHER CASH SETTLED - CHICAGO MERCANTILE EXCHANGE"
+      ],
+      "market_name_changes": false,
+      "quality_flag_counts": {
+        "non_tuesday_asof": 2
+      },
+      "asof_list_url": null
+    },
+    "146022": {
+      "contract_code": "146022",
+      "n_raw_rows": 248,
+      "n_weeks": 248,
+      "first": "2021-12-14",
+      "last": "2026-09-08",
+      "gaps": [],
+      "n_gaps": 0,
+      "duplicate_asofs": [],
+      "n_duplicates": 0,
+      "short_intervals": [
+        {
+          "from": "2023-06-27",
+          "to": "2023-07-03",
+          "days": 6
+        },
+        {
+          "from": "2023-07-03",
+          "to": "2023-07-11",
+          "days": 8
+        },
+        {
+          "from": "2025-11-04",
+          "to": "2025-11-10",
+          "days": 6
+        },
+        {
+          "from": "2025-11-10",
+          "to": "2025-11-18",
+          "days": 8
+        }
+      ],
+      "market_names": [
+        "MICRO ETHER  - CHICAGO MERCANTILE EXCHANGE"
+      ],
+      "market_name_changes": false,
+      "quality_flag_counts": {
+        "non_tuesday_asof": 2
+      },
+      "asof_list_url": null
+    }
+  },
+  "comparisons": {
+    "BTC_standard_vs_micro": {
+      "common_weeks": 280,
+      "std_weeks": 440,
+      "micro_weeks": 280,
+      "dealer_net_share_corr": 0.30504943523111294,
+      "dealer_net_share_corr_n": 280,
+      "dealer_wow_corr": -0.15409332911385992,
+      "dealer_wow_corr_n": 279,
+      "asset_manager_net_share_corr": 0.09645209520900518,
+      "asset_manager_net_share_corr_n": 280,
+      "asset_manager_wow_corr": 0.04687445225426937,
+      "asset_manager_wow_corr_n": 279,
+      "leveraged_net_share_corr": 0.3445832413384613,
+      "leveraged_net_share_corr_n": 280,
+      "leveraged_wow_corr": 0.01644982541090581,
+      "leveraged_wow_corr_n": 279,
+      "other_net_share_corr": 0.08347841273609945,
+      "other_net_share_corr_n": 280,
+      "other_wow_corr": -0.05353449266729356,
+      "other_wow_corr_n": 279,
+      "nonreportable_net_share_corr": 0.2373976976474126,
+      "nonreportable_net_share_corr_n": 280,
+      "nonreportable_wow_corr": 0.15958424169789315,
+      "nonreportable_wow_corr_n": 279,
+      "std_oi_first": 1702,
+      "std_oi_last": 21083,
+      "std_oi_growth_x": 12.387191539365453,
+      "micro_oi_first": 2965,
+      "micro_oi_last": 35179,
+      "micro_oi_growth_x": 11.864755480607082
+    },
+    "ETH_standard_vs_micro": {
+      "common_weeks": 248,
+      "std_weeks": 284,
+      "micro_weeks": 248,
+      "dealer_net_share_corr": 0.2755658742887616,
+      "dealer_net_share_corr_n": 248,
+      "dealer_wow_corr": -0.08124524753200542,
+      "dealer_wow_corr_n": 247,
+      "asset_manager_net_share_corr": 0.5191817152237838,
+      "asset_manager_net_share_corr_n": 248,
+      "asset_manager_wow_corr": 0.22621524351244054,
+      "asset_manager_wow_corr_n": 247,
+      "leveraged_net_share_corr": 0.12885541699615785,
+      "leveraged_net_share_corr_n": 248,
+      "leveraged_wow_corr": 0.00794940837313817,
+      "leveraged_wow_corr_n": 247,
+      "other_net_share_corr": -0.2294985392328565,
+      "other_net_share_corr_n": 248,
+      "other_wow_corr": -0.05507701963530584,
+      "other_wow_corr_n": 247,
+      "nonreportable_net_share_corr": 0.527975938264402,
+      "nonreportable_net_share_corr_n": 248,
+      "nonreportable_wow_corr": 0.2622591027536171,
+      "nonreportable_wow_corr_n": 247,
+      "std_oi_first": 1772,
+      "std_oi_last": 26564,
+      "std_oi_growth_x": 14.990970654627539,
+      "micro_oi_first": 6342,
+      "micro_oi_last": 63819,
+      "micro_oi_growth_x": 10.062913907284768
+    }
+  }
+}
