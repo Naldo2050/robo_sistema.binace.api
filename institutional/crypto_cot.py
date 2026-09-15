@@ -27,6 +27,7 @@ import logging
 import math
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -93,9 +94,14 @@ class CryptoCOTAnalysis:
     # Funding rate canônico
     funding_rate: Optional[float] = None
 
-    # Proveniência temporal: instante da fonte (quando disponível).
-    # observed_at = instante da análise (analyzed_at).
+    # Proveniência temporal (MEDIUM-2): três instantes separados.
+    # source_as_of = instante da fonte (quando disponível).
+    # retrieved_at = quando a resposta foi recebida (quando disponível;
+    #   NUNCA preenchido com analyzed_at).
+    # observed_at  = instante da análise (analyzed_at, epoch float legado).
     source_as_of: Optional[str] = None
+    retrieved_at: Optional[str] = None
+    analyzed_at: Optional[str] = None
 
     # Freshness
     is_stale: bool = False
@@ -142,6 +148,7 @@ class CryptoCOT:
         Interpreta dados de posicionamento e retorna regime determinístico com evidências.
         """
         now = time.time()
+        analyzed_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
 
         if positioning_data is None:
             return CryptoCOTAnalysis(
@@ -149,6 +156,7 @@ class CryptoCOT:
                 observed_at=now,
                 regime=PositioningRegime.UNKNOWN,
                 reasons=["Dados de posicionamento indisponíveis (None)"],
+                analyzed_at=analyzed_iso,
                 is_available=False,
             )
 
@@ -163,6 +171,7 @@ class CryptoCOT:
                 observed_at=now,
                 regime=PositioningRegime.UNKNOWN,
                 reasons=["Tipo de dado de posicionamento inválido"],
+                analyzed_at=analyzed_iso,
                 is_available=False,
             )
 
@@ -175,6 +184,7 @@ class CryptoCOT:
                 observed_at=now,
                 regime=PositioningRegime.UNKNOWN,
                 reasons=["Posicionamento marcado como indisponível pela fonte"],
+                analyzed_at=analyzed_iso,
                 is_available=False,
                 is_stale=is_stale,
             )
@@ -185,6 +195,7 @@ class CryptoCOT:
                 observed_at=now,
                 regime=PositioningRegime.UNKNOWN,
                 reasons=[f"Dados obsoletos (age={p_dict.get('age_seconds')}s > limite)"],
+                analyzed_at=analyzed_iso,
                 is_available=False,
                 is_stale=True,
             )
@@ -298,6 +309,8 @@ class CryptoCOT:
                 oi_delta_4h=oi_4h,
                 funding_rate=fr,
                 source_as_of=p_dict.get("source_as_of"),
+                retrieved_at=p_dict.get("retrieved_at"),
+                analyzed_at=analyzed_iso,
                 quality={"missing_fields": sorted(set(missing)),
                          "warnings": warnings},
                 is_available=True,
@@ -396,6 +409,8 @@ class CryptoCOT:
             oi_delta_4h=oi_4h,
             funding_rate=fr,
             source_as_of=p_dict.get("source_as_of"),
+            retrieved_at=p_dict.get("retrieved_at"),
+            analyzed_at=analyzed_iso,
             is_stale=is_stale,
             is_available=is_available,
         )

@@ -121,7 +121,9 @@ def test_ingest_versioning_append_only(tmp_path):
     rev = _row("tff_btc_revision.json")
     rec2, err2 = fetcher.ingest_row("133741", rev, "2026-09-12T00:05:00+00:00")
     assert err2 is None and rec2.revision == 1
-    assert rec2.first_seen_at == rec1.first_seen_at  # first_seen original preservado
+    # P5.1 item 3C: revisão tem first_seen próprio (nunca herda o da v0).
+    assert rec2.first_seen_at == "2026-09-12T00:05:00+00:00"
+    assert rec1.first_seen_at == "2026-09-11T19:45:00+00:00"
     assert len(fetcher._records[("133741", "2026-09-08")]) == 2
 
 

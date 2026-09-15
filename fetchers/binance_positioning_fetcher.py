@@ -76,8 +76,14 @@ class BinancePositioningSnapshot:
     top_position_vs_global: Optional[float] = None
 
     # 6. Proveniência e Freshness
+    # source_as_of  = instante da fonte (max source_timestamp, ISO UTC).
+    # retrieved_at  = quando a resposta foi recebida/coletada (ISO UTC).
+    # observed_at   = início da coleta (epoch float, legado).
+    # analyzed_at   = quando a análise rodou (CryptoCOTAnalysis.observed_at).
+    # retrieved_at NUNCA é preenchido com analyzed_at.
     source_timestamp: Optional[int] = None
     source_as_of: Optional[str] = None  # ISO UTC do source_timestamp (quando há)
+    retrieved_at: Optional[str] = None  # ISO UTC do recebimento (quando há)
     age_seconds: Optional[float] = None
     is_stale: bool = False
     is_available: bool = False
@@ -184,6 +190,8 @@ class BinancePositioningFetcher:
             try:
                 snapshot = await self._fetch_all_endpoints(session, symbol)
                 now = time.time()
+                snapshot.retrieved_at = datetime.fromtimestamp(
+                    now, tz=timezone.utc).isoformat()
                 self._cache[symbol] = (now, snapshot)
                 return snapshot
             finally:
