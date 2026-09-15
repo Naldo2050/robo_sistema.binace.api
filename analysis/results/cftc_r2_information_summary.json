@@ -1,0 +1,290 @@
+{
+  "schema_version": 1,
+  "research_history": true,
+  "point_in_time": false,
+  "note": "availability A=Friday-15:30ET(estimado se feriado/asof-atípico), B=segunda, C=terça; conclusões não dependem só de A; bootstrap em blocos temporais; FDR BH; sem cruzamento com preço além de targets",
+  "n_combos": 800,
+  "class_counts": {
+    "WEAK_UNSTABLE": 445,
+    "WEAK_STABLE": 189,
+    "NO_EVIDENCE": 162,
+    "PROMISING_RESEARCH_SIGNAL": 4
+  },
+  "top_by_robustness": [
+    {
+      "contract": "133741",
+      "category": "other",
+      "feature": "net_share_oi",
+      "horizon": 28,
+      "n": 436,
+      "pearson": 0.2951215426580176,
+      "spearman": 0.2896652207223941,
+      "q_value": 2.620165239114399e-07,
+      "classification": "PROMISING_RESEARCH_SIGNAL"
+    },
+    {
+      "contract": "133742",
+      "category": "leveraged",
+      "feature": "net_share_pct52",
+      "horizon": 28,
+      "n": 225,
+      "pearson": 0.2716305709961174,
+      "spearman": 0.2880067878897521,
+      "q_value": 0.004635830183355144,
+      "classification": "PROMISING_RESEARCH_SIGNAL"
+    },
+    {
+      "contract": "133742",
+      "category": "leveraged",
+      "feature": "net_share_oi",
+      "horizon": 28,
+      "n": 276,
+      "pearson": 0.24439915729670472,
+      "spearman": 0.2676805410881694,
+      "q_value": 0.004635830183355144,
+      "classification": "PROMISING_RESEARCH_SIGNAL"
+    },
+    {
+      "contract": "133741",
+      "category": "nonreportable",
+      "feature": "net_share_change_1w",
+      "horizon": 3,
+      "n": 439,
+      "pearson": -0.14910697734415126,
+      "spearman": -0.12953597674632966,
+      "q_value": 0.08907490695495415,
+      "classification": "PROMISING_RESEARCH_SIGNAL"
+    },
+    {
+      "contract": "133742",
+      "category": "other",
+      "feature": "net_share_pct52",
+      "horizon": 28,
+      "n": 225,
+      "pearson": -0.2634909620160348,
+      "spearman": -0.2622894292284361,
+      "q_value": 0.006299863697589694,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133742",
+      "category": "asset_manager",
+      "feature": "net_share_oi",
+      "horizon": 28,
+      "n": 276,
+      "pearson": -0.2452266962373971,
+      "spearman": -0.1683372298357688,
+      "q_value": 0.004635830183355144,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133741",
+      "category": "other",
+      "feature": "net_share_pct52",
+      "horizon": 28,
+      "n": 385,
+      "pearson": 0.23294013936561095,
+      "spearman": 0.24784040005888408,
+      "q_value": 0.0007695048027897447,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133742",
+      "category": "leveraged",
+      "feature": "net_share_pct26",
+      "horizon": 28,
+      "n": 251,
+      "pearson": 0.2208973620123088,
+      "spearman": 0.23903863373871034,
+      "q_value": 0.037521097014438703,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "146022",
+      "category": "asset_manager",
+      "feature": "net_share_oi",
+      "horizon": 28,
+      "n": 244,
+      "pearson": -0.21131613260872706,
+      "spearman": -0.1936680153749451,
+      "q_value": 0.06667814505401577,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133742",
+      "category": "asset_manager",
+      "feature": "net_share_change_4w",
+      "horizon": 28,
+      "n": 272,
+      "pearson": -0.19872309501670515,
+      "spearman": -0.25570739223875755,
+      "q_value": 0.06667814505401577,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "146022",
+      "category": "asset_manager",
+      "feature": "net_share_pct52",
+      "horizon": 28,
+      "n": 193,
+      "pearson": -0.19225287140685451,
+      "spearman": -0.2153667479216133,
+      "q_value": 0.17925482834839662,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133742",
+      "category": "asset_manager",
+      "feature": "net_share_oi",
+      "horizon": 14,
+      "n": 278,
+      "pearson": -0.17487052514179005,
+      "spearman": -0.12696324807749726,
+      "q_value": 0.13475725197039093,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133742",
+      "category": "leveraged",
+      "feature": "net_share_pct52",
+      "horizon": 14,
+      "n": 227,
+      "pearson": 0.17476832174137058,
+      "spearman": 0.18852385701396257,
+      "q_value": 0.1900847617148055,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133742",
+      "category": "asset_manager",
+      "feature": "net_change_4w",
+      "horizon": 28,
+      "n": 272,
+      "pearson": -0.17101521032690037,
+      "spearman": -0.1900667434940162,
+      "q_value": 0.1580264110769399,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133742",
+      "category": "dealer",
+      "feature": "net_share_oi",
+      "horizon": 28,
+      "n": 276,
+      "pearson": -0.16953035732683733,
+      "spearman": -0.20015410739002013,
+      "q_value": 0.1580264110769399,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "146022",
+      "category": "asset_manager",
+      "feature": "net_share_pct26",
+      "horizon": 28,
+      "n": 219,
+      "pearson": -0.16925565962525888,
+      "spearman": -0.16342042278734858,
+      "q_value": 0.24245831453870945,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133742",
+      "category": "leveraged",
+      "feature": "net_share_oi",
+      "horizon": 14,
+      "n": 278,
+      "pearson": 0.16519950278175724,
+      "spearman": 0.18228854671008737,
+      "q_value": 0.16248754241713365,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133742",
+      "category": "dealer",
+      "feature": "net_share_pct26",
+      "horizon": 28,
+      "n": 251,
+      "pearson": -0.15341143482324135,
+      "spearman": -0.14787332076934165,
+      "q_value": 0.26843745239029904,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "146022",
+      "category": "dealer",
+      "feature": "net_share_oi",
+      "horizon": 28,
+      "n": 244,
+      "pearson": 0.1495109985076575,
+      "spearman": 0.10142373889446488,
+      "q_value": 0.31709383613106445,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133742",
+      "category": "other",
+      "feature": "net_share_pct52",
+      "horizon": 14,
+      "n": 227,
+      "pearson": -0.14879782945675318,
+      "spearman": -0.11548725666171022,
+      "q_value": 0.36761038610123536,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133741",
+      "category": "other",
+      "feature": "net_share_pct52",
+      "horizon": 14,
+      "n": 387,
+      "pearson": 0.14792700147855825,
+      "spearman": 0.17669644443675248,
+      "q_value": 0.13475725197039093,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "146022",
+      "category": "asset_manager",
+      "feature": "net_share_change_4w",
+      "horizon": 28,
+      "n": 240,
+      "pearson": -0.14377234815960022,
+      "spearman": -0.17282021567302205,
+      "q_value": 0.36761038610123536,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "146022",
+      "category": "asset_manager",
+      "feature": "net_share_oi",
+      "horizon": 14,
+      "n": 246,
+      "pearson": -0.14053985589274212,
+      "spearman": -0.13985889424644124,
+      "q_value": 0.37964148429877903,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133742",
+      "category": "asset_manager",
+      "feature": "net_share_pct26",
+      "horizon": 28,
+      "n": 251,
+      "pearson": -0.14034184294949378,
+      "spearman": -0.1743250212284074,
+      "q_value": 0.36761038610123536,
+      "classification": "WEAK_STABLE"
+    },
+    {
+      "contract": "133742",
+      "category": "dealer",
+      "feature": "net_share_oi",
+      "horizon": 14,
+      "n": 278,
+      "pearson": -0.1392328387584779,
+      "spearman": -0.13834447755642,
+      "q_value": 0.31709383613106445,
+      "classification": "WEAK_STABLE"
+    }
+  ]
+}
