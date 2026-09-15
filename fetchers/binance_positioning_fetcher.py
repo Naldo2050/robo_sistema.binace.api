@@ -1,8 +1,13 @@
 # fetchers/binance_positioning_fetcher.py
 # -*- coding: utf-8 -*-
 """
-Coletor Canônico de Posicionamento e Crypto COT da Binance USD-M Futures (API Pública).
+Coletor Canônico de Posicionamento Binance USD-M Futures (API Pública).
 Fase P1.1 (Arquitetura Context-Only).
+
+Fonte intraday da Binance, independente do COT oficial semanal da CFTC/CME
+(ver fetchers/cftc_cot_fetcher.py). "Global" = mercado geral Binance (todas
+as contas; não equivale a "varejo" como fato). "Top Trader" = coorte Binance
+por margem/volume (não equivale a "institucional"/"smart money" como fato).
 
 Coleta e normaliza:
 1. Global Long/Short Account Ratio (globalLongShortAccountRatio)
@@ -24,6 +29,7 @@ import logging
 import math
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -37,7 +43,7 @@ _REQUEST_TIMEOUT = 5.0      # 5 segundos por request
 
 @dataclass
 class BinancePositioningSnapshot:
-    """Snapshot canônico normalizado de posicionamento institucional."""
+    """Snapshot canônico normalizado de posicionamento Binance."""
     symbol: str
     period: str
     observed_at: float
@@ -71,6 +77,7 @@ class BinancePositioningSnapshot:
 
     # 6. Proveniência e Freshness
     source_timestamp: Optional[int] = None
+    source_as_of: Optional[str] = None  # ISO UTC do source_timestamp (quando há)
     age_seconds: Optional[float] = None
     is_stale: bool = False
     is_available: bool = False
@@ -82,7 +89,7 @@ class BinancePositioningSnapshot:
 
 
 def _safe_float(val: Any) -> Optional[float]:
-    """Converte valor para float finito e positivo, ou None se inválido."""
+    """Converte valor para float finito, ou None se inválido."""
     if val is None or isinstance(val, bool):
         return None
     try:
@@ -92,6 +99,22 @@ def _safe_float(val: Any) -> Optional[float]:
     except (ValueError, TypeError):
         pass
     return None
+
+
+def _safe_ratio(val: Any) -> Optional[float]:
+    """Ratio L/S válido (>= 0) ou None. Negativo é semanticamente inválido."""
+    f = _safe_float(val)
+    if f is None or f < 0:
+        return None
+    return f
+
+
+def _safe_level(val: Any) -> Optional[float]:
+    """Nível (ex. open interest) válido (>= 0) ou None."""
+    f = _safe_float(val)
+    if f is None or f < 0:
+        return None
+    return f
 
 
 class BinancePositioningFetcher:
@@ -259,7 +282,7 @@ class BinancePositioningFetcher:
         # 1. Global Account Ratio
         if global_acc_data:
             latest = global_acc_data[-1]
-            snapshot.global_account_ratio = _safe_float(latest.get("longShortRatio"))
+            snapshot.global_account_ratio = _safe_ratio(latest.get("longShortRatio"))
             snapshot.global_long_account_pct = _safe_float(latest.get("longAccount"))
             snapshot.global_short_account_pct = _safe_float(latest.get("shortAccount"))
             if latest.get("timestamp"):
@@ -268,7 +291,7 @@ class BinancePositioningFetcher:
         # 2. Top Trader Account Ratio
         if top_acc_data:
             latest = top_acc_data[-1]
-            snapshot.top_account_ratio = _safe_float(latest.get("longShortRatio"))
+            snapshot.top_account_ratio = _safe_ratio(latest.get("longShortRatio"))
             snapshot.top_long_account_pct = _safe_float(latest.get("longAccount"))
             snapshot.top_short_account_pct = _safe_float(latest.get("shortAccount"))
             if latest.get("timestamp"):
@@ -277,7 +300,7 @@ class BinancePositioningFetcher:
         # 3. Top Trader Position Ratio
         if top_pos_data:
             latest = top_pos_data[-1]
-            snapshot.top_position_ratio = _safe_float(latest.get("longShortRatio"))
+            snapshot.top_position_ratio = _safe_ratio(latest.get("longShortRatio"))
             # Binance pode retornar 'longPosition' ou 'longAccount' neste endpoint
             l_pos = latest.get("longPosition") or latest.get("longAccount")
             s_pos = latest.get("shortPosition") or latest.get("shortAccount")
@@ -289,8 +312,8 @@ class BinancePositioningFetcher:
         # 4. Open Interest e Deltas
         if oi_hist_data:
             latest = oi_hist_data[-1]
-            oi_cur = _safe_float(latest.get("sumOpenInterest"))
-            oi_cur_usd = _safe_float(latest.get("sumOpenInterestValue"))
+            oi_cur = _safe_level(latest.get("sumOpenInterest"))
+            oi_cur_usd = _safe_level(latest.get("sumOpenInterestValue"))
             snapshot.open_interest = oi_cur
             snapshot.open_interest_usd = oi_cur_usd
             if latest.get("timestamp"):
@@ -299,14 +322,14 @@ class BinancePositioningFetcher:
             # Delta 1h: 12 barras de 5m
             if len(oi_hist_data) >= 13 and oi_cur is not None:
                 past_1h = oi_hist_data[-13]
-                oi_1h_base = _safe_float(past_1h.get("sumOpenInterest"))
+                oi_1h_base = _safe_level(past_1h.get("sumOpenInterest"))
                 if oi_1h_base and oi_1h_base > 0:
                     snapshot.oi_delta_1h = round((oi_cur - oi_1h_base) / oi_1h_base, 4)
 
             # Delta 4h: 48 barras de 5m
             if len(oi_hist_data) >= 49 and oi_cur is not None:
                 past_4h = oi_hist_data[-49]
-                oi_4h_base = _safe_float(past_4h.get("sumOpenInterest"))
+                oi_4h_base = _safe_level(past_4h.get("sumOpenInterest"))
                 if oi_4h_base and oi_4h_base > 0:
                     snapshot.oi_delta_4h = round((oi_cur - oi_4h_base) / oi_4h_base, 4)
 
@@ -325,6 +348,8 @@ class BinancePositioningFetcher:
         if source_timestamps:
             max_ts = max(source_timestamps)
             snapshot.source_timestamp = max_ts
+            snapshot.source_as_of = datetime.fromtimestamp(
+                max_ts / 1000.0, tz=timezone.utc).isoformat()
             age = now - (max_ts / 1000.0)
             snapshot.age_seconds = max(0.0, round(age, 1))
             snapshot.is_stale = age > self.max_stale_seconds

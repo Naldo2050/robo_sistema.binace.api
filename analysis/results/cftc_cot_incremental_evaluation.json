@@ -1,0 +1,18 @@
+{
+  "evaluation": "cftc_cot_incremental_value",
+  "date": "2026-09-15",
+  "baseline": "sistema sem CFTC (pos Binance apenas)",
+  "experiment": "sistema com CFTC context-only (flag OFF em produção; payload medido em teste)",
+  "shadow_observations": 2,
+  "coverage_rate": 1.0,
+  "available_rate": 1.0,
+  "weeks_of_history_point_in_time": 0,
+  "payload_delta_bytes_p50": 132,
+  "payload_section": "cftc (<=400 bytes, chave independente de pos)",
+  "decision_change_rate": null,
+  "returns_comparison": null,
+  "note": "amostra semanal insuficiente para qualquer conclusão estatística (~52 obs/ano; mínimo 26 semanas para percentis). Nenhuma métrica de retorno calculada.",
+  "classification": "INSUFFICIENT_SAMPLE",
+  "recommendation": "KEEP_CONTEXT_ONLY como teto; sem promoção a ML/risk/sizing sem fase futura específica de validação",
+  "ablation": {"A_baseline": "done", "B_binance": "done", "C_cftc": "pending_weeks", "D_combined": "pending_weeks"}
+}

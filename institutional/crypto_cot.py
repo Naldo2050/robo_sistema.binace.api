@@ -4,12 +4,17 @@
 Crypto COT (Commitment of Traders) & Positioning Analyzer.
 Fase P1.1 (Arquitetura Context-Only).
 
-Interpreta a estrutura de posicionamento institucional da Binance Futures:
-1. Global Long/Short Account Ratio (Varejo + Mercado Geral)
-2. Top Trader Long/Short Account Ratio (Top 20% Contas)
-3. Top Trader Long/Short Position Ratio (Top 20% Volume Financeiro)
+Interpreta a estrutura de posicionamento da Binance Futures (fonte intraday,
+independente do COT oficial semanal da CFTC/CME — ver institutional/cftc_cot.py):
+1. Global Long/Short Account Ratio (mercado geral Binance, todas as contas)
+2. Top Trader Long/Short Account Ratio (Top 20% contas por margem, Binance)
+3. Top Trader Long/Short Position Ratio (Top 20% por volume nocional, Binance)
 4. Open Interest e Deltas Temporais (1h / 4h)
 5. Funding Rate Canônico (fração decimal)
+
+NOMENCLATURA: "Global" = universo Binance (não equivale a "varejo" como fato);
+"Top Traders" = coorte Binance por margem/volume (não equivale a
+"institucional"/"smart money" como fato). Este módulo NÃO é o COT oficial.
 
 RESTRIÇÃO DE ARQUITETURA:
 Este módulo é ESTRITAMENTE CONTEXT-ONLY.
@@ -66,6 +71,19 @@ class CryptoCOTAnalysis:
     top_account_vs_global: Optional[float] = None
     top_position_vs_global: Optional[float] = None
 
+    # Divergências em pontos percentuais de long-share (métrica canônica;
+    # os campos *_vs_global acima são legado em diferença bruta de ratio).
+    # long_share = ratio / (1 + ratio); divergence_pp = (top - global) * 100.
+    top_account_vs_global_pp: Optional[float] = None
+    top_position_vs_global_pp: Optional[float] = None
+
+    # Lados/direções estruturados (evitam parse de texto livre em reasons).
+    squeeze_side: Optional[str] = None  # "LONG" | "SHORT" | None
+    oi_direction: Optional[str] = None  # "EXPANSION" | "CONTRACTION" | None
+
+    # Qualidade: {"missing_fields": [...], "warnings": [...]}.
+    quality: Dict[str, Any] = field(default_factory=dict)
+
     # Open interest e deltas
     open_interest: Optional[float] = None
     open_interest_usd: Optional[float] = None
@@ -74,6 +92,10 @@ class CryptoCOTAnalysis:
 
     # Funding rate canônico
     funding_rate: Optional[float] = None
+
+    # Proveniência temporal: instante da fonte (quando disponível).
+    # observed_at = instante da análise (analyzed_at).
+    source_as_of: Optional[str] = None
 
     # Freshness
     is_stale: bool = False
@@ -86,9 +108,16 @@ class CryptoCOTAnalysis:
         return d
 
 
+def _pp(top: Optional[float], glob: Optional[float]) -> Optional[float]:
+    """Divergência em pontos percentuais de long-share (canônica)."""
+    if top is None or glob is None:
+        return None
+    return round((top / (1.0 + top) - glob / (1.0 + glob)) * 100.0, 4)
+
+
 class CryptoCOT:
     """
-    Motor de análise de posicionamento institucional (Crypto COT).
+    Motor de análise de posicionamento Binance (intraday, context-only).
     Avalia divergências institucionais, crowding e risco de liquidação em cascata.
     """
 
@@ -160,21 +189,95 @@ class CryptoCOT:
                 is_stale=True,
             )
 
-        g_ratio = p_dict.get("global_account_ratio")
-        t_acc_ratio = p_dict.get("top_account_ratio")
-        t_pos_ratio = p_dict.get("top_position_ratio")
+        # Prioriza funding_rate canônico passado ou contido no dict
+        fr = funding_rate if funding_rate is not None else p_dict.get("funding_rate")
+
+        warnings: List[str] = []
+        missing: List[str] = []
+
+        def _as_ratio(v: Any, name: str) -> Optional[float]:
+            if v is None or isinstance(v, bool):
+                if v is None:
+                    missing.append(name)
+                else:
+                    warnings.append(f"{name} bool rejeitado")
+                    missing.append(name)
+                return None
+            try:
+                f = float(v)
+            except (ValueError, TypeError):
+                warnings.append(f"{name} não-numérico rejeitado")
+                missing.append(name)
+                return None
+            if not math.isfinite(f):
+                warnings.append(f"{name} non-finite rejeitado")
+                missing.append(name)
+                return None
+            if f < 0:
+                warnings.append(f"{name} negativo rejeitado (ratio >= 0)")
+                missing.append(name)
+                return None
+            return f
+
+        g_ratio = _as_ratio(p_dict.get("global_account_ratio"), "global_account_ratio")
+        t_acc_ratio = _as_ratio(p_dict.get("top_account_ratio"), "top_account_ratio")
+        t_pos_ratio = _as_ratio(p_dict.get("top_position_ratio"), "top_position_ratio")
+
+        # Funding: rejeita bool, non-finite e valores fora de limites plausíveis.
+        if isinstance(fr, bool):
+            warnings.append("funding_rate bool rejeitado")
+            fr = None
+        elif fr is not None:
+            try:
+                fr_f = float(fr)
+                if not math.isfinite(fr_f):
+                    warnings.append("funding_rate non-finite rejeitado")
+                    fr = None
+                elif abs(fr_f) > 0.05:
+                    warnings.append(f"funding_rate {fr_f} fora de faixa plausível (|fr|<=0.05)")
+                    fr = None
+                else:
+                    fr = fr_f
+            except (ValueError, TypeError):
+                warnings.append("funding_rate não-numérico rejeitado")
+                fr = None
+
+        # Open interest negativo é inválido (nível, não delta).
+        oi = p_dict.get("open_interest")
+        if oi is not None and not isinstance(oi, bool):
+            try:
+                oi_f = float(oi)
+                if not math.isfinite(oi_f) or oi_f < 0:
+                    warnings.append("open_interest inválido rejeitado")
+                    oi = None
+            except (ValueError, TypeError):
+                warnings.append("open_interest não-numérico rejeitado")
+                oi = None
+        elif isinstance(oi, bool):
+            warnings.append("open_interest bool rejeitado")
+            oi = None
+
         g_long_pct = p_dict.get("global_long_account_pct")
         g_short_pct = p_dict.get("global_short_account_pct")
         t_long_acc_pct = p_dict.get("top_long_account_pct")
         t_long_pos_pct = p_dict.get("top_long_position_pct")
 
-        oi = p_dict.get("open_interest")
         oi_usd = p_dict.get("open_interest_usd")
         oi_1h = p_dict.get("oi_delta_1h")
         oi_4h = p_dict.get("oi_delta_4h")
 
-        # Prioriza funding_rate canônico passado ou contido no dict
-        fr = funding_rate if funding_rate is not None else p_dict.get("funding_rate")
+        # Consistência ratio x percentual (alerta em quality, sem mudar regime).
+        def _long_share(r: Optional[float]) -> Optional[float]:
+            return (r / (1.0 + r)) if r is not None else None
+
+        _g_share = _long_share(g_ratio)
+        if _g_share is not None and g_long_pct is not None \
+                and not isinstance(g_long_pct, bool):
+            try:
+                if abs(float(g_long_pct) - _g_share * 100.0) > 2.0:
+                    warnings.append("global_long_account_pct inconsistente com global_account_ratio")
+            except (ValueError, TypeError):
+                pass
 
         # Verifica completude essencial
         if g_ratio is None or t_pos_ratio is None:
@@ -187,11 +290,16 @@ class CryptoCOT:
                 global_account_ratio=g_ratio,
                 top_account_ratio=t_acc_ratio,
                 top_position_ratio=t_pos_ratio,
+                top_account_vs_global_pp=_pp(t_acc_ratio, g_ratio),
+                top_position_vs_global_pp=_pp(t_pos_ratio, g_ratio),
                 open_interest=oi,
                 open_interest_usd=oi_usd,
                 oi_delta_1h=oi_1h,
                 oi_delta_4h=oi_4h,
                 funding_rate=fr,
+                source_as_of=p_dict.get("source_as_of"),
+                quality={"missing_fields": sorted(set(missing)),
+                         "warnings": warnings},
                 is_available=True,
                 is_stale=False,
             )
@@ -204,31 +312,36 @@ class CryptoCOT:
 
         reasons: List[str] = []
         regime = PositioningRegime.NEUTRAL
+        squeeze_side: Optional[str] = None
+        oi_direction: Optional[str] = None
 
         # 1. Detecção de Risco de Squeeze (Funding Extremo + Crowding)
         if fr is not None:
             if fr > self.SQUEEZE_FUNDING_THRESHOLD and g_ratio > self.CROWDED_LONG_RATIO:
                 regime = PositioningRegime.SQUEEZE_RISK
+                squeeze_side = "LONG"
                 reasons.append(
-                    f"Risco de Long Squeeze: funding elevado ({fr*100:.3f}%) com varejo comprado (L/S={g_ratio:.2f})"
+                    f"Risco de Long Squeeze: funding elevado ({fr*100:.3f}%) com mercado geral comprado (L/S={g_ratio:.2f})"
                 )
             elif fr < -self.SQUEEZE_FUNDING_THRESHOLD and g_ratio < self.CROWDED_SHORT_RATIO:
                 regime = PositioningRegime.SQUEEZE_RISK
+                squeeze_side = "SHORT"
                 reasons.append(
-                    f"Risco de Short Squeeze: funding negativo ({fr*100:.3f}%) com varejo vendido (L/S={g_ratio:.2f})"
+                    f"Risco de Short Squeeze: funding negativo ({fr*100:.3f}%) com mercado geral vendido (L/S={g_ratio:.2f})"
                 )
 
-        # 2. Detecção de Divergência Top Traders vs Global
+        # 2. Detecção de Divergência Top Traders vs mercado geral
+        # (legado: diferença bruta de ratios; canônico: divergence_pp).
         if regime == PositioningRegime.NEUTRAL:
             if top_pos_vs_global > self.DIVERGENCE_THRESHOLD:
                 regime = PositioningRegime.TOP_LONG_DIVERGENCE
                 reasons.append(
-                    f"Top Traders posicionados comprados vs Varejo (Top Pos={t_pos_ratio:.2f}, Global={g_ratio:.2f}, Diff=+{top_pos_vs_global:.2f})"
+                    f"Top Traders posicionados comprados vs mercado geral (Top Pos={t_pos_ratio:.2f}, Global={g_ratio:.2f}, Diff=+{top_pos_vs_global:.2f})"
                 )
             elif top_pos_vs_global < -self.DIVERGENCE_THRESHOLD:
                 regime = PositioningRegime.TOP_SHORT_DIVERGENCE
                 reasons.append(
-                    f"Top Traders posicionados vendidos vs Varejo (Top Pos={t_pos_ratio:.2f}, Global={g_ratio:.2f}, Diff={top_pos_vs_global:.2f})"
+                    f"Top Traders posicionados vendidos vs mercado geral (Top Pos={t_pos_ratio:.2f}, Global={g_ratio:.2f}, Diff={top_pos_vs_global:.2f})"
                 )
 
         # 3. Detecção de Crowding Unilateral
@@ -240,14 +353,17 @@ class CryptoCOT:
                 regime = PositioningRegime.CROWDED_SHORT
                 reasons.append(f"Mercado sobrecarregado na venda (Global L/S={g_ratio:.2f} <= {self.CROWDED_SHORT_RATIO})")
 
-        # 4. Detecção de Expansão de Open Interest
+        # 4. Detecção de variação expressiva de Open Interest
+        # (regime legado OI_EXPANSION mantido; direção em oi_direction).
         if regime == PositioningRegime.NEUTRAL:
             if oi_1h is not None and abs(oi_1h) >= self.OI_EXPANSION_1H:
                 regime = PositioningRegime.OI_EXPANSION
+                oi_direction = "EXPANSION" if oi_1h > 0 else "CONTRACTION"
                 direction = "crescimento" if oi_1h > 0 else "queda"
                 reasons.append(f"Variação expressiva de OI 1h ({direction} de {oi_1h*100:+.1f}%)")
             elif oi_4h is not None and abs(oi_4h) >= self.OI_EXPANSION_4H:
                 regime = PositioningRegime.OI_EXPANSION
+                oi_direction = "EXPANSION" if oi_4h > 0 else "CONTRACTION"
                 direction = "crescimento" if oi_4h > 0 else "queda"
                 reasons.append(f"Variação expressiva de OI 4h ({direction} de {oi_4h*100:+.1f}%)")
 
@@ -268,11 +384,18 @@ class CryptoCOT:
             top_long_position_pct=t_long_pos_pct,
             top_account_vs_global=top_acc_vs_global,
             top_position_vs_global=top_pos_vs_global,
+            top_account_vs_global_pp=_pp(t_acc_ratio, g_ratio),
+            top_position_vs_global_pp=_pp(t_pos_ratio, g_ratio),
+            squeeze_side=squeeze_side,
+            oi_direction=oi_direction,
+            quality={"missing_fields": sorted(set(missing)),
+                     "warnings": warnings},
             open_interest=oi,
             open_interest_usd=oi_usd,
             oi_delta_1h=oi_1h,
             oi_delta_4h=oi_4h,
             funding_rate=fr,
+            source_as_of=p_dict.get("source_as_of"),
             is_stale=is_stale,
             is_available=is_available,
         )
