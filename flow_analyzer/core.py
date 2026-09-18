@@ -254,6 +254,10 @@ class FlowAnalyzer(IFlowAnalyzer):
         # ou cold start (WARMING_UP). Resetado junto no _reset_metrics.
         self._time_pruned_max_ts: Optional[int] = None
         self._last_flow_trades_capacity_log_ms = 0
+        # DT-02/H1: marcas temporais (perf_counter) das últimas evicções por
+        # capacidade — lidas no log de LATÊNCIA CRÍTICA (evict_5s).
+        # Append O(1) por evicção; maxlen limita memória (~20k floats).
+        self._latcrit_eviction_marks: deque = deque(maxlen=20000)
         # 0 is the sentinel for no observed trade; production epoch_ms is positive.
         self._flow_first_trade_ts = 0
         self._max_ts_seen = 0
@@ -505,6 +509,10 @@ class FlowAnalyzer(IFlowAnalyzer):
             capacity_evicted = True
             self._flow_trades_capacity_evictions_total += 1
             self._flow_trades_last_capacity_eviction_ts = reference_ts
+            try:
+                self._latcrit_eviction_marks.append(time.perf_counter())
+            except AttributeError:
+                pass
             if self._prometheus is not None:
                 try:
                     self._prometheus.record_flow_trades_capacity_eviction()
@@ -717,7 +725,30 @@ class FlowAnalyzer(IFlowAnalyzer):
             
             # Alerta de latência crítica (> 200ms)
             if duration > 200.0:
-                logging.error("🚨 LATÊNCIA CRÍTICA: process_trade took %.2fms", duration)
+                # DT-02/H1/H2: contexto do buffer no instante do stall.
+                # buffer_size = ocupação do deque de 100k; evict_5s = evicções
+                # por capacidade nos 5s anteriores; parquet_flush = flush de
+                # feature store em andamento. Prefixo original preservado
+                # para continuidade dos greps históricos.
+                try:
+                    now_mono = time.perf_counter()
+                    marks = self._latcrit_eviction_marks
+                    while marks and marks[0] < now_mono - 5.0:
+                        marks.popleft()
+                    evict_5s = len(marks)
+                    buf_size = len(self.flow_trades)
+                except Exception:
+                    evict_5s, buf_size = -1, -1
+                try:
+                    from data_processing import feature_store as _fs_mod
+                    parquet_flush = bool(getattr(_fs_mod, "FLUSH_IN_PROGRESS", False))
+                except Exception:
+                    parquet_flush = False
+                logging.error(
+                    "🚨 LATÊNCIA CRÍTICA: process_trade took %.2fms | buffer_size=%d | "
+                    "evict_5s=%d | parquet_flush=%s",
+                    duration, buf_size, evict_5s, parquet_flush,
+                )
             
             # Heatmap fora do lock
             if heatmap_payload and self.liquidity_heatmap:
@@ -867,6 +898,10 @@ class FlowAnalyzer(IFlowAnalyzer):
         self._flow_trades_last_capacity_eviction_ts = 0
         self._time_pruned_max_ts = None  # P06: marcador de prune acompanha o reset
         self._last_flow_trades_capacity_log_ms = 0
+        try:
+            self._latcrit_eviction_marks.clear()
+        except AttributeError:
+            pass
         self._flow_first_trade_ts = 0
         self._price_at_reset = self._last_price
         self._last_price = None

@@ -8,6 +8,12 @@ from pathlib import Path
 import pandas as pd
 
 
+# DT-02/H1: flag observacional de flush em andamento (lida pelo log de
+# LATÊNCIA CRÍTICA em flow_analyzer/core.py para correlação H2).
+# Booleano simples é suficiente (leituras/escritas atômicas sob GIL).
+FLUSH_IN_PROGRESS = False
+
+
 class FeatureStore:
     """
     Armazena features por janela em Parquet particionado por dia.
@@ -93,38 +99,43 @@ class FeatureStore:
             self._flush()
 
     def _flush(self) -> None:
+        global FLUSH_IN_PROGRESS
         if not self.buffer:
             return
 
-        df = pd.DataFrame(self.buffer)
-        
-        # Converte para numérico onde possível
-        for col in df.columns:
-            if df[col].dtype == "object":
-                df[col] = self.safe_to_numeric(df[col])
+        FLUSH_IN_PROGRESS = True
+        try:
+            df = pd.DataFrame(self.buffer)
+            
+            # Converte para numérico onde possível
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    df[col] = self.safe_to_numeric(df[col])
 
-        df["saved_at"] = pd.to_datetime(df["saved_at"])
-        df["date"] = df["saved_at"].dt.strftime("%Y-%m-%d")
+            df["saved_at"] = pd.to_datetime(df["saved_at"])
+            df["date"] = df["saved_at"].dt.strftime("%Y-%m-%d")
 
-        # Desfragmenta o frame após as inserções/modificações
-        df = df.copy()
+            # Desfragmenta o frame após as inserções/modificações
+            df = df.copy()
 
-        grouped = df.groupby("date")
-        for date_str, group in grouped:
-            partition_dir = self.base_dir / f"date={date_str}"
-            partition_dir.mkdir(exist_ok=True)
-            timestamp_ms = int(time.time() * 1000)
-            filepath = partition_dir / f"part_{timestamp_ms}.parquet"
-            try:
-                group.drop(columns=["date"]).to_parquet(
-                    filepath, index=False, compression="snappy", engine=self.engine
-                )
-                logging.info(f"{len(group)} linhas gravadas em {filepath}")
-            except Exception as e:
-                logging.error(f"Erro ao gravar Parquet para {date_str}: {e}")
-                # Não limpa buffer em caso de erro
+            grouped = df.groupby("date")
+            for date_str, group in grouped:
+                partition_dir = self.base_dir / f"date={date_str}"
+                partition_dir.mkdir(exist_ok=True)
+                timestamp_ms = int(time.time() * 1000)
+                filepath = partition_dir / f"part_{timestamp_ms}.parquet"
+                try:
+                    group.drop(columns=["date"]).to_parquet(
+                        filepath, index=False, compression="snappy", engine=self.engine
+                    )
+                    logging.info(f"{len(group)} linhas gravadas em {filepath}")
+                except Exception as e:
+                    logging.error(f"Erro ao gravar Parquet para {date_str}: {e}")
+                    # Não limpa buffer em caso de erro
 
-        self.buffer.clear()
+            self.buffer.clear()
+        finally:
+            FLUSH_IN_PROGRESS = False
 
     def close(self) -> None:
         self._flush()
