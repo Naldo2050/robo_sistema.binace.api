@@ -723,6 +723,9 @@ def process_window_snapshot(
 
             # ----------------------------
             # Detecção de sinais
+            # DT-02: NÃO adicionar novos detectores de alta frequência aqui sem
+            # resolver a contenção de lock do FlowAnalyzer (ver
+            # docs/audit/TEST_DEBT.md e config/settings.py::SUPPORTED_SYMBOLS).
             # ----------------------------
             signals = pipeline.detect_signals(
                 absorption_detector=lambda data, sym: create_absorption_event(

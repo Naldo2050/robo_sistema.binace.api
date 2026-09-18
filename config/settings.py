@@ -133,6 +133,12 @@ VP_ADVANCED = True
 
 # ===== PARÂMETROS DE TRADING =====
 SYMBOL = "BTCUSDT"
+# DT-02 (ver docs/audit/TEST_DEBT.md): bloqueio formal de expansão de escopo.
+# NÃO EXPANDIR esta lista sem resolver DT-02 — contenção de lock em
+# FlowAnalyzer sob volume alto ainda não mitigada (latência crítica >1500ms
+# observada mesmo em single-símbolo sob rajadas; ver INV-B, 18/09/2026).
+# Vale também para novos detectores de alta frequência no window_processor.
+SUPPORTED_SYMBOLS = ["BTCUSDT"]
 MARKET_TYPE = "binance_futures_perp"
 STREAM_URL = f"wss://fstream.binance.com/market/ws/{SYMBOL.lower()}@aggTrade"  # aggTrade Binance USD-M Futures. NÃO usar stream.binance.com (Spot) — ver docs/audit/AUDITORIA_JANELAS_EXTRAIDAS_R4b_2026-09-03.md
 WINDOW_SIZE_MINUTES = 1
