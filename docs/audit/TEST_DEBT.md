@@ -54,3 +54,48 @@ Este documento registra os testes atualmente quebrados no repositório, identifi
 | `trading/alert_engine.py` | Gate duplo para `VOLUME_SPIKE`: `ratio >= threshold` E `current_volume >= p95_hourly[hour_utc]`. | `tests/unit/test_volume_spike_dual_gate.py` (Novo) | Validação do gate duplo: volume abaixo do p95 bloqueia o alerta mesmo com ratio alto; volume acima do p95 dispara normalmente. |
 | `orderbook_wrapper.py` & `data_handler.py` | Snapshot síncrono com timeout 1.5s e schema padronizado (`timestamps`, `source`, `snapshot_offset_ms`). | `tests/unit/test_orderbook_sync_snapshot.py`<br>`tests/unit/test_signal_orderbook_schema.py` (Novos) | Validação de fallback síncrono para cache background e paridade de schema entre sinais e triggers. |
 
+---
+
+## 4. Débitos Técnicos da Auditoria de Produção Futures (2026-09-08)
+
+Identificados durante a execução e validação da Coleta Oficial de 2 Horas (Item 8) na janela de overlap Londres/NY (08/09/2026 13:35–15:35 UTC, $N = 204.773$ trades, 120 janelas).
+
+### DT-01 — Observabilidade Contínua de Memória Heap/RSS do Processo Python
+
+* **ID:** `DT-01`
+* **Dono:** Equipe de Infraestrutura / Telemetria
+* **Prioridade:** Média
+* **Gatilho de Revisão:** Antes de habilitar execução ininterrupta 24/7 em produção contínua.
+* **Descrição Técnica:** A Validação 6 atestou a ausência de saturação com base no crescimento controlado em disco (`trading_bot.db` em 2.956 KB e `collect_2h.log` em 707 KB) e no health check estático de `MacroUpdateService` (`memory_mb <= 500 MB`). Não há, contudo, amostragem contínua minuto a minuto da memória residente real (RSS) do processo Python persistida no SQLite ou exportada periodicamente no `/metrics`.
+* **Impacto:** Impossibilidade de diagnosticar vazamentos lentos e progressivos de memória (memory leaks sutis em deques, closures assíncronas ou caches de enriquecimento) antes que atinjam o threshold de OOM (*Out Of Memory*) do container em sessões estendidas de dias ou semanas.
+* **Critério Objetivo de Resolução:** Série temporal de memória RSS (`psutil.Process().memory_info().rss` em Python ou `$proc.WorkingSet64` em PowerShell) registrada minuto a minuto em coleta futura de 2h+, comprovando empiricamente a ausência de crescimento linear sustentado ao longo da sessão, acompanhada da exposição contínua do gauge `process_memory_rss_bytes` no endpoint `/metrics`.
+
+### DT-02 — Otimização de Concorrência e Contenção de Lock em `FlowAnalyzer`
+
+* **ID:** `DT-02`
+* **Dono:** Equipe de Engenharia do Core / FlowAnalyzer
+* **Prioridade:** Crítica (reclassificada de Alta em 18/09/2026 — ver Adendo abaixo; bloqueante antes de qualquer expansão de escopo: multi-símbolo, novos detectores, aumento de carga)
+* **Gatilho de Revisão:** Antes de reativar detectores adicionais de alta frequência ou monitorar múltiplos pares concorrentes no mesmo loop.
+* **Descrição Técnica:** O método `process_trade()` em `flow_analyzer/core.py` e o método `_create_snapshot()` (acionado por `get_metrics()` a cada fechamento de janela de 1 minuto) compartilham o mesmo lock reentrante (`self._lock`). Sob rajadas de volume (>100 trades/s) ou durante a cópia e poda do histórico (`flow_trades_copy = [t for t in self.flow_trades if t['ts'] >= cutoff]`), a espera pelo lock provocou 11 alertas de `LATÊNCIA CRÍTICA: process_trade took > 200ms` (picos de 1.6s a 2.1s). Embora o `AsyncTradeBuffer` tenha absorvido 100% dos trades sem perdas, a contenção transitória no caminho quente de ingestão deve ser minimizada.
+* **Impacto:** Em regimes extremos de liquidação em cascata (>1.000 trades/s sustentados), o enfileiramento por contenção de lock pode elevar a latência ponta a ponta do pipeline e pressionar desnecessariamente a capacidade do buffer de entrada.
+* **Critério Objetivo de Resolução:** Desacoplamento da cópia de histórico de janelas em relação ao lock de ingestão (via *shallow copy* atômica, buffer circular imutável ou *read-copy-update*), validado em nova sessão sob estresse (>300 trades/s sustentados) com redução de $\ge 90\%$ nos eventos de latência crítica (>200ms), mantendo 100% de paridade entre trades recebidos e processados.
+* **Adendo 18/09/2026 (observação go-live, N=549.928, 76,4 trades/s médios):** 39 eventos (3,5x para 2,7x de volume — escala aprox. proporcional em contagem), porém cauda máxima de **4471ms** (2,1x o teto de 08/09) com **4 eventos >1500ms**, dos quais os 2 piores (4471ms e 3137ms) ocorreram em janelas de volume **modesto/baixo** e **nenhum** coincidiu com fechamento de janela — fora do padrão caracterizado em 08/09 (rajada + fecho). Mecanismo incompletamente caracterizado e com gatilhos além do throughput: reclassificado para **Crítica/Bloqueante** para expansão de escopo. Operação contínua single-símbolo permanece aprovada (buffer absorveu 100%, 0 gaps >2min, 0 crashes).
+
+### DT-03 — Instrumentação de Profundidade de Fila (Queue Depth) e Backpressure no `AsyncTradeBuffer`
+
+* **ID:** `DT-03`
+* **Dono:** Equipe de Engenharia do Core / Ingestion Pipeline
+* **Prioridade:** Média
+* **Gatilho de Revisão:** Antes de campanhas de stress test de alta volatilidade (ex: CPI, FOMC).
+* **Descrição Técnica:** O `AsyncTradeBuffer` possui thresholds reativos de status (`NORMAL`, `WARNING` a 80%, `CRITICAL` a 90%, `OVERFLOW` a 100%), mas não registra metricamente a série temporal contínua da profundidade instantânea da fila (`len(self._buffer)`) nem o pico máximo absoluto atingido durante rajadas de volume (como as de 404 trades/s e 318 trades/s registradas em 08/09).
+* **Impacto:** Impossibilidade de mensurar com precisão matemática a margem real de folga do buffer antes do acionamento de descarte por backpressure em eventos de estresse agudo.
+* **Critério Objetivo de Resolução:** Implementação do registro de `peak_buffer_size` e `buffer_fill_ratio` dentro das métricas de payload das janelas no SQLite e exposição contínua via gauge Prometheus `trades_buffer_queue_depth`, permitindo auditar o percentual exato de capacidade consumido em cada segundo de operação.
+
+---
+
+## 5. Mudança Pós-Sign-Off Formalizada (2026-09-18)
+
+* **Guarda de SLA de offset do orderbook** (`market_orchestrator/orderbook/orderbook_wrapper.py`, commit `c2df8fa`): snapshots `live_sync` com `snapshot_offset_ms > 1500ms` são descartados em favor do `cache_bg` (com `refresh_orderbook_async`); semântica de offset do fallback harmonizada para valor absoluto positivo + campo `cache_age_ms`. Mudança conservadora (aumenta fallback, nunca aceita dado estagnado como live). Cobertura: `tests/unit/test_orderbook_sync_snapshot.py::test_orderbook_sync_excessive_offset_triggers_fallback`. Validada na observação go-live de 18/09 (seção 4 do sign-off): 0 vazamentos >1500ms, p90 1272ms.
+* **Nota V3/18-09:** 3.272 sinais `is_signal=1` sem bloco `orderbook_data` no DB completo datam de **08/09 18:09 UTC a 15/09** (3.271 `Absorção` slim + 1 `ANALYSIS_TRIGGER` variante iceberg de 11/09) — i.e., **fora** das janelas auditadas e **após** o fix do Item 4 (`e696ee2`, 05/09): emissores alternativos não cobertos pelo contrato do Item 4. Investigação dedicada pendente (novo débito proposto: cobertura de schema para o emissor slim de `Absorção` e variantes de detectores).
+
+
