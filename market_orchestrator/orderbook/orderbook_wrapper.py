@@ -178,6 +178,16 @@ def fetch_orderbook_with_retry(
                 )
                 snapshot_offset_ms = int(exchange_ms - close_ms)
 
+                max_offset_ms = int(sync_timeout * 1000)
+                if snapshot_offset_ms > max_offset_ms:
+                    logging.warning(
+                        f"⏱️ Snapshot obtido com offset excessivo ({snapshot_offset_ms}ms > {max_offset_ms}ms). "
+                        "Recorrendo ao cache background para conformidade com SLA de timeout."
+                    )
+                    fallback = orderbook_fallback(bot, close_ms)
+                    refresh_orderbook_async(bot, close_ms)
+                    return fallback
+
                 ob_event["source_type"] = "live_sync"
                 ob_event["source"] = "live_sync"
                 ob_event["snapshot_offset_ms"] = snapshot_offset_ms
@@ -344,7 +354,9 @@ def orderbook_fallback(
             last_evt.get("timestamps", {}).get("exchange_ms")
             or int(last_time * 1000)
         )
-        snapshot_offset_ms = int(exchange_ms - ref_close)
+        # Harmonização de semântica: defasagem temporal positiva do snapshot em relação ao corte
+        snapshot_offset_ms = int(abs(ref_close - exchange_ms))
+        cache_age_ms = snapshot_offset_ms
 
         logging.warning(
             f"Usando orderbook em cache background (source=cache_bg, age={age:.1f}s, offset={snapshot_offset_ms}ms) "
@@ -356,11 +368,13 @@ def orderbook_fallback(
         ob_event["source_type"] = "cache_bg"
         ob_event["source"] = "cache_bg"
         ob_event["snapshot_offset_ms"] = snapshot_offset_ms
+        ob_event["cache_age_ms"] = cache_age_ms
 
         ob_data = ob_event.setdefault("orderbook_data", {})
         ob_data["source"] = "cache_bg"
         ob_data["source_type"] = "cache_bg"
         ob_data["snapshot_offset_ms"] = snapshot_offset_ms
+        ob_data["cache_age_ms"] = cache_age_ms
         ob_data["timestamps"] = ob_event.get("timestamps", {})
 
         ob_event["data_quality"] = {

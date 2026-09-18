@@ -121,6 +121,80 @@ def test_orderbook_sync_timeout_falls_back_to_cache_bg(monkeypatch):
 
     offset_ms = evt.get("snapshot_offset_ms")
     assert offset_ms is not None
-    assert offset_ms == int(bg_cached_exchange_ms - close_ms)
+    assert offset_ms == int(abs(close_ms - bg_cached_exchange_ms))
+    assert evt.get("cache_age_ms") == offset_ms
     assert evt.get("orderbook_data", {}).get("snapshot_offset_ms") == offset_ms
     assert "timestamps" in evt.get("orderbook_data", {})
+
+
+def test_orderbook_sync_excessive_offset_triggers_fallback(monkeypatch, caplog):
+    """
+    Testa a guarda de SLA estrita (Cenário a):
+    Quando o fetch live retorna com sucesso mas com snapshot_offset_ms > 1500ms
+    (ex: delay de trade ou latência de rede acumulada com offset = 2100ms):
+    (a) O dado live é descartado e substituído pelo cache_bg
+    (b) Nenhuma exceção ocorre
+    (c) O log registra o fallback preventivo com mensagem de offset excessivo
+    """
+    import logging
+    bot = MockBot()
+    close_ms = int(time.time() * 1000)
+    bg_cached_exchange_ms = close_ms - 3000  # Cache de 3s atrás
+
+    # Cache background inicializado
+    bot.last_valid_orderbook = {
+        "is_valid": True,
+        "timestamps": {
+            "exchange_ms": bg_cached_exchange_ms,
+            "received_ms": bg_cached_exchange_ms + 5,
+        },
+        "orderbook_data": {
+            "bid_depth_usd": 18000.0,
+            "ask_depth_usd": 19000.0,
+            "source": "cache_bg",
+        },
+    }
+    bot.last_valid_orderbook_time = time.time() - 3.0
+
+    # Simula fetch live que RETORNOU COM SUCESSO, porém com offset excessivo (2100ms)
+    live_delayed_exchange_ms = close_ms + 2100
+    fake_live_delayed_event = {
+        "is_valid": True,
+        "timestamps": {
+            "exchange_ms": live_delayed_exchange_ms,
+            "received_ms": live_delayed_exchange_ms + 10,
+        },
+        "orderbook_data": {
+            "bid_depth_usd": 50000.0,
+            "ask_depth_usd": 55000.0,
+        },
+    }
+
+    monkeypatch.setattr(
+        obw,
+        "run_orderbook_analyze",
+        lambda _bot, _close_ms, timeout_sec=None: fake_live_delayed_event,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        evt = obw.fetch_orderbook_with_retry(bot, close_ms=close_ms, timeout_sec=1.5)
+
+    # (a) O evento live atrasado foi descartado; o evento retornado é o cache_bg
+    assert evt is not None
+    assert evt.get("is_valid") is True
+    assert evt.get("source") == "cache_bg"
+    assert evt.get("source_type") == "cache_bg"
+    assert evt.get("orderbook_data", {}).get("source") == "cache_bg"
+    # O conteúdo veio do cache (18000), NÃO do live atrasado (50000)
+    assert evt.get("orderbook_data", {}).get("bid_depth_usd") == 18000.0
+
+    # (b) Nenhuma exceção e campos íntegros (positivo harmonizado)
+    offset_ms = evt.get("snapshot_offset_ms")
+    assert offset_ms == int(abs(close_ms - bg_cached_exchange_ms))
+    assert offset_ms > 0
+    assert evt.get("cache_age_ms") == 3000
+
+    # (c) O log registrou o acionamento do fallback pela guarda de SLA
+    assert any("Snapshot obtido com offset excessivo" in record.message for record in caplog.records)
+    assert any("Recorrendo ao cache background" in record.message for record in caplog.records)
+
