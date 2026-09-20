@@ -1114,3 +1114,143 @@ docs/
 **Arquivos modificados pendentes (working tree):** `docs/audit/ETAPA_6_MACRO_NAN_FRED_CACHE_2026-08-11.md`
 
 *Ultima atualizacao: 2026-08-16 (novos arquivos: common/json_safe.py, check_integrity.py, AUDIT_REPORT.md, 14 scripts de diagnostico, 15 testes unitarios, 8 docs de auditoria; HEAD `72951ca`)*
+
+---
+
+## Atualizacoes Posteriores (2026-08-16 ate 2026-09-15) — 85 commits
+
+> **Data base anterior:** 2026-08-16 15:06:59 -0300 (commit `38916cc`)
+> **HEAD atual:** `4c8335c` (2026-09-14 `fix(ai): gate unsupported microstructure claims`)
+> **Periodo:** 2026-08-22 a 2026-09-14 — 85 commits (fail-closed/no-fabrication, migracao Futures, Golden, O1/R1, forense opt-in)
+
+### NOVO PACOTE `audit_live/` - Captura Forense Opt-in (2026-09-11)
+```
+audit_live/
+├── __init__.py          # Pacote instrumentacao forense observacional (FORENSIC_CAPTURE=1, fire-and-forget)
+├── forensic_context.py  # Contexto forense LIVE
+├── forensic_payload.py  # Payload forense (commit 0408ed9)
+├── forensic_writer.py   # Writer forense + manifest.json (audit_writer_errors)
+└── hooks.py             # Hooks nao-intrusivos (nunca alteram logica de negocio)
+```
+
+### NOVO PACOTE `tests/golden/` - Harness Deterministico G1-G4 (2026-09-08)
+```
+tests/golden/
+├── __init__.py
+├── conftest.py
+├── fixtures/
+│   ├── gw1_balanced.json
+│   ├── gw2_buy_pressure.json
+│   ├── gw3_sell_absorption.json
+│   ├── gw4_external_unavailable.json
+│   ├── gw5_high_activity.json       # GW5 slow (1500 trades)
+│   └── gw6_weekend_holiday.json
+├── test_gw_math.py         # GW1-4, GW6 (math/enrichment)
+├── test_gw_enrichment.py
+├── test_gw_ml.py           # TS-1 chaves eligible/unversioned/mismatch
+├── test_gw_payload.py      # shape real end-to-end
+├── test_gw_system.py
+└── test_gw5_slow.py        # G4 slow + budget generoso
+```
+
+### NOVO `scripts/analytics/` - Avaliacao de Features/Posicionamento
+```
+scripts/analytics/
+├── feature_value_validator.py       # Validador valor de feature (V1)
+├── generate_o1_daily_snapshot.py    # Snapshot diario O1
+├── hardened_feature_evaluator.py    # Avaliador hardenado (V1.1/V1.2)
+├── positioning_evaluator.py         # Avaliador positioning P1.1
+└── positioning_shadow_collector.py  # Coletor shadow positioning
+```
+
+### NOVO `analysis/results/` - Resultados de Auditoria
+```
+analysis/results/
+├── o1_daily_2026-09-03.json
+├── v1_1_hardening_results.json
+├── v1_2_hardening_results.json
+└── v1_feature_value_validation.json
+```
+
+### `config/` - Novos arquivos
+```
+config/
+├── env_policy.py               # PF-D: bootstrap dotenv centralizado + observation guard (a31bdb9)
+├── o1_cohort_manifest.json     # Manifesto coorte O1 (O1_START=2026-09-03T01:35:00Z)
+├── r1_cohort_manifest.json     # Manifesto coorte R1 (28d replay, BTCUSDT)
+└── volume_baseline_fut.json    # Baseline volume Futures (calib thresh whale 2.0, spike p95/h)
+```
+
+### `institutional/` - Novos modulos P1.2/P1.3
+| Arquivo | Descricao |
+|---------|-----------|
+| `session_vwap.py` | VWAP por sessao UTC + historico corrente (bc9ae9f, P1.2) |
+| `market_structure.py` | Estrutura de mercado + stress forense (P1.3/P1.3B/C) |
+
+### `fetchers/` - Novos modulos
+| Arquivo | Descricao |
+|---------|-----------|
+| `binance_positioning_fetcher.py` | Fetcher positioning Binance (P1.1, long/short accounts) |
+| `onchain_updater.py` | Onchain fora do hot path (snapshot + DI + freshness, FASE B/C/D) |
+| `macro_cache_validator.py` | Validador cache macro/FRED |
+
+### `market_analysis/` - Novo modulo
+| Arquivo | Descricao |
+|---------|-----------|
+| `cross_asset_updater.py` | CrossAsset fora do hot path (snapshot + DI, E3-B; shared-session returns F5-C) |
+
+### `common/` - Novos modulos
+| Arquivo | Descricao |
+|---------|-----------|
+| `signal_direction.py` | Canonico infer_signal_side/classify_outcome/get_directional_confidence (LONG/SHORT/NEUTRAL/UNKNOWN) |
+| `ai_payload_integrator.py` | Integrador payload IA |
+| `async_bridge.py` | Bridge async |
+| `twap_validator.py` | Validador TWAP |
+
+### `market_orchestrator/` - Novos modulos
+| Arquivo | Descricao |
+|---------|-----------|
+| `capabilities.py` | Capability Contract (CONTINUOUS_TRADES_WS, POINT_IN_TIME_L2_SNAPSHOT; CONTINUOUS_L2/SPOOFING/ICEBERG=False) |
+
+### `tools/` - Novos utilitarios
+| Arquivo | Descricao |
+|---------|-----------|
+| `audit_manifest.py` | Auditoria de manifestos O1/R1 |
+| `audit_shadow.py` | Auditoria shadow observation |
+
+### `dados/audit/` + `dados/` - Datasets de calibracao R1-R4b
+| Arquivo | Descricao |
+|---------|-----------|
+| `dados/audit/compact_J21.json` | Compact J21 |
+| `dados/audit/klines_accept_futures.json` | Aceite migracao Futures |
+| `dados/audit/klines_fut_s1.json` / `klines_spot_s1.json` | Crosscheck spot vs futures |
+| `dados/audit/r4b_tabela_75_janelas.csv` | Tabela 75 janelas R4b |
+| `dados/audit/windows_flat.csv` | Janelas flat |
+| `dados/o1_cohort_manifest.json` / `dados/r1_cohort_manifest.json` | Manifestos replicados |
+
+### `docs/audit/` - +23 documentos (2026-09)
+AUDITORIA_JANELAS_EXTRAIDAS_2026-09-03, R2/R3/R4/R4b_2026-09-03, BINANCE_POSITIONING_DESIGN_2026, INSTITUTIONAL_CAPABILITIES_AUDIT_2026, INSTITUTIONAL_DATA_CONTRACTS_2026, O1_PREFLIGHT_VERIFICATION_REPORT_2026, P0_PIPELINE_INTEGRITY_EXECUTION_2026, P1_1_BINANCE_POSITIONING_EXECUTION_2026, P1_1B_POSITIONING_SHADOW_VALIDATION_2026, P1_2_SESSION_VWAP_EXECUTION_2026, P1_3_MARKET_STRUCTURE_EXECUTION_2026, P1_3B_MARKET_STRUCTURE_FORENSIC_AUDIT_2026, P1_3C_MARKET_STRUCTURE_SEMANTIC_FIX_2026, POST_AUDIT_VALIDATION_2026, TEST_DEBT, V1_1_METHODOLOGY_HARDENING_2026, V1_2_VALIDATOR_FORENSICS_2026, V1_FEATURE_VALUE_VALIDATION_2026 + `docs/freeze_consolidation_2026-09-01.md`
+
+### `scripts/diagnostics/` - +27 scripts commitados (pos 16/08)
+accept_futures_migration, audit_capabilities_deep, audit_data_attrition, audit_deep_modules, audit_live_data_invariants (era working-tree, agora commitado), audit_shadow_metrics, audit_sr_recurrence, audit_windows_offline, backup_shadow_dataset, calc_r4b_stats, capture_compact_sr (era working-tree), check_shadow_collection_health, collect_2h.ps1, crosscheck_klines_session, forensic_market_structure_stress, inspect_database_data, map_pbc_keys (era working-tree), measure_critical_path_positioning, measure_market_structure_performance, measure_session_vwap_performance, recheck_r4b, replay_etapa6_j1j4 + replay_j4_scorer (eram working-tree), run_o1_shadow_observation, run_shadow_observation (era working-tree), verify_safe_mode + outputs AUDITORIA_ACEITACAO_FINAL_20260901, AUDITORIA_FORENSE_2026-08-23, AUDITORIA_POS_FIX_1H_20260831
+
+### Migracoes / Fixes estruturais principais (pos 16/08)
+| Data | Mudanca |
+|------|---------|
+| 2026-08-22 | OutcomeTracker import restaurado; rolling aggregates preservam integridade temporal; raw history capacity; flow temporal quality no payload; labels em boundaries exatos |
+| 2026-08-30/31 | Win rates direction-aware; health recovery vs falha; funding canonico (x100); payload compact sem prosa redundante |
+| 2026-09-01/02 | Telemetria latencia por janela; freeze O1 baseline shadow; preflight O1; O1 ABANDONED_INSUFFICIENT_COVERAGE -> pivot R1 |
+| 2026-09-05 | **cc249d7: trades/klines unificados em Binance USD-M Futures (era spot)**; calib thresholds futures + snapshot sincrono book + ml_stale; relatorios R1-R4b |
+| 2026-09-07/08 | SEC-1/3/4 (AlphaVantage fail-closed, backup OCI exclui db/jsonl/env, eval->literal_eval); FASE A-D onchain; E3-A/B beep/cross-asset fora hot path; B-P0-1..4 + P1-A/B/C (ausente permanece ausente, UNKNOWN nunca 0.0); F5-C shared-session returns; Golden G1-G4; PF-S1/S2/M2/M3/D (shutdown cooperativo, dotenv centralizado) |
+| 2026-09-11/12/14 | Forense opt-in + replay offline; VWAP UTC corrente + pending-vs-gap; onchain coverage vs freshness; flow vs depth desambiguados; market-impact fail-closed sem profundidade; S/R walls snapshot vs estruturais; capabilities gate microstructure |
+
+### Testes novos (pos 16/08) — ~70 arquivos
+- `tests/golden/`: 6 (ver acima)
+- `tests/unit/`: ~55 — absorption_evidence, aggressive_pct_contract, alphavantage_fail_closed, backup_excludes, binance_positioning_p1_1, crossasset_* (5), dataset_provenance, dominance_change_missing, enrichment_context_no_fabrication, env_policy, event_memory_import_regression, event_similarity_direction_aware, feature_evaluator_diagnostics, flow_trades_capacity_diagnostic, flowdata_optional_widening, funding_rate_fallback (era working-tree), health_recovery, heatmap_golden/perf/scope, macro_session_lifecycle, market_orchestrator_direction_confidence, market_structure_p1_3, microstructure_claims_neutralization, ml_eligibility, ml_imbalance_missing, ml_stale_neutralization, mtf_nonfinite_none, no_eval, onchain_coverage/freshness/latency/window_contract, orderbook_market_impact_contract + insufficient_liquidity, orderbook_sync_snapshot, outcome_tracker_boundary + direction_aware, p01_imbalance_per_window, p04_onchain_provenance, p05_quality_usability, p06_retention_snapshot, ratio_nonfinite_contract, regime_corr_missing, session_vwap_coverage + p1_2, signal_direction, signal_orderbook_schema, sound_alert_nonblocking, stream_parser_aggtrade, volume_spike_dual_gate, windowstate_real_shape
+- `tests/payload/`: flow_window_quality_propagation, funding_rate_pipeline_p0, p00_compact_preserved, p02_semantic_contract, positioning_provenance_p1_1b
+- `tests/integration/`: test_ml_stale_real_event_pipeline
+
+### Pendentes em working tree (SEM commit em 2026-09-15)
+`docs/audit/FASE1_DEPRECATION_MECHANISM_FAILURE_2026-09.md`, `ORDERBOOK_LAG_EMPIRICAL_RECONCILIATION_2026-09.md`, `SIGNOFF_AUDITORIA_FUTURES_2026-09.md`, `query`, ~30 scripts `scripts/diagnostics/` (analyze_orderbook_sync_session, audit_c1_contamination, audit_latency_spikes, audit_val2, benchmark_dump_raw_trades_overhead, check_r4_citations, check_validations_data, decompose_london_ny_trades, detailed_volume_spike_audit, find_recent_files, generate_r4b_markdown, inspect_121201_log, inspect_all_dbs, inspect_latency_context, inspect_run_log, inspect_schema_real, inspect_snapshot_moment_trades, inspect_window97, investigate_asia_event, multi_day_stratified_audit, run_3_validation_scripts, run_all_validations, run_r4b_full, stratified_trade_sampling, test_store_init, val0_integrity, val2_check, validate_memory_and_latency_health, validate_ml_stale_neutralization, validate_signals_orderbook_schema, validate_volume_spike_dual_gate, validate_whale_threshold), `tests/unit/test_dump_raw_trades.py` + 6 modificados (klines_accept_futures.json, TEST_DEBT.md, orderbook_wrapper.py, collect_2h.ps1, test_ml_stale_real_event_pipeline.py, test_orderbook_sync_snapshot.py)
+
+*Ultima atualizacao: 2026-09-15 (HEAD `4c8335c`; 85 commits desde 2026-08-16; novos pacotes: audit_live/, tests/golden/, scripts/analytics/, analysis/results/; novos modulos: capabilities, signal_direction, env_policy, session_vwap, market_structure, binance_positioning_fetcher, onchain_updater, cross_asset_updater; migracao Futures cc249d7)*

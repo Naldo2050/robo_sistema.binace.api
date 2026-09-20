@@ -205,4 +205,12 @@ scratch/
 # Audit datasets pesados (>1MB)
 # ==============================
 dados/audit/klines_fut_28d.json
-dados/audit/aggtrades_sample.json
+dados/audit/aggtrades_sample.json
+
+# ==============================
+# Artefatos descartáveis / Paper Trading local
+# ==============================
+query
+logs/run.log.*
+dados/paper_trading.db*
+
