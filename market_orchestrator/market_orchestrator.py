@@ -258,6 +258,7 @@ class EnhancedMarketBot:
         liquidity_flow_alert_percentage: float,
         wall_std_dev_factor: float,
         dump_raw_trades: Optional[Union[str, bool, Path]] = None,
+        shadow_runtime: Optional[Any] = None,
     ) -> None:
         self.symbol = symbol
         self.window_size_minutes = window_size_minutes
@@ -521,6 +522,49 @@ class EnhancedMarketBot:
             component="orchestrator",
             symbol=self.symbol,
         )
+
+        # ====== Paper Trading Shadow Runtime (Gate C3-C-B3-B) ======
+        self.shadow_runtime: Optional[Any] = shadow_runtime
+        self.paper_shadow_status: str = "DISABLED"
+        self.paper_shadow_error: Optional[str] = None
+        self.paper_shadow_hook_errors: int = 0
+        self._shadow_subscribed: bool = False
+        self._shadow_init_attempted: bool = False
+
+        if shadow_runtime is not None:
+            self.paper_shadow_status = "RUNNING"
+        else:
+            self._init_shadow_runtime()
+
+    def _init_shadow_runtime(self) -> None:
+        """Inicializa o ShadowPaperRuntime via factory hermética se habilitado."""
+        if self._shadow_init_attempted:
+            return
+        self._shadow_init_attempted = True
+        try:
+            from paper_trading.factory import create_shadow_runtime
+
+            res = create_shadow_runtime()
+            self.paper_shadow_status = res.status
+            self.paper_shadow_error = res.reason
+            self.shadow_runtime = res.runtime
+            if res.status == "RUNNING":
+                logging.info("✅ ShadowPaperRuntime inicializado com sucesso (status=RUNNING)")
+            elif res.status == "FAILED":
+                logging.error(f"❌ Falha ao inicializar ShadowPaperRuntime: {res.reason}")
+        except Exception as exc:
+            self.paper_shadow_status = "FAILED"
+            self.paper_shadow_error = str(exc)
+            self.shadow_runtime = None
+            logging.error(f"❌ Exceção inesperada na inicialização do ShadowPaperRuntime: {exc}")
+
+    def _handle_shadow_runtime_error(self, exc: Exception) -> None:
+        """Trata falha externa no hook de tick do shadow runtime sem stack trace por tick."""
+        self.paper_shadow_hook_errors += 1
+        if self.paper_shadow_status != "FAILED":
+            self.paper_shadow_status = "FAILED"
+            self.paper_shadow_error = str(exc)
+            logging.error(f"❌ ShadowPaperRuntime hook error: {exc}")
 
     # ========================================
     # HANDLER DE RECONEXÃO
@@ -1024,6 +1068,13 @@ class EnhancedMarketBot:
                         self._raw_trades_file.write(trade_line + "\n")
                 except Exception as e_dump:
                     logging.debug(f"Erro ao escrever trade no dump JSONL: {e_dump}")
+
+            # Shadow Paper Trading Hook (Gate C3-C-B3-B)
+            if self.shadow_runtime is not None:
+                try:
+                    self.shadow_runtime.on_market_trade(norm)
+                except Exception as _shadow_exc:
+                    self._handle_shadow_runtime_error(_shadow_exc)
 
             # 8) Controle de janelas
             if self.window_end_ms is None:
@@ -2592,6 +2643,16 @@ class EnhancedMarketBot:
             self.time_manager.periodic_sync(600)
         )
 
+        # Subscrição do ShadowPaperRuntime ao EventBus (Gate C3-C-B3-B)
+        if (
+            self.paper_shadow_status == "RUNNING"
+            and self.shadow_runtime is not None
+            and not self._shadow_subscribed
+        ):
+            self.event_bus.subscribe("signal", self.shadow_runtime.on_signal)
+            self._shadow_subscribed = True
+            logging.info("✅ ShadowPaperRuntime subscrito no EventBus para o evento 'signal'")
+
         self._initialized = True
 
     async def _prefetch_ohlc_history(self) -> None:
@@ -2775,6 +2836,13 @@ class EnhancedMarketBot:
             await get_macro_provider().close_all_sessions()
         except Exception:
             pass
+
+        # Shadow Paper Trading Shutdown (Gate C3-C-B3-B)
+        try:
+            if getattr(self, "shadow_runtime", None) is not None:
+                self.shadow_runtime.shutdown()
+        except Exception as e:
+            logging.warning(f"Falha ao encerrar shadow_runtime: {e}")
 
         try:
             if hasattr(self, "event_bus") and self.event_bus:
