@@ -60,6 +60,7 @@ dados/ooo_report*.json
 # Banco de dados local (caso apareça fora de dados/)
 trading_bot.db
 dados/trading_bot.db
+dados/paper_trading.db*
 
 # Arquivos Parquet individuais (caso apareçam fora de features/)
 *.parquet
