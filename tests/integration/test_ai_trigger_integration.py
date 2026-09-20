@@ -160,6 +160,9 @@ def bot(monkeypatch, tmp_path):
         chamadas de rede e flakiness em CI.
         """
 
+        def is_synced(self):
+            return True
+
         def get_server_time_ms(self):
             return int(time.time() * 1000)
 
@@ -168,6 +171,9 @@ def bot(monkeypatch, tmp_path):
 
         def get_offset_seconds(self):
             return 0.0
+
+        def get_stats(self):
+            return {"is_synced": True, "status": "healthy"}
 
         def stop(self):
             pass
@@ -181,6 +187,9 @@ def bot(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("flow_analyzer.core.get_clock_sync", lambda: _NoopClockSync())
     monkeypatch.setattr("events.event_saver.get_clock_sync", lambda: _NoopClockSync())
+
+    import events.event_saver as ev_saver
+    prev_clock_instance = getattr(ev_saver, "_clock_sync_instance", None)
 
     # _ai_throttler e um singleton global em ai_runner.py: outros testes o usam
     # e deixam estado (cooldown/calls_this_hour) que faria should_call_ai
@@ -207,14 +216,19 @@ def bot(monkeypatch, tmp_path):
     saver = RecorderSaver()
     b.event_saver = saver
     b._last_ai_analysis_ts = 0.0
-    yield b, saver, b.ai_analyzer
-    # Teardown: threads de IA, EventBus, executor, loop asyncio + HealthMonitor
-    # (via _cleanup_handler) e threads flush/cleanup do EventSaver real (stop()).
     try:
-        b._cleanup_handler()
-        real_saver.stop()
-    except Exception as e:  # pragma: no cover - melhor esforco
-        print(f"[teardown] cleanup falhou (nao-critico): {e}")
+        yield b, saver, b.ai_analyzer
+    finally:
+        # Teardown: threads de IA, EventBus, executor, loop asyncio + HealthMonitor
+        # (via _cleanup_handler) e threads flush/cleanup do EventSaver real (stop()).
+        try:
+            b._cleanup_handler()
+            real_saver.stop()
+        except Exception as e:  # pragma: no cover - melhor esforco
+            print(f"[teardown] cleanup falhou (nao-critico): {e}")
+        finally:
+            # Gate B4: restaura _clock_sync_instance para isolamento perfeito entre testes
+            ev_saver._clock_sync_instance = prev_clock_instance
 
 
 def _subscribed_handler_names(bus, topic):

@@ -44,7 +44,12 @@ class TestOutOfOrderPruning:
         # Reset estado
         analyzer._max_ts_seen = 0
         analyzer._out_of_order_seen = False
-        
+
+        # Gate B4: grace=0 é intencional; estes testes verificam exclusivamente
+        # o algoritmo de pruning/OOO/cutoff. Comportamento P06 com grace period
+        # de produção é coberto separadamente em test_p06_retention_snapshot.py.
+        analyzer.flow_retention_grace_ms = 0
+
         return analyzer
     
     def _process_trade_with_mock_time(self, analyzer, trade, reference_ts):
@@ -280,6 +285,10 @@ class TestEdgeCases:
         analyzer = FlowAnalyzer()
         analyzer.net_flow_windows_min = [1]
         analyzer.flow_trades = deque(maxlen=100)
+        # Gate B4: grace=0 é intencional; estes testes verificam exclusivamente
+        # o algoritmo de pruning/OOO/cutoff. Comportamento P06 com grace period
+        # de produção é coberto separadamente em test_p06_retention_snapshot.py.
+        analyzer.flow_retention_grace_ms = 0
         return analyzer
     
     def _process_trade_with_mock_time(self, analyzer, trade, reference_ts):
@@ -358,7 +367,12 @@ class TestCVDAfterOOO:
     @pytest.fixture
     def analyzer(self):
         """Fixture para FlowAnalyzer."""
-        return FlowAnalyzer()
+        analyzer = FlowAnalyzer()
+        # Gate B4: grace=0 é intencional; estes testes verificam exclusivamente
+        # o algoritmo de pruning/OOO/cutoff. Comportamento P06 com grace period
+        # de produção é coberto separadamente em test_p06_retention_snapshot.py.
+        analyzer.flow_retention_grace_ms = 0
+        return analyzer
     
     def _process_trade_with_mock_time(self, analyzer, trade, reference_ts):
         """Processa trade com timestamp de referência mockado."""

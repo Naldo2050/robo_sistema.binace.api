@@ -81,11 +81,22 @@ class FakePipeline:
     enriched: Dict[str, Any] = field(default_factory=dict)
     context_added: Dict[str, Any] = field(default_factory=dict)
     closed: bool = False
+    onchain_updater: Any = None
+    cross_asset_snapshot: Any = None
 
-    def __init__(self, data, symbol, time_manager=None):
+    def __init__(
+        self,
+        data,
+        symbol,
+        time_manager=None,
+        onchain_updater=None,
+        cross_asset_snapshot=None,
+    ):
         self.data = data
         self.symbol = symbol
         self.time_manager = time_manager
+        self.onchain_updater = onchain_updater
+        self.cross_asset_snapshot = cross_asset_snapshot
         self.enriched = {}
         self.context_added = {}
         self.closed = False
