@@ -2,7 +2,11 @@ import asyncio
 import websockets
 import json
 from datetime import datetime
+import pytest
 
+pytestmark = pytest.mark.network
+
+@pytest.mark.network
 async def test_binance_stream():
     uri = "wss://stream.binance.com:9443/ws/btcusdt@aggTrade"
     

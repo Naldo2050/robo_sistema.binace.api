@@ -1,7 +1,10 @@
 # test_connection.py
 import asyncio
 import logging
+import pytest
 from market_orchestrator.connection.robust_connection import RobustConnectionManager
+
+pytestmark = pytest.mark.network
 
 logging.basicConfig(
     level=logging.DEBUG,
