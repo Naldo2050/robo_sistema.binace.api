@@ -3,6 +3,11 @@
 Adapters for translating runtime signals, market events, and risk rules into paper trading contracts.
 """
 
+from paper_trading.adapters.risk_adapter import (
+    RiskAdapter,
+    RiskAdapterResult,
+    RiskStatus,
+)
 from paper_trading.adapters.signal_adapter import (
     AdapterMode,
     AdapterResult,
@@ -14,5 +19,8 @@ __all__ = [
     "AdapterMode",
     "AdapterResult",
     "AdapterStatus",
+    "RiskAdapter",
+    "RiskAdapterResult",
+    "RiskStatus",
     "SignalDecisionAdapter",
 ]
