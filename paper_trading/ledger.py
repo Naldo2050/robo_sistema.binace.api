@@ -9,7 +9,9 @@ Provides synchronous flush() for deterministic replays and tests.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import queue
 import sqlite3
@@ -25,6 +27,43 @@ from paper_trading.contracts import (
     PaperPosition,
     Rejection,
 )
+
+VALID_SIGNAL_SIDES = {"LONG", "SHORT", "NEUTRAL", "UNKNOWN"}
+VALID_SIGNAL_OBSERVATION_STATUSES = {
+    "DECISION_CREATED",
+    "SKIPPED_NON_DIRECTIONAL",
+    "INVALID_SIGNAL",
+}
+VALID_RISK_STATUSES = {"APPROVED", "REJECTED", "ERROR"}
+VALID_COHORT_EVENT_TYPES = {
+    "STARTED",
+    "GRACEFUL_SHUTDOWN",
+    "CRASH_DETECTED",
+    "PERSISTENCE_FAILURE",
+}
+
+
+def _is_finite_number(val: Any) -> bool:
+    if val is None:
+        return True
+    if not isinstance(val, (int, float)) or isinstance(val, bool):
+        return False
+    return not (math.isnan(val) or math.isinf(val))
+
+
+def compute_signal_observation_id(cohort_id: str, source_window_id: str, source_event_key: str) -> str:
+    raw = f"{cohort_id}:{source_window_id}:{source_event_key}"
+    return f"obs_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
+
+
+def compute_risk_evaluation_id(cohort_id: str, decision_id: str) -> str:
+    raw = f"{cohort_id}:{decision_id}"
+    return f"reval_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
+
+
+def compute_cohort_event_id(cohort_id: str, event_type: str, timestamp_ms: int) -> str:
+    raw = f"{cohort_id}:{event_type}:{timestamp_ms}"
+    return f"cevt_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
 
 
 def json_dumps_safe(value: Any) -> str:
@@ -205,10 +244,49 @@ CREATE TABLE IF NOT EXISTS kill_switch_events (
     positions_closed_count INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS signal_observations (
+    observation_id TEXT PRIMARY KEY,
+    cohort_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    source_window_id TEXT NOT NULL,
+    source_event_key TEXT NOT NULL,
+    signal_timestamp INTEGER NOT NULL,
+    source_side TEXT NOT NULL,
+    status TEXT NOT NULL,
+    reason TEXT,
+    context_json TEXT,
+    created_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS risk_evaluations (
+    risk_evaluation_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    cohort_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    risk_reason TEXT,
+    max_size REAL,
+    source_confidence REAL,
+    risk_confidence REAL NOT NULL,
+    context_json TEXT,
+    evaluated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cohort_events (
+    event_id TEXT PRIMARY KEY,
+    cohort_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    timestamp_ms INTEGER NOT NULL,
+    reason TEXT,
+    metadata_json TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_decisions_cohort ON decisions(cohort_id);
 CREATE INDEX IF NOT EXISTS idx_rejections_cohort ON rejections(cohort_id);
 CREATE INDEX IF NOT EXISTS idx_closed_trades_cohort ON closed_trades(cohort_id);
 CREATE INDEX IF NOT EXISTS idx_positions_open ON positions(cohort_id, is_open);
+CREATE INDEX IF NOT EXISTS idx_sig_obs_cohort ON signal_observations(cohort_id);
+CREATE INDEX IF NOT EXISTS idx_risk_eval_cohort ON risk_evaluations(cohort_id);
+CREATE INDEX IF NOT EXISTS idx_cohort_events_cohort ON cohort_events(cohort_id);
 """
 
 
@@ -226,6 +304,10 @@ class PaperLedger:
 
         self._queue: queue.Queue[Any] = queue.Queue()
         self._stop_event = threading.Event()
+        self._has_error: bool = False
+        self._last_error_type: Optional[str] = None
+        self._error_count: int = 0
+        self._lock = threading.Lock()
 
         uri_flag = True if "?" in db_path or db_path.startswith("file:") else False
         self._conn = sqlite3.connect(
@@ -283,12 +365,22 @@ class PaperLedger:
                     self._write_funding(payload)
                 elif action == "RECORD_KILL_SWITCH":
                     self._write_kill_switch(payload)
+                elif action == "RECORD_SIGNAL_OBSERVATION":
+                    self._write_signal_observation(payload)
+                elif action == "RECORD_RISK_EVALUATION":
+                    self._write_risk_evaluation(payload)
+                elif action == "RECORD_COHORT_EVENT":
+                    self._write_cohort_event(payload)
                 self._conn.commit()
-            except Exception:
+            except Exception as exc:
                 try:
                     self._conn.rollback()
                 except Exception:
                     pass
+                with self._lock:
+                    self._has_error = True
+                    self._error_count += 1
+                    self._last_error_type = type(exc).__name__
             finally:
                 if sync_event is not None:
                     sync_event.set()
@@ -581,45 +673,324 @@ class PaperLedger:
             ),
         )
 
-    # Public Enqueue APIs (Thread-safe, Non-blocking)
+    def _write_signal_observation(self, payload: Dict[str, Any]) -> None:
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO signal_observations (
+                observation_id, cohort_id, symbol, source_window_id, source_event_key,
+                signal_timestamp, source_side, status, reason, context_json, created_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["observation_id"],
+                payload["cohort_id"],
+                payload["symbol"],
+                payload["source_window_id"],
+                payload["source_event_key"],
+                payload["signal_timestamp"],
+                payload["source_side"],
+                payload["status"],
+                payload.get("reason"),
+                json_dumps_safe(payload.get("context", {})),
+                payload["created_at_ms"],
+            ),
+        )
 
-    def record_cohort(self, cohort_id: str, created_at_ms: int, description: str = "", metadata: Optional[Dict[str, Any]] = None) -> None:
+    def _write_risk_evaluation(self, payload: Dict[str, Any]) -> None:
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO risk_evaluations (
+                risk_evaluation_id, decision_id, cohort_id, status, risk_reason,
+                max_size, source_confidence, risk_confidence, context_json, evaluated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["risk_evaluation_id"],
+                payload["decision_id"],
+                payload["cohort_id"],
+                payload["status"],
+                payload.get("risk_reason"),
+                payload.get("max_size"),
+                payload.get("source_confidence"),
+                payload["risk_confidence"],
+                json_dumps_safe(payload.get("context", {})),
+                payload["evaluated_at_ms"],
+            ),
+        )
+
+    def _write_cohort_event(self, payload: Dict[str, Any]) -> None:
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO cohort_events (
+                event_id, cohort_id, event_type, timestamp_ms, reason, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["event_id"],
+                payload["cohort_id"],
+                payload["event_type"],
+                payload["timestamp_ms"],
+                payload.get("reason"),
+                json_dumps_safe(payload.get("metadata", {})),
+            ),
+        )
+
+    # Public Enqueue APIs (Thread-safe, Non-blocking, Fail-closed)
+
+    def create_cohort(
+        self,
+        cohort_id: str,
+        created_at_ms: int,
+        description: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Strict fail-closed cohort creation.
+        Returns True if successfully created.
+        Returns False if cohort_id already exists or ledger is unhealthy.
+        Never overwrites existing metadata.
+        """
+        with self._lock:
+            if self._has_error:
+                return False
+
+        self.flush()
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO cohorts (cohort_id, created_at_ms, description, metadata_json)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        cohort_id,
+                        created_at_ms,
+                        description,
+                        json_dumps_safe(metadata or {}),
+                    ),
+                )
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        except Exception as exc:
+            with self._lock:
+                self._has_error = True
+                self._error_count += 1
+                self._last_error_type = type(exc).__name__
+            return False
+
+    def record_cohort(self, cohort_id: str, created_at_ms: int, description: str = "", metadata: Optional[Dict[str, Any]] = None) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
         self._queue.put(("RECORD_COHORT", {"cohort_id": cohort_id, "created_at_ms": created_at_ms, "description": description, "metadata": metadata or {}}, None))
+        return True
 
-    def record_decision(self, decision: CanonicalDecision) -> None:
+    def record_decision(self, decision: CanonicalDecision) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
         self._queue.put(("RECORD_DECISION", decision, None))
+        return True
 
-    def record_rejection(self, rejection: Rejection) -> None:
+    def record_rejection(self, rejection: Rejection) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
         self._queue.put(("RECORD_REJECTION", rejection, None))
+        return True
 
-    def record_order(self, order: PaperOrder) -> None:
+    def record_order(self, order: PaperOrder) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
         self._queue.put(("RECORD_ORDER", order, None))
+        return True
 
-    def record_fill(self, fill: PaperFill) -> None:
+    def record_fill(self, fill: PaperFill) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
         self._queue.put(("RECORD_FILL", fill, None))
+        return True
 
-    def record_position(self, position: PaperPosition) -> None:
+    def record_position(self, position: PaperPosition) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
         self._queue.put(("RECORD_POSITION", position, None))
+        return True
 
-    def close_position(self, position_id: str) -> None:
+    def close_position(self, position_id: str) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
         self._queue.put(("CLOSE_POSITION", position_id, None))
+        return True
 
-    def record_closed_trade(self, trade: ClosedTrade) -> None:
+    def record_closed_trade(self, trade: ClosedTrade) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
         self._queue.put(("RECORD_CLOSED_TRADE", trade, None))
         pos_id = trade.trade_id.replace("tr_", "")
         self._queue.put(("CLOSE_POSITION", pos_id, None))
+        return True
 
-    def record_funding(self, cohort_id: str, symbol: str, timestamp_ms: int, funding_rate: float, notional_usdt: float, amount_usdt: float, side: str) -> None:
+    def record_funding(self, cohort_id: str, symbol: str, timestamp_ms: int, funding_rate: float, notional_usdt: float, amount_usdt: float, side: str) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
         self._queue.put(("RECORD_FUNDING", {"cohort_id": cohort_id, "symbol": symbol, "timestamp_ms": timestamp_ms, "funding_rate": funding_rate, "notional_usdt": notional_usdt, "amount_usdt": amount_usdt, "side": side}, None))
+        return True
 
-    def record_kill_switch(self, cohort_id: str, triggered_at_ms: int, reason: str, count: int) -> None:
+    def record_kill_switch(self, cohort_id: str, triggered_at_ms: int, reason: str, count: int) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
         self._queue.put(("RECORD_KILL_SWITCH", {"cohort_id": cohort_id, "triggered_at_ms": triggered_at_ms, "reason": reason, "positions_closed_count": count}, None))
+        return True
 
-    def flush(self) -> None:
-        """Block until all queued writes have been committed to SQLite."""
+    def record_signal_observation(
+        self,
+        cohort_id: str,
+        symbol: str,
+        source_window_id: str,
+        source_event_key: str,
+        signal_timestamp: int,
+        source_side: str,
+        status: str,
+        reason: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        created_at_ms: Optional[int] = None,
+    ) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
+
+        if source_side not in VALID_SIGNAL_SIDES:
+            return False
+        if status not in VALID_SIGNAL_OBSERVATION_STATUSES:
+            return False
+
+        now_ms = created_at_ms if created_at_ms is not None else signal_timestamp
+        obs_id = compute_signal_observation_id(cohort_id, source_window_id, source_event_key)
+        payload = {
+            "observation_id": obs_id,
+            "cohort_id": cohort_id,
+            "symbol": symbol,
+            "source_window_id": source_window_id,
+            "source_event_key": source_event_key,
+            "signal_timestamp": signal_timestamp,
+            "source_side": source_side,
+            "status": status,
+            "reason": reason,
+            "context": context or {},
+            "created_at_ms": now_ms,
+        }
+        self._queue.put(("RECORD_SIGNAL_OBSERVATION", payload, None))
+        return True
+
+    def record_risk_evaluation(
+        self,
+        cohort_id: str,
+        decision_id: str,
+        status: str,
+        risk_confidence: float,
+        risk_reason: Optional[str] = None,
+        max_size: Optional[float] = None,
+        source_confidence: Optional[float] = None,
+        context: Optional[Dict[str, Any]] = None,
+        evaluated_at_ms: Optional[int] = None,
+    ) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
+
+        if status not in VALID_RISK_STATUSES:
+            return False
+        if not _is_finite_number(risk_confidence):
+            return False
+        if max_size is not None and not _is_finite_number(max_size):
+            return False
+        if source_confidence is not None and not _is_finite_number(source_confidence):
+            return False
+
+        now_ms = evaluated_at_ms if evaluated_at_ms is not None else 0
+        eval_id = compute_risk_evaluation_id(cohort_id, decision_id)
+        payload = {
+            "risk_evaluation_id": eval_id,
+            "decision_id": decision_id,
+            "cohort_id": cohort_id,
+            "status": status,
+            "risk_reason": risk_reason,
+            "max_size": max_size,
+            "source_confidence": source_confidence,
+            "risk_confidence": float(risk_confidence),
+            "context": context or {},
+            "evaluated_at_ms": now_ms,
+        }
+        self._queue.put(("RECORD_RISK_EVALUATION", payload, None))
+        return True
+
+    def record_cohort_event(
+        self,
+        cohort_id: str,
+        event_type: str,
+        timestamp_ms: int,
+        reason: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        with self._lock:
+            if self._has_error:
+                return False
+
+        if event_type not in VALID_COHORT_EVENT_TYPES:
+            return False
+
+        evt_id = compute_cohort_event_id(cohort_id, event_type, timestamp_ms)
+        payload = {
+            "event_id": evt_id,
+            "cohort_id": cohort_id,
+            "event_type": event_type,
+            "timestamp_ms": timestamp_ms,
+            "reason": reason,
+            "metadata": metadata or {},
+        }
+        self._queue.put(("RECORD_COHORT_EVENT", payload, None))
+        return True
+
+    def flush_status(self, timeout: float = 10.0) -> str:
+        """Block until all queued writes have been committed or timeout/unhealthy."""
+        with self._lock:
+            if self._has_error:
+                return "UNHEALTHY"
+
         event = threading.Event()
         self._queue.put(("FLUSH", None, event))
-        event.wait(timeout=10.0)
+        signaled = event.wait(timeout=timeout)
+
+        with self._lock:
+            if self._has_error:
+                return "UNHEALTHY"
+        if not signaled:
+            return "TIMEOUT"
+        return "SUCCESS"
+
+    def flush(self, timeout: float = 10.0) -> bool:
+        """Block until all queued writes have been committed to SQLite. Returns True on SUCCESS, False otherwise."""
+        return self.flush_status(timeout=timeout) == "SUCCESS"
+
+    def health_snapshot(self) -> Dict[str, Any]:
+        """Thread-safe snapshot of ledger persistence health."""
+        with self._lock:
+            return {
+                "healthy": not self._has_error,
+                "error_count": self._error_count,
+                "last_error_type": self._last_error_type,
+                "queue_size": self._queue.qsize(),
+                "worker_alive": self._worker.is_alive(),
+            }
 
     def close(self) -> None:
         """Flush remaining tasks and close background worker."""
@@ -800,3 +1171,76 @@ class PaperLedger:
             )
             for r in rows
         ]
+
+    def get_signal_observations(self, cohort_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Synchronously query signal observations."""
+        self.flush()
+        cur = self._conn.cursor()
+        if cohort_id:
+            cur.execute("SELECT * FROM signal_observations WHERE cohort_id = ? ORDER BY signal_timestamp ASC", (cohort_id,))
+        else:
+            cur.execute("SELECT * FROM signal_observations ORDER BY signal_timestamp ASC")
+        rows = cur.fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["context"] = json.loads(d["context_json"]) if d.get("context_json") else {}
+            results.append(d)
+        return results
+
+    def get_risk_evaluations(self, cohort_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Synchronously query risk evaluations."""
+        self.flush()
+        cur = self._conn.cursor()
+        if cohort_id:
+            cur.execute("SELECT * FROM risk_evaluations WHERE cohort_id = ? ORDER BY evaluated_at_ms ASC", (cohort_id,))
+        else:
+            cur.execute("SELECT * FROM risk_evaluations ORDER BY evaluated_at_ms ASC")
+        rows = cur.fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["context"] = json.loads(d["context_json"]) if d.get("context_json") else {}
+            results.append(d)
+        return results
+
+    def get_cohort_events(self, cohort_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Synchronously query cohort events."""
+        self.flush()
+        cur = self._conn.cursor()
+        if cohort_id:
+            cur.execute("SELECT * FROM cohort_events WHERE cohort_id = ? ORDER BY timestamp_ms ASC", (cohort_id,))
+        else:
+            cur.execute("SELECT * FROM cohort_events ORDER BY timestamp_ms ASC")
+        rows = cur.fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["metadata"] = json.loads(d["metadata_json"]) if d.get("metadata_json") else {}
+            results.append(d)
+        return results
+
+    def cohort_exists(self, cohort_id: str) -> bool:
+        """Check if cohort_id exists in cohorts table."""
+        self.flush()
+        cur = self._conn.cursor()
+        cur.execute("SELECT 1 FROM cohorts WHERE cohort_id = ? LIMIT 1", (cohort_id,))
+        return cur.fetchone() is not None
+
+    def cohort_has_open_positions(self, cohort_id: str) -> bool:
+        """Check if cohort has active open positions."""
+        self.flush()
+        cur = self._conn.cursor()
+        cur.execute("SELECT 1 FROM positions WHERE cohort_id = ? AND is_open = 1 LIMIT 1", (cohort_id,))
+        return cur.fetchone() is not None
+
+    def is_cohort_incomplete(self, cohort_id: str) -> bool:
+        """
+        Check if cohort exists and has not performed a GRACEFUL_SHUTDOWN.
+        Returns False if cohort does not exist.
+        """
+        if not self.cohort_exists(cohort_id):
+            return False
+        events = self.get_cohort_events(cohort_id)
+        has_graceful = any(e.get("event_type") == "GRACEFUL_SHUTDOWN" for e in events)
+        return not has_graceful
