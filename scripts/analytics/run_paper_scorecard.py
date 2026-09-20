@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 from paper_trading.contracts import ClosedTrade
 from paper_trading.ledger import PaperLedger
-from paper_trading.scorecard import group_by, scorecard
+from paper_trading.scorecard import group_by, prediction_scorecard, scorecard
 
 
 def format_percent(val: Optional[float]) -> str:
@@ -51,6 +51,8 @@ def run_cli() -> int:
         ledger = PaperLedger(db_path=db_path)
         all_trades = ledger.get_closed_trades(cohort_id=args.cohort)
         rejections = ledger.get_rejections(cohort_id=args.cohort)
+        decisions = ledger.get_decisions(cohort_id=args.cohort)
+        prediction_outcomes = ledger.get_prediction_outcomes(cohort_id=args.cohort)
         ledger.close()
     except Exception as e:
         print(f"Error reading ledger from {db_path}: {e}")
@@ -58,6 +60,9 @@ def run_cli() -> int:
 
     if args.provider:
         all_trades = [t for t in all_trades if t.decision_provider == args.provider]
+        dec_ids_for_prov = {d.decision_id for d in decisions if d.decision_provider == args.provider}
+        prediction_outcomes = [p for p in prediction_outcomes if p.decision_id in dec_ids_for_prov]
+        decisions = [d for d in decisions if d.decision_provider == args.provider]
 
     print("=" * 75)
     print(" PAPER TRADING FOUNDATION — SCORECARD REPORT")
@@ -65,6 +70,36 @@ def run_cli() -> int:
     print(f"Database:        {db_path}")
     print(f"Cohort Filter:   {args.cohort or 'ALL'}")
     print(f"Provider Filter: {args.provider or 'ALL'}")
+    print("-" * 75)
+
+    # Compute prediction scorecard independently of trade execution
+    dir_decisions = [d for d in decisions if d.side in ("LONG", "SHORT")]
+    pred_metrics = prediction_scorecard(
+        prediction_outcomes=prediction_outcomes,
+        total_directional_decisions=len(dir_decisions),
+    )
+
+    p_ci_low, p_ci_high = pred_metrics.directional_accuracy_ci95
+    p_ci_str = f"[{p_ci_low*100:.1f}%, {p_ci_high*100:.1f}%]" if pred_metrics.directional_accuracy is not None else "N/A"
+
+    if pred_metrics.prediction_directional_n > 0:
+        pred_acc_str = (
+            f"{pred_metrics.correct} / {pred_metrics.prediction_directional_n} "
+            f"({format_percent(pred_metrics.directional_accuracy)}) [95% CI: {p_ci_str}]"
+        )
+    else:
+        pred_acc_str = "N/A (0 resolved directional predictions)"
+
+    print("CANONICAL PREDICTION OUTCOMES:")
+    print(f"  Total Directional Decisions:  {pred_metrics.total_directional_decisions}")
+    print(f"  Directional Prediction Acc:   {pred_acc_str}")
+    print(f"  Prediction Directional N:     {pred_metrics.prediction_directional_n}")
+    print(f"  Observed Outcomes (C/I/F):    {pred_metrics.correct} / {pred_metrics.incorrect} / {pred_metrics.flat} (Observed N: {pred_metrics.observed_n})")
+    print(f"  Unresolved Predictions:       {pred_metrics.unresolved}")
+    print(f"  Horizon Observation Coverage: {format_percent(pred_metrics.horizon_observation_coverage)} ({pred_metrics.observed_n}/{pred_metrics.total_directional_decisions})")
+    print(f"  Directional Resolution Cov:   {format_percent(pred_metrics.directional_resolution_coverage)} ({pred_metrics.prediction_directional_n}/{pred_metrics.total_directional_decisions})")
+    print(f"  Flat Rate:                    {format_percent(pred_metrics.flat_rate)}")
+    print(f"  Unresolved Rate:              {format_percent(pred_metrics.unresolved_rate)}")
     print("-" * 75)
 
     if not all_trades:
@@ -89,21 +124,12 @@ def run_cli() -> int:
     else:
         dir_profit_str = "N/A (0 trades with resolved direction)"
 
-    if metrics.prediction_direction_decided_count > 0:
-        pred_acc_str = (
-            f"{metrics.prediction_direction_correct_count} / {metrics.prediction_direction_decided_count} "
-            f"({format_percent(metrics.prediction_accuracy)})"
-        )
-    else:
-        pred_acc_str = "N/A (no resolved predictions evaluated in this phase)"
-
     decided_outcomes = metrics.wins + metrics.losses
     decided_str = f"{metrics.wins} / {metrics.losses} / {metrics.flats} (Decided: {decided_outcomes}, Incomplete: {metrics.unknown})"
 
-    print("OVERALL METRICS:")
+    print("ECONOMIC EXECUTION METRICS (CLOSED TRADES):")
     print(f"  Total Trades:                 {metrics.total_trades}")
     print(f"  Trade Direction Profitability: {dir_profit_str}")
-    print(f"  Prediction Accuracy:          {pred_acc_str}")
     print(f"  Wins / Loss / Flat:           {decided_str}")
     print(f"  Net Win Rate (Post-Costs):    {format_percent(metrics.win_rate)} (95% CI Wilson: {ci_str})")
     print(f"  Break-Even Win Rate:          {format_percent(metrics.breakeven_win_rate)}")

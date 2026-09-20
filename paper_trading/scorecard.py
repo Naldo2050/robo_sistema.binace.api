@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from paper_trading.contracts import CanonicalDecision, ClosedTrade, Rejection
+from paper_trading.prediction import PredictionOutcome
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,33 @@ class AttritionReport:
     closed_trades_count: int
     unknown_trades_count: int
     balance_verified: bool
+
+
+@dataclass(frozen=True)
+class PredictionScorecardMetrics:
+    """
+    Canonical directional prediction accuracy & coverage metrics (Gate D0-B).
+
+    Completely isolated from economic execution, fees, slippage, and position limits.
+    """
+
+    total_directional_decisions: int
+    correct: int
+    incorrect: int
+    flat: int
+    unresolved: int
+
+    # Denominators
+    prediction_directional_n: int  # correct + incorrect (FLAT excluded)
+    observed_n: int  # correct + incorrect + flat
+
+    # Rates & Intervals
+    directional_accuracy: Optional[float]  # correct / (correct + incorrect)
+    directional_accuracy_ci95: Tuple[float, float]  # Wilson CI over (correct, correct+incorrect)
+    horizon_observation_coverage: Optional[float]  # (correct + incorrect + flat) / total_directional_decisions
+    directional_resolution_coverage: Optional[float]  # (correct + incorrect) / total_directional_decisions
+    flat_rate: Optional[float]  # flat / (correct + incorrect + flat)
+    unresolved_rate: Optional[float]  # unresolved / total_directional_decisions
 
 
 def wilson_interval(wins: int, n: int, z: float = 1.96) -> Tuple[float, float]:
@@ -465,4 +493,70 @@ def attrition_report(
         closed_trades_count=closed_trades_count,
         unknown_trades_count=unknown_trades_count,
         balance_verified=balance_verified,
+    )
+
+
+def prediction_scorecard(
+    prediction_outcomes: Sequence[PredictionOutcome],
+    total_directional_decisions: Optional[int] = None,
+) -> PredictionScorecardMetrics:
+    """
+    Compute canonical prediction performance over recorded PredictionOutcome instances.
+
+    Evaluates:
+      - Directional Prediction Accuracy = correct / (correct + incorrect), FLAT excluded.
+      - Wilson CI 95% over (correct vs incorrect).
+      - Horizon Observation Coverage = (correct + incorrect + flat) / total_directional_decisions.
+      - Directional Resolution Coverage = (correct + incorrect) / total_directional_decisions.
+      - Flat Rate = flat / (correct + incorrect + flat).
+      - Unresolved Rate = unresolved / total_directional_decisions.
+    """
+    correct = sum(1 for p in prediction_outcomes if p.result == "CORRECT")
+    incorrect = sum(1 for p in prediction_outcomes if p.result == "INCORRECT")
+    flat = sum(1 for p in prediction_outcomes if p.result == "FLAT")
+    unresolved = sum(1 for p in prediction_outcomes if p.result == "UNRESOLVED")
+
+    if total_directional_decisions is not None:
+        total_dec = total_directional_decisions
+    else:
+        total_dec = len(prediction_outcomes)
+
+    pred_n = correct + incorrect
+    obs_n = correct + incorrect + flat
+
+    if pred_n > 0:
+        dir_acc = correct / pred_n
+        ci95 = wilson_interval(correct, pred_n, z=1.96)
+    else:
+        dir_acc = None
+        ci95 = (0.0, 0.0)
+
+    if obs_n > 0:
+        flat_rate = flat / obs_n
+    else:
+        flat_rate = None
+
+    if total_dec > 0:
+        obs_cov = obs_n / total_dec
+        res_cov = pred_n / total_dec
+        unres_rate = unresolved / total_dec
+    else:
+        obs_cov = None
+        res_cov = None
+        unres_rate = None
+
+    return PredictionScorecardMetrics(
+        total_directional_decisions=total_dec,
+        correct=correct,
+        incorrect=incorrect,
+        flat=flat,
+        unresolved=unresolved,
+        prediction_directional_n=pred_n,
+        observed_n=obs_n,
+        directional_accuracy=dir_acc,
+        directional_accuracy_ci95=ci95,
+        horizon_observation_coverage=obs_cov,
+        directional_resolution_coverage=res_cov,
+        flat_rate=flat_rate,
+        unresolved_rate=unres_rate,
     )

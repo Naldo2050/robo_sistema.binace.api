@@ -27,6 +27,7 @@ from paper_trading.contracts import (
     PaperPosition,
     Rejection,
 )
+from paper_trading.prediction import PredictionOutcome
 
 VALID_SIGNAL_SIDES = {"LONG", "SHORT", "NEUTRAL", "UNKNOWN"}
 VALID_SIGNAL_OBSERVATION_STATUSES = {
@@ -280,6 +281,30 @@ CREATE TABLE IF NOT EXISTS cohort_events (
     metadata_json TEXT
 );
 
+CREATE TABLE IF NOT EXISTS prediction_outcomes (
+    prediction_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    cohort_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    reference_price REAL NOT NULL,
+    decision_timestamp INTEGER NOT NULL,
+    horizon_s INTEGER NOT NULL,
+    deadline_ms INTEGER NOT NULL,
+    result TEXT NOT NULL,
+    reason TEXT,
+    resolution_price REAL,
+    raw_return_bps REAL,
+    directional_return_bps REAL,
+    resolved_timestamp_ms INTEGER,
+    resolution_drift_ms INTEGER,
+    observed_at_ms INTEGER,
+    flat_tolerance_bps REAL NOT NULL,
+    resolution_tolerance_ms INTEGER NOT NULL,
+    policy_version TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_decisions_cohort ON decisions(cohort_id);
 CREATE INDEX IF NOT EXISTS idx_rejections_cohort ON rejections(cohort_id);
 CREATE INDEX IF NOT EXISTS idx_closed_trades_cohort ON closed_trades(cohort_id);
@@ -287,6 +312,9 @@ CREATE INDEX IF NOT EXISTS idx_positions_open ON positions(cohort_id, is_open);
 CREATE INDEX IF NOT EXISTS idx_sig_obs_cohort ON signal_observations(cohort_id);
 CREATE INDEX IF NOT EXISTS idx_risk_eval_cohort ON risk_evaluations(cohort_id);
 CREATE INDEX IF NOT EXISTS idx_cohort_events_cohort ON cohort_events(cohort_id);
+CREATE INDEX IF NOT EXISTS idx_pred_outcomes_cohort ON prediction_outcomes(cohort_id);
+CREATE INDEX IF NOT EXISTS idx_pred_outcomes_decision ON prediction_outcomes(decision_id);
+CREATE INDEX IF NOT EXISTS idx_pred_outcomes_result ON prediction_outcomes(result);
 """
 
 
@@ -371,6 +399,8 @@ class PaperLedger:
                     self._write_risk_evaluation(payload)
                 elif action == "RECORD_COHORT_EVENT":
                     self._write_cohort_event(payload)
+                elif action == "RECORD_PREDICTION_OUTCOME":
+                    self._write_prediction_outcome(payload)
                 self._conn.commit()
             except Exception as exc:
                 try:
@@ -735,6 +765,70 @@ class PaperLedger:
             ),
         )
 
+    def _write_prediction_outcome(self, outcome: PredictionOutcome) -> None:
+        """
+        Record terminal prediction outcome.
+        Fail-closed: one terminal outcome per prediction_id.
+        Identical retry is idempotent.
+        Conflicting outcome raises ValueError to trigger persistence health alert.
+        Never uses INSERT OR REPLACE.
+        """
+        cur = self._conn.execute(
+            "SELECT result, reason, resolution_price, directional_return_bps FROM prediction_outcomes WHERE prediction_id = ?",
+            (outcome.prediction_id,),
+        )
+        row = cur.fetchone()
+        if row is not None:
+            existing_res = row[0]
+            existing_reason = row[1]
+            existing_price = row[2]
+            existing_ret = row[3]
+            price_match = (existing_price == outcome.resolution_price or (existing_price is None and outcome.resolution_price is None))
+            ret_match = (existing_ret == outcome.directional_return_bps or (existing_ret is None and outcome.directional_return_bps is None))
+            if existing_res == outcome.result and existing_reason == outcome.reason and price_match and ret_match:
+                return  # Idempotent retry
+
+            raise ValueError(
+                f"Conflicting terminal outcome for prediction_id {outcome.prediction_id}: "
+                f"existing=({existing_res}, {existing_reason}) vs new=({outcome.result}, {outcome.reason})"
+            )
+
+        self._conn.execute(
+            """
+            INSERT INTO prediction_outcomes (
+                prediction_id, decision_id, cohort_id, symbol, side,
+                reference_price, decision_timestamp, horizon_s, deadline_ms,
+                result, reason, resolution_price, raw_return_bps,
+                directional_return_bps, resolved_timestamp_ms, resolution_drift_ms,
+                observed_at_ms, flat_tolerance_bps, resolution_tolerance_ms,
+                policy_version, created_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                outcome.prediction_id,
+                outcome.decision_id,
+                outcome.cohort_id,
+                outcome.symbol,
+                outcome.side,
+                outcome.reference_price,
+                outcome.decision_timestamp,
+                outcome.horizon_s,
+                outcome.deadline_ms,
+                outcome.result,
+                outcome.reason,
+                outcome.resolution_price,
+                outcome.raw_return_bps,
+                outcome.directional_return_bps,
+                outcome.resolved_timestamp_ms,
+                outcome.resolution_drift_ms,
+                outcome.observed_at_ms,
+                outcome.flat_tolerance_bps,
+                outcome.resolution_tolerance_ms,
+                outcome.policy_version,
+                outcome.created_at_ms,
+            ),
+        )
+
     # Public Enqueue APIs (Thread-safe, Non-blocking, Fail-closed)
 
     def create_cohort(
@@ -960,6 +1054,14 @@ class PaperLedger:
         self._queue.put(("RECORD_COHORT_EVENT", payload, None))
         return True
 
+    def record_prediction_outcome(self, outcome: PredictionOutcome) -> bool:
+        """Enqueue terminal prediction outcome for asynchronous persistence."""
+        with self._lock:
+            if self._has_error:
+                return False
+        self._queue.put(("RECORD_PREDICTION_OUTCOME", outcome, None))
+        return True
+
     def flush_status(self, timeout: float = 10.0) -> str:
         """Block until all queued writes have been committed or timeout/unhealthy."""
         with self._lock:
@@ -1118,6 +1220,45 @@ class PaperLedger:
             trades.append(tr)
         return trades
 
+    def get_decisions(self, cohort_id: Optional[str] = None) -> List[CanonicalDecision]:
+        """Synchronously fetch decisions from the ledger."""
+        self.flush()
+        cur = self._conn.cursor()
+        if cohort_id:
+            cur.execute("SELECT * FROM decisions WHERE cohort_id = ? ORDER BY decision_timestamp ASC", (cohort_id,))
+        else:
+            cur.execute("SELECT * FROM decisions ORDER BY decision_timestamp ASC")
+        rows = cur.fetchall()
+        decisions = []
+        for r in rows:
+            ctx = json.loads(r["context_json"]) if r["context_json"] else {}
+            pm = json.loads(r["provider_meta_json"]) if r["provider_meta_json"] else {}
+            dec = CanonicalDecision(
+                cohort_id=r["cohort_id"],
+                symbol=r["symbol"],
+                window_id=r["window_id"],
+                decision_provider=r["decision_provider"],
+                strategy_version=r["strategy_version"],
+                model_version=r["model_version"],
+                signal_timestamp=r["signal_timestamp"],
+                decision_timestamp=r["decision_timestamp"],
+                available_at=r["available_at"],
+                side=r["side"],
+                reference_price=r["reference_price"],
+                notional_usdt=r["notional_usdt"],
+                horizon_s=r["horizon_s"],
+                entry_type=r["entry_type"] or "MARKET",
+                confidence=r["confidence"],
+                stop_loss=r["stop_loss"],
+                take_profit=r["take_profit"],
+                funding_rate_at_decision=r["funding_rate_at_decision"],
+                funding_rate_source=r["funding_rate_source"],
+                context=ctx,
+                provider_meta=pm,
+            )
+            decisions.append(dec)
+        return decisions
+
     def get_rejections(self, cohort_id: Optional[str] = None) -> List[Rejection]:
         """Synchronously fetch rejections from the ledger."""
         self.flush()
@@ -1244,3 +1385,44 @@ class PaperLedger:
         events = self.get_cohort_events(cohort_id)
         has_graceful = any(e.get("event_type") == "GRACEFUL_SHUTDOWN" for e in events)
         return not has_graceful
+
+    def get_prediction_outcomes(self, cohort_id: Optional[str] = None) -> List[PredictionOutcome]:
+        """Synchronously query all persisted prediction outcomes."""
+        self.flush()
+        cur = self._conn.cursor()
+        if cohort_id:
+            cur.execute(
+                "SELECT * FROM prediction_outcomes WHERE cohort_id = ? ORDER BY decision_timestamp ASC",
+                (cohort_id,),
+            )
+        else:
+            cur.execute("SELECT * FROM prediction_outcomes ORDER BY decision_timestamp ASC")
+        rows = cur.fetchall()
+        outcomes: List[PredictionOutcome] = []
+        for r in rows:
+            outcomes.append(
+                PredictionOutcome(
+                    prediction_id=r["prediction_id"],
+                    decision_id=r["decision_id"],
+                    cohort_id=r["cohort_id"],
+                    symbol=r["symbol"],
+                    side=r["side"],
+                    reference_price=float(r["reference_price"]),
+                    decision_timestamp=int(r["decision_timestamp"]),
+                    horizon_s=int(r["horizon_s"]),
+                    deadline_ms=int(r["deadline_ms"]),
+                    result=r["result"],
+                    reason=r["reason"],
+                    resolution_price=float(r["resolution_price"]) if r["resolution_price"] is not None else None,
+                    raw_return_bps=float(r["raw_return_bps"]) if r["raw_return_bps"] is not None else None,
+                    directional_return_bps=float(r["directional_return_bps"]) if r["directional_return_bps"] is not None else None,
+                    resolved_timestamp_ms=int(r["resolved_timestamp_ms"]) if r["resolved_timestamp_ms"] is not None else None,
+                    resolution_drift_ms=int(r["resolution_drift_ms"]) if r["resolution_drift_ms"] is not None else None,
+                    observed_at_ms=int(r["observed_at_ms"]) if r["observed_at_ms"] is not None else None,
+                    flat_tolerance_bps=float(r["flat_tolerance_bps"]),
+                    resolution_tolerance_ms=int(r["resolution_tolerance_ms"]),
+                    policy_version=r["policy_version"],
+                    created_at_ms=int(r["created_at_ms"]),
+                )
+            )
+        return outcomes

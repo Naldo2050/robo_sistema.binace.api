@@ -24,6 +24,8 @@ from paper_trading.adapters.signal_adapter import SignalDecisionAdapter
 from paper_trading.adapters.risk_adapter import RiskAdapter
 from paper_trading.execution_sink import ExecutionSink
 from paper_trading.executor import PaperExecutor
+from paper_trading.prediction import PredictionTrackerConfig
+from paper_trading.prediction_tracker import PredictionTracker
 from risk_management.risk_manager import RiskConfig, RiskManager
 
 SignalResultStatus = Literal[
@@ -109,6 +111,7 @@ class ShadowPaperRuntime:
         risk_adapter: Optional[RiskAdapter] = None,
         execution_sink: Optional[ExecutionSink] = None,
         signal_adapter: Optional[SignalDecisionAdapter] = None,
+        prediction_tracker: Optional[PredictionTracker] = None,
         ledger: Optional[Any] = None,
         git_sha: Optional[str] = None,
         ledger_is_owner: bool = False,
@@ -148,6 +151,10 @@ class ShadowPaperRuntime:
             "fills_enqueued": 0,
             "positions_enqueued": 0,
             "closed_trades_enqueued": 0,
+            "predictions_registered": 0,
+            "predictions_resolved": 0,
+            "predictions_unresolved": 0,
+            "prediction_outcomes_enqueued": 0,
         }
 
         # Build / wire components if enabled
@@ -192,12 +199,26 @@ class ShadowPaperRuntime:
                     symbol=config.symbol,
                     executor=executor,
                 )
+
+            # 5. Prediction Tracker
+            if prediction_tracker is not None:
+                self.prediction_tracker = prediction_tracker
+            else:
+                self.prediction_tracker = PredictionTracker(
+                    config=PredictionTrackerConfig(
+                        resolution_tolerance_ms=30_000,
+                        flat_tolerance_bps=1.0,
+                        policy_version="v1",
+                    ),
+                    clock_ms=self.clock_ms,
+                )
         else:
             # Inactive stubs when disabled
             self.provider = None  # type: ignore[assignment]
             self.signal_adapter = None  # type: ignore[assignment]
             self.risk_adapter = None  # type: ignore[assignment]
             self.execution_sink = None  # type: ignore[assignment]
+            self.prediction_tracker = None  # type: ignore[assignment]
 
     @property
     def is_active(self) -> bool:
@@ -377,6 +398,12 @@ class ShadowPaperRuntime:
                         self._accept_new_exposure = False
                         return ShadowSignalResult(status="ERROR", error="Failed to enqueue decision")
 
+                # Register decision with PredictionTracker BEFORE risk evaluation
+                if self.prediction_tracker is not None:
+                    pred_id = self.prediction_tracker.register(decision)
+                    if pred_id:
+                        self._counters["predictions_registered"] += 1
+
                 # 2. Risk check
                 risk_res = self.risk_adapter.evaluate(decision)
                 risk_status = "APPROVED" if risk_res.status == "APPROVED" else ("REJECTED" if risk_res.status == "REJECTED_BY_RISK" else "ERROR")
@@ -512,6 +539,21 @@ class ShadowPaperRuntime:
                 self._counters["fills"] += fills_count
                 self._counters["closed_trades"] += closed_count
 
+                # Feed PredictionTracker on the same causal timeline
+                if self.prediction_tracker is not None:
+                    resolved_preds = self.prediction_tracker.on_tick(norm)
+                    for pred_out in resolved_preds:
+                        self._counters["predictions_resolved"] += 1
+                        if self.ledger is not None:
+                            ok_pred = self.ledger.record_prediction_outcome(pred_out)
+                            if ok_pred:
+                                self._counters["prediction_outcomes_enqueued"] += 1
+                            else:
+                                self._counters["persistence_errors"] += 1
+                                self._counters["persistence_blocks"] += 1
+                                self._persistence_failed = True
+                                self._accept_new_exposure = False
+
                 return ShadowTradeResult(
                     status="PROCESSED",
                     accepted=accepted,
@@ -536,6 +578,23 @@ class ShadowPaperRuntime:
         with self._lock:
             self._active = False
             self._accept_new_exposure = False
+
+            if self.prediction_tracker is not None:
+                unresolved_preds = self.prediction_tracker.flush_unresolved(
+                    reason="PROCESS_SHUTDOWN",
+                    observed_at_ms=self.clock_ms(),
+                )
+                for pred_out in unresolved_preds:
+                    self._counters["predictions_unresolved"] += 1
+                    if self.ledger is not None:
+                        ok_pred = self.ledger.record_prediction_outcome(pred_out)
+                        if ok_pred:
+                            self._counters["prediction_outcomes_enqueued"] += 1
+                        else:
+                            self._counters["persistence_errors"] += 1
+                            self._counters["persistence_blocks"] += 1
+                            self._persistence_failed = True
+                            self._accept_new_exposure = False
 
             if self.ledger is not None:
                 open_pos_count = 0

@@ -268,3 +268,81 @@ def test_scorecard_cost_incomplete_excluded_from_net_win_rate():
     assert metrics.unknown == 1
     # Win rate is strictly over decided outcomes: 1 / (1 + 1) = 0.50
     assert metrics.win_rate == 0.50
+
+
+def test_canonical_prediction_scorecard_denominators():
+    """
+    Section 22 test:
+      4 correct, 3 incorrect, 2 flat, 1 unresolved.
+      Total directional decisions = 10.
+      Prediction directional N = 7.
+      Directional Accuracy = 4/7 = 57.142857%.
+      Horizon observation coverage = 9/10 = 90%.
+      Directional resolution coverage = 7/10 = 70%.
+      Flat rate = 2/9.
+      Unresolved rate = 1/10.
+      No mixed denominators.
+    """
+    from paper_trading.prediction import PredictionOutcome
+    from paper_trading.scorecard import prediction_scorecard
+
+    def _make_pred(pred_id: str, result: str) -> PredictionOutcome:
+        return PredictionOutcome(
+            prediction_id=pred_id,
+            decision_id=f"dec_{pred_id}",
+            cohort_id="c1",
+            symbol="BTCUSDT",
+            side="LONG",
+            reference_price=100.0,
+            decision_timestamp=1000,
+            horizon_s=300,
+            deadline_ms=301000,
+            result=result,  # type: ignore[arg-type]
+            reason="HORIZON_RESOLVED" if result != "UNRESOLVED" else "NO_TICK_WITHIN_TOLERANCE",
+            resolution_price=101.0 if result in ("CORRECT", "INCORRECT", "FLAT") else None,
+            raw_return_bps=100.0 if result == "CORRECT" else (-100.0 if result == "INCORRECT" else 0.0),
+            directional_return_bps=100.0 if result == "CORRECT" else (-100.0 if result == "INCORRECT" else 0.0),
+            resolved_timestamp_ms=301000 if result != "UNRESOLVED" else None,
+            resolution_drift_ms=0 if result != "UNRESOLVED" else None,
+            observed_at_ms=301000,
+            flat_tolerance_bps=1.0,
+            resolution_tolerance_ms=30000,
+            policy_version="v1",
+            created_at_ms=301000,
+        )
+
+    outcomes = (
+        [_make_pred(f"c_{i}", "CORRECT") for i in range(4)]
+        + [_make_pred(f"i_{i}", "INCORRECT") for i in range(3)]
+        + [_make_pred(f"f_{i}", "FLAT") for i in range(2)]
+        + [_make_pred("u_0", "UNRESOLVED")]
+    )
+
+    metrics = prediction_scorecard(outcomes, total_directional_decisions=10)
+
+    assert metrics.total_directional_decisions == 10
+    assert metrics.correct == 4
+    assert metrics.incorrect == 3
+    assert metrics.flat == 2
+    assert metrics.unresolved == 1
+
+    # Directional prediction N (FLAT excluded)
+    assert metrics.prediction_directional_n == 7
+    assert metrics.directional_accuracy == pytest.approx(4.0 / 7.0)
+    assert metrics.directional_accuracy == pytest.approx(0.57142857)
+
+    # Observed N (C + I + F)
+    assert metrics.observed_n == 9
+    assert metrics.horizon_observation_coverage == pytest.approx(9.0 / 10.0)
+    assert metrics.horizon_observation_coverage == 0.90
+
+    # Directional Resolution Coverage
+    assert metrics.directional_resolution_coverage == pytest.approx(7.0 / 10.0)
+    assert metrics.directional_resolution_coverage == 0.70
+
+    # Flat Rate = 2 / 9
+    assert metrics.flat_rate == pytest.approx(2.0 / 9.0)
+
+    # Unresolved Rate = 1 / 10
+    assert metrics.unresolved_rate == pytest.approx(1.0 / 10.0)
+    assert metrics.unresolved_rate == 0.10
