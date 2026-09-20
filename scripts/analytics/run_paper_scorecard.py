@@ -81,28 +81,48 @@ def run_cli() -> int:
     d_low, d_high = metrics.directional_accuracy_ci95
     d_ci_str = f"[{d_low*100:.1f}%, {d_high*100:.1f}%]" if metrics.directional_accuracy is not None else "N/A"
 
+    if metrics.trade_direction_decided_count > 0:
+        dir_profit_str = (
+            f"{metrics.trade_direction_profitable_count} / {metrics.trade_direction_decided_count} "
+            f"({format_percent(metrics.trade_direction_profitability_rate)}) [95% CI: {d_ci_str}]"
+        )
+    else:
+        dir_profit_str = "N/A (0 trades with resolved direction)"
+
+    if metrics.prediction_direction_decided_count > 0:
+        pred_acc_str = (
+            f"{metrics.prediction_direction_correct_count} / {metrics.prediction_direction_decided_count} "
+            f"({format_percent(metrics.prediction_accuracy)})"
+        )
+    else:
+        pred_acc_str = "N/A (no resolved predictions evaluated in this phase)"
+
+    decided_outcomes = metrics.wins + metrics.losses
+    decided_str = f"{metrics.wins} / {metrics.losses} / {metrics.flats} (Decided: {decided_outcomes}, Incomplete: {metrics.unknown})"
+
     print("OVERALL METRICS:")
-    print(f"  Total Trades:         {metrics.total_trades}")
-    print(f"  Direction Correct:    {metrics.direction_correct_count} / {metrics.direction_correct_count + metrics.direction_incorrect_count} ({format_percent(metrics.directional_accuracy)}) [95% CI: {d_ci_str}]")
-    print(f"  Wins / Loss / Flat:   {metrics.wins} / {metrics.losses} / {metrics.flats} (Unknown: {metrics.unknown})")
-    print(f"  Net Win Rate:         {format_percent(metrics.win_rate)} (95% CI Wilson: {ci_str})")
-    print(f"  Break-Even Win Rate:  {format_percent(metrics.breakeven_win_rate)}")
-    print(f"  Expectancy:           {format_float(metrics.expectancy_bps, 2)} bps | {format_float(metrics.expectancy_R, 2)} R")
-    print(f"  Profit Factor:        {format_float(metrics.profit_factor, 2)}")
-    print(f"  Avg Payoff:           {format_float(metrics.avg_payoff, 2)}")
-    print(f"  Max Drawdown:         {format_float(metrics.max_drawdown_bps, 2)} bps")
-    print(f"  Mean MAE / MFE:       {format_float(metrics.mae_bps_mean, 2)} bps / {format_float(metrics.mfe_bps_mean, 2)} bps")
-    print(f"  Costs Complete Ratio: {format_percent(metrics.costs_complete_ratio)}")
+    print(f"  Total Trades:                 {metrics.total_trades}")
+    print(f"  Trade Direction Profitability: {dir_profit_str}")
+    print(f"  Prediction Accuracy:          {pred_acc_str}")
+    print(f"  Wins / Loss / Flat:           {decided_str}")
+    print(f"  Net Win Rate (Post-Costs):    {format_percent(metrics.win_rate)} (95% CI Wilson: {ci_str})")
+    print(f"  Break-Even Win Rate:          {format_percent(metrics.breakeven_win_rate)}")
+    print(f"  Expectancy:                   {format_float(metrics.expectancy_bps, 2)} bps | {format_float(metrics.expectancy_R, 2)} R")
+    print(f"  Profit Factor:                {format_float(metrics.profit_factor, 2)}")
+    print(f"  Avg Payoff:                   {format_float(metrics.avg_payoff, 2)}")
+    print(f"  Max Drawdown:                 {format_float(metrics.max_drawdown_bps, 2)} bps")
+    print(f"  Mean MAE / MFE:               {format_float(metrics.mae_bps_mean, 2)} bps / {format_float(metrics.mfe_bps_mean, 2)} bps")
+    print(f"  Costs Complete Ratio:         {format_percent(metrics.costs_complete_ratio)}")
     print("-" * 75)
 
     # Breakdown by Provider
     by_provider = group_by(all_trades, "decision_provider")
     print("BREAKDOWN BY DECISION PROVIDER:")
-    print(f"{'Provider':<20} | {'Trades':<7} | {'Dir Acc':<10} | {'Net WR':<10} | {'Exp (bps)':<10} | {'Max DD':<10}")
+    print(f"{'Provider':<20} | {'Trades':<7} | {'Gross Dir%':<10} | {'Net WR':<10} | {'Exp (bps)':<10} | {'Max DD':<10}")
     print("-" * 75)
     for prov, p_trades in sorted(by_provider.items()):
         p_met = scorecard(p_trades)
-        d_acc_s = format_percent(p_met.directional_accuracy)
+        d_acc_s = format_percent(p_met.trade_direction_profitability_rate)
         wr_s = format_percent(p_met.win_rate)
         exp_s = format_float(p_met.expectancy_bps, 1)
         dd_s = format_float(p_met.max_drawdown_bps, 1)

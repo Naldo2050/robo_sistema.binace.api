@@ -190,3 +190,81 @@ def test_calibration_table_with_none():
     assert bin_high.total_in_bin == 2
     assert bin_high.wins_in_bin == 2
     assert pytest.approx(bin_high.win_rate, rel=1e-4) == 1.0
+
+
+def test_scorecard_denominators_and_metric_universes():
+    """Prove exact mathematical isolation of trade direction profitability vs prediction accuracy vs net win rate."""
+    # 5 trades matching the preflight scenario:
+    # 4 gross profitable (80%), 1 gross loss (20%)
+    # 2 net profitable (40%), 3 net losses (60%)
+    # prediction_direction_correct is None (not evaluated yet)
+    trades = [
+        make_dummy_trade("t1", gross_pnl_bps=50.0, net_pnl_bps=30.0, trade_direction_profitable=True, trade_win=True, prediction_direction_correct=None),
+        make_dummy_trade("t2", gross_pnl_bps=40.0, net_pnl_bps=20.0, trade_direction_profitable=True, trade_win=True, prediction_direction_correct=None),
+        make_dummy_trade("t3", gross_pnl_bps=10.0, net_pnl_bps=-10.0, trade_direction_profitable=True, trade_win=False, prediction_direction_correct=None),
+        make_dummy_trade("t4", gross_pnl_bps=15.0, net_pnl_bps=-5.0, trade_direction_profitable=True, trade_win=False, prediction_direction_correct=None),
+        make_dummy_trade("t5", gross_pnl_bps=-30.0, net_pnl_bps=-50.0, trade_direction_profitable=False, trade_win=False, prediction_direction_correct=None),
+    ]
+
+    metrics = scorecard(trades)
+
+    # 1. Trade Direction Profitability Universe (Gross PnL > 0)
+    assert metrics.trade_direction_profitable_count == 4
+    assert metrics.trade_direction_unprofitable_count == 1
+    assert metrics.trade_direction_decided_count == 5
+    assert metrics.direction_correct_count == 4
+    assert metrics.direction_incorrect_count == 1
+    # Prove that denominator is strictly 5 and NOT 7 (4 correct + 3 net losses)
+    assert (metrics.direction_correct_count + metrics.direction_incorrect_count) == 5
+    assert metrics.trade_direction_profitability_rate == 0.80
+    assert metrics.trade_direction_profitability_rate != pytest.approx(4.0 / 7.0)
+    assert pytest.approx(4.0 / 7.0, rel=1e-3) == 0.5714
+
+    # 2. Prediction Accuracy Universe (Resolved market predictions)
+    # None predictions do NOT enter denominator
+    assert metrics.prediction_direction_correct_count == 0
+    assert metrics.prediction_direction_decided_count == 0
+    assert metrics.prediction_accuracy is None
+
+    # 3. Net Win Rate Universe (Post-costs economic outcomes)
+    assert metrics.wins == 2
+    assert metrics.losses == 3
+    assert metrics.flats == 0
+    assert metrics.unknown == 0
+    assert metrics.win_rate == 0.40  # 2 / 5
+
+
+def test_scorecard_prediction_direction_distinct_from_trade_direction():
+    """Prove trade_direction_profitable does not equal prediction_direction_correct."""
+    # Trade with gross profit due to favourable market movement, but prediction was wrong or independent
+    trades = [
+        make_dummy_trade("t1", trade_direction_profitable=True, prediction_direction_correct=False),
+        make_dummy_trade("t2", trade_direction_profitable=False, prediction_direction_correct=True),
+        make_dummy_trade("t3", trade_direction_profitable=True, prediction_direction_correct=None),
+    ]
+    metrics = scorecard(trades)
+
+    assert metrics.trade_direction_profitable_count == 2
+    assert metrics.trade_direction_decided_count == 3
+    assert metrics.trade_direction_profitability_rate == pytest.approx(2.0 / 3.0)
+
+    assert metrics.prediction_direction_correct_count == 1
+    assert metrics.prediction_direction_decided_count == 2  # t3 with None is excluded!
+    assert metrics.prediction_accuracy == pytest.approx(1.0 / 2.0)
+
+
+def test_scorecard_cost_incomplete_excluded_from_net_win_rate():
+    """Cost-incomplete trades are recorded as unknown and excluded from net win rate denominator."""
+    trades = [
+        make_dummy_trade("t1", gross_pnl_bps=100.0, net_pnl_bps=90.0, trade_win=True),
+        make_dummy_trade("t2", gross_pnl_bps=-50.0, net_pnl_bps=-60.0, trade_win=False),
+        make_dummy_trade("t3", gross_pnl_bps=50.0, net_pnl_bps=None, trade_win=None),  # incomplete funding
+    ]
+    metrics = scorecard(trades)
+
+    assert metrics.total_trades == 3
+    assert metrics.wins == 1
+    assert metrics.losses == 1
+    assert metrics.unknown == 1
+    # Win rate is strictly over decided outcomes: 1 / (1 + 1) = 0.50
+    assert metrics.win_rate == 0.50

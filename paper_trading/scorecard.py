@@ -26,8 +26,11 @@ class ScorecardMetrics:
     flats: int
     unknown: int
     trade_direction_profitable_count: int
+    trade_direction_unprofitable_count: int
+    trade_direction_decided_count: int
     trade_direction_profitability_rate: Optional[float]
     prediction_direction_correct_count: int
+    prediction_direction_decided_count: int
     prediction_accuracy: Optional[float]
     win_rate: Optional[float]
     win_rate_ci95: Tuple[float, float]
@@ -51,8 +54,8 @@ class ScorecardMetrics:
 
     @property
     def direction_incorrect_count(self) -> int:
-        """Alias for non-profitable decided outcomes (losses)."""
-        return self.losses
+        """Count of trades where directional price movement was not profitable (gross PnL <= 0)."""
+        return self.trade_direction_unprofitable_count
 
 
 @dataclass(frozen=True)
@@ -178,8 +181,11 @@ def scorecard(
             flats=0,
             unknown=0,
             trade_direction_profitable_count=0,
+            trade_direction_unprofitable_count=0,
+            trade_direction_decided_count=0,
             trade_direction_profitability_rate=None,
             prediction_direction_correct_count=0,
+            prediction_direction_decided_count=0,
             prediction_accuracy=None,
             win_rate=None,
             win_rate_ci95=(0.0, 0.0),
@@ -333,8 +339,11 @@ def scorecard(
         flats=flats,
         unknown=unknown,
         trade_direction_profitable_count=trade_dir_profitable_cnt,
+        trade_direction_unprofitable_count=trade_dir_decided_cnt - trade_dir_profitable_cnt,
+        trade_direction_decided_count=trade_dir_decided_cnt,
         trade_direction_profitability_rate=trade_dir_rate,
         prediction_direction_correct_count=pred_dir_correct_cnt,
+        prediction_direction_decided_count=pred_dir_decided_cnt,
         prediction_accuracy=pred_acc,
         win_rate=win_rate,
         win_rate_ci95=ci95,
