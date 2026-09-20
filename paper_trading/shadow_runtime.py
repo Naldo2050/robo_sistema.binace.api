@@ -98,7 +98,7 @@ class ShadowPaperRuntime:
            ↓
       ExecutionSink (PaperExecutor)
            ↓
-      In-Memory State & Metrics
+      In-Memory State & Metrics & Optional Auditable PaperLedger
     """
 
     def __init__(
@@ -110,14 +110,20 @@ class ShadowPaperRuntime:
         execution_sink: Optional[ExecutionSink] = None,
         signal_adapter: Optional[SignalDecisionAdapter] = None,
         ledger: Optional[Any] = None,
+        git_sha: Optional[str] = None,
+        ledger_is_owner: bool = False,
     ) -> None:
         self.config = config
         self.clock_ms = clock_ms or (lambda: int(time.time() * 1000))
         self.ledger = ledger
+        self._git_sha = git_sha or "HEAD"
+        self._ledger_is_owner = ledger_is_owner
         self._lock = threading.RLock()
 
-        # Lifecycle flag
+        # Lifecycle flags
         self._active: bool = bool(config.enabled)
+        self._accept_new_exposure: bool = bool(config.enabled)
+        self._persistence_failed: bool = False
 
         # In-memory operational counters
         self._counters: Dict[str, int] = {
@@ -133,6 +139,15 @@ class ShadowPaperRuntime:
             "fills": 0,
             "closed_trades": 0,
             "runtime_errors": 0,
+            "persistence_blocks": 0,
+            "persistence_errors": 0,
+            "observations_enqueued": 0,
+            "decisions_enqueued": 0,
+            "risk_evaluations_enqueued": 0,
+            "orders_enqueued": 0,
+            "fills_enqueued": 0,
+            "positions_enqueued": 0,
+            "closed_trades_enqueued": 0,
         }
 
         # Build / wire components if enabled
@@ -190,6 +205,91 @@ class ShadowPaperRuntime:
         with self._lock:
             return self._active and self.config.enabled
 
+    @property
+    def accepts_new_exposure(self) -> bool:
+        """Indicate whether the shadow runtime accepts new signals and risk evaluations."""
+        with self._lock:
+            return self._active and self._accept_new_exposure and self.config.enabled
+
+    def start(self) -> bool:
+        """
+        Explicit lifecycle start for shadow runtime.
+
+        When ledger is configured:
+          1. Verify persistence health.
+          2. Attempt strict cohort creation (fail-closed on duplicates).
+          3. Record STARTED cohort event.
+          4. Enable runtime operations for new exposures.
+        """
+        with self._lock:
+            if not self.config.enabled:
+                self._active = False
+                self._accept_new_exposure = False
+                return False
+
+            if self.ledger is not None:
+                # 1. Check health
+                health = self.ledger.health_snapshot()
+                if not health["healthy"]:
+                    self._counters["persistence_blocks"] += 1
+                    self._persistence_failed = True
+                    self._accept_new_exposure = False
+                    self._active = False
+                    return False
+
+                # 2. Strict cohort creation
+                meta = {
+                    "git_sha": self._git_sha,
+                    "strategy_version": self.config.strategy_version,
+                    "provider": self.config.provider,
+                    "random_seed": self.config.random_seed,
+                    "symbol": self.config.symbol,
+                    "timeframe": self.config.timeframe,
+                    "notional_usdt": self.config.notional_usdt,
+                    "horizon_s": self.config.horizon_s,
+                    "order_ttl_ms": self.config.order_ttl_ms,
+                    "fees": self.config.taker_fee_bps,
+                    "slippage": self.config.entry_slippage_bps,
+                    "entry_slippage_bps": self.config.entry_slippage_bps,
+                    "exit_slippage_bps": self.config.exit_slippage_bps,
+                    "cost_source": self.config.cost_source,
+                    "cost_effective_at": self.config.cost_effective_at,
+                    "risk_config": {
+                        "max_position_size": (
+                            self.risk_adapter.risk_manager.config.max_position_size
+                            if hasattr(self.risk_adapter, "risk_manager")
+                            else None
+                        )
+                    },
+                    "risk_position_limit_active": False,
+                    "risk_daily_loss_active": False,
+                }
+                cohort_created = self.ledger.create_cohort(
+                    cohort_id=self.config.cohort_id or "CH_SHADOW_DEFAULT",
+                    created_at_ms=self.clock_ms(),
+                    description="Shadow paper trading session",
+                    metadata=meta,
+                )
+                if not cohort_created:
+                    # Duplicate or failed cohort creation: fail closed
+                    self._active = False
+                    self._accept_new_exposure = False
+                    return False
+
+                # 3. Record STARTED cohort event
+                self.ledger.record_cohort_event(
+                    cohort_id=self.config.cohort_id or "CH_SHADOW_DEFAULT",
+                    event_type="STARTED",
+                    timestamp_ms=self.clock_ms(),
+                    reason="Runtime started",
+                    metadata={"git_sha": self._git_sha},
+                )
+                self.ledger.flush_status()
+
+            self._active = True
+            self._accept_new_exposure = True
+            return True
+
     def on_signal(self, event: Dict[str, Any]) -> ShadowSignalResult:
         """
         Process a runtime market signal event into paper order execution.
@@ -198,41 +298,111 @@ class ShadowPaperRuntime:
         without escaping into the orchestrator or EventBus.
         """
         with self._lock:
-            if not self._active or not self.config.enabled:
+            if not self._active or not self._accept_new_exposure or not self.config.enabled:
                 return ShadowSignalResult(status="INACTIVE")
 
             try:
+                # 0. Health gate check
+                if self.ledger is not None:
+                    health = self.ledger.health_snapshot()
+                    if not health["healthy"]:
+                        self._counters["persistence_blocks"] += 1
+                        self._persistence_failed = True
+                        self._accept_new_exposure = False
+                        return ShadowSignalResult(status="ERROR", error="Persistence health gate failure")
+
                 self._counters["signals_seen"] += 1
 
                 # 1. Adapt signal to canonical decision
                 adapter_res = self.signal_adapter.process_signal(event)
 
+                # Determine observation status & skip reason
                 if adapter_res.status == "SKIPPED_INVALID_EVENT":
                     self._counters["invalid_signals"] += 1
-                    return ShadowSignalResult(
-                        status="SKIPPED",
-                        skip_reason=adapter_res.reason or "Invalid signal payload",
-                    )
-
-                if adapter_res.status == "SKIPPED_NON_DIRECTIONAL":
+                    obs_status = "INVALID_SIGNAL"
+                    skip_reason = adapter_res.reason or "Invalid signal payload"
+                elif adapter_res.status == "SKIPPED_NON_DIRECTIONAL":
                     self._counters["nondirectional_skips"] += 1
-                    return ShadowSignalResult(
-                        status="SKIPPED",
-                        skip_reason=adapter_res.reason or "Non-directional signal",
+                    obs_status = "SKIPPED_NON_DIRECTIONAL"
+                    skip_reason = adapter_res.reason or "Non-directional signal"
+                elif adapter_res.decision is not None:
+                    obs_status = "DECISION_CREATED"
+                    skip_reason = None
+                else:
+                    self._counters["invalid_signals"] += 1
+                    obs_status = "INVALID_SIGNAL"
+                    skip_reason = adapter_res.reason or "No decision generated"
+
+                # Persist signal observation
+                if self.ledger is not None:
+                    ok_obs = self.ledger.record_signal_observation(
+                        cohort_id=self.config.cohort_id or "CH_SHADOW_DEFAULT",
+                        symbol=self.config.symbol,
+                        source_window_id=adapter_res.source_window_id or str(event.get("epoch_ms", 0)),
+                        source_event_key=adapter_res.source_event_key or str(event.get("event_type", "default")),
+                        signal_timestamp=int(event.get("epoch_ms", event.get("timestamp", self.clock_ms()))),
+                        source_side=adapter_res.source_side or "UNKNOWN",
+                        status=obs_status,
+                        reason=skip_reason,
+                        context={"event_type": str(event.get("event_type", "unknown"))},
+                        created_at_ms=self.clock_ms(),
                     )
+                    if ok_obs:
+                        self._counters["observations_enqueued"] += 1
+                    else:
+                        self._counters["persistence_errors"] += 1
+                        self._counters["persistence_blocks"] += 1
+                        self._persistence_failed = True
+                        self._accept_new_exposure = False
+                        return ShadowSignalResult(status="ERROR", error="Failed to enqueue signal observation")
+
+                if obs_status != "DECISION_CREATED":
+                    return ShadowSignalResult(status="SKIPPED", skip_reason=skip_reason)
 
                 decision = adapter_res.decision
                 if decision is None:
-                    self._counters["invalid_signals"] += 1
-                    return ShadowSignalResult(
-                        status="SKIPPED",
-                        skip_reason=adapter_res.reason or "No decision generated",
-                    )
+                    return ShadowSignalResult(status="SKIPPED", skip_reason="No decision generated")
 
                 self._counters["directional_decisions"] += 1
 
+                # Persist decision BEFORE risk evaluation
+                if self.ledger is not None:
+                    ok_dec = self.ledger.record_decision(decision)
+                    if ok_dec:
+                        self._counters["decisions_enqueued"] += 1
+                    else:
+                        self._counters["persistence_errors"] += 1
+                        self._counters["persistence_blocks"] += 1
+                        self._persistence_failed = True
+                        self._accept_new_exposure = False
+                        return ShadowSignalResult(status="ERROR", error="Failed to enqueue decision")
+
                 # 2. Risk check
                 risk_res = self.risk_adapter.evaluate(decision)
+                risk_status = "APPROVED" if risk_res.status == "APPROVED" else ("REJECTED" if risk_res.status == "REJECTED_BY_RISK" else "ERROR")
+
+                # Persist risk evaluation BEFORE order submission
+                if self.ledger is not None:
+                    ok_risk = self.ledger.record_risk_evaluation(
+                        cohort_id=self.config.cohort_id or "CH_SHADOW_DEFAULT",
+                        decision_id=decision.decision_id,
+                        status=risk_status,
+                        risk_confidence=float(risk_res.risk_confidence if risk_res.risk_confidence is not None else 0.0),
+                        risk_reason=risk_res.risk_reason,
+                        max_size=risk_res.max_size,
+                        source_confidence=risk_res.source_confidence,
+                        context=risk_res.context,
+                        evaluated_at_ms=self.clock_ms(),
+                    )
+                    if ok_risk:
+                        self._counters["risk_evaluations_enqueued"] += 1
+                    else:
+                        self._counters["persistence_errors"] += 1
+                        self._counters["persistence_blocks"] += 1
+                        self._persistence_failed = True
+                        self._accept_new_exposure = False
+                        return ShadowSignalResult(status="ERROR", error="Failed to enqueue risk evaluation")
+
                 if risk_res.status != "APPROVED" or risk_res.paper_order is None:
                     self._counters["risk_rejected"] += 1
                     return ShadowSignalResult(
@@ -241,6 +411,18 @@ class ShadowPaperRuntime:
                     )
 
                 self._counters["risk_approved"] += 1
+
+                # Persist order BEFORE submitting to sink
+                if self.ledger is not None:
+                    ok_ord = self.ledger.record_order(risk_res.paper_order)
+                    if ok_ord:
+                        self._counters["orders_enqueued"] += 1
+                    else:
+                        self._counters["persistence_errors"] += 1
+                        self._counters["persistence_blocks"] += 1
+                        self._persistence_failed = True
+                        self._accept_new_exposure = False
+                        return ShadowSignalResult(status="ERROR", error="Failed to enqueue order")
 
                 # 3. Order submission to causal sink
                 sink_res = self.execution_sink.submit_order(risk_res.paper_order)
@@ -257,6 +439,9 @@ class ShadowPaperRuntime:
                         if sink_res.rejection is not None
                         else sink_res.error_message or str(sink_res.status)
                     )
+                    if self.ledger is not None and sink_res.rejection is not None:
+                        self.ledger.record_rejection(sink_res.rejection)
+
                     return ShadowSignalResult(
                         status="ORDER_REJECTED",
                         rejection_reason=rejection_reason,
@@ -270,8 +455,9 @@ class ShadowPaperRuntime:
         """
         Process a normalized market trade tick through the causal ExecutionSink.
 
-        Fail-closed boundary: exceptions are trapped, incrementing runtime_errors
-        without escaping into the WebSocket message loop.
+        Continues delegating to sink as long as runtime is active, even if
+        ledger is unhealthy or new exposures are blocked, to avoid freezing
+        existing positions.
         """
         with self._lock:
             if not self._active or not self.config.enabled:
@@ -282,9 +468,46 @@ class ShadowPaperRuntime:
 
                 sink_res = self.execution_sink.on_market_trade(norm)
                 accepted = (sink_res.status == "ACCEPTED")
-                fills_count = len(sink_res.events.fills) if sink_res.events else 0
-                closed_count = len(sink_res.events.closed_trades) if sink_res.events else 0
-                rejections_count = len(sink_res.events.rejections) if sink_res.events else 0
+                fills_count = 0
+                closed_count = 0
+                rejections_count = 0
+
+                if sink_res.events:
+                    fills_count = len(sink_res.events.fills)
+                    closed_count = len(sink_res.events.closed_trades)
+                    rejections_count = len(sink_res.events.rejections)
+
+                    # Persist discrete events to ledger if configured
+                    if self.ledger is not None:
+                        for rej in sink_res.events.rejections:
+                            self.ledger.record_rejection(rej)
+
+                        for fill in sink_res.events.fills:
+                            ok_f = self.ledger.record_fill(fill)
+                            if ok_f:
+                                self._counters["fills_enqueued"] += 1
+                            else:
+                                self._counters["persistence_errors"] += 1
+                                self._persistence_failed = True
+                                self._accept_new_exposure = False
+
+                        for pos in sink_res.events.opened_positions:
+                            ok_p = self.ledger.record_position(pos)
+                            if ok_p:
+                                self._counters["positions_enqueued"] += 1
+                            else:
+                                self._counters["persistence_errors"] += 1
+                                self._persistence_failed = True
+                                self._accept_new_exposure = False
+
+                        for trade in sink_res.events.closed_trades:
+                            ok_c = self.ledger.record_closed_trade(trade)
+                            if ok_c:
+                                self._counters["closed_trades_enqueued"] += 1
+                            else:
+                                self._counters["persistence_errors"] += 1
+                                self._persistence_failed = True
+                                self._accept_new_exposure = False
 
                 self._counters["fills"] += fills_count
                 self._counters["closed_trades"] += closed_count
@@ -306,10 +529,35 @@ class ShadowPaperRuntime:
         Gracefully disable the runtime.
 
         Disallows new signals, new orders, and tick evaluations immediately.
+        Records GRACEFUL_SHUTDOWN cohort event with open position counts.
+        Flushes ledger and closes it only if runtime owns it.
         Does NOT synthesize artificial position liquidations.
         """
         with self._lock:
             self._active = False
+            self._accept_new_exposure = False
+
+            if self.ledger is not None:
+                open_pos_count = 0
+                pending_orders_count = 0
+                if self.execution_sink is not None and hasattr(self.execution_sink, "executor"):
+                    open_pos_count = len(self.execution_sink.executor.position_manager.open_positions)
+                    pending_orders_count = len(self.execution_sink.executor.pending_orders)
+
+                meta = {
+                    "open_positions_count": open_pos_count,
+                    "pending_orders_count": pending_orders_count,
+                }
+                self.ledger.record_cohort_event(
+                    cohort_id=self.config.cohort_id or "CH_SHADOW_DEFAULT",
+                    event_type="GRACEFUL_SHUTDOWN",
+                    timestamp_ms=self.clock_ms(),
+                    reason="Runtime shutdown",
+                    metadata=meta,
+                )
+                self.ledger.flush_status()
+                if self._ledger_is_owner:
+                    self.ledger.close()
 
     def get_counters(self) -> Dict[str, int]:
         """Return a read-only snapshot copy of in-memory telemetry counters."""
@@ -324,6 +572,8 @@ class ShadowPaperRuntime:
             return {
                 "active": self._active,
                 "enabled": self.config.enabled,
+                "accept_new_exposure": self._accept_new_exposure,
+                "persistence_failed": self._persistence_failed,
                 "cohort_id": self.config.cohort_id,
                 "provider": self.config.provider,
                 "symbol": self.config.symbol,
