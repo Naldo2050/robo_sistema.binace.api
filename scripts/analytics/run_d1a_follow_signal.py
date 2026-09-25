@@ -328,6 +328,50 @@ def main() -> int:
     print(f"Exit Code:    {exit_code}", flush=True)
     print("=" * 70, flush=True)
 
+    # Post-session Forensics & Scorecard
+    print("\n" + "=" * 70, flush=True)
+    print(" EXECUTING POST-SESSION FORENSICS & METRICS", flush=True)
+    print("=" * 70, flush=True)
+    time.sleep(2)
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.close()
+    except Exception as e:
+        print(f"Warning: WAL checkpoint failed: {e}", flush=True)
+
+    import hashlib
+    db_sha256 = "N/A"
+    db_size = 0
+    if os.path.exists(db_path):
+        db_size = os.path.getsize(db_path)
+        with open(db_path, "rb") as f:
+            db_sha256 = hashlib.sha256(f.read()).hexdigest()
+    print(f"Database Size:   {db_size} bytes", flush=True)
+    print(f"Database SHA256: {db_sha256}", flush=True)
+
+    # Run scorecard
+    print("\n--- OFFICIAL PAPER TRADING SCORECARD ---", flush=True)
+    try:
+        subprocess.run(
+            [sys.executable, "scripts/analytics/run_paper_scorecard.py", "--db", db_path, "--cohort", cohort_id],
+            check=False,
+        )
+    except Exception as e:
+        print(f"Error running scorecard: {e}", flush=True)
+
+    # Run D1-A full metrics
+    print("\n--- GATE D1-A FULL METRICS (JSON) ---", flush=True)
+    try:
+        subprocess.run(
+            [sys.executable, "scripts/analytics/calc_d1a_metrics.py", "--db", db_path, "--cohort", cohort_id],
+            check=False,
+        )
+    except Exception as e:
+        print(f"Error running calc_d1a_metrics: {e}", flush=True)
+
     return exit_code or 0
 
 
