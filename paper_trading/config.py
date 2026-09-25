@@ -56,6 +56,7 @@ class ShadowPaperConfig:
 
     enabled: bool = False
     cohort_id: Optional[str] = None
+    mode: str = "BASELINE"
     provider: Optional[ShadowProviderType] = None
     random_seed: Optional[int] = None
     symbol: str = "BTCUSDT"
@@ -223,33 +224,46 @@ def parse_shadow_config(env: Mapping[str, str]) -> ShadowConfigResult:
             is_valid=False,
         )
 
-    # 3. Provider and Seed
-    raw_provider = env.get("PAPER_PROVIDER")
-    if not raw_provider or raw_provider.strip() not in ALLOWED_SHADOW_PROVIDERS:
-        return ShadowConfigResult(
-            config=None,
-            error=f"PAPER_PROVIDER must be one of {ALLOWED_SHADOW_PROVIDERS}, got {raw_provider!r}",
-            is_valid=False,
-        )
+    # 3. Mode, Provider and Seed
+    raw_follow = env.get("FOLLOW_SIGNAL")
+    follow_signal, _ = _parse_bool(raw_follow, default=False)
+    raw_mode = env.get("PAPER_MODE")
 
-    from typing import cast
-
-    provider = cast(ShadowProviderType, raw_provider.strip())
-
+    mode: str
+    provider: Optional[ShadowProviderType] = None
     random_seed: Optional[int] = None
-    if provider == "seeded_random":
-        raw_seed = env.get("PAPER_RANDOM_SEED")
-        random_seed, seed_err = _parse_int(raw_seed, "PAPER_RANDOM_SEED")
-        if seed_err is not None:
-            return ShadowConfigResult(config=None, error=seed_err, is_valid=False)
+
+    if follow_signal is True or (raw_mode and raw_mode.strip() == "FOLLOW_SIGNAL"):
+        mode = "FOLLOW_SIGNAL"
+        provider = None
+        random_seed = None
     else:
-        # fixed_long/fixed_short: seed is optional/ignored, but if present must not be malformed
-        raw_seed = env.get("PAPER_RANDOM_SEED")
-        if raw_seed is not None and raw_seed.strip():
-            parsed_seed, seed_err = _parse_int(raw_seed, "PAPER_RANDOM_SEED")
+        mode = "BASELINE"
+        raw_provider = env.get("PAPER_PROVIDER")
+        if not raw_provider or raw_provider.strip() not in ALLOWED_SHADOW_PROVIDERS:
+            return ShadowConfigResult(
+                config=None,
+                error=f"PAPER_PROVIDER must be one of {ALLOWED_SHADOW_PROVIDERS}, got {raw_provider!r}",
+                is_valid=False,
+            )
+
+        from typing import cast
+
+        provider = cast(ShadowProviderType, raw_provider.strip())
+
+        if provider == "seeded_random":
+            raw_seed = env.get("PAPER_RANDOM_SEED")
+            random_seed, seed_err = _parse_int(raw_seed, "PAPER_RANDOM_SEED")
             if seed_err is not None:
                 return ShadowConfigResult(config=None, error=seed_err, is_valid=False)
-            random_seed = parsed_seed
+        else:
+            # fixed_long/fixed_short: seed is optional/ignored, but if present must not be malformed
+            raw_seed = env.get("PAPER_RANDOM_SEED")
+            if raw_seed is not None and raw_seed.strip():
+                parsed_seed, seed_err = _parse_int(raw_seed, "PAPER_RANDOM_SEED")
+                if seed_err is not None:
+                    return ShadowConfigResult(config=None, error=seed_err, is_valid=False)
+                random_seed = parsed_seed
 
     # 4. Notional, Horizon, TTL
     notional_usdt, notional_err = _parse_float(env.get("PAPER_NOTIONAL_USDT"), "PAPER_NOTIONAL_USDT")
@@ -311,6 +325,7 @@ def parse_shadow_config(env: Mapping[str, str]) -> ShadowConfigResult:
     config = ShadowPaperConfig(
         enabled=True,
         cohort_id=cohort_id,
+        mode=mode,
         provider=provider,
         random_seed=random_seed,
         symbol=raw_symbol,

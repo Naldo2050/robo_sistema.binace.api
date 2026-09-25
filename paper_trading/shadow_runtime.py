@@ -160,7 +160,10 @@ class ShadowPaperRuntime:
         # Build / wire components if enabled
         if config.enabled:
             # 1. Decision Provider
-            self.provider = create_decision_provider(config.provider, config.random_seed)
+            if config.mode == "FOLLOW_SIGNAL":
+                self.provider = None
+            else:
+                self.provider = create_decision_provider(config.provider, config.random_seed)
 
             # 2. Signal Decision Adapter
             if signal_adapter is not None:
@@ -169,7 +172,7 @@ class ShadowPaperRuntime:
                 self.signal_adapter = SignalDecisionAdapter(
                     cohort_id=config.cohort_id or "CH_SHADOW_DEFAULT",
                     strategy_version=config.strategy_version,
-                    mode="BASELINE",
+                    mode=config.mode,  # type: ignore[arg-type]
                     provider=self.provider,
                     timeframe=config.timeframe,
                     default_notional_usdt=config.notional_usdt or 1000.0,
@@ -214,7 +217,7 @@ class ShadowPaperRuntime:
                 )
         else:
             # Inactive stubs when disabled
-            self.provider = None  # type: ignore[assignment]
+            self.provider = None
             self.signal_adapter = None  # type: ignore[assignment]
             self.risk_adapter = None  # type: ignore[assignment]
             self.execution_sink = None  # type: ignore[assignment]

@@ -287,3 +287,75 @@ def test_17_zero_order_endpoint(tmp_path):
         finally:
             if res.runtime is not None:
                 res.runtime.shutdown()
+
+
+def test_18_follow_signal_mode_configures_runtime_without_provider(tmp_path):
+    """18. FOLLOW_SIGNAL mode operates without random provider and sets adapter mode."""
+    env = _valid_env(tmp_path, cohort_id="CH_FOLLOW_SIG")
+    env["FOLLOW_SIGNAL"] = "1"
+    env.pop("PAPER_PROVIDER", None)
+    env.pop("PAPER_RANDOM_SEED", None)
+
+    res = create_shadow_runtime(env)
+    try:
+        assert res.status == "RUNNING"
+        assert res.runtime is not None
+        assert res.runtime.provider is None
+        assert res.runtime.signal_adapter.mode == "FOLLOW_SIGNAL"
+    finally:
+        if res.runtime is not None:
+            res.runtime.shutdown()
+
+
+def test_19_follow_signal_decision_invariants(tmp_path):
+    """19. FOLLOW_SIGNAL directly executes signal directions and skips neutrals."""
+    env = _valid_env(tmp_path, cohort_id="CH_FOLLOW_INV")
+    env["FOLLOW_SIGNAL"] = "true"
+    env.pop("PAPER_PROVIDER", None)
+
+    res = create_shadow_runtime(env)
+    try:
+        assert res.status == "RUNNING"
+        rt = res.runtime
+        assert rt is not None
+
+        # LONG
+        res_long = rt.signal_adapter.process_signal({
+            "symbol": "BTCUSDT",
+            "epoch_ms": 1790363280000,
+            "preco_fechamento": 84000.0,
+            "tipo_evento": "Absorção",
+            "resultado_da_batalha": "Absorção de Venda",
+        })
+        assert res_long.status == "DECISION_CREATED"
+        assert res_long.decision is not None
+        assert res_long.decision.side == "LONG"
+        assert res_long.decision.decision_provider == "signal_follow"
+
+        # SHORT
+        res_short = rt.signal_adapter.process_signal({
+            "symbol": "BTCUSDT",
+            "epoch_ms": 1790363280000,
+            "preco_fechamento": 84000.0,
+            "tipo_evento": "Exaustão",
+            "resultado_da_batalha": "Exaustão de Compra",
+        })
+        assert res_short.status == "DECISION_CREATED"
+        assert res_short.decision is not None
+        assert res_short.decision.side == "SHORT"
+        assert res_short.decision.decision_provider == "signal_follow"
+
+        # NEUTRAL
+        res_neutral = rt.signal_adapter.process_signal({
+            "symbol": "BTCUSDT",
+            "epoch_ms": 1790363280000,
+            "preco_fechamento": 84000.0,
+            "tipo_evento": "ANALYSIS_TRIGGER",
+            "resultado_da_batalha": "N/A",
+        })
+        assert res_neutral.status == "SKIPPED_NON_DIRECTIONAL"
+        assert res_neutral.decision is None
+    finally:
+        if res.runtime is not None:
+            res.runtime.shutdown()
+
