@@ -48,11 +48,12 @@ def run_cli() -> int:
         return 0
 
     try:
-        ledger = PaperLedger(db_path=db_path)
+        ledger = PaperLedger(db_path=db_path, read_only=True)
         all_trades = ledger.get_closed_trades(cohort_id=args.cohort)
         rejections = ledger.get_rejections(cohort_id=args.cohort)
         decisions = ledger.get_decisions(cohort_id=args.cohort)
         prediction_outcomes = ledger.get_prediction_outcomes(cohort_id=args.cohort)
+        cohort_events = ledger.get_cohort_events(cohort_id=args.cohort)
         ledger.close()
     except Exception as e:
         print(f"Error reading ledger from {db_path}: {e}")
@@ -77,6 +78,8 @@ def run_cli() -> int:
     pred_metrics = prediction_scorecard(
         prediction_outcomes=prediction_outcomes,
         total_directional_decisions=len(dir_decisions),
+        cohort_events=cohort_events,
+        cohort_id=args.cohort,
     )
 
     p_ci_low, p_ci_high = pred_metrics.directional_accuracy_ci95
@@ -91,15 +94,33 @@ def run_cli() -> int:
         pred_acc_str = "N/A (0 resolved directional predictions)"
 
     print("CANONICAL PREDICTION OUTCOMES:")
+    print(f"  Cohort Lifecycle:             {pred_metrics.cohort_lifecycle}")
+    print(f"  Prediction Accounting:        {pred_metrics.prediction_accounting}")
+    print(f"  Prediction Integrity:         {pred_metrics.prediction_integrity}")
     print(f"  Total Directional Decisions:  {pred_metrics.total_directional_decisions}")
+    print(f"  Terminal Prediction Outcomes: {pred_metrics.terminal_prediction_outcomes}")
+    print(f"  Missing Prediction Outcomes:  {pred_metrics.missing_prediction_outcomes}")
+    print(f"  Correct:                      {pred_metrics.correct}")
+    print(f"  Incorrect:                    {pred_metrics.incorrect}")
+    print(f"  Flat:                         {pred_metrics.flat}")
+    print(f"  Unresolved:                   {pred_metrics.unresolved}")
+    print(f"  Interrupted/Pending:          {pred_metrics.missing_prediction_outcomes}")
+    print(
+        f"  Conservation:                 {pred_metrics.total_directional_decisions} = "
+        f"{pred_metrics.correct} + {pred_metrics.incorrect} + {pred_metrics.flat} + "
+        f"{pred_metrics.unresolved} + {pred_metrics.missing_prediction_outcomes} "
+        f"({'PASS' if pred_metrics.conservation_passed else 'FAIL'})"
+    )
     print(f"  Directional Prediction Acc:   {pred_acc_str}")
     print(f"  Prediction Directional N:     {pred_metrics.prediction_directional_n}")
     print(f"  Observed Outcomes (C/I/F):    {pred_metrics.correct} / {pred_metrics.incorrect} / {pred_metrics.flat} (Observed N: {pred_metrics.observed_n})")
-    print(f"  Unresolved Predictions:       {pred_metrics.unresolved}")
     print(f"  Horizon Observation Coverage: {format_percent(pred_metrics.horizon_observation_coverage)} ({pred_metrics.observed_n}/{pred_metrics.total_directional_decisions})")
+    print(f"  Terminal Outcome Coverage:    {format_percent(pred_metrics.terminal_outcome_coverage)} ({pred_metrics.terminal_prediction_outcomes}/{pred_metrics.total_directional_decisions})")
+    print(f"  Prediction Accounting Cov:    {format_percent(pred_metrics.prediction_accounting_coverage)} ({pred_metrics.terminal_prediction_outcomes}/{pred_metrics.total_directional_decisions})")
     print(f"  Directional Resolution Cov:   {format_percent(pred_metrics.directional_resolution_coverage)} ({pred_metrics.prediction_directional_n}/{pred_metrics.total_directional_decisions})")
     print(f"  Flat Rate:                    {format_percent(pred_metrics.flat_rate)}")
     print(f"  Unresolved Rate:              {format_percent(pred_metrics.unresolved_rate)}")
+    print(f"  Interrupted Rate:             {format_percent(pred_metrics.interrupted_rate)}")
     print("-" * 75)
 
     if not all_trades:

@@ -93,7 +93,7 @@ class AttritionReport:
 @dataclass(frozen=True)
 class PredictionScorecardMetrics:
     """
-    Canonical directional prediction accuracy & coverage metrics (Gate D0-B).
+    Canonical directional prediction accuracy & coverage metrics (Gate D0-B / D0-B.1).
 
     Completely isolated from economic execution, fees, slippage, and position limits.
     """
@@ -115,6 +115,32 @@ class PredictionScorecardMetrics:
     directional_resolution_coverage: Optional[float]  # (correct + incorrect) / total_directional_decisions
     flat_rate: Optional[float]  # flat / (correct + incorrect + flat)
     unresolved_rate: Optional[float]  # unresolved / total_directional_decisions
+
+    # Gate D0-B.1 Crash-Safe Accounting Fields
+    terminal_prediction_outcomes: int = 0
+    missing_prediction_outcomes: int = 0
+    cohort_lifecycle: str = "UNKNOWN"
+    prediction_accounting: str = "PASS"
+    prediction_integrity: str = "PASS"
+    conservation_passed: bool = True
+    terminal_outcome_coverage: Optional[float] = None
+    prediction_accounting_coverage: Optional[float] = None
+    interrupted_rate: Optional[float] = None
+
+    @property
+    def interrupted(self) -> int:
+        """Count of decisions missing a terminal outcome (alias for missing_prediction_outcomes)."""
+        return self.missing_prediction_outcomes
+
+    @property
+    def missing(self) -> int:
+        """Count of decisions missing a terminal outcome."""
+        return self.missing_prediction_outcomes
+
+    @property
+    def terminal_outcomes(self) -> int:
+        """Count of terminal prediction outcomes."""
+        return self.terminal_prediction_outcomes
 
 
 def wilson_interval(wins: int, n: int, z: float = 1.96) -> Tuple[float, float]:
@@ -496,30 +522,101 @@ def attrition_report(
     )
 
 
+def classify_cohort_lifecycle(
+    cohort_events: Optional[Sequence[Any]] = None,
+    cohort_id: Optional[str] = None,
+) -> str:
+    """
+    Classify cohort lifecycle from cohort_events (Gate D0-B.1):
+      - GRACEFUL: GRACEFUL_SHUTDOWN event present.
+      - INCOMPLETE: STARTED event present, GRACEFUL_SHUTDOWN absent.
+      - UNKNOWN: neither event present or no events recorded.
+    """
+    if not cohort_events:
+        return "UNKNOWN"
+
+    cohort_map: Dict[str, Dict[str, bool]] = {}
+    for evt in cohort_events:
+        cid = evt.get("cohort_id") if isinstance(evt, dict) else getattr(evt, "cohort_id", None)
+        if cohort_id is not None and cid is not None and cid != cohort_id:
+            continue
+        cid_key = cid or "DEFAULT"
+        if cid_key not in cohort_map:
+            cohort_map[cid_key] = {"started": False, "graceful": False}
+
+        etype = evt.get("event_type") if isinstance(evt, dict) else getattr(evt, "event_type", None)
+        if etype == "GRACEFUL_SHUTDOWN":
+            cohort_map[cid_key]["graceful"] = True
+        elif etype == "STARTED":
+            cohort_map[cid_key]["started"] = True
+
+    if not cohort_map:
+        return "UNKNOWN"
+
+    if any(flags["started"] and not flags["graceful"] for flags in cohort_map.values()):
+        return "INCOMPLETE"
+    if all(flags["graceful"] for flags in cohort_map.values()):
+        return "GRACEFUL"
+    return "UNKNOWN"
+
+
 def prediction_scorecard(
     prediction_outcomes: Sequence[PredictionOutcome],
     total_directional_decisions: Optional[int] = None,
+    cohort_lifecycle: Optional[str] = None,
+    cohort_events: Optional[Sequence[Any]] = None,
+    cohort_id: Optional[str] = None,
 ) -> PredictionScorecardMetrics:
     """
-    Compute canonical prediction performance over recorded PredictionOutcome instances.
+    Compute canonical prediction performance over recorded PredictionOutcome instances (Gate D0-B & D0-B.1).
 
     Evaluates:
-      - Directional Prediction Accuracy = correct / (correct + incorrect), FLAT excluded.
+      - Terminal Prediction Outcomes = CORRECT + INCORRECT + FLAT + UNRESOLVED.
+      - Missing Prediction Outcomes = total_directional_decisions - terminal_prediction_outcomes.
+      - Directional Prediction Accuracy = correct / (correct + incorrect), FLAT and MISSING excluded.
       - Wilson CI 95% over (correct vs incorrect).
       - Horizon Observation Coverage = (correct + incorrect + flat) / total_directional_decisions.
+      - Terminal Outcome Coverage = (correct + incorrect + flat + unresolved) / total_directional_decisions.
+      - Prediction Accounting Coverage = terminal_prediction_outcomes / total_directional_decisions.
       - Directional Resolution Coverage = (correct + incorrect) / total_directional_decisions.
-      - Flat Rate = flat / (correct + incorrect + flat).
+      - Flat Rate = flat / (correct + incorrect + flat), MISSING excluded.
       - Unresolved Rate = unresolved / total_directional_decisions.
+      - Interrupted Rate = missing_prediction_outcomes / total_directional_decisions.
+      - Conservation: D == (C + I + F + U + missing) and missing >= 0.
+      - Lifecycle: GRACEFUL, INCOMPLETE, UNKNOWN.
+      - Prediction Integrity: FAIL if lifecycle is GRACEFUL and missing > 0 (INTEGRITY_GAP), PASS otherwise.
     """
     correct = sum(1 for p in prediction_outcomes if p.result == "CORRECT")
     incorrect = sum(1 for p in prediction_outcomes if p.result == "INCORRECT")
     flat = sum(1 for p in prediction_outcomes if p.result == "FLAT")
     unresolved = sum(1 for p in prediction_outcomes if p.result == "UNRESOLVED")
 
+    terminal_outcomes = correct + incorrect + flat + unresolved
+
     if total_directional_decisions is not None:
         total_dec = total_directional_decisions
     else:
-        total_dec = len(prediction_outcomes)
+        total_dec = terminal_outcomes
+
+    missing_outcomes = total_dec - terminal_outcomes
+
+    # Conservation: D = C + I + F + U + missing
+    conservation_passed = (total_dec == (terminal_outcomes + missing_outcomes)) and (missing_outcomes >= 0)
+    prediction_accounting = "PASS" if conservation_passed else "FAIL"
+
+    # Cohort Lifecycle
+    if cohort_lifecycle is not None:
+        lifecycle = cohort_lifecycle.upper()
+    elif cohort_events is not None:
+        lifecycle = classify_cohort_lifecycle(cohort_events, cohort_id=cohort_id)
+    else:
+        lifecycle = "UNKNOWN"
+
+    # Prediction Integrity: Graceful shutdown MUST flush pendings as UNRESOLVED (missing expected = 0)
+    if lifecycle == "GRACEFUL":
+        prediction_integrity = "FAIL" if (missing_outcomes > 0 or not conservation_passed) else "PASS"
+    else:
+        prediction_integrity = "PASS" if conservation_passed else "FAIL"
 
     pred_n = correct + incorrect
     obs_n = correct + incorrect + flat
@@ -539,11 +636,17 @@ def prediction_scorecard(
     if total_dec > 0:
         obs_cov = obs_n / total_dec
         res_cov = pred_n / total_dec
+        term_cov = terminal_outcomes / total_dec
+        acct_cov = terminal_outcomes / total_dec
         unres_rate = unresolved / total_dec
+        interrupted_rate = missing_outcomes / total_dec
     else:
         obs_cov = None
         res_cov = None
+        term_cov = None
+        acct_cov = None
         unres_rate = None
+        interrupted_rate = None
 
     return PredictionScorecardMetrics(
         total_directional_decisions=total_dec,
@@ -559,4 +662,13 @@ def prediction_scorecard(
         directional_resolution_coverage=res_cov,
         flat_rate=flat_rate,
         unresolved_rate=unres_rate,
+        terminal_prediction_outcomes=terminal_outcomes,
+        missing_prediction_outcomes=missing_outcomes,
+        cohort_lifecycle=lifecycle,
+        prediction_accounting=prediction_accounting,
+        prediction_integrity=prediction_integrity,
+        conservation_passed=conservation_passed,
+        terminal_outcome_coverage=term_cov,
+        prediction_accounting_coverage=acct_cov,
+        interrupted_rate=interrupted_rate,
     )

@@ -323,11 +323,12 @@ class PaperLedger:
     Asynchronous append-only SQLite store with synchronous test flush.
     """
 
-    def __init__(self, db_path: str = "dados/paper_trading.db") -> None:
+    def __init__(self, db_path: str = "dados/paper_trading.db", read_only: bool = False) -> None:
         self.db_path = db_path
+        self.read_only = read_only
         self._is_memory = (db_path == ":memory:" or "mode=memory" in db_path)
 
-        if not self._is_memory:
+        if not self._is_memory and not self.read_only:
             os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
 
         self._queue: queue.Queue[Any] = queue.Queue()
@@ -336,6 +337,28 @@ class PaperLedger:
         self._last_error_type: Optional[str] = None
         self._error_count: int = 0
         self._lock = threading.Lock()
+
+        if self.read_only:
+            if db_path.startswith("file:"):
+                ro_path = db_path if "mode=ro" in db_path else (f"{db_path}&mode=ro" if "?" in db_path else f"{db_path}?mode=ro")
+            elif "?" in db_path:
+                ro_path = db_path if "mode=ro" in db_path else f"{db_path}&mode=ro"
+            else:
+                norm_path = os.path.abspath(db_path).replace("\\", "/")
+                ro_path = f"file:///{norm_path}?mode=ro"
+
+            self._conn = sqlite3.connect(
+                ro_path,
+                check_same_thread=False,
+                uri=True,
+            )
+            self._conn.row_factory = sqlite3.Row
+            self._worker = threading.Thread(
+                target=lambda: None,
+                daemon=True,
+                name="PaperLedgerWriterNoop",
+            )
+            return
 
         uri_flag = True if "?" in db_path or db_path.startswith("file:") else False
         self._conn = sqlite3.connect(
@@ -845,7 +868,7 @@ class PaperLedger:
         Never overwrites existing metadata.
         """
         with self._lock:
-            if self._has_error:
+            if self._has_error or self.read_only:
                 return False
 
         self.flush()
@@ -875,14 +898,14 @@ class PaperLedger:
 
     def record_cohort(self, cohort_id: str, created_at_ms: int, description: str = "", metadata: Optional[Dict[str, Any]] = None) -> bool:
         with self._lock:
-            if self._has_error:
+            if self._has_error or self.read_only:
                 return False
         self._queue.put(("RECORD_COHORT", {"cohort_id": cohort_id, "created_at_ms": created_at_ms, "description": description, "metadata": metadata or {}}, None))
         return True
 
     def record_decision(self, decision: CanonicalDecision) -> bool:
         with self._lock:
-            if self._has_error:
+            if self._has_error or self.read_only:
                 return False
         self._queue.put(("RECORD_DECISION", decision, None))
         return True
@@ -1064,6 +1087,8 @@ class PaperLedger:
 
     def flush_status(self, timeout: float = 10.0) -> str:
         """Block until all queued writes have been committed or timeout/unhealthy."""
+        if self.read_only:
+            return "SUCCESS"
         with self._lock:
             if self._has_error:
                 return "UNHEALTHY"
@@ -1096,6 +1121,12 @@ class PaperLedger:
 
     def close(self) -> None:
         """Flush remaining tasks and close background worker."""
+        if self.read_only:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            return
         self.flush()
         self._stop_event.set()
         self._worker.join(timeout=2.0)
@@ -1349,11 +1380,14 @@ class PaperLedger:
         """Synchronously query cohort events."""
         self.flush()
         cur = self._conn.cursor()
-        if cohort_id:
-            cur.execute("SELECT * FROM cohort_events WHERE cohort_id = ? ORDER BY timestamp_ms ASC", (cohort_id,))
-        else:
-            cur.execute("SELECT * FROM cohort_events ORDER BY timestamp_ms ASC")
-        rows = cur.fetchall()
+        try:
+            if cohort_id:
+                cur.execute("SELECT * FROM cohort_events WHERE cohort_id = ? ORDER BY timestamp_ms ASC", (cohort_id,))
+            else:
+                cur.execute("SELECT * FROM cohort_events ORDER BY timestamp_ms ASC")
+            rows = cur.fetchall()
+        except sqlite3.OperationalError:
+            return []
         results = []
         for r in rows:
             d = dict(r)
