@@ -116,7 +116,16 @@ def build_regime_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "duration":   "desconhecida",
         }
 
-    mode = regime.get("mode", "RB")
+    # P0-D2: regime insuficiente/UNKNOWN nunca gera estratégia mean-reversion
+    # (mode UNK não cai no default RB).
+    mode = regime.get("mode", "UNK")
+    if mode in ("UNK", "UNKNOWN"):
+        return {
+            "label":      "Indeterminado",
+            "strategies": [],
+            "avoid":      [],
+            "duration":   "desconhecida",
+        }
     cs = regime.get("cs", "MIX")
     vol = regime.get("v", "")
     bbw = regime.get("bbw")

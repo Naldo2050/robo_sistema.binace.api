@@ -132,13 +132,12 @@ def _j2_event(flow_trend="accelerating_buying"):
 
 def test_a_j2_regime_gets_no_multi_tf_bonus():
     from institutional.enricher import _build_regime_probabilities
-    probs = _build_regime_probabilities(_j2_event())["regime_probabilities"]
-    # Sem bônus accel (+0.15): trending 0; mean_rev = ADX default 0.15 + RANGE
-    # 0.25 + RANGE_BOUND 0.20 = 0.60; total 0.60 => mean_reverting 1.0.
-    # Comportamento antigo (fail-open) daria trending 0.2.
-    assert probs["trending"] == pytest.approx(0.0)
-    assert probs["mean_reverting"] == pytest.approx(1.0)
-    assert probs["breakout"] == pytest.approx(0.0)
+    out = _build_regime_probabilities(_j2_event())
+    # P0-B2 provava trending==0.0 (sem bônus, mas MEAN_REVERTING 1.0 por defaults).
+    # P0-D2: flow PARTIAL não vota e nada mais existe => INSUFFICIENT/UNKNOWN.
+    assert out["status"] == "INSUFFICIENT_DATA"
+    assert out["current_regime"] == "UNKNOWN"
+    assert out["regime_probabilities"] is None
 
 
 def test_a_j2_summary_no_reversal_with_status():
@@ -219,8 +218,9 @@ def test_d_full_regime_bonus_preserved():
         event["fluxo_continuo"]["order_flow"]["buy_sell_ratio"][
             "imbalance_validity"][tf] = {"validity": "VALID", "reason": None}
     probs = _build_regime_probabilities(event)["regime_probabilities"]
-    # trending 0.15 / total 0.75 => 0.2 normalizado (bônus preservado com FULL).
-    assert probs["trending"] == pytest.approx(0.2)
+    # P0-D2: único voto real é o flow VALID (+0.15) — sem os 0.60 de defaults,
+    # trending 0.15/total 0.15 => 1.0. Bônus preservado como voto, não como 0.2.
+    assert probs["trending"] == pytest.approx(1.0)
 
 
 # ── E. INVALID nunca entra ───────────────────────────────────────────────────
@@ -244,8 +244,11 @@ def test_e_invalid_window_excluded_everywhere():
         "imbalance_validity"] = {
             "1m": {"validity": "VALID", "reason": None},
             "5m": {"validity": "INVALID", "reason": "INVARIANT_VIOLATION"}}
-    probs = _build_regime_probabilities(event)["regime_probabilities"]
-    assert probs["trending"] == pytest.approx(0.0)
+    probs = _build_regime_probabilities(event)
+    # P0-D2: 1m VALID não basta sem o par (5m INVALID) e nada mais existe =>
+    # INSUFFICIENT (antes: trending 0.0 por gate P0-B2 sobre defaults MR 1.0).
+    assert probs["status"] == "INSUFFICIENT_DATA"
+    assert probs["current_regime"] == "UNKNOWN"
 
     flow = {"pa": "neutral", "imb": 0.3, "d1": "+16K", "d5": "-8K",
             "iv": {"1m": "V", "5m": "I"}}

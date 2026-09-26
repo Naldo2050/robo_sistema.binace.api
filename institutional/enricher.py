@@ -1689,28 +1689,92 @@ def _build_regime_probabilities(event: dict) -> dict:
     - Whale score
     - Flow acceleration
     - OB imbalance
+
+    P0-D2 fail-closed (sem thresholds/pesos novos, sem mínimo de evidências):
+    - Defaults que votavam (ADX 25.0, profile RANGE, structure RANGE_BOUND)
+      NÃO votam mais: ausência é ausência. Mesma matemática/pesos para inputs
+      realmente observados e finitos.
+    - NaN/±Inf nunca votam (validity INVALID) e nunca serializam.
+    - Zero votos reais => status INSUFFICIENT_DATA, current_regime UNKNOWN,
+      distributions/probabilities/duration/avg_adx null (fallback 0.33/0.50/0.17
+      removido do caminho semântico).
+    - Com >=1 voto: status PARTIAL (há informação real, SEM afirmar suficiência
+      operacional), distribuição normalizada dos votos observados,
+      calibration_status UNCALIBRATED_HEURISTIC (1.0 = 100% dos votos
+      disponíveis, nunca probabilidade calibrada).
     """
     multi_tf = event.get("multi_tf", {}) or {}
     ia = event.get("institutional_analytics", {}) or {}
     market_env = event.get("market_environment", {}) or {}
 
-    # ADX médio (força de tendência)
+    evidence: dict = {}
+
+    def _mark(key: str, status: str, observed: bool) -> None:
+        evidence[key] = {"status": status, "observed": bool(observed)}
+
+    def _finite_number(value):
+        # float finito ou None. bool/str inválida/NaN/±Inf => None (nunca vota,
+        # nunca chega ao JSON como non-finite).
+        if isinstance(value, bool):
+            return None
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        return v if math.isfinite(v) else None
+
+    # ADX médio (força de tendência). Ausente => sem voto (antes: 25.0 => +0.15).
     adx_vals = []
+    _adx_seen_invalid = False
     for tf in ("15m", "1h", "4h"):
-        adx = multi_tf.get(tf, {}).get("adx")
-        if adx and adx > 0:
-            adx_vals.append(float(adx))
-    avg_adx = sum(adx_vals) / len(adx_vals) if adx_vals else 25.0
+        raw_adx = (multi_tf.get(tf, {}) or {}).get("adx")
+        if raw_adx is None:
+            continue
+        v = _finite_number(raw_adx)
+        if v is None:
+            _adx_seen_invalid = True
+            continue
+        if v > 0:
+            adx_vals.append(v)
+    if adx_vals:
+        avg_adx = sum(adx_vals) / len(adx_vals)
+        _mark("adx", "VALID", True)
+    elif _adx_seen_invalid:
+        avg_adx = None
+        _mark("adx", "INVALID", False)
+    else:
+        avg_adx = None
+        _mark("adx", "INSUFFICIENT_DATA", False)
 
-    # Profile shape
-    prof_shape = _get_nested(ia, "profile_analysis", "profile_shape", "shape", default="D") or "D"
-    prof_signal = _get_nested(ia, "profile_analysis", "profile_shape", "trading_signal", default="RANGE") or "RANGE"
+    # Profile shape. Ausente => sem voto (antes: RANGE => +0.25).
+    _prof = _get_nested(ia, "profile_analysis", "profile_shape") or {}
+    if isinstance(_prof, dict) and _prof:
+        prof_signal = _prof.get("trading_signal") or "RANGE"
+        _mark("profile_shape", "VALID", True)
+    else:
+        prof_signal = None
+        _mark("profile_shape", "INSUFFICIENT_DATA", False)
 
-    # Whale score
-    whale_score = abs(_get_nested(ia, "flow_analysis", "whale_accumulation", "score", default=0) or 0)
+    # Whale score (módulo; thresholds existentes preservados).
+    _whale_raw = _get_nested(ia, "flow_analysis", "whale_accumulation", "score", default=None)
+    _whale_v = _finite_number(_whale_raw) if _whale_raw is not None else None
+    if _whale_v is None:
+        whale_score = None
+        _mark("whale", "INVALID" if _whale_raw is not None else "INSUFFICIENT_DATA", False)
+    else:
+        whale_score = abs(_whale_v)
+        _mark("whale", "VALID", True)
 
-    # OB imbalance
-    ob_imb = abs(event.get("orderbook_data", {}).get("imbalance", 0) or 0)
+    # OB imbalance snapshot (módulo; thresholds existentes preservados).
+    _ob_raw = event.get("orderbook_data", {}).get("imbalance", None) \
+        if isinstance(event.get("orderbook_data", {}), dict) else None
+    _ob_v = _finite_number(_ob_raw) if _ob_raw is not None else None
+    if _ob_v is None:
+        ob_imb = None
+        _mark("orderbook", "INVALID" if _ob_raw is not None else "INSUFFICIENT_DATA", False)
+    else:
+        ob_imb = abs(_ob_v)
+        _mark("orderbook", "VALID", True)
 
     # Flow trend (aceleração de venda/compra)
     # P0-B2: bônus multi-TF só quando 1m E 5m forem confirmatórios (dual
@@ -1730,94 +1794,138 @@ def _build_regime_probabilities(event: dict) -> dict:
     except Exception:
         _multi_tf_confirming = False
 
-    # Score para cada regime
+    # Score para cada regime (pesos/bônus existentes, só para observado+finito).
+    # votes_cast conta inputs que realmente votaram (sem mínimo inventado).
     trending_score = 0.0
     mean_rev_score = 0.0
     breakout_score = 0.0
+    votes_cast = 0
 
-    # ADX: > 40 → trending; < 20 → range; 20-40 → mixed
-    if avg_adx > 50:
-        trending_score += 0.4
-    elif avg_adx > 35:
-        trending_score += 0.25
-    elif avg_adx < 20:
-        mean_rev_score += 0.3
-    else:
-        mean_rev_score += 0.15
+    # ADX: > 50 → trending; < 20 → range; 20-40 → mixed (thresholds intactos).
+    if avg_adx is not None:
+        votes_cast += 1
+        if avg_adx > 50:
+            trending_score += 0.4
+        elif avg_adx > 35:
+            trending_score += 0.25
+        elif avg_adx < 20:
+            mean_rev_score += 0.3
+        else:
+            mean_rev_score += 0.15
 
-    # Profile shape
-    if prof_signal == "BREAKOUT_EXPECTED":
-        breakout_score += 0.35
-    elif prof_signal == "RANGE":
-        mean_rev_score += 0.25
-    elif prof_signal in ("TREND_UP", "TREND_DOWN"):
-        trending_score += 0.25
+    # Profile shape (só observado; ausente não vota mais).
+    if prof_signal is not None:
+        if prof_signal == "BREAKOUT_EXPECTED":
+            breakout_score += 0.35
+            votes_cast += 1
+        elif prof_signal == "RANGE":
+            mean_rev_score += 0.25
+            votes_cast += 1
+        elif prof_signal in ("TREND_UP", "TREND_DOWN"):
+            trending_score += 0.25
+            votes_cast += 1
 
-    # Whale score: alta acumulação/distribuição → breakout potencial
-    if whale_score >= 30:
-        breakout_score += 0.20
-    elif whale_score >= 15:
-        breakout_score += 0.10
+    # Whale score: alta acumulação/distribuição → breakout potencial.
+    if whale_score is not None:
+        if whale_score >= 30:
+            breakout_score += 0.20
+            votes_cast += 1
+        elif whale_score >= 15:
+            breakout_score += 0.10
+            votes_cast += 1
 
-    # OB imbalance extremo → possível breakout
-    if ob_imb >= 0.8:
-        breakout_score += 0.25
-        trending_score += 0.10
-    elif ob_imb >= 0.5:
-        breakout_score += 0.10
+    # OB imbalance extremo → possível breakout (snapshot; decay fora de escopo).
+    if ob_imb is not None:
+        if ob_imb >= 0.8:
+            breakout_score += 0.25
+            trending_score += 0.10
+            votes_cast += 1
+        elif ob_imb >= 0.5:
+            breakout_score += 0.10
+            votes_cast += 1
 
     # Flow trend — somente com confirmação temporal multi-TF (P0-B2 §8).
+    # Evidência observada mesmo sem votar (ex: "stable_*"): VALID em metadata.
+    _flow_observed = bool(flow_trend)
+    _mark("flow_trend", "VALID" if _flow_observed else "INSUFFICIENT_DATA", _flow_observed)
     if "accel" in flow_trend.lower() and _multi_tf_confirming:
         trending_score += 0.15
+        votes_cast += 1
     if "reversal" in flow_trend.lower() and _multi_tf_confirming:
         mean_rev_score += 0.15
+        votes_cast += 1
 
-    # Market structure
-    structure = market_env.get("market_structure", "RANGE_BOUND")
-    if structure == "TRENDING":
-        trending_score += 0.20
-    elif structure == "RANGE_BOUND":
-        mean_rev_score += 0.20
+    # Market structure (só observado; ausente não vota mais).
+    structure = market_env.get("market_structure", None)
+    if structure is None:
+        _mark("market_structure", "INSUFFICIENT_DATA", False)
+    else:
+        _mark("market_structure", "VALID", True)
+        if structure == "TRENDING":
+            trending_score += 0.20
+            votes_cast += 1
+        elif structure == "RANGE_BOUND":
+            mean_rev_score += 0.20
+            votes_cast += 1
 
-    # Normalizar para somar 1.0
+    # Fail-closed: zero votos reais => INSUFFICIENT_DATA (fallback 0.33/0.50/0.17
+    # removido do caminho semântico; total==0 também é aritmeticamente vazio).
     total = trending_score + mean_rev_score + breakout_score
-    if total == 0:
-        trending_score = 0.33
-        mean_rev_score = 0.50
-        breakout_score = 0.17
-        total = 1.0
+    if votes_cast == 0 or total == 0:
+        return {
+            "status": "INSUFFICIENT_DATA",
+            "current_regime": "UNKNOWN",
+            "regime_probabilities": None,
+            "regime_change_probability": None,
+            "expected_regime_duration": None,
+            "avg_adx": round(avg_adx, 1) if avg_adx is not None else None,
+            "calibration_status": "UNCALIBRATED_HEURISTIC",
+            "evidence": evidence,
+            "evidence_count": 0,
+        }
 
     trending_prob = round(trending_score / total, 3)
     mean_rev_prob = round(mean_rev_score / total, 3)
     breakout_prob = round(1.0 - trending_prob - mean_rev_prob, 3)
     breakout_prob = max(0.0, breakout_prob)
 
-    # Regime dominante
+    # Regime dominante (legado: argmax; desempate = ordem de inserção, acidental).
     probs = {
         "trending": trending_prob,
         "mean_reverting": mean_rev_prob,
         "breakout": breakout_prob,
     }
+    _top = max(trending_score, mean_rev_score, breakout_score)
+    tie_detected = sum(1 for s in (trending_score, mean_rev_score, breakout_score) if s == _top) > 1
     current_regime = max(probs, key=probs.get)  # type: ignore[arg-type]
 
-    # Regime change probability: baseado em instabilidade dos sinais
+    # Regime change probability: fórmula legada preservada (heurística NÃO
+    # calibrada); regime UNKNOWN não gera duração.
     regime_change_prob = round(breakout_prob + (0.5 - abs(0.5 - trending_prob)) * 0.3, 3)
     regime_change_prob = min(0.95, max(0.05, regime_change_prob))
 
-    # Expected duration
+    # Expected duration (lookup heurístico legado por regime).
     if current_regime == "trending":
-        duration_est = "30m-2h" if avg_adx < 50 else "2h-8h"
+        duration_est = "30m-2h" if (avg_adx or 0) < 50 else "2h-8h"
     elif current_regime == "mean_reverting":
         duration_est = "15m-1h"
     else:
         duration_est = "5m-30m"
 
     return {
+        "status": "PARTIAL",
         "current_regime": current_regime.upper(),
         "regime_probabilities": probs,
         "regime_change_probability": regime_change_prob,
+        "regime_change_calibration_status": "UNCALIBRATED_HEURISTIC",
         "expected_regime_duration": duration_est,
-        "avg_adx": round(avg_adx, 1),
+        "duration_status": "HEURISTIC_LOOKUP",
+        "avg_adx": round(avg_adx, 1) if avg_adx is not None else None,
+        "calibration_status": "UNCALIBRATED_HEURISTIC",
+        "selection_method": "ARGMAX_HEURISTIC",
+        "tie_detected": tie_detected,
+        "evidence": evidence,
+        "evidence_count": votes_cast,
     }
 
 

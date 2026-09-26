@@ -481,7 +481,14 @@ def _calculate_regime_consensus(event_data: dict) -> dict:
 
     regime_analysis = event_data.get("regime_analysis", {})
     current_regime = regime_analysis.get("current_regime", "")
-    mode_short = _regime_to_mode.get(current_regime.upper(), "") if current_regime else ""
+    # P0-D2: regime INSUFFICIENT_DATA/UNKNOWN explícito nunca vira RB/MR e não
+    # cai no fallback de market_environment (ausência não é range). Eventos
+    # legados sem a chave (sem status) preservam o fallback antigo.
+    if regime_analysis.get("status") == "INSUFFICIENT_DATA" or \
+            str(current_regime).upper() == "UNKNOWN":
+        mode_short = "UNK"
+    else:
+        mode_short = _regime_to_mode.get(current_regime.upper(), "") if current_regime else ""
 
     # fallback: inferir do market_environment se regime_analysis ausente
     if not mode_short:
