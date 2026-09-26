@@ -45,6 +45,7 @@ def test_a_empty_event_is_insufficient():
     assert out["expected_regime_duration"] is None
     assert out["avg_adx"] is None
     assert out["calibration_status"] == "UNCALIBRATED_HEURISTIC"
+    assert out["counts_as_vote"] is False
     assert out["evidence_count"] == 0
     for key in ("adx", "profile_shape", "market_structure", "flow_trend",
                 "whale", "orderbook"):
@@ -200,14 +201,10 @@ def test_k_full_inputs_math_unchanged():
     assert out["avg_adx"] == 60.0
     assert out["expected_regime_duration"] == "2h-8h"
     assert out["evidence_count"] == 6
+    assert out["counts_as_vote"] is False
 
 
 def test_k_tie_detected():
-    ev = {"orderbook_data": {"imbalance": 0.9},
-          "market_environment": {"market_structure": "TRENDING"}}
-    # T=0.10+0.20=0.30; B=0.25 → sem empate; usa whale p/ forçar empate:
-    # ob 0.9 (T+0.10,B+0.25) + whale 40?? B+0.20 => T=0.10,B=0.45. Sem empate.
-    # Empate real: adx>50 (+0.4T) + profile BREAKOUT (+0.35B)... T=0.4,B=0.35.
     # T==B exato: structure TRENDING (+0.2T) + ob>=0.5 (+0.1B) + whale>=15
     # (+0.1B): T=0.2,B=0.2 => empate.
     ev = {"market_environment": {"market_structure": "TRENDING"},
@@ -219,6 +216,39 @@ def test_k_tie_detected():
         out["regime_probabilities"]["breakout"] == 0.5
     assert out["tie_detected"] is True
     assert out["selection_method"] == "ARGMAX_HEURISTIC"
+
+
+def _valid_flow_pair():
+    integrity = {tf: {"status": "FULL", "is_temporal_coverage_valid": True}
+                 for tf in ("1m", "5m")}
+    validity = {tf: {"validity": "VALID", "reason": None}
+                for tf in ("1m", "5m")}
+    return {"fluxo_continuo": {
+        "order_flow": {"buy_sell_ratio": {
+            "flow_trend": "accelerating_buying",
+            "imbalance_validity": validity}},
+        "flow_window_integrity": integrity}}
+
+
+def test_k_evidence_count_is_per_source():
+    # P0-FINAL-CLOSE: 1 fonte => 1 (mesmo ob>=0.8 com 2 bônus internos);
+    # N fontes => N; 2 branches da mesma fonte (accel+reversal) => 1.
+    assert regime(
+        {"orderbook_data": {"imbalance": 0.9}})["evidence_count"] == 1
+    assert regime(
+        {"multi_tf": {"15m": {"adx": 60}}})["evidence_count"] == 1
+    assert regime(
+        {"market_environment": {"market_structure": "TRENDING"},
+         "orderbook_data": {"imbalance": 0.6},
+         "institutional_analytics": {"flow_analysis": {
+             "whale_accumulation": {"score": 20}}}})["evidence_count"] == 3
+    dual = _valid_flow_pair()
+    dual["fluxo_continuo"]["order_flow"]["buy_sell_ratio"][
+        "flow_trend"] = "accelerating_reversal_x"
+    out = regime(dual)
+    assert out["evidence_count"] == 1
+    assert out["evidence"]["flow_trend"] == {"status": "VALID",
+                                             "observed": True}
 
 
 # ── L. compact/summary UNKNOWN ───────────────────────────────────────────────

@@ -1846,13 +1846,18 @@ def _build_regime_probabilities(event: dict) -> dict:
 
     # Flow trend — somente com confirmação temporal multi-TF (P0-B2 §8).
     # Evidência observada mesmo sem votar (ex: "stable_*"): VALID em metadata.
+    # P0-FINAL-CLOSE: uma fonte conta no máximo 1 (teto por fonte, não por
+    # branch — scores/bônus inalterados).
     _flow_observed = bool(flow_trend)
     _mark("flow_trend", "VALID" if _flow_observed else "INSUFFICIENT_DATA", _flow_observed)
+    _flow_voted = False
     if "accel" in flow_trend.lower() and _multi_tf_confirming:
         trending_score += 0.15
-        votes_cast += 1
+        _flow_voted = True
     if "reversal" in flow_trend.lower() and _multi_tf_confirming:
         mean_rev_score += 0.15
+        _flow_voted = True
+    if _flow_voted:
         votes_cast += 1
 
     # Market structure (só observado; ausente não vota mais).
@@ -1880,6 +1885,9 @@ def _build_regime_probabilities(event: dict) -> dict:
             "expected_regime_duration": None,
             "avg_adx": round(avg_adx, 1) if avg_adx is not None else None,
             "calibration_status": "UNCALIBRATED_HEURISTIC",
+            # P0-FINAL-CLOSE: distribuições heurísticas nunca contam como voto
+            # independente (P1-A deve ignorá-las como evidência própria).
+            "counts_as_vote": False,
             "evidence": evidence,
             "evidence_count": 0,
         }
@@ -1922,6 +1930,8 @@ def _build_regime_probabilities(event: dict) -> dict:
         "duration_status": "HEURISTIC_LOOKUP",
         "avg_adx": round(avg_adx, 1) if avg_adx is not None else None,
         "calibration_status": "UNCALIBRATED_HEURISTIC",
+        # P0-FINAL-CLOSE: ver comentário no ramo INSUFFICIENT_DATA acima.
+        "counts_as_vote": False,
         "selection_method": "ARGMAX_HEURISTIC",
         "tie_detected": tie_detected,
         "evidence": evidence,
