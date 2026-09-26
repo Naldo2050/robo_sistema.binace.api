@@ -29,11 +29,25 @@ Uso:
 """
 
 import logging
+import math
 import time
 from collections import deque
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _finite_or_none(value) -> Optional[float]:
+    """float finito ou None. P0-FINAL-CLOSE: NaN/±Inf/str inválida nunca votam
+    e nunca serializam (mesma semântica de flow_analyzer.metrics._finite_volume,
+    sem importar para manter este módulo folha)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
 
 
 def _canonical_absorption_direction(label: object) -> str:
@@ -121,6 +135,7 @@ class WhaleAccumulationCalculator:
         # ═══════════════════════════════════════════
         flow_score: float = 0.0
         flow_detail: dict = {}
+        _sector_nonvoting = False
 
         if sector_flow and isinstance(sector_flow, dict):
             # Priorizar whale, fallback para mid
@@ -128,18 +143,38 @@ class WhaleAccumulationCalculator:
             mid_data = sector_flow.get("mid", {})
             retail_data = sector_flow.get("retail", {})
 
-            # Delta do whale/mid (quem move o mercado)
-            whale_delta: float = 0.0
-            if isinstance(whale_data, dict):
-                whale_delta = float(whale_data.get("delta", 0))
+            # Delta do whale/mid (quem move o mercado). P0-FINAL-CLOSE:
+            # NaN/±Inf/inválido não vota: vira 0.0 (mesmo que campo ausente)
+            # com rastro em detail; se NENHUM delta for utilizável mas havia
+            # sujeira non-finite, o componente é NON_VOTING (nunca NaN/Inf).
+            _bad_fields = []
 
-            mid_delta: float = 0.0
-            if isinstance(mid_data, dict):
-                mid_delta = float(mid_data.get("delta", 0))
+            def _sector_delta(data, name):
+                if not isinstance(data, dict):
+                    return 0.0
+                if "delta" not in data:
+                    return 0.0
+                v = _finite_or_none(data.get("delta"))
+                if v is None:
+                    _bad_fields.append(name)
+                    return 0.0
+                return v
 
-            retail_delta: float = 0.0
-            if isinstance(retail_data, dict):
-                retail_delta = float(retail_data.get("delta", 0))
+            def _delta_usable(data, name):
+                return (isinstance(data, dict)
+                        and data.get("delta") is not None
+                        and name not in _bad_fields)
+
+            whale_delta = _sector_delta(whale_data, "whale")
+            mid_delta = _sector_delta(mid_data, "mid")
+            retail_delta = _sector_delta(retail_data, "retail")
+            _sector_nonvoting = bool(_bad_fields) and not (
+                _delta_usable(whale_data, "whale")
+                or _delta_usable(mid_data, "mid")
+                or _delta_usable(retail_data, "retail")
+            )
+            if _bad_fields:
+                flow_detail["nonfinite_ignored"] = sorted(_bad_fields)
 
             # Usar whale se disponível, senão mid
             primary_delta = whale_delta if whale_delta != 0 else mid_delta
@@ -165,16 +200,25 @@ class WhaleAccumulationCalculator:
             flow_detail["retail_delta"] = round(retail_delta, 4)
             flow_detail["primary_delta"] = round(primary_delta, 4)
 
-        # CVD como fallback/complemento
+        # CVD como fallback/complemento. P0-FINAL-CLOSE: NaN/±Inf nunca votam
+        # (antes: max/min propagavam NaN; Inf virava score extremo). Fórmula
+        # para CVD finito bit-equivalente.
         if cvd is not None and flow_score == 0:
-            flow_score = max(-15, min(15, cvd * 5))
-            flow_detail["cvd_used"] = True
+            _cvd_v = _finite_or_none(cvd)
+            if _cvd_v is None:
+                flow_detail["cvd_status"] = "NON_VOTING_NONFINITE"
+            else:
+                flow_score = max(-15, min(15, _cvd_v * 5))
+                flow_detail["cvd_used"] = True
 
         components["flow"] = {
             "score": round(flow_score, 2),
             "max": 30,
             "detail": flow_detail,
         }
+        if _sector_nonvoting:
+            components["flow"]["status"] = "NON_VOTING_NONFINITE"
+            components["flow"]["reason"] = "SECTOR_DELTA_NONFINITE"
         score += flow_score
 
         # ═══════════════════════════════════════════
