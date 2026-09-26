@@ -460,7 +460,7 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
     Contrato serializável (B-P0-1, idêntico a flow_analyzer.metrics):
     ratio None + ratio_state quando não computável; nunca NaN/Inf/99.
     """
-    from .metrics import _finite_volume, _present_volume
+    from .metrics import _finite_volume, _present_volume, compute_window_imbalances, is_temporal_confirmation_valid
 
     # Extrair volumes de compra/venda (finito ou None; sem coagir p/ 0)
     buy_vol = _present_volume(flow_data, "buy_volume_btc", "buy_volume")
@@ -481,44 +481,17 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
         # buy > 0, sell == 0: infinito não serializa; direção nos volumes
         main_ratio, ratio_state = None, "buy_only"
 
-    # Extrair flows de múltiplas janelas (None = ausente; sem coagir p/ 0)
-    net_flow_1m = _finite_volume(flow_data.get("net_flow_1m"))
-    net_flow_5m = _finite_volume(flow_data.get("net_flow_5m"))
-    net_flow_15m = _finite_volume(flow_data.get("net_flow_15m"))
-    total_volume = flow_data.get("total_volume", 0) or flow_data.get("total_volume_btc", 0)
-
+    # Extrair flows de múltiplas janelas: cálculo canônico P0-B1 em metrics.py
+    # (fonte única; sem duplicar a lógica de invariante/validade aqui).
     # P01: imbalance normalizado usa o total da PRÓPRIA janela (paridade com metrics).
-    def _total_for_window(window_min: int):
-        for key in (f"total_volume_{window_min}m", f"total_{window_min}m"):
-            v = _finite_volume(flow_data.get(key))
-            if v is not None:
-                return v
-        if window_min == 1:
-            return total_volume
-        return None
+    window_ratios, imbalance_validity = compute_window_imbalances(flow_data)
 
     # Calcular ratios por janela usando net_flow da própria janela
     # net_flow > 0 = mais compra, net_flow < 0 = mais venda
     ratios = {
         "current": main_ratio,
     }
-
-    # Imbalance por janela (normalizado); chave omitida se net ou total ausente/<=0
-    for key, net_flow, window_min in (("imbalance_1m", net_flow_1m, 1),
-                                      ("imbalance_5m", net_flow_5m, 5),
-                                      ("imbalance_15m", net_flow_15m, 15)):
-        if net_flow is None:
-            continue
-        window_total = _total_for_window(window_min)
-        if window_total is None or not window_total > 0:
-            continue
-        raw_imbalance = net_flow / window_total  # sem arredondar antes da divisão
-        # Proteção documentada só contra epsilon numérico (não clamp de erro):
-        if raw_imbalance > 1.0 and raw_imbalance <= 1.0 + 1e-9:
-            raw_imbalance = 1.0
-        elif raw_imbalance < -1.0 and raw_imbalance >= -1.0 - 1e-9:
-            raw_imbalance = -1.0
-        ratios[key] = round(raw_imbalance, 4)
+    ratios.update(window_ratios)
 
     # Sector ratios (se disponível; mesma regra: só com ambos finitos)
     sector_flow = flow_data.get("sector_flow", {})
@@ -537,11 +510,19 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
             else:
                 sector_ratios[sector_name] = 0.0  # sell-only: limite válido
 
-    # Detecção de tendência do fluxo (imbalance normalizado por janela)
+    # Detecção de tendência do fluxo (imbalance normalizado por janela).
+    # P0-B2 (paridade com metrics): 1m E 5m confirmatórios ou insufficient_data.
+    _integrity = flow_data.get("flow_window_integrity")
+    _trend_windows_ok = (
+        is_temporal_confirmation_valid(_integrity, imbalance_validity, "1m")
+        and is_temporal_confirmation_valid(_integrity, imbalance_validity, "5m")
+    )
     imbalance_1m = ratios.get("imbalance_1m", 0)
     imbalance_5m = ratios.get("imbalance_5m", 0)
 
-    if not imbalance_1m and not imbalance_5m:
+    if not _trend_windows_ok:
+        trend = "insufficient_data"
+    elif not imbalance_1m and not imbalance_5m:
         trend = "insufficient_data"
     else:
         recent = abs(imbalance_1m)
@@ -578,6 +559,8 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
         "buy_sell_ratio": main_ratio,
         "ratio_state": ratio_state,
         "ratios": ratios,
+        # P0-B1 (aditivo, paridade com metrics): temporal_validity por janela.
+        "imbalance_validity": imbalance_validity,
         "sector_ratios": sector_ratios,
         "pressure": pressure,
         "flow_trend": trend,

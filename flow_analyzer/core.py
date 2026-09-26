@@ -1034,7 +1034,10 @@ class FlowAnalyzer(IFlowAnalyzer):
             
             # Order flow
             if self._check_time_budget(start_time, "accumulated"):
-                order_flow_result = self._compute_order_flow(snapshot, now_ms, start_time)
+                order_flow_result = self._compute_order_flow(
+                    snapshot, now_ms, start_time,
+                    flow_window_integrity=metrics.get("flow_window_integrity"),
+                )
                 if order_flow_result:
                     metrics.update(order_flow_result)
             
@@ -1208,9 +1211,16 @@ class FlowAnalyzer(IFlowAnalyzer):
         self,
         snapshot: Dict[str, Any],
         now_ms: int,
-        start_time: float
+        start_time: float,
+        flow_window_integrity: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-         """Computa order flow por janela."""
+         """Computa order flow por janela.
+
+         flow_window_integrity (opcional, aditivo P0-B1): dict
+         {"1m"|"5m"|"15m": {"status", "is_temporal_coverage_valid", ...}}
+         repassado a calculate_buy_sell_ratios para temporal_validity.
+         Ausente => validade PARTIAL/NO_INTEGRITY_INFO (nunca VALID assumido).
+         """
          if not self.net_flow_windows_min:
              return {}
          
@@ -1301,7 +1311,12 @@ class FlowAnalyzer(IFlowAnalyzer):
                      "delta": float(data['delta'])
                  }
              flow_data["sector_flow"] = sector_flow
-             
+
+             # P0-B1: integridade temporal para temporal_validity (aditivo;
+             # sem ela, calculate marca PARTIAL/NO_INTEGRITY_INFO, nunca VALID).
+             if flow_window_integrity is not None:
+                 flow_data["flow_window_integrity"] = flow_window_integrity
+
              # Calculate and add ratio
              ratio_result = calculate_buy_sell_ratios(flow_data)
              order_flow["buy_sell_ratio"] = ratio_result

@@ -412,6 +412,143 @@ def _present_volume(flow_data: dict, *keys):
     return None
 
 
+# ==============================================================================
+# P0-B1: INTEGRIDADE DO PRODUTOR + METADATA TEMPORAL (fail-closed, aditivo)
+# ==============================================================================
+#
+# Canônico e de fonte única: aggregates.py reutiliza estas funções
+# (mesma direção de import já existente para _finite_volume/_present_volume;
+# metrics.py nunca importa aggregates — sem ciclo).
+#
+# Contrato:
+# - Valores parciais 1m/5m/15m SEMPRE preservados para observabilidade.
+# - Cada janela tentada recebe temporal_validity:
+#     VALID   <=> flow_window_integrity[tf].is_temporal_coverage_valid is True
+#               (prova positiva de cobertura FULL; sem ela, nunca VALID).
+#     PARTIAL <=> aritmética válida mas cobertura não-FULL (WARMING_UP,
+#               CAPACITY_TRUNCATED, TRUNCATED, ...) ou integridade ausente
+#               (reason=NO_INTEGRITY_INFO — fail-safe, nunca VALID assumido).
+#     INVALID <=> aritmética inválida (non-finite, denominador ausente/
+#               não-finito/não-positivo, ou |imb|>1 além do epsilon):
+#               imbalance_value=null (chave numérica omitida, como antes),
+#               reason=INVARIANT_VIOLATION. Nunca clamp silencioso para 1.0.
+# - Nenhum threshold novo: o único epsilon é _IMBALANCE_FP_EPS = 1e-9,
+#   literal já existente no clamp de fronteira abaixo (reutilizado, não criado).
+# - Janelas cuja chave net_flow_Xm sequer existe em flow_data são "ausentes"
+#   (sem entrada em validity): ausência de input ≠ violação.
+
+_IMBALANCE_FP_EPS = 1e-9  # reutiliza tolerância preexistente (ver loop abaixo)
+
+_IMBALANCE_WINDOWS = (
+    (1, "net_flow_1m", "imbalance_1m", "1m"),
+    (5, "net_flow_5m", "imbalance_5m", "5m"),
+    (15, "net_flow_15m", "imbalance_15m", "15m"),
+)
+
+
+def _window_total_for_imbalance(flow_data: dict, window_min: int):
+    """Denominador da PRÓPRIA janela (paridade P01 com o código anterior).
+
+    Fallback legado total_volume/total_volume_btc vale SOMENTE para 1m.
+    Retorna float finito ou None (ausente/inválido). Ao contrário do código
+    anterior, o fallback passa por _finite_volume: lixo não-finito vira
+    INVALID explícito em vez de omitir silenciosamente ou levantar TypeError.
+    """
+    for key in (f"total_volume_{window_min}m", f"total_{window_min}m"):
+        v = _finite_volume(flow_data.get(key))
+        if v is not None:
+            return v
+    if window_min == 1:
+        fallback = flow_data.get("total_volume", 0) or flow_data.get("total_volume_btc", 0)
+        return _finite_volume(fallback)
+    return None
+
+
+def _temporal_validity_for_window(integrity: Any, window_key: str):
+    """(validity, reason) a partir EXCLUSIVAMENTE de flow_window_integrity.
+
+    Sem threshold novo: só lê is_temporal_coverage_valid (bool) e status (str).
+    """
+    entry = integrity.get(window_key) if isinstance(integrity, dict) else None
+    if isinstance(entry, dict) and entry.get("is_temporal_coverage_valid") is True:
+        return "VALID", None
+    if isinstance(entry, dict):
+        return "PARTIAL", str(entry.get("status", "UNKNOWN_STATUS"))
+    return "PARTIAL", "NO_INTEGRITY_INFO"
+
+
+def is_temporal_confirmation_valid(integrity: Any, validity_map: Any, window_key: str) -> bool:
+    """Gate canônico P0-B2: janela conta como confirmação temporal?
+
+    Fail-closed duplo (contrato P0-B2 §1): True SOMENTE se
+      imbalance_validity[tf].validity == "VALID"
+      E flow_window_integrity[tf].is_temporal_coverage_valid is True.
+    Qualquer divergência, ausência, PARTIAL, INVALID ou NO_INTEGRITY_INFO
+    => False (observável, nunca confirmatório). Sem threshold novo.
+
+    Localização: metrics.py (folha: só stdlib+constants+utils). Reutilizado por
+    aggregates.py (importa daqui), enricher, flow_summary e payload builders
+    (lazy import — sem ciclo: flow_analyzer nunca importa esses pacotes).
+    """
+    entry = validity_map.get(window_key) if isinstance(validity_map, dict) else None
+    if not isinstance(entry, dict) or entry.get("validity") != "VALID":
+        return False
+    info = integrity.get(window_key) if isinstance(integrity, dict) else None
+    if not isinstance(info, dict) or info.get("is_temporal_coverage_valid") is not True:
+        return False
+    return True
+
+
+def compute_window_imbalances(flow_data: dict):
+    """Núcleo canônico P0-B1: (ratios_numéricos, validity_map).
+
+    ratios_numéricos: {imbalance_Xm: float} só para aritmética válida em
+      [-1, +1] (snap de fronteira ±1e-9 preservado). Bit-equivalente ao código
+      anterior para todos os inputs válidos.
+    validity_map: {"1m"|"5m"|"15m": {"validity": VALID|PARTIAL|INVALID,
+      "reason": None|status|NO_INTEGRITY_INFO|INVARIANT_VIOLATION}} somente
+      para janelas cujo net_flow_Xm foi fornecido (tentadas). Janela sem chave
+      net => ausente em ambos (nunca fabricada).
+    """
+    ratios: Dict[str, float] = {}
+    validity: Dict[str, Dict[str, Any]] = {}
+    integrity = flow_data.get("flow_window_integrity")
+
+    for window_min, net_key, imb_key, window_label in _IMBALANCE_WINDOWS:
+        if net_key not in flow_data:
+            continue  # input ausente => janela ausente (não é violação)
+        net_flow = _finite_volume(flow_data.get(net_key))
+        if net_flow is None:
+            # Chave presente mas non-finite (NaN/Inf/str): E => null/INVALID.
+            validity[window_label] = {"validity": "INVALID", "reason": "INVARIANT_VIOLATION"}
+            continue
+        window_total = _window_total_for_imbalance(flow_data, window_min)
+        if window_total is None or not window_total > 0:
+            # Denominador ausente/não-finito/não-positivo => null/INVALID.
+            validity[window_label] = {"validity": "INVALID", "reason": "INVARIANT_VIOLATION"}
+            continue
+        raw_imbalance = net_flow / window_total  # sem arredondar antes da divisão
+        if not math.isfinite(raw_imbalance):
+            validity[window_label] = {"validity": "INVALID", "reason": "INVARIANT_VIOLATION"}
+            continue
+        # Proteção preexistente só contra epsilon numérico (não clamp de erro):
+        # ramos separados para +1 e -1, como no código anterior.
+        if raw_imbalance > 1.0 and raw_imbalance <= 1.0 + _IMBALANCE_FP_EPS:
+            raw_imbalance = 1.0
+        elif raw_imbalance < -1.0 and raw_imbalance >= -1.0 - _IMBALANCE_FP_EPS:
+            raw_imbalance = -1.0
+        elif raw_imbalance > 1.0 or raw_imbalance < -1.0:
+            # Fora de [-1,+1] além da tolerância: NUNCA clamp para ±1.0,
+            # NUNCA publica o número; null + INVALID explícito.
+            validity[window_label] = {"validity": "INVALID", "reason": "INVARIANT_VIOLATION"}
+            continue
+        ratios[imb_key] = round(raw_imbalance, 4)
+        temporal, reason = _temporal_validity_for_window(integrity, window_label)
+        validity[window_label] = {"validity": temporal, "reason": reason}
+
+    return ratios, validity
+
+
 def calculate_buy_sell_ratios(flow_data: dict) -> dict:
     """
     Calcula Buy/Sell Ratios em múltiplas janelas temporais.
@@ -458,47 +595,17 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
         # buy > 0, sell == 0: infinito não serializa; direção nos volumes
         main_ratio, ratio_state = None, "buy_only"
 
-    # Extrair flows de múltiplas janelas (None = ausente; sem coagir p/ 0)
-    net_flow_1m = _finite_volume(flow_data.get("net_flow_1m"))
-    net_flow_5m = _finite_volume(flow_data.get("net_flow_5m"))
-    net_flow_15m = _finite_volume(flow_data.get("net_flow_15m"))
-    total_volume = flow_data.get("total_volume", 0) or flow_data.get("total_volume_btc", 0)
-
-    # P01: imbalance normalizado usa o total da PRÓPRIA janela.
-    # total_volume (legado) = total 1m. total_volume_{1,5,15}m quando presentes.
-    # Sem fallback cruzado: denominador 1m para numerador 5m/15m era o bug
-    # (ex.: net_15m/total_1m = 1.506, fora de [-1,+1]).
-    def _total_for_window(window_min: int):
-        for key in (f"total_volume_{window_min}m", f"total_{window_min}m"):
-            v = _finite_volume(flow_data.get(key))
-            if v is not None:
-                return v
-        if window_min == 1:
-            return total_volume
-        return None
+    # P0-B1: núcleo canônico (valores + temporal_validity). O cálculo vive em
+    # compute_window_imbalances (fonte única com aggregates.py); net/total por
+    # janela são lidos lá, sempre da PRÓPRIA janela (P01, sem fallback cruzado).
+    window_ratios, imbalance_validity = compute_window_imbalances(flow_data)
 
     # Calcular ratios por janela usando net_flow da própria janela
     # net_flow > 0 = mais compra, net_flow < 0 = mais venda
     ratios = {
         "current": main_ratio,
     }
-
-    # Imbalance por janela (normalizado); chave omitida se net ou total ausente/<=0
-    for key, net_flow, window_min in (("imbalance_1m", net_flow_1m, 1),
-                                      ("imbalance_5m", net_flow_5m, 5),
-                                      ("imbalance_15m", net_flow_15m, 15)):
-        if net_flow is None:
-            continue
-        window_total = _total_for_window(window_min)
-        if window_total is None or not window_total > 0:
-            continue
-        raw_imbalance = net_flow / window_total  # sem arredondar antes da divisão
-        # Proteção documentada só contra epsilon numérico (não clamp de erro):
-        if raw_imbalance > 1.0 and raw_imbalance <= 1.0 + 1e-9:
-            raw_imbalance = 1.0
-        elif raw_imbalance < -1.0 and raw_imbalance >= -1.0 - 1e-9:
-            raw_imbalance = -1.0
-        ratios[key] = round(raw_imbalance, 4)
+    ratios.update(window_ratios)
 
     # Sector ratios (se disponível; mesma regra: só com ambos finitos)
     sector_flow = flow_data.get("sector_flow", {})
@@ -517,11 +624,22 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
             else:
                 sector_ratios[sector_name] = 0.0  # sell-only: limite válido
 
-    # Detecção de tendência do fluxo (imbalance normalizado por janela)
+    # Detecção de tendência do fluxo (imbalance normalizado por janela).
+    # P0-B2: tendência multi-TF exige 1m E 5m confirmatórios (dual VALID);
+    # PARTIAL é observável mas NÃO confirma. Sem os horizontes exigidos pela
+    # fórmula => "insufficient_data" (nunca "stable" por ausência). Matemática
+    # com horizontes VALID inalterada (mesmo THRESHOLD 0.05).
+    integrity = flow_data.get("flow_window_integrity")
+    _trend_windows_ok = (
+        is_temporal_confirmation_valid(integrity, imbalance_validity, "1m")
+        and is_temporal_confirmation_valid(integrity, imbalance_validity, "5m")
+    )
     imbalance_1m = ratios.get("imbalance_1m", 0)
     imbalance_5m = ratios.get("imbalance_5m", 0)
 
-    if not imbalance_1m and not imbalance_5m:
+    if not _trend_windows_ok:
+        trend = "insufficient_data"
+    elif not imbalance_1m and not imbalance_5m:
         trend = "insufficient_data"
     else:
         recent = abs(imbalance_1m)
@@ -565,6 +683,11 @@ def calculate_buy_sell_ratios(flow_data: dict) -> dict:
         "buy_sell_ratio": main_ratio,
         "ratio_state": ratio_state,
         "ratios": ratios,
+        # P0-B1 (aditivo): temporal_validity por janela tentada
+        # {"1m"|"5m"|"15m": {"validity": VALID|PARTIAL|INVALID, "reason": ...}}.
+        # Ausente quando nenhuma janela foi tentada. Nenhum consumer é obrigado
+        # a lê-lo nesta etapa (P0-B2 cuidará dos gates).
+        "imbalance_validity": imbalance_validity,
         "sector_ratios": sector_ratios,
         "pressure": pressure,
         "flow_trend": trend,
