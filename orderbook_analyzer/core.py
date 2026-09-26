@@ -68,6 +68,26 @@ except Exception:
 
 from monitoring.time_manager import TimeManager
 from orderbook_core.protocols import TimeManagerProtocol
+
+
+def iceberg_detection_confirmed() -> bool:
+    """Gate canônico P0-C: iceberg pode ser afirmado como confirmado?
+
+    Fonte de verdade: market_orchestrator.capabilities (CONTINUOUS_L2 E
+    ICEBERG_DETECTION_SUPPORTED). Import lazy de propósito: market_orchestrator
+    importa orderbook_analyzer no topo (market_orchestrator.py:89), logo um
+    import top-level aqui criaria ciclo. Mesmo padrão já usado em
+    payload_builder_compact._build_iceberg. Falha de import => False
+    (fail-closed). Sem flag local, sem literal duplicado.
+    """
+    try:
+        from market_orchestrator.capabilities import (
+            CONTINUOUS_L2,
+            ICEBERG_DETECTION_SUPPORTED,
+        )
+        return bool(CONTINUOUS_L2 and ICEBERG_DETECTION_SUPPORTED)
+    except ImportError:
+        return False
 from orderbook_core.metrics import OrderBookMetrics, MetricsTracker
 from orderbook_core.orderbook_config import OrderBookConfig
 from orderbook_core.orderbook import OrderBookSnapshot
@@ -2627,7 +2647,24 @@ class OrderBookAnalyzer:
             # 4) Patterns
             bid_walls = self._detect_walls(bids, side="bid")
             ask_walls = self._detect_walls(asks, side="ask")
-            iceberg, iceberg_score = self._compute_iceberg(bids, asks)
+            iceberg_raw, iceberg_score_raw = self._compute_iceberg(bids, asks)
+
+            # P0-C: capability fail-closed. A heurística compara apenas 2
+            # snapshots REST pontuais (fapi/v1/depth ~60s): sem CONTINUOUS_L2
+            # ela NUNCA vira claim confirmado. Algoritmo intacto; o valor bruto
+            # viaja só como telemetria UNCONFIRMED.
+            if iceberg_detection_confirmed():
+                iceberg, iceberg_score = iceberg_raw, iceberg_score_raw
+                iceberg_status = "CONFIRMED"
+                iceberg_heuristic = None
+            else:
+                iceberg, iceberg_score = False, 0.0
+                iceberg_status = "UNSUPPORTED"
+                iceberg_heuristic = {
+                    "value": round(float(iceberg_score_raw), 4),
+                    "validity": "UNCONFIRMED",
+                    "reason": "CONTINUOUS_L2_UNAVAILABLE",
+                }
 
             # 5) Market impact
             mi = self._compute_market_impact(bids, asks, mid)
@@ -2711,6 +2748,10 @@ class OrderBookAnalyzer:
                 "alertas_liquidez": alertas,
                 "iceberg_reloaded": bool(iceberg),
                 "iceberg_score": iceberg_score,
+                # P0-C: confirmação sempre false/zero quando ICEBERG=False;
+                # heurística separada, explícita, nunca confirmatória.
+                "iceberg_status": iceberg_status,
+                "iceberg_heuristic": iceberg_heuristic,
                 "walls": {"bids": bid_walls[:3], "asks": ask_walls[:3]},
 
                 "market_impact_buy": mi["buy"],
