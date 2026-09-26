@@ -36,6 +36,29 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _canonical_absorption_direction(label: object) -> str:
+    """Direção canônica da absorção (somente evidência explicativa, P0-A2).
+
+    Convenção canônica (absorption.py:10-16, data_handler.py:1160-1169):
+    - Absorção de Compra / COMPRA / BUY => BEARISH (BUY agressivo absorvido por SELL)
+    - Absorção de Venda / VENDA / SELL => BULLISH (SELL agressivo absorvido por BUY)
+    - Neutra, ausente ou desconhecida => NEUTRAL
+
+    NOTA DE NÃO-REUSO: common/signal_direction.infer_signal_side NÃO é reutilizado
+    aqui de propósito. Ele mapeia "COMPRA" genérico => LONG/BULLISH e retorna
+    LONG/SHORT/NEUTRAL/UNKNOWN com precedência event_type/explicit_side, enquanto
+    neste contexto "COMPRA"/"BUY" significa absorção de compra => BEARISH.
+    Reutilizá-lo inverteria o contrato e acoplaria flow_analyzer a common.
+    Função privada local, sem threshold/peso, sem conversão em número.
+    """
+    text = str(label or "").upper()
+    if "COMPRA" in text or "BUY" in text:
+        return "BEARISH"
+    if "VENDA" in text or "SELL" in text:
+        return "BULLISH"
+    return "NEUTRAL"
+
+
 class WhaleAccumulationCalculator:
     """
     Calcula score de acumulação/distribuição de whales.
@@ -196,15 +219,22 @@ class WhaleAccumulationCalculator:
         score += depth_score
 
         # ═══════════════════════════════════════════
-        # 3. ABSORPTION PATTERN BIAS (-25 a +25)
-        # ═══════════════════════════════════════════
+        # 3. ABSORPTION PATTERN BIAS — P0-A2 FAIL-CLOSED NON-VOTING
+        # ═══════════════════════════════════════════════════════════
+        # Contrato P0-A2: contribuição numérica neutralizada (score sempre 0.0)
+        # porque magnitude net*3 provou-se semanticamente assimétrica e deriva
+        # da mesma fita de trades do componente flow (double counting), sem
+        # magnitude alternativa canônica validada. Direção conhecida vira apenas
+        # evidência explicativa (canonical_direction), NUNCA número no total.
+        # Preservados para explicabilidade/compat: max=25, label, index,
+        # classification, buyer/seller, net legado só p/ diagnóstico.
         abs_score: float = 0.0
         abs_detail: dict = {}
 
         if absorption_data and isinstance(absorption_data, dict):
             # Suportar formato nested ou flat
             abs_inner = absorption_data.get("current_absorption", absorption_data)
-            
+
             if isinstance(abs_inner, dict):
                 buyer_str = float(abs_inner.get("buyer_strength", 0))
                 seller_exh = float(abs_inner.get("seller_exhaustion", 0))
@@ -212,32 +242,31 @@ class WhaleAccumulationCalculator:
                 classification = str(abs_inner.get("classification", ""))
                 label = str(abs_inner.get("label", ""))
 
-                # buyer_strength alto = compradores fortes = acumulação
-                # seller_exhaustion alto = vendedores cansados = acumulação
+                # Métrica legada SOMENTE para diagnóstico/compatibilidade.
+                # NÃO entra no score (fail-closed). Assimetria documentada em
+                # tests/unit/test_whale_absorption_boost_p0a.py (P0-A -> P0-A2).
                 net_absorption = buyer_str - seller_exh
 
-                # Escalar: valores típicos são 0-10
-                if net_absorption > 0:
-                    abs_score = min(25, net_absorption * 3)
-                else:
-                    abs_score = max(-25, net_absorption * 3)
-
-                # Boost se absorção é STRONG
-                if "STRONG" in classification.upper():
-                    if "COMPRA" in label.upper() or "BUY" in label.upper():
-                        abs_score = min(25, abs_score + 8)
-                    elif "VENDA" in label.upper() or "SELL" in label.upper():
-                        abs_score = max(-25, abs_score - 8)
+                canonical_direction = _canonical_absorption_direction(label)
 
                 abs_detail["buyer_strength"] = buyer_str
                 abs_detail["seller_exhaustion"] = seller_exh
                 abs_detail["net_absorption"] = round(net_absorption, 2)
+                abs_detail["legacy_unvalidated_metric"] = True
                 abs_detail["index"] = abs_index
                 abs_detail["label"] = label
+                abs_detail["classification"] = classification
+                abs_detail["canonical_direction"] = canonical_direction
 
         components["absorption"] = {
             "score": round(abs_score, 2),
             "max": 25,
+            "status": "NON_VOTING_UNVALIDATED_MAGNITUDE",
+            "canonical_direction": _canonical_absorption_direction(
+                abs_detail.get("label", "") if abs_detail else ""
+            )
+            if abs_detail
+            else "NEUTRAL",
             "detail": abs_detail,
         }
         score += abs_score
