@@ -128,6 +128,11 @@ def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
             bias = "SELL"
 
     # --- Divergência curto prazo vs fluxo dominante ---
+    # P0-B2: comparação 1m vs 5m só confirma se AMBOS forem VALID (dual
+    # fail-closed). Prefere flow.iv (inclui INVALID de invariante); sem iv,
+    # recai no flow.q legado; sem ambos, comportamento legado (P0-B2 não
+    # fabrica gate sem dado). Divergência com cobertura insuficiente NÃO emite
+    # reversal — registra temporal_comparison INSUFFICIENT em vez de NEUTRAL.
     d1_str = str(flow.get("d1", "0"))
     d5_str = str(flow.get("d5", "0"))
 
@@ -135,20 +140,13 @@ def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
     d1_negative = d1_str.startswith("-")
     d5_positive = d5_str.startswith("+") and d5_str != "+0"
     d5_negative = d5_str.startswith("-")
-
-    # Janelas degradadas (trunc/warm) não podem sustentar comparação
-    # temporal entre timeframes — tratar valor parcial como completo
-    # seria inferência sobre dado incompleto.
-    degraded_windows = _degraded_flow_windows(flow.get("q"))
-    temporal_comparison_valid = not ({"1m", "5m"} & set(degraded_windows))
-
-    short_term_reversal = (
-        temporal_comparison_valid
-        and (
-            (d1_positive and d5_negative)
-            or (d1_negative and d5_positive)
-        )
+    signs_diverge = (
+        (d1_positive and d5_negative) or (d1_negative and d5_positive)
     )
+
+    temporal_comparison_valid, temporal_reason = _temporal_comparison_state(flow)
+
+    short_term_reversal = signs_diverge and temporal_comparison_valid
 
     result: dict[str, Any] = {
         "bias":  bias,
@@ -158,8 +156,41 @@ def build_flow_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
     if short_term_reversal:
         result["reversal_signal"] = True
+    elif signs_diverge:
+        result["temporal_comparison"] = {
+            "conclusion": "INSUFFICIENT_COVERAGE",
+            "reason": temporal_reason,
+        }
 
     return result
+
+
+def _temporal_comparison_state(flow: dict[str, Any]) -> tuple:
+    """(valid: bool, reason: str|None) para a comparação 1m vs 5m.
+
+    Fonte 1 (P0-B1): flow.iv {"1m"|"5m": V|P|I} — V+V exige também cobertura
+      FULL quando flow.q presente (dual fail-closed, contrato P0-B2 §1).
+    Fonte 2 (legado): flow.q degradadas (trunc/warm), como antes.
+    Sem iv nem q: (True, None) — comportamento legado preservado.
+    """
+    iv = flow.get("iv")
+    if isinstance(iv, dict) and ("1m" in iv or "5m" in iv):
+        if iv.get("1m") == "V" and iv.get("5m") == "V":
+            quality = flow.get("q")
+            if isinstance(quality, dict):
+                degraded = _degraded_flow_windows(quality)
+                if {"1m", "5m"} & set(degraded):
+                    return False, "q_degraded_1m_or_5m_despite_iv"
+            return True, None
+        return False, f"iv_not_valid_1m_5m:{iv.get('1m')}/{iv.get('5m')}"
+
+    # Janelas degradadas (trunc/warm) não podem sustentar comparação
+    # temporal entre timeframes — tratar valor parcial como completo
+    # seria inferência sobre dado incompleto.
+    degraded_windows = _degraded_flow_windows(flow.get("q"))
+    if {"1m", "5m"} & set(degraded_windows):
+        return False, "q_degraded_1m_or_5m"
+    return True, None
 
 
 def _degraded_flow_windows(quality: Any) -> list:

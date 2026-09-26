@@ -767,6 +767,12 @@ COMO MONTAR SUA ANÁLISE:
 3. FLUXO DE GRANDES TRADES: O score de whale indica acumulação ou distribuição?
 4. PADRÃO: Qual padrão está se formando? (absorção, exaustão, breakout)
 5. CONFLUÊNCIA: Quantos fatores apontam na mesma direção?
+5b. VALIDADE TEMPORAL (fail-closed, obrigatório): f.q (warm/trunc) ou f.iv (P/I)
+   = janela PARTIAL/INVALID = contexto OBSERVACIONAL, NUNCA confirmação.
+   Somente janelas VALID (f.iv=V com cobertura full) podem confirmar
+   tendência/reversão multi-timeframe. d1/d5/d15 numericamente iguais com
+   q=warm = UMA amostra contada 3 vezes, não 3 confirmações — não conte
+   janelas PARTIAL/INVALID/UNKNOWN como fatores independentes na confluência.
 6. VEREDITO: O que fazer agora? (comprar, vender, esperar)
 7. NÍVEIS: Onde entrar? Onde stopar?
 
@@ -845,7 +851,7 @@ LEMBRE-SE:
 GROQ_STRICT_SYSTEM_PROMPT = """Voce e um analista de mercado crypto. Responda SOMENTE com JSON valido.
 
 COMO ANALISAR:
-1. Analise f.d1 (delta USD 1min): +280K = compra forte, -34K = venda leve. Sinal + = compra, - = venda.
+1. Analise f.d1 (delta USD 1min): +280K = compra forte, -34K = venda leve. Sinal + = compra, - = venda. Se f.q.1m!=full ou f.iv.1m!=V, trate d1/d5/d15 como PARCIAIS (observáveis, sem confirmação multi-timeframe).
 2. Verifique f.imb: <-0.3 = pressao venda, >+0.3 = pressao compra. f.bsr: >1 = compradores dominam.
 3. Verifique ob.imb: <-0.3 = ask pesado (SELL pressure), >+0.3 = bid pesado (BUY pressure). ob.bias="SELL" confirma. ext.cci="OB" = sobrecomprado, "OS" = sobrevendido.
 4. Confirme com RSI e trend dos timeframes (tf).

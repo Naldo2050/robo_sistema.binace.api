@@ -432,6 +432,21 @@ def _compress_flow(payload: dict) -> dict:
                 bsr.get("pressure", ""), bsr.get("pressure", ""))
             result["trend"] = FLOW_TREND_MAP.get(
                 bsr.get("flow_trend", ""), bsr.get("flow_trend", ""))
+            # P0-B2: preserva validade temporal junto dos valores parciais
+            # (V=VALID pode confirmar; P=PARTIAL observável; I=INVALID null).
+            # A compressão nunca remove esta metadata (contrato §10).
+            _validity = bsr.get("imbalance_validity")
+            if isinstance(_validity, dict):
+                _iv = {}
+                for _wk in ("1m", "5m", "15m"):
+                    _entry = _validity.get(_wk)
+                    if isinstance(_entry, dict):
+                        _code = {"VALID": "V", "PARTIAL": "P", "INVALID": "I"}.get(
+                            _entry.get("validity"))
+                        if _code is not None:
+                            _iv[_wk] = _code
+                if _iv:
+                    result["iv"] = _iv
 
         # Volumes
         result["buy_vol"] = _r(order_flow.get("buy_volume_btc"), "ratio")

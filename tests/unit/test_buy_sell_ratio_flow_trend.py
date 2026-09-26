@@ -4,6 +4,16 @@ from flow_analyzer.aggregates import calculate_buy_sell_ratios as aggregates_cal
 from flow_analyzer.metrics import calculate_buy_sell_ratios as metrics_calc
 
 
+# P0-B2: tendência multi-TF exige 1m E 5m VALID. Fixtures de matemática de
+# tendência passam integridade FULL (valores/asserts inalterados); os dois
+# testes insufficient_data seguem sem integridade (provam o gate).
+_FULL_INTEGRITY = {
+    "1m": {"status": "FULL", "is_temporal_coverage_valid": True},
+    "5m": {"status": "FULL", "is_temporal_coverage_valid": True},
+    "15m": {"status": "FULL", "is_temporal_coverage_valid": True},
+}
+
+
 @pytest.mark.parametrize("calc", [metrics_calc, aggregates_calc], ids=["metrics", "aggregates"])
 class TestFlowTrendImbalanceNormalizado:
     def test_caso1_decelerating_selling(self, calc):
@@ -17,6 +27,7 @@ class TestFlowTrendImbalanceNormalizado:
             # P01: totais próprios por janela (contrato net_X/total_X)
             "total_volume_5m": 1000.0,
             "total_volume_15m": 1000.0,
+            "flow_window_integrity": _FULL_INTEGRITY,
         }
         result = calc(flow_data)
         assert result["flow_trend"] == "decelerating_selling"
@@ -31,6 +42,7 @@ class TestFlowTrendImbalanceNormalizado:
             "total_volume": 1000.0,
             "total_volume_5m": 1000.0,
             "total_volume_15m": 1000.0,
+            "flow_window_integrity": _FULL_INTEGRITY,
         }
         result = calc(flow_data)
         assert result["flow_trend"] == "accelerating_selling"
@@ -45,6 +57,7 @@ class TestFlowTrendImbalanceNormalizado:
             "total_volume": 1000.0,
             "total_volume_5m": 1000.0,
             "total_volume_15m": 1000.0,
+            "flow_window_integrity": _FULL_INTEGRITY,
         }
         result = calc(flow_data)
         assert result["flow_trend"] == "stable_selling"
@@ -59,6 +72,7 @@ class TestFlowTrendImbalanceNormalizado:
             "total_volume": 1000.0,
             "total_volume_5m": 1000.0,
             "total_volume_15m": 1000.0,
+            "flow_window_integrity": _FULL_INTEGRITY,
         }
         result = calc(flow_data)
         assert result["flow_trend"] == "decelerating_buying"
@@ -73,6 +87,7 @@ class TestFlowTrendImbalanceNormalizado:
             "total_volume": 1000.0,
             "total_volume_5m": 1000.0,
             "total_volume_15m": 1000.0,
+            "flow_window_integrity": _FULL_INTEGRITY,
         }
         result = calc(flow_data)
         assert result["flow_trend"] == "stable_selling"
@@ -112,6 +127,7 @@ class TestFlowTrendImbalanceNormalizado:
             # P01: cada janela normalizada pelo próprio total
             "total_volume_5m": 1000.0,
             "total_volume_15m": 1000.0,
+            "flow_window_integrity": _FULL_INTEGRITY,
         }
         result = calc(flow_data)
         assert result["ratios"]["imbalance_1m"] == -0.074
@@ -130,6 +146,7 @@ class TestPressureNeutralZoneComFlowTrend:
             "total_volume": 1000.0,
             "total_volume_5m": 1000.0,
             "total_volume_15m": 1000.0,
+            "flow_window_integrity": _FULL_INTEGRITY,
         }
         result = metrics_calc(flow_data)
         assert result["pressure"] == "SLIGHT_BUY"
@@ -144,6 +161,7 @@ class TestPressureNeutralZoneComFlowTrend:
             "total_volume": 1000.0,
             "total_volume_5m": 1000.0,
             "total_volume_15m": 1000.0,
+            "flow_window_integrity": _FULL_INTEGRITY,
         }
         result = metrics_calc(flow_data)
         assert result["pressure"] == "SLIGHT_SELL"
@@ -158,6 +176,7 @@ class TestPressureNeutralZoneComFlowTrend:
             "total_volume": 1000.0,
             "total_volume_5m": 1000.0,
             "total_volume_15m": 1000.0,
+            "flow_window_integrity": _FULL_INTEGRITY,
         }
         result = metrics_calc(flow_data)
         assert result["pressure"] == "NEUTRAL"

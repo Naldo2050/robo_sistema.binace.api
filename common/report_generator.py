@@ -190,6 +190,20 @@ def generate_ai_analysis_report(
         interpretation_lines.append(
             f"- **Order Flow:** Δ = {delta_fmt} ({'positivo' if delta >= 0 else 'negativo'})"
         )
+
+        # P0-B2: exibe PARTIAL sem imprimir como confirmação/tendência completa.
+        # flow_cont/order_flow já extraídos acima (linhas 133-134).
+        try:
+            _integrity_r = (flow_cont.get("flow_window_integrity") or {})
+            _info_1m = _integrity_r.get("1m") if isinstance(_integrity_r, dict) else None
+            if isinstance(_info_1m, dict) and not _info_1m.get("is_temporal_coverage_valid"):
+                _cov = _info_1m.get("effective_coverage_pct")
+                _cov_txt = f" ({_cov}% cobertura)" if isinstance(_cov, (int, float)) else ""
+                interpretation_lines.append(
+                    f"  ⚠️ Fluxo 1m PARCIAL{_cov_txt} — observável, sem confirmação temporal completa."
+                )
+        except Exception:
+            pass
         
         # 🆕 VALIDA VOLUMES ANTES DE COMPARAR
         has_valid_volumes = (volume_compra > 0 or volume_venda > 0)

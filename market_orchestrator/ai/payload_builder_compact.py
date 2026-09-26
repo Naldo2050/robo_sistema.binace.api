@@ -655,6 +655,22 @@ def _build_flow(event_data: dict) -> dict:
     if bsr is not None:
         flow["bsr"] = round(bsr, 2)
 
+    # P0-B2: imbalance validity por janela (V=VALID, P=PARTIAL, I=INVALID).
+    # Valores d1/d5/d15 acima permanecem observáveis mesmo PARTIAL; este campo
+    # diz ao LLM quais janelas podem confirmar tendência (só V). Aditivo.
+    bsr_validity = bsr_data.get("imbalance_validity")
+    if isinstance(bsr_validity, dict):
+        iv: dict[str, str] = {}
+        for _wk in ("1m", "5m", "15m"):
+            _entry = bsr_validity.get(_wk)
+            if isinstance(_entry, dict):
+                _code = {"VALID": "V", "PARTIAL": "P", "INVALID": "I"}.get(
+                    _entry.get("validity"))
+                if _code is not None:
+                    iv[_wk] = _code
+        if iv:
+            flow["iv"] = iv
+
     # Passive/Aggressive composite (T6)
     ia = event_data.get("institutional_analytics", {})
     pa_data = ia.get("flow_analysis", {}).get("passive_aggressive", {})

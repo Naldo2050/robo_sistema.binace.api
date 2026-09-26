@@ -1713,7 +1713,22 @@ def _build_regime_probabilities(event: dict) -> dict:
     ob_imb = abs(event.get("orderbook_data", {}).get("imbalance", 0) or 0)
 
     # Flow trend (aceleração de venda/compra)
+    # P0-B2: bônus multi-TF só quando 1m E 5m forem confirmatórios (dual
+    # VALID em imbalance_validity + flow_window_integrity). PARTIAL é
+    # observável mas não aumenta confidence; INVALID/ausente nunca vota.
+    # Defesa em profundidade junto ao gate do produtor (flow_trend já vem
+    # insufficient_data sem horizontes VALID; aqui cobrimos eventos legados).
     flow_trend = _get_nested(event, "fluxo_continuo", "order_flow", "buy_sell_ratio", "flow_trend", default="") or ""
+    _trend_integrity = _get_nested(event, "fluxo_continuo", "flow_window_integrity") or {}
+    _trend_validity = _get_nested(event, "fluxo_continuo", "order_flow", "buy_sell_ratio", "imbalance_validity") or {}
+    try:
+        from flow_analyzer.metrics import is_temporal_confirmation_valid as _is_confirming
+        _multi_tf_confirming = (
+            _is_confirming(_trend_integrity, _trend_validity, "1m")
+            and _is_confirming(_trend_integrity, _trend_validity, "5m")
+        )
+    except Exception:
+        _multi_tf_confirming = False
 
     # Score para cada regime
     trending_score = 0.0
@@ -1751,10 +1766,10 @@ def _build_regime_probabilities(event: dict) -> dict:
     elif ob_imb >= 0.5:
         breakout_score += 0.10
 
-    # Flow trend
-    if "accel" in flow_trend.lower():
+    # Flow trend — somente com confirmação temporal multi-TF (P0-B2 §8).
+    if "accel" in flow_trend.lower() and _multi_tf_confirming:
         trending_score += 0.15
-    if "reversal" in flow_trend.lower():
+    if "reversal" in flow_trend.lower() and _multi_tf_confirming:
         mean_rev_score += 0.15
 
     # Market structure
