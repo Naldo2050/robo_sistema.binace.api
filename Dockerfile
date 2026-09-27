@@ -4,7 +4,7 @@ FROM python:3.12-slim
 # Definir variáveis de ambiente para Python
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    TZ=America/New_York
+    TZ=UTC
 
 # Instalar dependências do sistema necessárias
 # gcc e python3-dev para compilar certas libs pip
@@ -19,8 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Configurar diretório de trabalho
 WORKDIR /app
 
-# Criar usuário não-root para segurança
-RUN groupadd -r trader && useradd -r -g trader trader
+# Criar usuário não-root parametrizável por UID/GID para segurança no host/OCI
+ARG APP_UID=1000
+ARG APP_GID=1000
+RUN groupadd -g ${APP_GID} trader && useradd -u ${APP_UID} -g trader -m -s /bin/bash trader
 
 # Copiar apenas requirements primeiro para cache do Docker
 COPY requirements.txt .
@@ -35,8 +37,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copiar o restante do código
 COPY . .
 
-# Criar diretórios necessários e ajustar permissões
-RUN mkdir -p dados logs features && \
+# Criar diretórios persistentes necessários e ajustar permissões
+RUN mkdir -p dados logs features ml/models && \
     chown -R trader:trader /app
 
 # Mudar para o usuário não-root

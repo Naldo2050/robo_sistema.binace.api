@@ -144,7 +144,9 @@ class MLInferenceEngine:
     RSI_PERIOD = 14           # Período para RSI
     VOL_SMA_PERIOD = 20       # Período para Volume SMA
 
-    def __init__(self, model_dir: str = "ml/models"):
+    def __init__(self, model_dir: Optional[str] = None):
+        if model_dir is None:
+            model_dir = os.getenv("ML_MODELS_DIR", "ml/models")
         self.model_dir = Path(model_dir)
         self.model_path = self.model_dir / "xgb_model_latest.json"
         self.metadata_path = self.model_dir / "model_metadata_latest.json"
@@ -160,6 +162,11 @@ class MLInferenceEngine:
         
         self._load_model()
         self._load_metadata()
+
+    @property
+    def ml_status(self) -> str:
+        """Contrato formal de status do modelo: ML_AVAILABLE ou ML_MISSING."""
+        return "ML_AVAILABLE" if self.model is not None else "ML_MISSING"
 
     def _load_model(self):
         """Carrega o modelo XGBoost."""
@@ -500,6 +507,7 @@ class MLInferenceEngine:
                 'prob_up': 0.5,
                 'signal': 'neutral',
                 'status': 'hybrid_disabled',
+                'ml_status': self.ml_status,
                 'confidence': 0.0,
                 'valid_for_futures': self.valid_for_futures,
                 'ml_stale': self.ml_stale,
@@ -509,7 +517,8 @@ class MLInferenceEngine:
             return {
                 'prob_up': 0.5,
                 'signal': 'neutral',
-                'status': 'model_not_loaded',
+                'status': 'ML_MISSING',
+                'ml_status': 'ML_MISSING',
                 'valid_for_futures': self.valid_for_futures,
                 'ml_stale': self.ml_stale,
             }
@@ -627,6 +636,7 @@ class MLInferenceEngine:
                 'prob_down': 1.0 - prob,
                 'signal': signal,
                 'status': 'ok',
+                'ml_status': 'ML_AVAILABLE',
                 'confidence': confidence,
                 'valid_for_futures': self.valid_for_futures,
                 'ml_stale': self.ml_stale,
@@ -647,6 +657,7 @@ class MLInferenceEngine:
             return {
                 'prob_up': 0.5,
                 'status': 'error',
+                'ml_status': 'ML_MISSING',
                 'msg': str(e),
                 'valid_for_futures': self.valid_for_futures,
                 'ml_stale': self.ml_stale,

@@ -1,6 +1,10 @@
 services:
   market-bot:
-    build: .
+    build:
+      context: .
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
     container_name: market_bot_prod
     restart: unless-stopped
     ports:
@@ -12,10 +16,12 @@ services:
       - LOG_FORMAT=json
       - LOG_LEVEL=INFO
       - PROMETHEUS_PORT=8000
+      - TZ=UTC
     volumes:
       - ./dados:/app/dados
       - ./logs:/app/logs
       - ./features:/app/features
+      - ${ML_MODELS_PATH_HOST:-./ml/models}:/app/ml/models:ro
     # Configuração de recursos (ajuste conforme instância OCI)
     deploy:
       resources:
