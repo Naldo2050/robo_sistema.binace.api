@@ -1,28 +1,50 @@
 # fetchers/binance_liquidation_stream.py
 # -*- coding: utf-8 -*-
 """
-P2-D — Binance Forced Liquidations Telemetry Contract v1.
+P2-D1.1 — Binance Forced Liquidations Telemetry Contract v1.
 
 Consome, normaliza e agrega telemetria de liquidações forçadas da Binance
-USD-M Futures (forceOrder / allForceOrders).
+USD-M Futures (forceOrder / allForceOrders) com endurecimento semântico estrito.
 
 Garante:
 1. Semântica estrita do Side da liquidação:
    - forceOrder S="SELL"  => liquidated_position_side = "LONG"
    - forceOrder S="BUY"   => liquidated_position_side = "SHORT"
-2. Quantidade e Preço observados:
-   - Prioriza filled quantity (z / executedQty / l) sobre original quantity (q).
-   - Prioriza average execution price (ap / averagePrice) com fallback transparente para limit price (p).
-   - observed_notional_usd = filled_qty * average_price.
-3. Deduplicação determinística:
-   - event_id determinístico derivado dos atributos físicos da exchange.
-4. Capability declarada honestamente:
-   - OBSERVED_FORCE_ORDER_SNAPSHOT (a Binance publica snapshots das ordens de liquidação;
-     NÃO é um complete continuous tape).
-5. Agregação contemporânea por janela temporal [window_start_ms, window_end_ms).
-6. Distinção estrita:
-   - stream saudável + 0 eventos => VALID (event_count=0, notionals=0.0 como ZERO_OBSERVED).
-   - stream indisponível/desconectado => UNKNOWN/MISSING (notionals=None).
+2. Distinção Rígida entre Preço Observado vs Estimado (Price Fallback):
+   - ap (average execution price) > 0:
+     * average_price = ap
+     * observed_notional_usd = filled_qty * ap
+     * notional_quality = OBSERVED_EXECUTION
+     * validity = VALID
+   - ap ausente/zero mas p (limit price) > 0:
+     * average_price = None (não mente que houve execução observada a esse preço)
+     * limit_price = p
+     * observed_notional_usd = None (NÃO preenchido como se fosse observado)
+     * estimated_notional_usd = filled_qty * p
+     * notional_quality = ESTIMATED_LIMIT_PRICE
+     * validity = PARTIAL
+     * reason inclui LIMIT_PRICE_FALLBACK
+3. Agregação Semântica:
+   - observed totals somam EXCLUSIVAMENTE observed_notional_usd.
+   - estimated totals são mantidos em campos separados.
+   - NUNCA misturar observado + estimado em total chamado 'observed'.
+4. Health da Conexão vs Natureza Event-Sparse:
+   - forceOrder é inerentemente event-sparse (poucos eventos por hora em regime calmo).
+   - "silêncio por N segundos" NÃO é interpretado como unhealthy.
+   - stream_healthy é determinado pela camada de conexão (socket/ping-pong):
+     CONNECTED / DISCONNECTED / RECONNECTING / DEGRADED.
+   - CONNECTED + 0 eventos => ZERO_OBSERVED (validity=VALID, notionals=0.0).
+   - DISCONNECTED => UNKNOWN / MISSING (notionals=None).
+5. Deduplicação Determinística & Risco Residual:
+   - event_id estável gerado a partir de:
+     symbol + trade_time_ms + order_side + orig_qty + filled_qty + price + status.
+   - Risco residual documentado: caso duas liquidações distintas ocorram no mesmo
+     milissegundo T com par, lado, quantidades, preços e status idênticos, a segunda
+     é tratada como duplicata. A API pública da Binance não fornece orderId único.
+6. Limites de Janela Contemporânea:
+   - Intervalo semi-aberto estrito: [window_start_ms, window_end_ms).
+   - Âncora causal: trade_time_ms (T). Event time (E) é usado apenas como fallback
+     se T estiver ausente/corrompido.
 7. Evidence v1 adapter:
    - Family: DERIVATIVES
    - Type: SLOW_CONTEXT (conforme capability snapshot)
@@ -70,6 +92,21 @@ class LiquidatedPositionSide(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class NotionalQuality(str, Enum):
+    """Qualidade da valoração nocional do evento de liquidação."""
+    OBSERVED_EXECUTION = "OBSERVED_EXECUTION"      # ap (average execution price) válido
+    ESTIMATED_LIMIT_PRICE = "ESTIMATED_LIMIT_PRICE"  # ap ausente/zero, fallback p (limit price)
+    NONE = "NONE"                                  # Preço/quantidade ausentes ou inválidos
+
+
+class StreamConnectionStatus(str, Enum):
+    """Estado de conexão e transporte da stream WebSocket/REST."""
+    CONNECTED = "CONNECTED"
+    DISCONNECTED = "DISCONNECTED"
+    RECONNECTING = "RECONNECTING"
+    DEGRADED = "DEGRADED"
+
+
 class LiquidationValidity(str, Enum):
     """Validade do evento ou resumo de liquidação."""
     VALID = "VALID"
@@ -107,9 +144,12 @@ class ForcedLiquidationEvent:
     liquidated_position_side: str       # "LONG" ou "SHORT"
     original_qty: Optional[float]
     filled_qty: Optional[float]
-    average_price: Optional[float]
-    observed_notional_usd: Optional[float]
-    order_status: str
+    average_price: Optional[float]      # Preço médio real de execução (ap) se observado
+    limit_price: Optional[float]        # Preço limite da ordem (p)
+    observed_notional_usd: Optional[float]   # filled_qty * average_price (somente se ap observado)
+    estimated_notional_usd: Optional[float]  # filled_qty * limit_price (quando ap ausente)
+    notional_quality: str = NotionalQuality.NONE.value
+    order_status: str = "UNKNOWN"
     source: str = "binance_usdm"
     stream: str = "<symbol>@forceOrder"
     validity: LiquidationValidity = LiquidationValidity.VALID
@@ -134,7 +174,10 @@ class ForcedLiquidationEvent:
             "original_qty": self.original_qty,
             "filled_qty": self.filled_qty,
             "average_price": self.average_price,
+            "limit_price": self.limit_price,
             "observed_notional_usd": self.observed_notional_usd,
+            "estimated_notional_usd": self.estimated_notional_usd,
+            "notional_quality": self.notional_quality,
             "order_status": self.order_status,
             "validity": (
                 self.validity.value
@@ -164,7 +207,10 @@ def parse_force_order_payload(payload: Any) -> ForcedLiquidationEvent:
             original_qty=None,
             filled_qty=None,
             average_price=None,
+            limit_price=None,
             observed_notional_usd=None,
+            estimated_notional_usd=None,
+            notional_quality=NotionalQuality.NONE.value,
             order_status="UNKNOWN",
             validity=LiquidationValidity.INVALID,
             reason="PAYLOAD_NOT_A_DICT",
@@ -180,7 +226,7 @@ def parse_force_order_payload(payload: Any) -> ForcedLiquidationEvent:
     raw_symbol = order_dict.get("s") or order_dict.get("symbol") or "UNKNOWN"
     symbol = str(raw_symbol).upper().strip()
 
-    # 2. Timestamps
+    # 2. Timestamps: T (trade_time) é a âncora causal canônica; E é o envelope de evento
     event_time_raw = data.get("E") or data.get("eventTime") or order_dict.get("T") or order_dict.get("time") or 0
     trade_time_raw = order_dict.get("T") or order_dict.get("time") or data.get("E") or 0
 
@@ -232,25 +278,29 @@ def parse_force_order_payload(payload: Any) -> ForcedLiquidationEvent:
         filled_qty = last_qty
         qty_reasons.append("LAST_QTY_USED")
     elif orig_qty is not None and orig_qty > 0.0 and order_status in ("FILLED", "NEW"):
-        # Em alguns snapshots iniciais, z pode ser 0 ou omitido enquanto q está preenchido
+        # Em alguns snapshots iniciais, z pode ser 0 enquanto q está preenchido
         filled_qty = orig_qty
         qty_reasons.append("ORIG_QTY_FALLBACK")
 
-    # Determinar execution price
-    execution_price: Optional[float] = None
+    # 5. P2-D1.1 Hardening: Distinção estrita entre Preço Médio Observado e Preço Limite Estimado
+    observed_average_price: Optional[float] = None
+    observed_notional_usd: Optional[float] = None
+    estimated_notional_usd: Optional[float] = None
+    notional_quality = NotionalQuality.NONE.value
     price_reasons: List[str] = []
 
     if avg_price is not None and avg_price > 0.0:
-        execution_price = avg_price
+        # Preço médio de execução realmente observado pela exchange
+        observed_average_price = avg_price
+        if filled_qty is not None and filled_qty > 0:
+            observed_notional_usd = round(filled_qty * avg_price, 2)
+            notional_quality = NotionalQuality.OBSERVED_EXECUTION.value
     elif limit_price is not None and limit_price > 0.0:
-        execution_price = limit_price
+        # Fallback de preço limite: NÃO vira observed_notional_usd!
         price_reasons.append("LIMIT_PRICE_FALLBACK")
-
-    # 5. Cálculo do Notional
-    observed_notional_usd: Optional[float] = None
-    if filled_qty is not None and execution_price is not None:
-        if filled_qty > 0 and execution_price > 0:
-            observed_notional_usd = round(filled_qty * execution_price, 2)
+        if filled_qty is not None and filled_qty > 0:
+            estimated_notional_usd = round(filled_qty * limit_price, 2)
+            notional_quality = NotionalQuality.ESTIMATED_LIMIT_PRICE.value
 
     # 6. Avaliação de Validade
     validity = LiquidationValidity.VALID
@@ -283,18 +333,25 @@ def parse_force_order_payload(payload: Any) -> ForcedLiquidationEvent:
     elif has_strictly_negative:
         validity = LiquidationValidity.INVALID
         reasons.append("NEGATIVE_PRICE_OR_QTY")
-    elif (filled_qty is not None and filled_qty <= 0) or (execution_price is not None and execution_price <= 0):
+    elif filled_qty is not None and filled_qty <= 0:
         validity = LiquidationValidity.INVALID
-        reasons.append("NON_POSITIVE_PRICE_OR_QTY")
-    elif filled_qty is None or execution_price is None or observed_notional_usd is None:
+        reasons.append("NON_POSITIVE_QTY")
+    elif notional_quality == NotionalQuality.ESTIMATED_LIMIT_PRICE.value:
+        # P2-D1.1: Fallback para limit price torna o evento PARTIAL
+        validity = LiquidationValidity.PARTIAL
+    elif observed_notional_usd is None:
         validity = LiquidationValidity.PARTIAL
         reasons.append("NOTIONAL_CANNOT_BE_CALCULATED")
 
     # 7. Gerar event_id determinístico para deduplicação
-    # symbol + trade_time + order_side + filled_qty + exec_price + status
+    # Composição: symbol_tradeTime_orderSide_origQty_filledQty_price_status
+    # Risco residual de colisão documentado: No evento teórico de duas liquidações
+    # distintas no exato mesmo ms T com atributos idênticos, a segunda é deduplicada.
+    orig_str = f"{orig_qty:.8f}" if orig_qty is not None else "none"
     fq_str = f"{filled_qty:.8f}" if filled_qty is not None else "none"
-    pr_str = f"{execution_price:.2f}" if execution_price is not None else "none"
-    event_id = f"{symbol}_{trade_time_ms}_{order_side}_{fq_str}_{pr_str}_{order_status}"
+    ref_price = observed_average_price or limit_price
+    pr_str = f"{ref_price:.2f}" if ref_price is not None else "none"
+    event_id = f"{symbol}_{trade_time_ms}_{order_side}_{orig_str}_{fq_str}_{pr_str}_{order_status}"
 
     return ForcedLiquidationEvent(
         symbol=symbol,
@@ -304,8 +361,11 @@ def parse_force_order_payload(payload: Any) -> ForcedLiquidationEvent:
         liquidated_position_side=liquidated_position_side,
         original_qty=orig_qty,
         filled_qty=filled_qty,
-        average_price=execution_price,
+        average_price=observed_average_price,
+        limit_price=limit_price,
         observed_notional_usd=observed_notional_usd,
+        estimated_notional_usd=estimated_notional_usd,
+        notional_quality=notional_quality,
         order_status=order_status,
         source="binance_usdm",
         stream=f"{symbol.lower()}@forceOrder",
@@ -324,9 +384,14 @@ class LiquidationWindowSummary:
     event_count: Optional[int]
     long_liquidated_qty: Optional[float]
     short_liquidated_qty: Optional[float]
+    # Totais observados: somam SOMENTE observed_notional_usd (OBSERVED_EXECUTION)
     long_liquidated_notional_usd: Optional[float]
     short_liquidated_notional_usd: Optional[float]
     total_liquidated_notional_usd: Optional[float]
+    # Totais estimados: somam SOMENTE estimated_notional_usd (ESTIMATED_LIMIT_PRICE)
+    long_estimated_notional_usd: Optional[float] = None
+    short_estimated_notional_usd: Optional[float] = None
+    total_estimated_notional_usd: Optional[float] = None
     latest_event_ms: Optional[int] = None
     source: str = "binance_usdm"
     coverage: str = STREAM_CAPABILITY
@@ -334,6 +399,7 @@ class LiquidationWindowSummary:
     reason: Optional[str] = None
     larger_observed_side: str = LargerObservedSide.NONE.value
     stream_healthy: bool = True
+    connection_status: str = StreamConnectionStatus.CONNECTED.value
     contract_version: str = LIQUIDATION_CONTRACT_VERSION
 
     def to_dict(self) -> Dict[str, Any]:
@@ -348,6 +414,9 @@ class LiquidationWindowSummary:
             "long_liquidated_notional_usd": self.long_liquidated_notional_usd,
             "short_liquidated_notional_usd": self.short_liquidated_notional_usd,
             "total_liquidated_notional_usd": self.total_liquidated_notional_usd,
+            "long_estimated_notional_usd": self.long_estimated_notional_usd,
+            "short_estimated_notional_usd": self.short_estimated_notional_usd,
+            "total_estimated_notional_usd": self.total_estimated_notional_usd,
             "latest_event_ms": self.latest_event_ms,
             "source": self.source,
             "coverage": self.coverage,
@@ -359,13 +428,14 @@ class LiquidationWindowSummary:
             "reason": self.reason,
             "larger_observed_side": self.larger_observed_side,
             "stream_healthy": self.stream_healthy,
+            "connection_status": self.connection_status,
         }
 
 
 class LiquidationWindowAggregator:
     """
     Agregador puro contemporâneo de liquidações com deduplicação determinística.
-    Opera estritamente por janela temporal sem alterar trading nem criar previsões.
+    Opera estritamente por janela temporal semi-aberta [window_start_ms, window_end_ms).
     """
 
     def __init__(self, symbol: str = "BTCUSDT", max_seen_events: int = 10_000):
@@ -404,15 +474,39 @@ class LiquidationWindowAggregator:
         window_start_ms: int,
         window_end_ms: int,
         stream_healthy: bool = True,
+        connection_status: Optional[Union[StreamConnectionStatus, str]] = None,
     ) -> LiquidationWindowSummary:
         """
         Agrega eventos observados dentro do intervalo semi-aberto [window_start_ms, window_end_ms).
 
-        Regra estrita:
-        - Stream saudável + 0 eventos: validade VALID, event_count=0, notionals 0.0 (ZERO_OBSERVED).
-        - Stream não-saudável / desconectado: validade UNKNOWN, notionals=None.
+        Regra estrita P2-D1.1:
+        - trade_time == window_start_ms => ENTRA na janela atual.
+        - trade_time == window_end_ms   => EXCLUÍDO (pertence à próxima janela).
+        - Âncora causal: trade_time_ms (T). Event time (E) é usado apenas como fallback.
+        - Stream saudável CONNECTED + 0 eventos: validade VALID, event_count=0, notionals 0.0 (ZERO_OBSERVED).
+        - Stream não-saudável (DISCONNECTED, RECONNECTING): validade UNKNOWN, notionals=None.
+        - Totais observados somam SOMENTE observed_notional_usd.
+        - Totais estimados somam SOMENTE estimated_notional_usd.
         """
-        if not stream_healthy:
+        # Resolver status de conexão
+        conn_str: str
+        is_healthy: bool
+        if connection_status is not None:
+            conn_str = (
+                connection_status.value
+                if isinstance(connection_status, StreamConnectionStatus)
+                else str(connection_status).upper()
+            )
+            is_healthy = conn_str == StreamConnectionStatus.CONNECTED.value
+        else:
+            is_healthy = bool(stream_healthy)
+            conn_str = (
+                StreamConnectionStatus.CONNECTED.value
+                if is_healthy
+                else StreamConnectionStatus.DISCONNECTED.value
+            )
+
+        if not is_healthy:
             return LiquidationWindowSummary(
                 window_start_ms=window_start_ms,
                 window_end_ms=window_end_ms,
@@ -422,16 +516,21 @@ class LiquidationWindowAggregator:
                 long_liquidated_notional_usd=None,
                 short_liquidated_notional_usd=None,
                 total_liquidated_notional_usd=None,
+                long_estimated_notional_usd=None,
+                short_estimated_notional_usd=None,
+                total_estimated_notional_usd=None,
                 latest_event_ms=None,
                 source="binance_usdm",
                 coverage=STREAM_CAPABILITY,
                 validity=LiquidationValidity.UNKNOWN,
-                reason="STREAM_UNHEALTHY_OR_DISCONNECTED",
+                reason=f"STREAM_{conn_str}",
                 larger_observed_side=LargerObservedSide.NONE.value,
                 stream_healthy=False,
+                connection_status=conn_str,
             )
 
-        # Filtrar eventos da janela pelo trade_time_ms (ou event_time_ms se trade_time=0)
+        # Filtrar eventos estritamente pelo trade_time_ms em [window_start_ms, window_end_ms)
+        # Event time (E) é apenas envelope/fallback se trade_time=0
         window_events = [
             e for e in self._events
             if e.symbol == self.symbol
@@ -448,6 +547,9 @@ class LiquidationWindowAggregator:
                 long_liquidated_notional_usd=0.0,
                 short_liquidated_notional_usd=0.0,
                 total_liquidated_notional_usd=0.0,
+                long_estimated_notional_usd=0.0,
+                short_estimated_notional_usd=0.0,
+                total_estimated_notional_usd=0.0,
                 latest_event_ms=None,
                 source="binance_usdm",
                 coverage=STREAM_CAPABILITY,
@@ -455,16 +557,21 @@ class LiquidationWindowAggregator:
                 reason="ZERO_OBSERVED_HEALTHY_STREAM",
                 larger_observed_side=LargerObservedSide.NONE.value,
                 stream_healthy=True,
+                connection_status=conn_str,
             )
 
         long_qty = 0.0
         short_qty = 0.0
-        long_notional = 0.0
-        short_notional = 0.0
+        # Totais puramente observados
+        long_observed_notional = 0.0
+        short_observed_notional = 0.0
+        # Totais puramente estimados
+        long_estimated_notional = 0.0
+        short_estimated_notional = 0.0
+
         has_partial = False
         has_invalid = False
         latest_ts = 0
-
         valid_events_count = 0
 
         for e in window_events:
@@ -481,26 +588,41 @@ class LiquidationWindowAggregator:
 
             valid_events_count += 1
 
-            if e.liquidated_position_side == LiquidatedPositionSide.LONG.value:
-                if e.filled_qty is not None:
+            is_long = e.liquidated_position_side == LiquidatedPositionSide.LONG.value
+            is_short = e.liquidated_position_side == LiquidatedPositionSide.SHORT.value
+
+            if e.filled_qty is not None:
+                if is_long:
                     long_qty += e.filled_qty
-                if e.observed_notional_usd is not None:
-                    long_notional += e.observed_notional_usd
-            elif e.liquidated_position_side == LiquidatedPositionSide.SHORT.value:
-                if e.filled_qty is not None:
+                elif is_short:
                     short_qty += e.filled_qty
-                if e.observed_notional_usd is not None:
-                    short_notional += e.observed_notional_usd
 
-        total_notional = long_notional + short_notional
+            # Somar observed notional SOMENTE onde for OBSERVED_EXECUTION
+            if e.observed_notional_usd is not None:
+                if is_long:
+                    long_observed_notional += e.observed_notional_usd
+                elif is_short:
+                    short_observed_notional += e.observed_notional_usd
 
-        # Comparação matemática descritiva (sem viés de sinal)
+            # Somar estimated notional SOMENTE onde for ESTIMATED_LIMIT_PRICE
+            if e.estimated_notional_usd is not None:
+                if is_long:
+                    long_estimated_notional += e.estimated_notional_usd
+                elif is_short:
+                    short_estimated_notional += e.estimated_notional_usd
+
+        total_observed_notional = long_observed_notional + short_observed_notional
+        total_estimated_notional = long_estimated_notional + short_estimated_notional
+
+        # Comparação matemática descritiva sobre os volumes observados (se existirem) ou estimados
         larger_side = LargerObservedSide.NONE.value
-        if long_notional > short_notional:
+        comp_long = long_observed_notional if total_observed_notional > 0 else long_estimated_notional
+        comp_short = short_observed_notional if total_observed_notional > 0 else short_estimated_notional
+        if comp_long > comp_short:
             larger_side = LargerObservedSide.LONG.value
-        elif short_notional > long_notional:
+        elif comp_short > comp_long:
             larger_side = LargerObservedSide.SHORT.value
-        elif total_notional > 0:
+        elif (comp_long + comp_short) > 0:
             larger_side = LargerObservedSide.EQUAL.value
 
         validity = LiquidationValidity.VALID
@@ -517,9 +639,12 @@ class LiquidationWindowAggregator:
             event_count=valid_events_count,
             long_liquidated_qty=round(long_qty, 4),
             short_liquidated_qty=round(short_qty, 4),
-            long_liquidated_notional_usd=round(long_notional, 2),
-            short_liquidated_notional_usd=round(short_notional, 2),
-            total_liquidated_notional_usd=round(total_notional, 2),
+            long_liquidated_notional_usd=round(long_observed_notional, 2),
+            short_liquidated_notional_usd=round(short_observed_notional, 2),
+            total_liquidated_notional_usd=round(total_observed_notional, 2),
+            long_estimated_notional_usd=round(long_estimated_notional, 2),
+            short_estimated_notional_usd=round(short_estimated_notional, 2),
+            total_estimated_notional_usd=round(total_estimated_notional, 2),
             latest_event_ms=latest_ts if latest_ts > 0 else None,
             source="binance_usdm",
             coverage=STREAM_CAPABILITY,
@@ -527,6 +652,7 @@ class LiquidationWindowAggregator:
             reason=";".join(reasons) if reasons else None,
             larger_observed_side=larger_side,
             stream_healthy=True,
+            connection_status=conn_str,
         )
 
 
@@ -538,7 +664,10 @@ def liquidation_summary_to_evidence(
     Adapter que converte um LiquidationWindowSummary nas 4 instâncias canônicas
     de Evidence v1 registradas na taxonomia institucional.
 
-    Contrato estrito:
+    Contrato estrito P2-D1.1:
+    - derivatives.liquidations.*_observed_notional reflete EXCLUSIVAMENTE
+      os valores observados de execução (long_liquidated_notional_usd, etc.),
+      nunca misturando com estimativas de preço limite.
     - Family: DERIVATIVES
     - Type: SLOW_CONTEXT (conforme capability snapshot throttled)
     - counts_as_vote: False (estritamente não-votante)
@@ -558,6 +687,7 @@ def liquidation_summary_to_evidence(
         "window_start_ms": summary.window_start_ms,
         "window_end_ms": summary.window_end_ms,
         "larger_observed_side": summary.larger_observed_side,
+        "connection_status": summary.connection_status,
     }
 
     ev_validity: EvidenceValidity
@@ -575,19 +705,28 @@ def liquidation_summary_to_evidence(
             "derivatives.liquidations.long_observed_notional",
             summary.long_liquidated_notional_usd,
             "USD",
-            {"liquidated_position_side": "LONG"},
+            {
+                "liquidated_position_side": "LONG",
+                "estimated_notional_usd": summary.long_estimated_notional_usd,
+            },
         ),
         (
             "derivatives.liquidations.short_observed_notional",
             summary.short_liquidated_notional_usd,
             "USD",
-            {"liquidated_position_side": "SHORT"},
+            {
+                "liquidated_position_side": "SHORT",
+                "estimated_notional_usd": summary.short_estimated_notional_usd,
+            },
         ),
         (
             "derivatives.liquidations.total_observed_notional",
             summary.total_liquidated_notional_usd,
             "USD",
-            {"is_composite": True},
+            {
+                "is_composite": True,
+                "estimated_notional_usd": summary.total_estimated_notional_usd,
+            },
         ),
         (
             "derivatives.liquidations.event_count",
