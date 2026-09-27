@@ -53,13 +53,39 @@ Garante:
    - calibration: NOT_APPLICABLE
 """
 
-from __future__ import annotations
-
+import asyncio
+import json
+import logging
 import math
+import random
+import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+
+try:
+    import aiohttp
+    HAS_AIOHTTP = True
+except ImportError:
+    aiohttp = None
+    HAS_AIOHTTP = False
+
+try:
+    from prometheus_client import (
+        Counter as _PromCounter,
+        Gauge as _PromGauge,
+        REGISTRY as _PROM_REGISTRY,
+    )
+    HAS_PROMETHEUS = True
+except ImportError:
+    _PromCounter = None
+    _PromGauge = None
+    _PROM_REGISTRY = None
+    HAS_PROMETHEUS = False
+
+logger = logging.getLogger(__name__)
 
 from institutional.evidence import (
     Evidence,
@@ -107,6 +133,13 @@ class StreamConnectionStatus(str, Enum):
     DEGRADED = "DEGRADED"
 
 
+class ConnectionCoverageStatus(str, Enum):
+    """Status de cobertura da conexão durante o intervalo da janela."""
+    FULL = "FULL"        # Conectado continuamente durante toda a janela
+    PARTIAL = "PARTIAL"  # Conexão esteve ativa em apenas parte da janela
+    NONE = "NONE"        # Sem conexão (desconectado) durante toda a janela
+
+
 class LiquidationValidity(str, Enum):
     """Validade do evento ou resumo de liquidação."""
     VALID = "VALID"
@@ -132,6 +165,240 @@ def _finite_or_none(val: Any) -> Optional[float]:
         return f if math.isfinite(f) else None
     except (ValueError, TypeError):
         return None
+
+
+@dataclass
+class ConnectionStateInterval:
+    """Intervalo contínuo de estado de conexão."""
+    status: StreamConnectionStatus
+    start_ms: int
+    end_ms: Optional[int] = None
+
+
+class ConnectionIntervalTracker:
+    """
+    Rastreia transições temporais de status de conexão WebSocket para derivar com
+    exatidão a cobertura (FULL, PARTIAL, NONE) em qualquer janela [window_start_ms, window_end_ms).
+    """
+
+    def __init__(self, initial_status: StreamConnectionStatus = StreamConnectionStatus.DISCONNECTED):
+        self._lock = threading.Lock()
+        self._history: List[ConnectionStateInterval] = []
+        self._current_status: StreamConnectionStatus = initial_status
+        self._current_start_ms: int = int(time.time() * 1000)
+
+    @property
+    def current_status(self) -> StreamConnectionStatus:
+        with self._lock:
+            return self._current_status
+
+    def record_status(
+        self,
+        status: Union[StreamConnectionStatus, str],
+        timestamp_ms: Optional[int] = None,
+    ) -> None:
+        """Registra transição de estado da conexão."""
+        resolved: StreamConnectionStatus
+        if isinstance(status, StreamConnectionStatus):
+            resolved = status
+        else:
+            try:
+                resolved = StreamConnectionStatus(str(status).upper())
+            except ValueError:
+                resolved = StreamConnectionStatus.DEGRADED
+
+        ts = timestamp_ms if timestamp_ms is not None else int(time.time() * 1000)
+
+        with self._lock:
+            if resolved == self._current_status:
+                return
+            closed_interval = ConnectionStateInterval(
+                status=self._current_status,
+                start_ms=self._current_start_ms,
+                end_ms=ts,
+            )
+            self._history.append(closed_interval)
+            self._current_status = resolved
+            self._current_start_ms = ts
+
+    def evaluate_coverage(self, window_start_ms: int, window_end_ms: int) -> ConnectionCoverageStatus:
+        """
+        Determina determinística e temporalmente a cobertura de CONNECTED na janela:
+        - FULL: esteve CONNECTED ininterruptamente durante todo o intervalo [window_start_ms, window_end_ms).
+        - NONE: não esteve CONNECTED em nenhum milissegundo da janela.
+        - PARTIAL: esteve CONNECTED em parte da janela, ou sofreu desconexões/reconexões.
+        """
+        with self._lock:
+            intervals = list(self._history)
+            intervals.append(
+                ConnectionStateInterval(
+                    status=self._current_status,
+                    start_ms=self._current_start_ms,
+                    end_ms=None,
+                )
+            )
+
+        connected_overlaps: List[Tuple[float, float]] = []
+        for it in intervals:
+            if it.status != StreamConnectionStatus.CONNECTED:
+                continue
+            s = float(it.start_ms)
+            e = float(it.end_ms) if it.end_ms is not None else float("inf")
+            overlap_s = max(float(window_start_ms), s)
+            overlap_e = min(float(window_end_ms), e)
+            if overlap_s < overlap_e:
+                connected_overlaps.append((overlap_s, overlap_e))
+
+        if not connected_overlaps:
+            return ConnectionCoverageStatus.NONE
+
+        for s, e in connected_overlaps:
+            if s <= window_start_ms and e >= window_end_ms:
+                return ConnectionCoverageStatus.FULL
+
+        return ConnectionCoverageStatus.PARTIAL
+
+    def prune_older_than(self, older_than_ms: int) -> int:
+        """Poda intervalos históricos encerrados antes de older_than_ms."""
+        with self._lock:
+            initial = len(self._history)
+            self._history = [
+                it for it in self._history
+                if (it.end_ms is None or it.end_ms >= older_than_ms)
+            ]
+            return initial - len(self._history)
+
+
+class LiquidationMetrics:
+    """
+    Singleton thread-safe para métricas Prometheus de liquidações forçadas.
+    Evita duplicate registration no REGISTRY.
+    Se prometheus_client indisponível, opera em modo no-op.
+    """
+    _instance: Optional["LiquidationMetrics"] = None
+    _lock = threading.Lock()
+
+    def __init__(self, prefix: str = "liquidation"):
+        self.enabled = HAS_PROMETHEUS
+        self.prefix = prefix
+        self.stream_connected = None
+        self.events_received_total = None
+        self.events_valid_total = None
+        self.events_partial_total = None
+        self.events_invalid_total = None
+        self.events_deduplicated_total = None
+        self.stream_reconnects_total = None
+
+        if not self.enabled:
+            return
+
+        def _get_or_create_counter(name: str, doc: str, labels: Tuple[str, ...]) -> Any:
+            if _PROM_REGISTRY is not None and name in _PROM_REGISTRY._names_to_collectors:
+                return _PROM_REGISTRY._names_to_collectors[name]
+            try:
+                return _PromCounter(name, doc, labels)
+            except ValueError:
+                if _PROM_REGISTRY is not None and name in _PROM_REGISTRY._names_to_collectors:
+                    return _PROM_REGISTRY._names_to_collectors[name]
+                return None
+
+        def _get_or_create_gauge(name: str, doc: str, labels: Tuple[str, ...]) -> Any:
+            if _PROM_REGISTRY is not None and name in _PROM_REGISTRY._names_to_collectors:
+                return _PROM_REGISTRY._names_to_collectors[name]
+            try:
+                return _PromGauge(name, doc, labels)
+            except ValueError:
+                if _PROM_REGISTRY is not None and name in _PROM_REGISTRY._names_to_collectors:
+                    return _PROM_REGISTRY._names_to_collectors[name]
+                return None
+
+        self.stream_connected = _get_or_create_gauge(
+            f"{prefix}_stream_connected",
+            "1 se a stream WebSocket de liquidações está conectada, 0 caso contrário",
+            ("symbol",),
+        )
+        self.events_received_total = _get_or_create_counter(
+            f"{prefix}_events_received_total",
+            "Total de eventos de liquidação recebidos no WebSocket",
+            ("symbol",),
+        )
+        self.events_valid_total = _get_or_create_counter(
+            f"{prefix}_events_valid_total",
+            "Total de eventos de liquidação com validade VALID",
+            ("symbol",),
+        )
+        self.events_partial_total = _get_or_create_counter(
+            f"{prefix}_events_partial_total",
+            "Total de eventos de liquidação com validade PARTIAL",
+            ("symbol",),
+        )
+        self.events_invalid_total = _get_or_create_counter(
+            f"{prefix}_events_invalid_total",
+            "Total de eventos de liquidação com validade INVALID",
+            ("symbol",),
+        )
+        self.events_deduplicated_total = _get_or_create_counter(
+            f"{prefix}_events_deduplicated_total",
+            "Total de eventos descartados por deduplicação de ID",
+            ("symbol",),
+        )
+        self.stream_reconnects_total = _get_or_create_counter(
+            f"{prefix}_stream_reconnects_total",
+            "Total de reconexões ocorridas no stream de liquidações",
+            ("symbol",),
+        )
+
+    @classmethod
+    def get_instance(cls, prefix: str = "liquidation") -> "LiquidationMetrics":
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls(prefix=prefix)
+            return cls._instance
+
+    def set_connected(self, is_connected: bool, symbol: str = "BTCUSDT") -> None:
+        if self.stream_connected is not None:
+            try:
+                self.stream_connected.labels(symbol=symbol.upper()).set(1.0 if is_connected else 0.0)
+            except Exception:
+                pass
+
+    def record_received(self, symbol: str = "BTCUSDT") -> None:
+        if self.events_received_total is not None:
+            try:
+                self.events_received_total.labels(symbol=symbol.upper()).inc()
+            except Exception:
+                pass
+
+    def record_validity(self, validity: Union[LiquidationValidity, str], symbol: str = "BTCUSDT") -> None:
+        v_str = validity.value if isinstance(validity, LiquidationValidity) else str(validity).upper()
+        target = None
+        if v_str == "VALID":
+            target = self.events_valid_total
+        elif v_str == "PARTIAL":
+            target = self.events_partial_total
+        elif v_str == "INVALID":
+            target = self.events_invalid_total
+
+        if target is not None:
+            try:
+                target.labels(symbol=symbol.upper()).inc()
+            except Exception:
+                pass
+
+    def record_deduplicated(self, symbol: str = "BTCUSDT") -> None:
+        if self.events_deduplicated_total is not None:
+            try:
+                self.events_deduplicated_total.labels(symbol=symbol.upper()).inc()
+            except Exception:
+                pass
+
+    def record_reconnect(self, symbol: str = "BTCUSDT") -> None:
+        if self.stream_reconnects_total is not None:
+            try:
+                self.stream_reconnects_total.labels(symbol=symbol.upper()).inc()
+            except Exception:
+                pass
+
 
 
 @dataclass(frozen=True)
@@ -400,6 +667,7 @@ class LiquidationWindowSummary:
     larger_observed_side: str = LargerObservedSide.NONE.value
     stream_healthy: bool = True
     connection_status: str = StreamConnectionStatus.CONNECTED.value
+    connection_coverage_status: str = ConnectionCoverageStatus.FULL.value
     contract_version: str = LIQUIDATION_CONTRACT_VERSION
 
     def to_dict(self) -> Dict[str, Any]:
@@ -429,6 +697,7 @@ class LiquidationWindowSummary:
             "larger_observed_side": self.larger_observed_side,
             "stream_healthy": self.stream_healthy,
             "connection_status": self.connection_status,
+            "connection_coverage_status": self.connection_coverage_status,
         }
 
 
@@ -442,7 +711,7 @@ class LiquidationWindowAggregator:
         self.symbol = symbol.upper().strip()
         self.max_seen_events = max_seen_events
         self._events: List[ForcedLiquidationEvent] = []
-        self._seen_event_ids: Set[str] = set()
+        self._seen_event_ids: OrderedDict[str, int] = OrderedDict()
 
     def add_event(self, raw_or_parsed: Union[ForcedLiquidationEvent, Dict[str, Any]]) -> bool:
         """
@@ -459,15 +728,25 @@ class LiquidationWindowAggregator:
             return False
 
         if len(self._seen_event_ids) >= self.max_seen_events:
-            # Poda metade dos mais antigos para evitar vazamento de memória em execuções longas
-            half = self.max_seen_events // 2
-            evs_to_keep = self._events[-half:]
-            self._seen_event_ids = {e.event_id for e in evs_to_keep if e.event_id}
-            self._events = evs_to_keep
+            # Poda FIFO bounded para manter teto estrito O(max_seen_events) de memória
+            self._seen_event_ids.popitem(last=False)
 
-        self._seen_event_ids.add(event.event_id)
+        self._seen_event_ids[event.event_id] = event.trade_time_ms or event.event_time_ms
         self._events.append(event)
         return True
+
+    def prune_events_older_than(self, older_than_ms: int) -> int:
+        """
+        Poda eventos da lista em memória cujo timestamp for estritamente anterior a older_than_ms.
+        Retorna a quantidade de eventos descartados.
+        Preserva os IDs em _seen_event_ids para manter a barreira de deduplicação causal pós-reconexão.
+        """
+        initial_count = len(self._events)
+        self._events = [
+            e for e in self._events
+            if (e.trade_time_ms or e.event_time_ms) >= older_than_ms
+        ]
+        return initial_count - len(self._events)
 
     def summarize_window(
         self,
@@ -475,16 +754,18 @@ class LiquidationWindowAggregator:
         window_end_ms: int,
         stream_healthy: bool = True,
         connection_status: Optional[Union[StreamConnectionStatus, str]] = None,
+        connection_coverage_status: Optional[Union[ConnectionCoverageStatus, str]] = None,
     ) -> LiquidationWindowSummary:
         """
         Agrega eventos observados dentro do intervalo semi-aberto [window_start_ms, window_end_ms).
 
-        Regra estrita P2-D1.1:
+        Regra estrita P2-D1.1 e P2-D2:
         - trade_time == window_start_ms => ENTRA na janela atual.
         - trade_time == window_end_ms   => EXCLUÍDO (pertence à próxima janela).
         - Âncora causal: trade_time_ms (T). Event time (E) é usado apenas como fallback.
-        - Stream saudável CONNECTED + 0 eventos: validade VALID, event_count=0, notionals 0.0 (ZERO_OBSERVED).
-        - Stream não-saudável (DISCONNECTED, RECONNECTING): validade UNKNOWN, notionals=None.
+        - FULL coverage + 0 eventos: VALID, event_count=0, notionals 0.0 (ZERO_OBSERVED).
+        - PARTIAL coverage + 0 eventos: PARTIAL, event_count=0, notionals=None (evita falso zero).
+        - NONE coverage: UNKNOWN, notionals=None.
         - Totais observados somam SOMENTE observed_notional_usd.
         - Totais estimados somam SOMENTE estimated_notional_usd.
         """
@@ -506,7 +787,23 @@ class LiquidationWindowAggregator:
                 else StreamConnectionStatus.DISCONNECTED.value
             )
 
-        if not is_healthy:
+        # Resolver status de cobertura
+        cov_str: str
+        if connection_coverage_status is not None:
+            cov_str = (
+                connection_coverage_status.value
+                if isinstance(connection_coverage_status, ConnectionCoverageStatus)
+                else str(connection_coverage_status).upper()
+            )
+        else:
+            cov_str = (
+                ConnectionCoverageStatus.FULL.value
+                if is_healthy
+                else ConnectionCoverageStatus.NONE.value
+            )
+
+        # 1. Sem cobertura ou conexão inativa durante toda a janela
+        if cov_str == ConnectionCoverageStatus.NONE.value or (not is_healthy and cov_str != ConnectionCoverageStatus.PARTIAL.value):
             return LiquidationWindowSummary(
                 window_start_ms=window_start_ms,
                 window_end_ms=window_end_ms,
@@ -523,42 +820,70 @@ class LiquidationWindowAggregator:
                 source="binance_usdm",
                 coverage=STREAM_CAPABILITY,
                 validity=LiquidationValidity.UNKNOWN,
-                reason=f"STREAM_{conn_str}",
+                reason=f"STREAM_{conn_str}" if not is_healthy else "NO_CONNECTION_COVERAGE",
                 larger_observed_side=LargerObservedSide.NONE.value,
-                stream_healthy=False,
+                stream_healthy=is_healthy,
                 connection_status=conn_str,
+                connection_coverage_status=cov_str,
             )
 
-        # Filtrar eventos estritamente pelo trade_time_ms em [window_start_ms, window_end_ms)
-        # Event time (E) é apenas envelope/fallback se trade_time=0
+        # 2. Filtrar eventos estritamente pelo trade_time_ms em [window_start_ms, window_end_ms)
         window_events = [
             e for e in self._events
             if e.symbol == self.symbol
             and window_start_ms <= (e.trade_time_ms or e.event_time_ms) < window_end_ms
         ]
 
+        # 3. Tratar caso de zero eventos observados
         if not window_events:
-            return LiquidationWindowSummary(
-                window_start_ms=window_start_ms,
-                window_end_ms=window_end_ms,
-                event_count=0,
-                long_liquidated_qty=0.0,
-                short_liquidated_qty=0.0,
-                long_liquidated_notional_usd=0.0,
-                short_liquidated_notional_usd=0.0,
-                total_liquidated_notional_usd=0.0,
-                long_estimated_notional_usd=0.0,
-                short_estimated_notional_usd=0.0,
-                total_estimated_notional_usd=0.0,
-                latest_event_ms=None,
-                source="binance_usdm",
-                coverage=STREAM_CAPABILITY,
-                validity=LiquidationValidity.VALID,
-                reason="ZERO_OBSERVED_HEALTHY_STREAM",
-                larger_observed_side=LargerObservedSide.NONE.value,
-                stream_healthy=True,
-                connection_status=conn_str,
-            )
+            if cov_str == ConnectionCoverageStatus.PARTIAL.value:
+                # Conexão caiu durante parte da janela: NÃO declarar ZERO_OBSERVED completo
+                return LiquidationWindowSummary(
+                    window_start_ms=window_start_ms,
+                    window_end_ms=window_end_ms,
+                    event_count=0,
+                    long_liquidated_qty=None,
+                    short_liquidated_qty=None,
+                    long_liquidated_notional_usd=None,
+                    short_liquidated_notional_usd=None,
+                    total_liquidated_notional_usd=None,
+                    long_estimated_notional_usd=None,
+                    short_estimated_notional_usd=None,
+                    total_estimated_notional_usd=None,
+                    latest_event_ms=None,
+                    source="binance_usdm",
+                    coverage=STREAM_CAPABILITY,
+                    validity=LiquidationValidity.PARTIAL,
+                    reason="PARTIAL_CONNECTION_COVERAGE_ZERO_OBSERVED",
+                    larger_observed_side=LargerObservedSide.NONE.value,
+                    stream_healthy=is_healthy,
+                    connection_status=conn_str,
+                    connection_coverage_status=cov_str,
+                )
+            else:
+                # FULL coverage + zero eventos => ZERO_OBSERVED válido
+                return LiquidationWindowSummary(
+                    window_start_ms=window_start_ms,
+                    window_end_ms=window_end_ms,
+                    event_count=0,
+                    long_liquidated_qty=0.0,
+                    short_liquidated_qty=0.0,
+                    long_liquidated_notional_usd=0.0,
+                    short_liquidated_notional_usd=0.0,
+                    total_liquidated_notional_usd=0.0,
+                    long_estimated_notional_usd=0.0,
+                    short_estimated_notional_usd=0.0,
+                    total_estimated_notional_usd=0.0,
+                    latest_event_ms=None,
+                    source="binance_usdm",
+                    coverage=STREAM_CAPABILITY,
+                    validity=LiquidationValidity.VALID,
+                    reason="ZERO_OBSERVED_HEALTHY_STREAM",
+                    larger_observed_side=LargerObservedSide.NONE.value,
+                    stream_healthy=True,
+                    connection_status=conn_str,
+                    connection_coverage_status=cov_str,
+                )
 
         long_qty = 0.0
         short_qty = 0.0
@@ -632,6 +957,9 @@ class LiquidationWindowAggregator:
         if has_partial:
             validity = LiquidationValidity.PARTIAL
             reasons.append("WINDOW_CONTAINS_PARTIAL_EVENTS")
+        if cov_str == ConnectionCoverageStatus.PARTIAL.value:
+            validity = LiquidationValidity.PARTIAL
+            reasons.append("PARTIAL_CONNECTION_COVERAGE")
 
         return LiquidationWindowSummary(
             window_start_ms=window_start_ms,
@@ -651,8 +979,9 @@ class LiquidationWindowAggregator:
             validity=validity,
             reason=";".join(reasons) if reasons else None,
             larger_observed_side=larger_side,
-            stream_healthy=True,
+            stream_healthy=is_healthy,
             connection_status=conn_str,
+            connection_coverage_status=cov_str,
         )
 
 
@@ -688,6 +1017,7 @@ def liquidation_summary_to_evidence(
         "window_end_ms": summary.window_end_ms,
         "larger_observed_side": summary.larger_observed_side,
         "connection_status": summary.connection_status,
+        "connection_coverage_status": summary.connection_coverage_status,
     }
 
     ev_validity: EvidenceValidity
@@ -763,9 +1093,252 @@ def liquidation_summary_to_evidence(
                 "field_id": field_id,
                 "unit": unit,
                 "capability": summary.coverage,
+                "connection_coverage_status": summary.connection_coverage_status,
                 **extra_meta,
             },
         )
         evidences.append(ev)
 
     return evidences
+
+
+# =====================================================================
+# P2-D2: ROUTING GUARDS
+# =====================================================================
+
+def is_force_order_message(data: Any) -> bool:
+    """
+    Identifica com precisão se a mensagem é um payload de liquidação forçada Binance Futures.
+    Retorna False para aggTrade, depthUpdate, klines ou outros eventos.
+    """
+    if not isinstance(data, dict):
+        return False
+    inner = data.get("data", data) if isinstance(data.get("data"), dict) else data
+    if not isinstance(inner, dict):
+        return False
+    e = inner.get("e")
+    if e == "forceOrder":
+        return True
+    if e in ("aggTrade", "trade", "depthUpdate", "kline", "bookTicker"):
+        return False
+    # Checa estrutura de ordem de liquidação se 'e' for omitido (ex: REST format ou wrapper alternativo)
+    order = inner.get("o")
+    if isinstance(order, dict) and "s" in order and "S" in order and ("ap" in order or "p" in order) and "q" in order:
+        return True
+    return False
+
+
+def is_agg_trade_message(data: Any) -> bool:
+    """
+    Identifica se a mensagem é um trade ou aggTrade da Binance.
+    """
+    if not isinstance(data, dict):
+        return False
+    inner = data.get("data", data) if isinstance(data.get("data"), dict) else data
+    if not isinstance(inner, dict):
+        return False
+    e = inner.get("e")
+    if e == "aggTrade" or "a" in inner:
+        return True
+    if e == "trade" or ("t" in inner and "p" in inner and "q" in inner):
+        return True
+    return False
+
+
+# =====================================================================
+# P2-D2: WEBSOCKET DEDICATED LISTENER
+# =====================================================================
+
+class BinanceLiquidationListener:
+    """
+    Listener WebSocket dedicado e assíncrono para telemetria de liquidações Binance USD-M.
+
+    Garante:
+    - Conexão separada dedicada (Opção B): isolamento total do failure-domain de aggTrade.
+    - Zero chamadas pesadas no callback (apenas parse, add_event em memória e métricas).
+    - Roteamento cruzado estrito: aggTrade é descartado sem processamento.
+    - Rastreamento fino de cobertura temporal via ConnectionIntervalTracker.
+    - Reconexão resiliente com backoff exponencial e jitter.
+    - Heartbeat e keepalive com timeout.
+    """
+
+    def __init__(
+        self,
+        symbol: str = "BTCUSDT",
+        stream_url: Optional[str] = None,
+        aggregator: Optional[LiquidationWindowAggregator] = None,
+        tracker: Optional[ConnectionIntervalTracker] = None,
+        metrics: Optional[LiquidationMetrics] = None,
+        max_reconnect_attempts: int = 50,
+        initial_delay: float = 1.0,
+        max_delay: float = 60.0,
+        ping_interval: float = 20.0,
+        ping_timeout: float = 10.0,
+        on_event_callback: Optional[Callable[[ForcedLiquidationEvent], None]] = None,
+    ):
+        self.symbol = symbol.upper().strip()
+        self.stream_url = stream_url or f"wss://fstream.binance.com/ws/{self.symbol.lower()}@forceOrder"
+        self.aggregator = aggregator or LiquidationWindowAggregator(symbol=self.symbol)
+        self.tracker = tracker or ConnectionIntervalTracker()
+        self.metrics = metrics or LiquidationMetrics.get_instance()
+        self.max_reconnect_attempts = max_reconnect_attempts
+        self.initial_delay = initial_delay
+        self.max_delay = max_delay
+        self.ping_interval = ping_interval
+        self.ping_timeout = ping_timeout
+        self.on_event_callback = on_event_callback
+
+        self._running = False
+        self._task: Optional[asyncio.Task] = None
+        self._session: Optional[Any] = None
+        self._ws: Optional[Any] = None
+        self._reconnect_count = 0
+
+    @property
+    def is_connected(self) -> bool:
+        return self.tracker.current_status == StreamConnectionStatus.CONNECTED
+
+    def handle_raw_message(self, raw_message: Union[str, bytes, Dict[str, Any]]) -> Optional[ForcedLiquidationEvent]:
+        """
+        Processa mensagem bruta da rede no hot-path de liquidação.
+        Leve, não-bloqueante e com guards de roteamento cruzado.
+        """
+        data: Dict[str, Any]
+        if isinstance(raw_message, (str, bytes)):
+            try:
+                data = json.loads(raw_message)
+            except Exception:
+                return None
+        elif isinstance(raw_message, dict):
+            data = raw_message
+        else:
+            return None
+
+        # Cross-routing guard: nunca passar aggTrade pelo parser de liquidação
+        if is_agg_trade_message(data):
+            return None
+
+        # Validação de payload forceOrder
+        if not is_force_order_message(data):
+            return None
+
+        self.metrics.record_received(symbol=self.symbol)
+        event = parse_force_order_payload(data)
+        self.metrics.record_validity(event.validity, symbol=self.symbol)
+
+        is_new = self.aggregator.add_event(event)
+        if not is_new:
+            self.metrics.record_deduplicated(symbol=self.symbol)
+
+        if self.on_event_callback is not None:
+            try:
+                self.on_event_callback(event)
+            except Exception as e:
+                logger.warning(f"Erro no on_event_callback de liquidação: {e}")
+
+        return event
+
+    async def run(self) -> None:
+        """Loop de conexão contínua com auto-reconnect e backoff exponencial."""
+        if not HAS_AIOHTTP:
+            raise RuntimeError("aiohttp é obrigatório para execução do BinanceLiquidationListener.")
+
+        self._running = True
+        self.tracker.record_status(StreamConnectionStatus.DISCONNECTED)
+        self.metrics.set_connected(False, symbol=self.symbol)
+
+        while self._running:
+            try:
+                self.tracker.record_status(StreamConnectionStatus.RECONNECTING)
+                timeout = aiohttp.ClientTimeout(total=self.ping_timeout + 20)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    self._session = session
+                    async with session.ws_connect(
+                        self.stream_url,
+                        heartbeat=self.ping_interval,
+                        autoping=True,
+                    ) as ws:
+                        self._ws = ws
+                        self._reconnect_count = 0
+                        self.tracker.record_status(StreamConnectionStatus.CONNECTED)
+                        self.metrics.set_connected(True, symbol=self.symbol)
+                        logger.info(f"Conexão ativa ao stream de liquidações ({self.stream_url})")
+
+                        async for msg in ws:
+                            if not self._running:
+                                break
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                self.handle_raw_message(msg.data)
+                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                break
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning(f"Exceção no stream WebSocket de liquidações: {exc}")
+            finally:
+                self.tracker.record_status(StreamConnectionStatus.DISCONNECTED)
+                self.metrics.set_connected(False, symbol=self.symbol)
+
+            if not self._running:
+                break
+
+            self._reconnect_count += 1
+            if self._reconnect_count > self.max_reconnect_attempts:
+                logger.error("Máximo de tentativas de reconexão atingido no stream de liquidações.")
+                break
+
+            self.metrics.record_reconnect(symbol=self.symbol)
+            delay = min(self.initial_delay * (2 ** (self._reconnect_count - 1)), self.max_delay)
+            jitter = delay * random.uniform(-0.15, 0.15)
+            wait_time = max(0.2, delay + jitter)
+            logger.info(f"Reconectando stream de liquidações em {wait_time:.2f}s...")
+            try:
+                await asyncio.sleep(wait_time)
+            except asyncio.CancelledError:
+                break
+
+        self.tracker.record_status(StreamConnectionStatus.DISCONNECTED)
+        self.metrics.set_connected(False, symbol=self.symbol)
+
+    def start(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> asyncio.Task:
+        """Inicia o listener em background asyncio task."""
+        self._running = True
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        self._task = loop.create_task(self.run())
+        return self._task
+
+    async def stop(self) -> None:
+        """Encerra graciosamente a conexão e o loop assíncrono."""
+        self._running = False
+        if self._ws is not None and not self._ws.closed:
+            await self._ws.close()
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        self.tracker.record_status(StreamConnectionStatus.DISCONNECTED)
+        self.metrics.set_connected(False, symbol=self.symbol)
+
+
+def get_liquidation_window_context(summary: LiquidationWindowSummary) -> Dict[str, Any]:
+    """
+    Retorna dicionário aditivo com telemetria da janela para contexto observacional interno.
+    NÃO altera payload de IA/LLM, NEM confluência, NEM sinais, NEM whale score.
+    """
+    return {
+        "liquidation_summary": summary.to_dict(),
+        "is_telemetry_only": True,
+        "counts_as_vote": False,
+        "direction": "UNKNOWN",
+    }
+
