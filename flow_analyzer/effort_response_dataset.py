@@ -315,6 +315,10 @@ class EffortResponseShadowRecord:
             if k not in ALLOWED_PROVENANCE_KEYS:
                 raise ValueError(f"Campo não permitido na proveniência: '{k}'")
 
+        obs_open = p.get("observation_open_ms")
+        obs_close = p.get("observation_close_ms")
+        anchor = p.get("causal_anchor_ms")
+
         provenance = ShadowProvenance(
             exchange=p.get("exchange", "binance_futures"),
             stream=p.get("stream", "aggTrade"),
@@ -324,6 +328,9 @@ class EffortResponseShadowRecord:
             source_event_id=p.get("source_event_id"),
             orderbook_source_type=p.get("orderbook_source_type"),
             orderbook_snapshot_ms=p.get("orderbook_snapshot_ms"),
+            observation_open_ms=int(obs_open) if obs_open is not None else None,
+            observation_close_ms=int(obs_close) if obs_close is not None else None,
+            causal_anchor_ms=int(anchor) if anchor is not None else None,
         )
         q = data.get("quality", {})
         quality = ShadowQuality(

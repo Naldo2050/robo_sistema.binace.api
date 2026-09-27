@@ -38,6 +38,7 @@ As janelas são CRIADAS no arquivo principal: market_orchestrator/market_orchest
 
 import asyncio
 import logging
+import os
 import queue
 import threading
 import time
@@ -466,6 +467,133 @@ def process_window(bot) -> None:
         bot.window_data = []
 
 
+def _try_record_effort_response_shadow(
+    bot: Any,
+    valid_window_data: List[Dict[str, Any]],
+    close_ms: int,
+    enriched: Dict[str, Any],
+    flow_metrics: Optional[Dict[str, Any]],
+    ob_event: Optional[Dict[str, Any]],
+    macro_context: Optional[Dict[str, Any]],
+) -> None:
+    """Hook não-bloqueante e seguro para coleta do shadow dataset de esforço vs resposta.
+
+    Ativado somente se a feature flag EFFORT_RESPONSE_SHADOW_ENABLED for 1/true.
+    Totalmente isolado com try/except; qualquer erro é logado como warning sem afetar o trading.
+    """
+    if os.getenv("EFFORT_RESPONSE_SHADOW_ENABLED", "0").strip().lower() not in ("1", "true", "yes"):
+        return
+
+    try:
+        from flow_analyzer.effort_response_transport import (
+            EffortResponseSnapshotDTO,
+            ShadowAsyncTransport,
+        )
+
+        transport = ShadowAsyncTransport.get_instance()
+        stats = transport.get_stats()
+        if not stats.get("enabled"):
+            return
+
+        ohlc = enriched.get("ohlc", {})
+        open_val = ohlc.get("open")
+        high_val = ohlc.get("high")
+        low_val = ohlc.get("low")
+        close_val = ohlc.get("close")
+        vwap_val = ohlc.get("vwap")
+        poc_val = enriched.get("poc_price")
+
+        if open_val is None or high_val is None or low_val is None or close_val is None:
+            return
+
+        # Timestamps canônicos
+        causal_anchor_ms = int(close_ms)
+        all_ts = [int(t["T"]) for t in valid_window_data if "T" in t]
+        if not all_ts:
+            return
+        obs_open_ms = min(all_ts)
+        obs_close_ms = max(all_ts)
+
+        # BOUNDARY_EXCLUDED_FOR_CAUSAL_SAFETY:
+        # Se por qualquer motivo de jitter de relógio o último trade for >= causal_anchor_ms,
+        # rejeita o registro para evitar violação causal estrita
+        if obs_close_ms >= causal_anchor_ms:
+            logging.debug(
+                "Shadow transport ignorou janela %s: obs_close_ms (%d) >= causal_anchor_ms (%d)",
+                getattr(bot, "symbol", "UNKNOWN"),
+                obs_close_ms,
+                causal_anchor_ms,
+            )
+            return
+
+        # Volumes e notionals
+        buy_notional = 0.0
+        sell_notional = 0.0
+        if flow_metrics and "buy_notional_usdt" in flow_metrics and "sell_notional_usdt" in flow_metrics:
+            buy_notional = float(flow_metrics["buy_notional_usdt"])
+            sell_notional = float(flow_metrics["sell_notional_usdt"])
+        else:
+            for t in valid_window_data:
+                notional = float(t.get("p", 0.0)) * float(t.get("q", 0.0))
+                if t.get("m"):
+                    sell_notional += notional
+                else:
+                    buy_notional += notional
+
+        # Contexto whitelist
+        context_data: Dict[str, Any] = {
+            "symbol": getattr(bot, "symbol", "BTCUSDT"),
+            "trade_count": len(valid_window_data),
+        }
+        if ob_event:
+            context_data["spread"] = ob_event.get("spread")
+            context_data["bid_depth"] = ob_event.get("bid_depth")
+            context_data["ask_depth"] = ob_event.get("ask_depth")
+            context_data["orderbook_imbalance"] = ob_event.get("imbalance")
+            context_data["orderbook_imbalance_source_type"] = ob_event.get("source_type")
+
+        if macro_context:
+            context_data["regime_current_at_t"] = macro_context.get("regime_current_at_t")
+            context_data["regime_status_at_t"] = macro_context.get("regime_status_at_t")
+            context_data["regime_calibration_status_at_t"] = macro_context.get("regime_calibration_status_at_t")
+
+        # Constrói o snapshot minimalista frozen
+        dto = EffortResponseSnapshotDTO(
+            symbol=getattr(bot, "symbol", "BTCUSDT"),
+            causal_anchor_ms=causal_anchor_ms,
+            observation_open_ms=obs_open_ms,
+            observation_close_ms=obs_close_ms,
+            buy_notional_usd=buy_notional,
+            sell_notional_usd=sell_notional,
+            open=float(open_val),
+            high=float(high_val),
+            low=float(low_val),
+            close=float(close_val),
+            window_duration_ms=causal_anchor_ms - obs_open_ms,
+            vwap=float(vwap_val) if vwap_val is not None else None,
+            poc=float(poc_val) if poc_val is not None else None,
+            context_data=context_data,
+        )
+
+        # Enfileira sem bloqueio (DROP_NEWEST se cheio)
+        transport.submit_nowait(dto)
+
+        # Alimenta observação de preço para resolução dos alvos anteriores
+        transport.on_price_observation(
+            timestamp_ms=causal_anchor_ms,
+            open=float(open_val),
+            high=float(high_val),
+            low=float(low_val),
+            close=float(close_val),
+            is_window=True,
+            window_open_ms=obs_open_ms,
+            window_close_ms=obs_close_ms,
+        )
+
+    except Exception as e_shadow:
+        logging.warning("Erro ao submeter janela ao shadow transport: %s", e_shadow)
+
+
 def process_window_snapshot(
     bot,
     window_data: List[Dict[str, Any]],
@@ -714,6 +842,19 @@ def process_window_snapshot(
             _populate_window_state(
                 window_state, enriched, flow_metrics, ob_event,
                 macro_context, total_buy_volume, total_sell_volume,
+            )
+
+            # ----------------------------
+            # Shadow Dataset: Effort vs Response (P1-F)
+            # ----------------------------
+            _try_record_effort_response_shadow(
+                bot=bot,
+                valid_window_data=valid_window_data,
+                close_ms=close_ms,
+                enriched=enriched,
+                flow_metrics=flow_metrics,
+                ob_event=ob_event,
+                macro_context=macro_context,
             )
 
             try:
