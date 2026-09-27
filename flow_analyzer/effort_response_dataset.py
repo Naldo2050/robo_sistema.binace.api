@@ -134,6 +134,9 @@ ALLOWED_PROVENANCE_KEYS: frozenset[str] = frozenset({
     "source_event_id",
     "orderbook_source_type",
     "orderbook_snapshot_ms",
+    "observation_open_ms",
+    "observation_close_ms",
+    "causal_anchor_ms",
 })
 
 
@@ -187,16 +190,21 @@ def _validate_no_lookahead_keys(mapping: Dict[str, Any], container_name: str) ->
 def build_deterministic_record_id(
     *,
     symbol: str,
-    window_close_ms: int,
+    causal_anchor_ms: Optional[int] = None,
+    window_close_ms: Optional[int] = None,
     feature_contract_version: str = FEATURE_CONTRACT_VERSION,
     shadow_schema_version: str = SHADOW_SCHEMA_VERSION,
 ) -> str:
     """Gera record_id determinístico invariante.
 
-    Mesmos inputs sempre produzem exatamente o mesmo record_id.
+    Evolução P1-F: aceita causal_anchor_ms (boundary lógico canônico da janela).
+    Preserva window_close_ms por retrocompatibilidade se causal_anchor_ms não for informado.
     """
+    anchor = causal_anchor_ms if causal_anchor_ms is not None else window_close_ms
+    if anchor is None:
+        raise ValueError("build_deterministic_record_id requer causal_anchor_ms ou window_close_ms")
     clean_sym = symbol.strip().upper()
-    return f"rec_{clean_sym}_{int(window_close_ms)}_v{feature_contract_version}_s{shadow_schema_version}"
+    return f"rec_{clean_sym}_{int(anchor)}_v{feature_contract_version}_s{shadow_schema_version}"
 
 
 @dataclass(frozen=True)
@@ -215,6 +223,18 @@ class ShadowProvenance:
     source_event_id: Optional[str] = None
     orderbook_source_type: Optional[str] = None
     orderbook_snapshot_ms: Optional[int] = None
+    observation_open_ms: Optional[int] = None
+    observation_close_ms: Optional[int] = None
+    causal_anchor_ms: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        # Preenchimento defensivo retrocompatível
+        if self.observation_open_ms is None:
+            object.__setattr__(self, "observation_open_ms", self.window_open_ms)
+        if self.observation_close_ms is None:
+            object.__setattr__(self, "observation_close_ms", self.window_close_ms)
+        if self.causal_anchor_ms is None:
+            object.__setattr__(self, "causal_anchor_ms", self.window_close_ms)
 
 
 @dataclass(frozen=True)
@@ -245,6 +265,10 @@ class HorizonOutcome:
     observation_count: Optional[int] = None
     horizon_duration_ms: Optional[int] = None
     resolved_at_ms: Optional[int] = None
+    excursion_status: Optional[str] = None  # "FULL" | "PARTIAL" | "INSUFFICIENT_DATA"
+    excursion_coverage_start_ms: Optional[int] = None
+    excursion_coverage_end_ms: Optional[int] = None
+    excursion_observation_count: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -506,6 +530,9 @@ def build_shadow_record(
     window_open_ms: int,
     window_close_ms: int,
     window_data: Dict[str, Any],
+    causal_anchor_ms: Optional[int] = None,
+    observation_open_ms: Optional[int] = None,
+    observation_close_ms: Optional[int] = None,
     context_data: Optional[Dict[str, Any]] = None,
     source_event_id: Optional[str] = None,
     orderbook_source_type: Optional[str] = None,
@@ -516,11 +543,18 @@ def build_shadow_record(
 ) -> EffortResponseShadowRecord:
     """Constrói registro contemporâneo no fechamento da janela t.
 
-    Outcomes futuros são inicializados como PENDING para 1m, 5m e 15m.
+    Evolução P1-F:
+    - Ancoragem causal estrita em causal_anchor_ms (window_end_ms lógico).
+    - Preserva window_open_ms e window_close_ms para compatibilidade e auditoria física.
+    - Outcomes futuros são inicializados como PENDING indexados a partir de causal_anchor_ms.
     """
+    anchor_base = causal_anchor_ms if causal_anchor_ms is not None else window_close_ms
+    obs_open = observation_open_ms if observation_open_ms is not None else window_open_ms
+    obs_close = observation_close_ms if observation_close_ms is not None else window_close_ms
+
     record_id = build_deterministic_record_id(
         symbol=symbol,
-        window_close_ms=window_close_ms,
+        causal_anchor_ms=anchor_base,
     )
 
     features, core_val, opt_comp, _reasons = build_shadow_features_at_t(
@@ -537,7 +571,7 @@ def build_shadow_record(
 
     ctx_in = dict(context_data or {})
     ctx_in["symbol"] = symbol
-    ctx_in["window_close_ms"] = window_close_ms
+    ctx_in["window_close_ms"] = obs_close
     context, missing_context = build_shadow_context_at_t(**ctx_in)
 
     provenance = ShadowProvenance(
@@ -549,6 +583,9 @@ def build_shadow_record(
         source_event_id=source_event_id,
         orderbook_source_type=orderbook_source_type,
         orderbook_snapshot_ms=orderbook_snapshot_ms,
+        observation_open_ms=int(obs_open),
+        observation_close_ms=int(obs_close),
+        causal_anchor_ms=int(anchor_base),
     )
 
     quality = ShadowQuality(
@@ -566,19 +603,19 @@ def build_shadow_record(
             "1m": HorizonOutcome(
                 horizon="1m",
                 status="PENDING",
-                target_timestamp_ms=window_close_ms + 60_000,
+                target_timestamp_ms=anchor_base + 60_000,
                 horizon_duration_ms=60_000,
             ).to_dict(),
             "5m": HorizonOutcome(
                 horizon="5m",
                 status="PENDING",
-                target_timestamp_ms=window_close_ms + 300_000,
+                target_timestamp_ms=anchor_base + 300_000,
                 horizon_duration_ms=300_000,
             ).to_dict(),
             "15m": HorizonOutcome(
                 horizon="15m",
                 status="PENDING",
-                target_timestamp_ms=window_close_ms + 900_000,
+                target_timestamp_ms=anchor_base + 900_000,
                 horizon_duration_ms=900_000,
             ).to_dict(),
         },
