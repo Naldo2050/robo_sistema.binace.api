@@ -288,6 +288,8 @@ class EnhancedMarketBot:
         self._cleanup_lock = threading.Lock()
         self._cleanup_started = threading.Event()
         self._ai_init_lock = threading.Lock()
+        self._is_shutdown = False
+        self._shutdown_async_lock: Optional[asyncio.Lock] = None
 
         self.warming_up = False
         self._warmup_lock = threading.Lock()
@@ -755,11 +757,8 @@ class EnhancedMarketBot:
         logging.info("✅ Bot encerrado com segurança.")
 
     def _register_cleanup_handlers(self) -> None:
-        try:
-            signal.signal(signal.SIGINT, self._cleanup_handler)
-            signal.signal(signal.SIGTERM, self._cleanup_handler)
-        except Exception:
-            pass
+        # Nota: main.py gerencia os sinais do event loop assíncrono cooperativamente (SIGTERM/SIGINT).
+        # Mantemos apenas atexit como salvaguarda síncrona final para processos não orquestrados pelo main.py.
         try:
             atexit.register(self._cleanup_handler)
         except Exception:
@@ -2763,20 +2762,29 @@ class EnhancedMarketBot:
     # SHUTDOWN (assíncrono)
     # ========================================
     async def shutdown(self) -> None:
-        """Shutdown limpo (chamar com await, dentro do loop)."""
-        # Marcar cleanup iniciado para evitar handler duplicado (atexit/signal)
-        try:
-            with self._cleanup_lock:
-                self._cleanup_started.set()
-                self.is_cleaning_up = True
-        except Exception:
-            pass
+        """Shutdown limpo (chamar com await, dentro do loop). Idempotente."""
+        if self._shutdown_async_lock is None:
+            self._shutdown_async_lock = asyncio.Lock()
 
-        self.should_stop = True
+        async with self._shutdown_async_lock:
+            if self._is_shutdown:
+                logging.debug("Bot já foi encerrado (shutdown idempotente), ignorando chamada duplicada.")
+                return
+            self._is_shutdown = True
 
-        # Cancela periodic_sync task
-        if hasattr(self, "_periodic_sync_task") and self._periodic_sync_task:
-            self._periodic_sync_task.cancel()
+            # Marcar cleanup iniciado para evitar handler duplicado (atexit/signal)
+            try:
+                with self._cleanup_lock:
+                    self._cleanup_started.set()
+                    self.is_cleaning_up = True
+            except Exception:
+                pass
+
+            self.should_stop = True
+
+            # Cancela periodic_sync task
+            if hasattr(self, "_periodic_sync_task") and self._periodic_sync_task:
+                self._periodic_sync_task.cancel()
 
         # 1) Para geradores de trabalho primeiro
         try:

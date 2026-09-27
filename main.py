@@ -61,6 +61,7 @@ _fix_encoding_windows()
 
 import logging
 import asyncio
+import signal
 import traceback
 
 from config.env_policy import maybe_load_dotenv
@@ -420,27 +421,87 @@ async def main() -> int:
         # NOTA: bot.run() já chama self.initialize() internamente.
         # Não chamar bot.initialize() aqui para evitar inicialização dupla.
 
-        # 3. Iniciar task de heartbeat periódico durante execução do bot
+        # 3. Gerenciamento cooperativo de sinais (SIGINT e SIGTERM)
+        loop = asyncio.get_running_loop()
+        shutdown_event = asyncio.Event()
+
+        def _on_signal(sig_name: str) -> None:
+            logger.info(f"🛑 Sinal recebido: {sig_name}. Acionando shutdown cooperativo gracioso...")
+            shutdown_event.set()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _on_signal, sig.name)
+            except (NotImplementedError, AttributeError, RuntimeError):
+                try:
+                    signal.signal(
+                        sig,
+                        lambda s, f, n=sig.name: loop.call_soon_threadsafe(_on_signal, n),
+                    )
+                except Exception as e_sig:
+                    logger.debug(f"Não foi possível registrar signal handler síncrono para {sig}: {e_sig}")
+
+        # Iniciar task de heartbeat periódico durante execução do bot
         heartbeat_task = asyncio.create_task(_heartbeat_during_run(heartbeat))
 
+        # 4. Executar o bot cooperativamente
+        bot_task = asyncio.create_task(bot.run())
+        shutdown_waiter = asyncio.create_task(shutdown_event.wait())
+        wait_tasks = [bot_task, shutdown_waiter]
+
+        timeout_task = None
+        if cli_args.duration_seconds and cli_args.duration_seconds > 0:
+            logging.info(f"⏱️ Execução com temporizador: {cli_args.duration_seconds} segundos...")
+            timeout_task = asyncio.create_task(asyncio.sleep(float(cli_args.duration_seconds)))
+            wait_tasks.append(timeout_task)
+
         try:
-            # 4. Executar o bot
-            if cli_args.duration_seconds and cli_args.duration_seconds > 0:
-                logging.info(f"⏱️ Execução com temporizador: {cli_args.duration_seconds} segundos...")
+            done, pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+
+            # Cancelar waiters/timers auxiliares
+            for t in pending:
+                if t is not bot_task:
+                    t.cancel()
+
+            if shutdown_event.is_set():
+                logger.info("🛑 Parada cooperativa solicitada via sinal (SIGINT/SIGTERM).")
+            elif timeout_task and timeout_task in done:
+                logger.info(f"⏱️ Tempo limite de {cli_args.duration_seconds}s atingido. Iniciando graceful shutdown...")
+
+            # Acionar shutdown cooperativo no bot
+            if bot is not None:
+                await bot.shutdown()
+
+            # Aguardar bot_task finalizar
+            if not bot_task.done():
                 try:
-                    await asyncio.wait_for(bot.run(), timeout=float(cli_args.duration_seconds))
-                except asyncio.TimeoutError:
-                    logging.info(f"⏱️ Tempo limite de {cli_args.duration_seconds}s atingido. Iniciando graceful shutdown...")
-                    await bot.shutdown()
-                    return 0
-            else:
-                await bot.run()
-                return 0
+                    await asyncio.wait_for(bot_task, timeout=10.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    bot_task.cancel()
+                    try:
+                        await bot_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
+            if bot_task.done() and not bot_task.cancelled() and bot_task.exception():
+                exc = bot_task.exception()
+                if not isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)):
+                    raise exc
+
+            return 0
         finally:
             heartbeat_task.cancel()
             try:
                 await heartbeat_task
             except asyncio.CancelledError:
+                pass
+            if bot is not None:
+                await bot.shutdown()
+            await heartbeat.stop()
+            try:
+                from fetchers.macro_update_service import stop_macro_service
+                await stop_macro_service()
+            except Exception:
                 pass
 
     except KeyboardInterrupt:
