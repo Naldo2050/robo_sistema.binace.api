@@ -10,6 +10,7 @@ v3 — Correções (2026-03-17):
   - Metadados de warmup no retorno de predict()
 """
 
+import os
 import json
 import logging
 import xgboost as xgb
