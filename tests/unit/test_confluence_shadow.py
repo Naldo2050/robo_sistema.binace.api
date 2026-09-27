@@ -496,75 +496,42 @@ def test_j2_real_mixed_directions():
     assert any("COMPOSITE_NON_VOTING" in f for f in facts)
 
 
-# ── FIXTURE J1 (Fiel aos dados reais: BOS bearish presente) ───────────────────
+# ── FIXTURE J1 (Fiel aos dados reais: flow BULLISH + book BULLISH + BOS BEARISH) ───
 
-def test_j1_real_with_bos_bearish_mixed():
-    """J1 real: se existe BOS bearish, o resultado não pode ser forçado BULLISH.
+def test_j1_real_mixed_directions():
+    """J1 fiel aos dados observados:
 
-    Dados J1 observados:
-    - sector_flow order_flow: buy 3.37 BTC / sell 4.21 BTC -> fluxo vendedor
-    - BOS bearish / choch -> estrutura bearish
-    - Se houver evidência bullish residual -> MIXED
-    - Se somente bearish -> ALIGNED_BEARISH
+    Dados reais J1:
+    - volume_compra = 38.731 BTC
+    - volume_venda = 4.273 BTC
+    - delta = +34.458 BTC
+    - flow_imbalance = +0.8013
+    - aggressive_buy_pct = 90.06%
+      -> executed flow = BULLISH
+    - orderbook imbalance = +0.864
+      -> orderbook snapshot = BULLISH
+    - market_structure BOS = bearish
+      -> market structure BOS = BEARISH
+    - whale/regime = composites/non-voting
+    - candlestick (bearish_engulfing) = omitido (não está na whitelist atual)
+
+    Portanto:
+    executed flow (BULLISH) + orderbook snapshot (BULLISH)
+    vs market structure BOS (BEARISH)
+    produz deterministicamente MIXED_DIRECTIONS.
     """
     evs = [
-        # Fluxo executado J1: venda predominante
+        # Executed flow: buy 38.731 vs sell 4.273 BTC -> delta +34.458 BTC (+80.13% imb)
         Evidence(
             source="flow.net.1m",
-            direction=EvidenceDirection.BEARISH,
-            family=EvidenceFamily.EXECUTED_FLOW,
-            evidence_type=EvidenceType.CONTINUOUS_TRADES,
-            validity=EvidenceValidity.VALID,
-            calibration=EvidenceCalibration.NOT_APPLICABLE,
-            observed_at_ms=1788700000000,  # timestamp J1 (conceitual)
-        ),
-        # BOS bearish
-        Evidence(
-            source="market_structure.bos",
-            direction=EvidenceDirection.BEARISH,
-            family=EvidenceFamily.MARKET_STRUCTURE,
-            evidence_type=EvidenceType.UNKNOWN,
-            validity=EvidenceValidity.VALID,
-            calibration=EvidenceCalibration.UNCALIBRATED_HEURISTIC,
-            observed_at_ms=1788700000000,
-        ),
-    ]
-
-    result = reconcile(
-        evidences=evs,
-        symbol="BTCUSDT",
-        observation_open_ms=1788699940000,
-        observation_close_ms=1788700000000,
-        causal_anchor_ms=1788700020000,
-    )
-
-    # Sem evidência bullish -> ALIGNED_BEARISH (não forçado bullish)
-    assert result.status == ReconcilerStatus.ALIGNED_BEARISH
-    assert result.independent_confirmation is False
-
-
-def test_j1_real_with_mixed_signals():
-    """J1 com sinal bullish residual + BOS bearish -> MIXED_DIRECTIONS."""
-    evs = [
-        Evidence(
-            source="flow.net.1m",
-            direction=EvidenceDirection.BEARISH,
+            direction=EvidenceDirection.BULLISH,
             family=EvidenceFamily.EXECUTED_FLOW,
             evidence_type=EvidenceType.CONTINUOUS_TRADES,
             validity=EvidenceValidity.VALID,
             calibration=EvidenceCalibration.NOT_APPLICABLE,
             observed_at_ms=1788700000000,
         ),
-        Evidence(
-            source="market_structure.bos",
-            direction=EvidenceDirection.BEARISH,
-            family=EvidenceFamily.MARKET_STRUCTURE,
-            evidence_type=EvidenceType.UNKNOWN,
-            validity=EvidenceValidity.VALID,
-            calibration=EvidenceCalibration.UNCALIBRATED_HEURISTIC,
-            observed_at_ms=1788700000000,
-        ),
-        # Suponha orderbook com suporte bullish
+        # Orderbook snapshot: imbalance +0.864
         Evidence(
             source="orderbook.snapshot.imbalance",
             direction=EvidenceDirection.BULLISH,
@@ -574,6 +541,36 @@ def test_j1_real_with_mixed_signals():
             calibration=EvidenceCalibration.NOT_APPLICABLE,
             observed_at_ms=1788700000000,
         ),
+        # Market structure: BOS bearish
+        Evidence(
+            source="market_structure.bos",
+            direction=EvidenceDirection.BEARISH,
+            family=EvidenceFamily.MARKET_STRUCTURE,
+            evidence_type=EvidenceType.UNKNOWN,
+            validity=EvidenceValidity.VALID,
+            calibration=EvidenceCalibration.UNCALIBRATED_HEURISTIC,
+            observed_at_ms=1788700000000,
+        ),
+        # Whale composite (non-voting)
+        Evidence(
+            source="whale.score",
+            direction=EvidenceDirection.BULLISH,
+            family=EvidenceFamily.UNKNOWN,
+            evidence_type=EvidenceType.DERIVED,
+            validity=EvidenceValidity.VALID,
+            calibration=EvidenceCalibration.UNCALIBRATED_HEURISTIC,
+            observed_at_ms=1788700000000,
+        ),
+        # Regime composite (non-voting)
+        Evidence(
+            source="regime.current",
+            direction=EvidenceDirection.BEARISH,
+            family=EvidenceFamily.UNKNOWN,
+            evidence_type=EvidenceType.DERIVED,
+            validity=EvidenceValidity.VALID,
+            calibration=EvidenceCalibration.UNCALIBRATED_HEURISTIC,
+            observed_at_ms=1788700000000,
+        ),
     ]
 
     result = reconcile(
@@ -583,7 +580,67 @@ def test_j1_real_with_mixed_signals():
         observation_close_ms=1788700000000,
         causal_anchor_ms=1788700020000,
     )
+
+    # Conflito direcional -> MIXED_DIRECTIONS
     assert result.status == ReconcilerStatus.MIXED_DIRECTIONS
+    assert result.independent_confirmation is False
+    assert result.evidence_count == 3  # flow, orderbook, bos
+
+    # Direções presentes contêm tanto BULLISH quanto BEARISH
+    assert "bullish" in result.directions_present
+    assert "bearish" in result.directions_present
+
+    # Composites observados (não-votantes)
+    assert len(result.observed_composites) == 2
+    comp_sources = {c["source"] for c in result.observed_composites}
+    assert "whale.score" in comp_sources
+    assert "regime.current" in comp_sources
+
+    # Fatos estruturados
+    facts = result.summary_facts.get("facts", [])
+    assert any("POINT_IN_TIME_L2" in f for f in facts)
+    assert any("COMPOSITE_NON_VOTING" in f for f in facts)
+
+
+# ── CENÁRIO SINTÉTICO (ALIGNED_BEARISH preservado) ─────────────────────────────
+
+def test_synthetic_aligned_bearish():
+    """Cenário sintético onde todas as evidências direcionais são BEARISH -> ALIGNED_BEARISH.
+
+    Preservado como SYNTHETIC_ALIGNED_BEARISH (não J1 real).
+    """
+    evs = [
+        Evidence(
+            source="flow.net.1m",
+            direction=EvidenceDirection.BEARISH,
+            family=EvidenceFamily.EXECUTED_FLOW,
+            evidence_type=EvidenceType.CONTINUOUS_TRADES,
+            validity=EvidenceValidity.VALID,
+            calibration=EvidenceCalibration.NOT_APPLICABLE,
+            observed_at_ms=1788700000000,
+        ),
+        Evidence(
+            source="market_structure.bos",
+            direction=EvidenceDirection.BEARISH,
+            family=EvidenceFamily.MARKET_STRUCTURE,
+            evidence_type=EvidenceType.UNKNOWN,
+            validity=EvidenceValidity.VALID,
+            calibration=EvidenceCalibration.UNCALIBRATED_HEURISTIC,
+            observed_at_ms=1788700000000,
+        ),
+    ]
+
+    result = reconcile(
+        evidences=evs,
+        symbol="BTCUSDT",
+        observation_open_ms=1788699940000,
+        observation_close_ms=1788700000000,
+        causal_anchor_ms=1788700020000,
+    )
+
+    # Sem evidência bullish -> ALIGNED_BEARISH
+    assert result.status == ReconcilerStatus.ALIGNED_BEARISH
+    assert result.independent_confirmation is False
 
 
 # ── DETERMINISMO ───────────────────────────────────────────────────────────────
