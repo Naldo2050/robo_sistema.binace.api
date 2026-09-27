@@ -2871,6 +2871,16 @@ class EnhancedMarketBot:
         except Exception as e:
             logging.warning(f"Falha ao encerrar shadow_runtime: {e}")
 
+        # Shadow Effort/Response Transport Shutdown (Gate C1 Hardening)
+        try:
+            from flow_analyzer.effort_response_transport import ShadowAsyncTransport
+            shadow_transport = ShadowAsyncTransport.get_if_initialized()
+            if shadow_transport is not None:
+                shadow_transport.close(timeout=5.0)
+                logging.info("✅ ShadowAsyncTransport drenado e encerrado com sucesso.")
+        except Exception as e_shadow:
+            logging.warning(f"Falha ao encerrar ShadowAsyncTransport: {e_shadow}")
+
         try:
             if hasattr(self, "event_bus") and self.event_bus:
                 self.event_bus.shutdown()

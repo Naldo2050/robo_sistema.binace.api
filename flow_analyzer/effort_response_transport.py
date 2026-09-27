@@ -230,7 +230,7 @@ class ShadowAsyncTransport:
 
     def __init__(
         self,
-        filepath: Union[str, Path] = "dados/datasets/shadow_effort_response.jsonl",
+        filepath: Optional[Union[str, Path]] = None,
         queue_capacity: Optional[int] = None,
         enabled: Optional[bool] = None,
         startup_event_time_ms: Optional[int] = None,
@@ -245,6 +245,8 @@ class ShadowAsyncTransport:
         else:
             self._enabled = bool(enabled)
 
+        if filepath is None or str(filepath) == "dados/datasets/shadow_effort_response.jsonl":
+            filepath = os.getenv("EFFORT_RESPONSE_SHADOW_FILEPATH", "dados/datasets/shadow_effort_response.jsonl")
         self.filepath = Path(filepath)
         self._disabled_due_to_corruption = False
 
@@ -293,6 +295,10 @@ class ShadowAsyncTransport:
         self._observations: deque[PriceObservation] = deque()
         self._last_event_time_ms: int = 0
 
+        # Política de recuperação no startup (sem wall clock)
+        self._recovery_pending_records: List[Any] = []
+        self._recovery_pending_state: str = "RESOLVED"
+
         # Inicializa storage e worker
         self._init_storage()
         self._init_pending_from_storage(startup_event_time_ms)
@@ -324,7 +330,7 @@ class ShadowAsyncTransport:
         )
 
     def _init_pending_from_storage(self, startup_event_time_ms: Optional[int] = None) -> None:
-        """Reconstitui horizontes PENDING na inicialização com semântica de gap."""
+        """Carrega registros com horizontes PENDING na inicialização com política temporal estrita."""
         if not self._storage or self._disabled_due_to_corruption:
             return
 
@@ -334,13 +340,47 @@ class ShadowAsyncTransport:
             self._handle_corruption(e)
             return
 
-        now_ms = startup_event_time_ms if startup_event_time_ms is not None else int(time.time() * 1000)
-
+        self._recovery_pending_records = []
         for rec in records:
             outcomes = rec.outcomes_future or {}
             if outcomes.get("status") == "RESOLVED":
                 continue
+            horizons = outcomes.get("horizons") or {}
+            has_pending = any(h_data.get("status") == "PENDING" for h_data in horizons.values())
+            if has_pending:
+                self._recovery_pending_records.append(rec)
 
+        if startup_event_time_ms is not None:
+            self.resolve_startup_recovery(startup_event_time_ms)
+        else:
+            if self._recovery_pending_records:
+                self._recovery_pending_state = "RECOVERY_PENDING"
+                logger.info(
+                    "Shadow startup: %d registros carregados como RECOVERY_PENDING. "
+                    "Aguardando primeiro watermark/event-time real da exchange.",
+                    len(self._recovery_pending_records),
+                )
+            else:
+                self._recovery_pending_state = "RESOLVED"
+
+    def resolve_startup_recovery(self, event_time_ms: int) -> None:
+        """Resolve registros em RECOVERY_PENDING a partir do primeiro event-time real da exchange.
+
+        Contrato:
+        - NUNCA usa wall clock local como event-time.
+        - Se target < (event_time_ms - OUTCOME_BOUNDARY_TOLERANCE_MS): marca INSUFFICIENT_DATA (offline gap).
+        - Se target >= (event_time_ms - OUTCOME_BOUNDARY_TOLERANCE_MS): reinserir pending heap.
+        - Se já RESOLVED: não reinserir.
+        """
+        if not self._recovery_pending_records:
+            self._recovery_pending_state = "RESOLVED"
+            return
+
+        recovered_count = 0
+        gap_count = 0
+
+        for rec in self._recovery_pending_records:
+            outcomes = rec.outcomes_future or {}
             horizons = outcomes.get("horizons") or {}
             updates_needed: Dict[str, Any] = {"horizons": {}}
             has_offline_gap = False
@@ -348,9 +388,10 @@ class ShadowAsyncTransport:
             for h_name, h_data in horizons.items():
                 if h_data.get("status") == "PENDING":
                     target_ms = int(h_data.get("target_timestamp_ms", 0))
-                    # Se o alvo venceu enquanto o bot esteve offline:
-                    if target_ms < (now_ms - OUTCOME_BOUNDARY_TOLERANCE_MS):
+                    # Se o alvo venceu durante o downtime:
+                    if target_ms < (event_time_ms - OUTCOME_BOUNDARY_TOLERANCE_MS):
                         has_offline_gap = True
+                        gap_count += 1
                         updates_needed["horizons"][h_name] = HorizonOutcome(
                             horizon=h_name,
                             status="INSUFFICIENT_DATA",
@@ -360,15 +401,15 @@ class ShadowAsyncTransport:
                             return_bps=None,
                             horizon_duration_ms=h_data.get("horizon_duration_ms"),
                             excursion_status="INSUFFICIENT_DATA",
-                            resolved_at_ms=now_ms,
+                            resolved_at_ms=event_time_ms,
                         ).to_dict()
                         try:
                             self._metrics.outcomes_insufficient_total.labels(horizon=h_name).inc()
                         except Exception:
                             pass
                     else:
-                        # Alvo ainda futuro ou dentro do boundary de inicialização:
-                        # Reinsere no pending registry
+                        # Alvo ainda futuro em relação ao event_time_ms seguro:
+                        recovered_count += 1
                         self._register_pending_entry(
                             target_timestamp_ms=target_ms,
                             record_id=rec.record_id,
@@ -385,9 +426,19 @@ class ShadowAsyncTransport:
                 )
                 updates_needed["status"] = "PARTIALLY_RESOLVED" if not all_res else "RESOLVED"
                 try:
-                    self._storage.update_record_outcomes(rec.record_id, updates_needed)
+                    with self._storage_lock:
+                        self._storage.update_record_outcomes(rec.record_id, updates_needed)
                 except Exception as e_up:
                     logger.warning("Falha ao registrar gap offline para %s: %s", rec.record_id, e_up)
+
+        self._recovery_pending_records.clear()
+        self._recovery_pending_state = "RESOLVED"
+        logger.info(
+            "Shadow startup recovery concluída para watermark %d: %d horizontes reinseridos, %d marcados como INSUFFICIENT_DATA.",
+            event_time_ms,
+            recovered_count,
+            gap_count,
+        )
 
     def _register_pending_entry(
         self,
@@ -434,7 +485,7 @@ class ShadowAsyncTransport:
 
         Nunca abre arquivo, nunca espera lock de disco, nunca propaga exceção.
         """
-        if not self._enabled or self._disabled_due_to_corruption:
+        if not self._enabled or self._disabled_due_to_corruption or self._stop_event.is_set():
             return False
 
         try:
@@ -484,7 +535,7 @@ class ShadowAsyncTransport:
 
         Não bloqueia o chamador.
         """
-        if not self._enabled or self._disabled_due_to_corruption or not self._queue:
+        if not self._enabled or self._disabled_due_to_corruption or not self._queue or self._stop_event.is_set():
             return
 
         obs = PriceObservation(
@@ -597,6 +648,9 @@ class ShadowAsyncTransport:
 
     def _process_observation(self, obs: PriceObservation) -> None:
         """Adiciona observação ao buffer com eviction por event time e resolve min-heap."""
+        if self._recovery_pending_state == "RECOVERY_PENDING" and obs.timestamp_ms > 0:
+            self.resolve_startup_recovery(obs.timestamp_ms)
+
         self._last_event_time_ms = max(self._last_event_time_ms, obs.timestamp_ms)
         self._observations.append(obs)
 
@@ -771,15 +825,16 @@ class ShadowAsyncTransport:
             return True
 
         self._stop_event.set()
-        try:
-            self._queue.put_nowait(None)
-        except Exception:
-            pass
+        if self._worker_started and self._queue is not None:
+            try:
+                self._queue.put_nowait(None)
+            except Exception:
+                pass
 
-        self.flush(timeout=timeout)
+            self.flush(timeout=timeout)
 
-        if self._worker_thread and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=1.0)
+            if self._worker_thread and self._worker_thread.is_alive():
+                self._worker_thread.join(timeout=timeout)
 
         self._worker_started = False
         return True
@@ -800,7 +855,14 @@ class ShadowAsyncTransport:
             "pending_registry_size": len(self._pending_map),
             "observation_buffer_size": len(self._observations),
             "last_event_time_ms": self._last_event_time_ms,
+            "recovery_pending_state": self._recovery_pending_state,
+            "recovery_pending_count": len(self._recovery_pending_records),
         }
+
+    @classmethod
+    def get_if_initialized(cls) -> Optional["ShadowAsyncTransport"]:
+        """Retorna o singleton apenas se já estiver instanciado, sem criar nova instância."""
+        return cls._singleton
 
     @classmethod
     def get_instance(cls, **kwargs: Any) -> "ShadowAsyncTransport":

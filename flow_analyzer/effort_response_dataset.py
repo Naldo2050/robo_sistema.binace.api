@@ -874,7 +874,14 @@ class EffortResponseShadowStorage:
         self._init_storage()
 
     def _init_storage(self) -> None:
-        self.filepath.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.filepath.parent.mkdir(parents=True, exist_ok=True)
+        except PermissionError as pe:
+            logger.error("Permissão negada ao criar diretório '%s': %s", self.filepath.parent, pe)
+            raise
+        except OSError as oe:
+            logger.error("Erro de sistema de arquivos ao criar diretório '%s': %s", self.filepath.parent, oe)
+            raise
         if not self.filepath.exists():
             return
 
