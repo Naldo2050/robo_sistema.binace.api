@@ -13,7 +13,7 @@ try:
 except ImportError:
     OCIMonitor = None
 
-NON_STAGE_CHANNELS = frozenset({"ws_error", "buffer_critical", "buffer_overflow", "main"})
+NON_STAGE_CHANNELS = frozenset({"ws_error", "buffer_critical", "buffer_overflow", "main", "liquidation_stream_status", "shadow_collector"})
 # Componentes estritamente downstream do feed de trades/orderbook do WebSocket
 DOWNSTREAM_COMPONENTS = frozenset({"orderbook", "trade_ingestion", "window_processor", "trade_buffer"})
 

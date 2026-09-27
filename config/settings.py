@@ -250,3 +250,11 @@ PAYLOAD_TRIPWIRE_CACHE_HIT_MIN = 0.10   # Min 10% de cache hits
 
 # ===== SEMANTIC LLM PAYLOAD V3 (P2-F2 — feature flag, default OFF) =====
 LLM_SEMANTIC_PAYLOAD_V3_ENABLED = os.getenv("LLM_SEMANTIC_PAYLOAD_V3_ENABLED", "0") == "1"
+
+# ===== BINANCE LIQUIDATION STREAM (P2-D2 / C1 — feature flag, default OFF) =====
+BINANCE_LIQUIDATION_STREAM_ENABLED = os.getenv("BINANCE_LIQUIDATION_STREAM_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+
+# ===== EFFORT RESPONSE SHADOW DATASET (P1-F / C1 — feature flag, default OFF) =====
+EFFORT_RESPONSE_SHADOW_ENABLED = os.getenv("EFFORT_RESPONSE_SHADOW_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+EFFORT_RESPONSE_SHADOW_QUEUE_CAPACITY = int(os.getenv("EFFORT_RESPONSE_SHADOW_QUEUE_CAPACITY", "1000"))
+EFFORT_RESPONSE_SHADOW_FILEPATH = os.getenv("EFFORT_RESPONSE_SHADOW_FILEPATH", "dados/datasets/shadow_effort_response.jsonl")

@@ -525,6 +525,12 @@ class EnhancedMarketBot:
             symbol=self.symbol,
         )
 
+        # ====== Binance Liquidation Stream Telemetry (P2-D2 / C1) ======
+        self.liquidation_listener: Optional[Any] = None
+        self.liquidation_stream_enabled: bool = getattr(
+            config, "BINANCE_LIQUIDATION_STREAM_ENABLED", False
+        )
+
         # ====== Paper Trading Shadow Runtime (Gate C3-C-B3-B) ======
         self.shadow_runtime: Optional[Any] = shadow_runtime
         self.paper_shadow_status: str = "DISABLED"
@@ -2671,6 +2677,24 @@ class EnhancedMarketBot:
             self._shadow_subscribed = True
             logging.info("✅ ShadowPaperRuntime subscrito no EventBus para o evento 'signal'")
 
+        # Telemetria de Liquidação Binance USD-M (P2-D2 / C1)
+        if getattr(config, "BINANCE_LIQUIDATION_STREAM_ENABLED", False) or self.liquidation_stream_enabled:
+            try:
+                from fetchers.binance_liquidation_stream import BinanceLiquidationListener
+                self.liquidation_listener = BinanceLiquidationListener(symbol=self.symbol)
+                self.liquidation_listener.start(loop=self._loop)
+                logging.info(f"✅ BinanceLiquidationListener iniciado para {self.symbol} (stream dedicado)")
+                if hasattr(self, "health_monitor") and self.health_monitor is not None:
+                    self.health_monitor.record_event(
+                        "liquidation_stream_status",
+                        {"status": "started", "symbol": self.symbol},
+                    )
+            except Exception as e_liq:
+                logging.warning(f"⚠️ Falha ao iniciar BinanceLiquidationListener (não-crítico): {e_liq}")
+                self.liquidation_listener = None
+        else:
+            self.liquidation_listener = None
+
         self._initialized = True
 
     async def _prefetch_ohlc_history(self) -> None:
@@ -2880,6 +2904,16 @@ class EnhancedMarketBot:
                 logging.info("✅ ShadowAsyncTransport drenado e encerrado com sucesso.")
         except Exception as e_shadow:
             logging.warning(f"Falha ao encerrar ShadowAsyncTransport: {e_shadow}")
+
+        # Fechamento do BinanceLiquidationListener (P2-D2 / C1)
+        try:
+            if hasattr(self, "liquidation_listener") and self.liquidation_listener is not None:
+                await self.liquidation_listener.stop()
+                logging.info("✅ BinanceLiquidationListener encerrado com sucesso.")
+        except Exception as e_liq:
+            logging.warning(f"Falha ao encerrar BinanceLiquidationListener: {e_liq}")
+        finally:
+            self.liquidation_listener = None
 
         try:
             if hasattr(self, "event_bus") and self.event_bus:
