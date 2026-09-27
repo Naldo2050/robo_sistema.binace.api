@@ -225,41 +225,73 @@ class WhaleAccumulationCalculator:
         # 2. ORDER BOOK DEPTH ASYMMETRY (-20 a +20)
         # ═══════════════════════════════════════════
         depth_score: float = 0.0
-        depth_detail = {}
+        depth_detail: dict = {}
+        depth_status: Optional[str] = None
+        depth_reason: Optional[str] = None
 
-        if orderbook_data and isinstance(orderbook_data, dict):
-            bid_depth = float(orderbook_data.get("bid_depth_usd", 0))
-            ask_depth = float(orderbook_data.get("ask_depth_usd", 0))
-            ob_imbalance = orderbook_data.get("imbalance", None)
+        if not orderbook_data or not isinstance(orderbook_data, dict):
+            depth_status = "NON_VOTING_MISSING"
+            depth_reason = "ORDERBOOK_DATA_MISSING"
+        else:
+            raw_bid = orderbook_data.get("bid_depth_usd")
+            raw_ask = orderbook_data.get("ask_depth_usd")
 
-            total_depth = bid_depth + ask_depth
-            if total_depth > 0:
-                depth_ratio = (bid_depth - ask_depth) / total_depth
-                depth_score = depth_ratio * 20  # -20 a +20
+            if raw_bid is None or raw_ask is None:
+                depth_status = "NON_VOTING_MISSING"
+                depth_reason = "BID_OR_ASK_DEPTH_MISSING"
+            else:
+                bid_depth = _finite_or_none(raw_bid)
+                ask_depth = _finite_or_none(raw_ask)
 
-                depth_detail["bid_depth"] = round(bid_depth, 2)
-                depth_detail["ask_depth"] = round(ask_depth, 2)
-                depth_detail["ratio"] = round(depth_ratio, 4)
+                if bid_depth is None or ask_depth is None:
+                    depth_status = "NON_VOTING_INVALID_INPUT"
+                    depth_reason = "BID_OR_ASK_DEPTH_NONFINITE_OR_MALFORMED"
+                    depth_detail["invalid_fields"] = [
+                        f for f, v in [("bid_depth_usd", bid_depth), ("ask_depth_usd", ask_depth)] if v is None
+                    ]
+                elif bid_depth < 0 or ask_depth < 0:
+                    depth_status = "NON_VOTING_INVALID_INPUT"
+                    depth_reason = "NEGATIVE_DEPTH"
+                elif bid_depth == 0.0 and ask_depth == 0.0:
+                    # Contrato comprovado: orderbook_core/event_factory.py emite 0/0
+                    # exclusivamente em erro/indisponibilidade (fail-closed)
+                    depth_status = "NON_VOTING_ZERO_DEPTH"
+                    depth_reason = "ZERO_TOTAL_DEPTH"
+                    depth_detail["bid_depth"] = 0.0
+                    depth_detail["ask_depth"] = 0.0
+                else:
+                    total_depth = bid_depth + ask_depth
+                    # total_depth > 0 garantido
+                    depth_ratio = (bid_depth - ask_depth) / total_depth
+                    depth_score = depth_ratio * 20.0  # -20 a +20
 
-                # Depth metrics mais detalhados
-                depth_metrics = orderbook_data.get("depth_metrics", {})
-                if isinstance(depth_metrics, dict):
-                    deep_imb = depth_metrics.get("depth_imbalance", 0)
-                    if isinstance(deep_imb, (int, float)):
-                        # Confirmar com depth mais profundo
-                        if (depth_ratio > 0 and deep_imb > 0) or (depth_ratio < 0 and deep_imb < 0):
-                            depth_score *= 1.2  # Confirmação = boost
-                            depth_detail["deep_confirmation"] = True
-                        else:
-                            depth_detail["deep_confirmation"] = False
+                    depth_detail["bid_depth"] = round(bid_depth, 2)
+                    depth_detail["ask_depth"] = round(ask_depth, 2)
+                    depth_detail["ratio"] = round(depth_ratio, 4)
 
-            depth_score = max(-20, min(20, depth_score))
+                    # Depth metrics mais detalhados
+                    depth_metrics = orderbook_data.get("depth_metrics", {})
+                    if isinstance(depth_metrics, dict):
+                        deep_imb = depth_metrics.get("depth_imbalance", 0)
+                        deep_imb_v = _finite_or_none(deep_imb)
+                        if deep_imb_v is not None:
+                            # Confirmar com depth mais profundo
+                            if (depth_ratio > 0 and deep_imb_v > 0) or (depth_ratio < 0 and deep_imb_v < 0):
+                                depth_score *= 1.2  # Confirmação = boost
+                                depth_detail["deep_confirmation"] = True
+                            else:
+                                depth_detail["deep_confirmation"] = False
+
+                    depth_score = max(-20.0, min(20.0, depth_score))
 
         components["depth"] = {
             "score": round(depth_score, 2),
             "max": 20,
             "detail": depth_detail,
         }
+        if depth_status:
+            components["depth"]["status"] = depth_status
+            components["depth"]["reason"] = depth_reason
         score += depth_score
 
         # ═══════════════════════════════════════════
@@ -280,11 +312,11 @@ class WhaleAccumulationCalculator:
             abs_inner = absorption_data.get("current_absorption", absorption_data)
 
             if isinstance(abs_inner, dict):
-                buyer_str = float(abs_inner.get("buyer_strength", 0))
-                seller_exh = float(abs_inner.get("seller_exhaustion", 0))
-                abs_index = float(abs_inner.get("index", 0))
-                classification = str(abs_inner.get("classification", ""))
-                label = str(abs_inner.get("label", ""))
+                buyer_str = _finite_or_none(abs_inner.get("buyer_strength")) or 0.0
+                seller_exh = _finite_or_none(abs_inner.get("seller_exhaustion")) or 0.0
+                abs_index = _finite_or_none(abs_inner.get("index")) or 0.0
+                classification = str(abs_inner.get("classification") or "")
+                label = str(abs_inner.get("label") or "")
 
                 # Métrica legada SOMENTE para diagnóstico/compatibilidade.
                 # NÃO entra no score (fail-closed). Assimetria documentada em
@@ -321,64 +353,220 @@ class WhaleAccumulationCalculator:
         deriv_score: float = 0.0
         deriv_detail: dict = {}
 
+        # 4.1 LSR (Long/Short Ratio)
+        btc_deriv: dict = {}
         if derivatives_data and isinstance(derivatives_data, dict):
-            # Buscar dados de BTCUSDT
-            btc_deriv = derivatives_data.get("BTCUSDT", derivatives_data)
+            raw_btc = derivatives_data.get("BTCUSDT", derivatives_data)
+            if isinstance(raw_btc, dict):
+                btc_deriv = raw_btc
 
-            if isinstance(btc_deriv, dict):
-                lsr = float(btc_deriv.get("long_short_ratio", 1.0))
-                oi = float(btc_deriv.get("open_interest", 0))
-                oi_usd = float(btc_deriv.get("open_interest_usd", 0))
+        # Open interest informativo (sem quebrar calculate em inputs não finitos/inválidos)
+        raw_oi = btc_deriv.get("open_interest")
+        oi_v = _finite_or_none(raw_oi)
+        raw_oi_usd = btc_deriv.get("open_interest_usd")
+        oi_usd_v = _finite_or_none(raw_oi_usd)
+        if oi_v is not None:
+            deriv_detail["open_interest"] = oi_v
+        if oi_usd_v is not None:
+            deriv_detail["open_interest_usd"] = oi_usd_v
 
-                # Long/Short Ratio
-                # LSR > 2 = muito mais longs = posicionamento bullish
-                # LSR < 0.5 = muito mais shorts = posicionamento bearish
-                # Mas cuidado: LSR extremo pode indicar crowded trade
-                if lsr > 1:
-                    # Normalizar: LSR 1→0pts, LSR 2→15pts, LSR 3→20pts
-                    lsr_score = min(20, (lsr - 1) * 15)
+        raw_lsr = btc_deriv.get("long_short_ratio")
+        if raw_lsr is None:
+            lsr_valid = False
+            lsr_status = "NON_VOTING_MISSING"
+            lsr_reason = "LSR_MISSING"
+            lsr_observed = None
+            lsr_contrib = 0.0
+        else:
+            v_lsr = _finite_or_none(raw_lsr)
+            if v_lsr is None:
+                lsr_valid = False
+                lsr_status = "NON_VOTING_INVALID_INPUT"
+                lsr_reason = "LSR_NONFINITE_OR_MALFORMED"
+                lsr_observed = None
+                lsr_contrib = 0.0
+            elif v_lsr <= 0:
+                lsr_valid = False
+                lsr_status = "NON_VOTING_INVALID_INPUT"
+                lsr_reason = "LSR_NON_POSITIVE"
+                lsr_observed = v_lsr
+                lsr_contrib = 0.0
+            else:
+                lsr_valid = True
+                lsr_status = "VALID"
+                lsr_reason = None
+                lsr_observed = round(v_lsr, 4)
+                if v_lsr > 1.0:
+                    lsr_score = min(20.0, (v_lsr - 1.0) * 15.0)
                 else:
-                    # LSR 1→0pts, LSR 0.5→-15pts, LSR 0.3→-20pts
-                    lsr_score = max(-20, (lsr - 1) * 20)
+                    lsr_score = max(-20.0, (v_lsr - 1.0) * 20.0)
+                lsr_contrib = round(lsr_score, 2)
+                deriv_detail["long_short_ratio"] = lsr_observed
+                deriv_detail["lsr_score"] = lsr_contrib
 
-                deriv_score += lsr_score
-                deriv_detail["long_short_ratio"] = lsr
-                deriv_detail["lsr_score"] = round(lsr_score, 2)
-
-                # Funding rates (se disponível via onchain)
-                if onchain_data and isinstance(onchain_data, dict):
-                    funding = onchain_data.get("funding_rates", {})
-                    if isinstance(funding, dict) and funding:
-                        avg_funding = sum(float(v) for v in funding.values()) / len(funding)
-                        # Funding positivo = longs pagam shorts = bullish positioning
-                        funding_score = max(-5, min(5, avg_funding * 10000))
-                        deriv_score += funding_score
-                        deriv_detail["avg_funding"] = round(avg_funding, 6)
-                        deriv_detail["funding_score"] = round(funding_score, 2)
-
-                deriv_score = max(-25, min(25, deriv_score))
-
-        # On-chain exchange netflow como bônus
+        # 4.2 Funding Rates
+        funding = None
         if onchain_data and isinstance(onchain_data, dict):
-            netflow = onchain_data.get("exchange_netflow", 0)
-            if isinstance(netflow, (int, float)) and netflow != 0:
-                # Netflow negativo = saída de exchanges = acumulação
-                # Netflow positivo = entrada em exchanges = distribuição
-                netflow_bonus = max(-5, min(5, -netflow * 0.02))
-                deriv_score = max(-25, min(25, deriv_score + netflow_bonus))
-                deriv_detail["exchange_netflow"] = netflow
-                deriv_detail["netflow_signal"] = "accumulation" if netflow < 0 else "distribution"
+            funding = onchain_data.get("funding_rates")
+            if funding is None:
+                funding = onchain_data.get("funding_rate")
+        if funding is None and btc_deriv:
+            funding = btc_deriv.get("funding_rates")
+            if funding is None:
+                funding = btc_deriv.get("funding_rate")
+
+        if funding is None:
+            funding_valid = False
+            funding_status = "NON_VOTING_MISSING"
+            funding_reason = "FUNDING_MISSING"
+            funding_observed = None
+            funding_contrib = 0.0
+        elif isinstance(funding, dict):
+            if not funding:
+                funding_valid = False
+                funding_status = "NON_VOTING_MISSING"
+                funding_reason = "FUNDING_RATES_EMPTY"
+                funding_observed = None
+                funding_contrib = 0.0
+            else:
+                valid_rates = []
+                for rate_val in funding.values():
+                    fv = _finite_or_none(rate_val)
+                    if fv is not None:
+                        valid_rates.append(fv)
+                if valid_rates:
+                    avg_funding = sum(valid_rates) / len(valid_rates)
+                    funding_score = max(-5.0, min(5.0, avg_funding * 10000.0))
+                    funding_valid = True
+                    funding_status = "VALID"
+                    funding_reason = None
+                    funding_observed = round(avg_funding, 6)
+                    funding_contrib = round(funding_score, 2)
+                    deriv_detail["avg_funding"] = funding_observed
+                    deriv_detail["funding_score"] = funding_contrib
+                else:
+                    funding_valid = False
+                    funding_status = "NON_VOTING_INVALID_INPUT"
+                    funding_reason = "FUNDING_RATES_ALL_NONFINITE"
+                    funding_observed = None
+                    funding_contrib = 0.0
+        else:
+            fv = _finite_or_none(funding)
+            if fv is not None:
+                avg_funding = fv
+                funding_score = max(-5.0, min(5.0, avg_funding * 10000.0))
+                funding_valid = True
+                funding_status = "VALID"
+                funding_reason = None
+                funding_observed = round(avg_funding, 6)
+                funding_contrib = round(funding_score, 2)
+                deriv_detail["avg_funding"] = funding_observed
+                deriv_detail["funding_score"] = funding_contrib
+            else:
+                funding_valid = False
+                funding_status = "NON_VOTING_INVALID_INPUT"
+                funding_reason = "FUNDING_RATE_NONFINITE_OR_MALFORMED"
+                funding_observed = None
+                funding_contrib = 0.0
+
+        # 4.3 On-chain Exchange Netflow
+        if not onchain_data or not isinstance(onchain_data, dict):
+            netflow_valid = False
+            netflow_status = "NON_VOTING_MISSING"
+            netflow_reason = "ONCHAIN_DATA_MISSING"
+            netflow_observed = None
+            netflow_contrib = 0.0
+        else:
+            req_paid = onchain_data.get("requires_paid_api") or []
+            is_paid = (
+                (isinstance(req_paid, (list, tuple, set)) and "exchange_netflow" in req_paid)
+                or onchain_data.get("status") in ("requires_paid_api", "unavailable")
+            )
+            if is_paid:
+                netflow_valid = False
+                netflow_status = "NON_VOTING_MISSING"
+                netflow_reason = "REQUIRES_PAID_API"
+                netflow_observed = None
+                netflow_contrib = 0.0
+            else:
+                raw_nf = onchain_data.get("exchange_netflow")
+                if raw_nf is None or "exchange_netflow" not in onchain_data:
+                    netflow_valid = False
+                    netflow_status = "NON_VOTING_MISSING"
+                    netflow_reason = "EXCHANGE_NETFLOW_MISSING"
+                    netflow_observed = None
+                    netflow_contrib = 0.0
+                else:
+                    nf_v = _finite_or_none(raw_nf)
+                    if nf_v is None:
+                        netflow_valid = False
+                        netflow_status = "NON_VOTING_INVALID_INPUT"
+                        netflow_reason = "NETFLOW_NONFINITE_OR_MALFORMED"
+                        netflow_observed = None
+                        netflow_contrib = 0.0
+                    elif nf_v == 0.0:
+                        # Observação zero real (fluxo líquido nulo)
+                        netflow_valid = True
+                        netflow_status = "VALID_ZERO_OBSERVED"
+                        netflow_reason = None
+                        netflow_observed = 0.0
+                        netflow_contrib = 0.0
+                    else:
+                        nf_bonus = max(-5.0, min(5.0, -nf_v * 0.02))
+                        netflow_valid = True
+                        netflow_status = "VALID"
+                        netflow_reason = None
+                        netflow_observed = round(nf_v, 4)
+                        netflow_contrib = round(nf_bonus, 2)
+                        deriv_detail["exchange_netflow"] = netflow_observed
+                        deriv_detail["netflow_signal"] = "accumulation" if netflow_observed < 0 else "distribution"
+
+        # Detalhe per-input
+        deriv_detail["inputs"] = {
+            "lsr": {
+                "observed": lsr_observed,
+                "validity": lsr_status,
+                "contribution": lsr_contrib,
+            },
+            "funding": {
+                "observed": funding_observed,
+                "validity": funding_status,
+                "contribution": funding_contrib,
+            },
+            "netflow": {
+                "observed": netflow_observed,
+                "validity": netflow_status,
+                "contribution": netflow_contrib,
+            },
+        }
+        if lsr_reason:
+            deriv_detail["inputs"]["lsr"]["reason"] = lsr_reason
+        if funding_reason:
+            deriv_detail["inputs"]["funding"]["reason"] = funding_reason
+        if netflow_reason:
+            deriv_detail["inputs"]["netflow"]["reason"] = netflow_reason
+
+        # Total do componente derivatives
+        deriv_score = max(-25.0, min(25.0, lsr_contrib + funding_contrib + netflow_contrib))
+        any_deriv_valid = lsr_valid or funding_valid or netflow_valid
 
         components["derivatives"] = {
             "score": round(deriv_score, 2),
             "max": 25,
             "detail": deriv_detail,
         }
+        if not any_deriv_valid:
+            has_invalid = any(s == "NON_VOTING_INVALID_INPUT" for s in (lsr_status, funding_status, netflow_status))
+            components["derivatives"]["status"] = "NON_VOTING_INVALID_INPUT" if has_invalid else "NON_VOTING_MISSING"
+            components["derivatives"]["reason"] = "ALL_INPUTS_INVALID" if has_invalid else "ALL_INPUTS_MISSING"
+
         score += deriv_score
 
         # ═══════════════════════════════════════════
         # SCORE FINAL E CLASSIFICAÇÃO
         # ═══════════════════════════════════════════
+        if not math.isfinite(score):
+            score = 0.0
         score = max(-100, min(100, round(score)))
 
         if score >= 50:
