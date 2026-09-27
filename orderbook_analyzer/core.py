@@ -60,6 +60,7 @@ from orderbook_core.tracing_utils import TracerWrapper
 
 # Import fallback robusto
 from orderbook_core.orderbook_fallback import get_fallback_instance, fetch_with_fallback
+from .directional_liquidity import build_directional_liquidity
 
 try:
     from zoneinfo import ZoneInfo
@@ -1966,10 +1967,12 @@ class OrderBookAnalyzer:
         mi_buy_1m = _simulate_market_impact(asks[:self.top_n], 1_000_000.0, "buy", mid)
         mi_sell_100k = _simulate_market_impact(bids[:self.top_n], 100_000.0, "sell", mid)
         mi_sell_1m = _simulate_market_impact(bids[:self.top_n], 1_000_000.0, "sell", mid)
-        return {
+        res = {
             "buy": {"100k": mi_buy_100k, "1M": mi_buy_1m},
             "sell": {"100k": mi_sell_100k, "1M": mi_sell_1m},
         }
+        res["directional_liquidity"] = build_directional_liquidity(res["buy"], res["sell"], mid)
+        return res
 
 
     def _build_depth_summary(
@@ -2756,6 +2759,7 @@ class OrderBookAnalyzer:
 
                 "market_impact_buy": mi["buy"],
                 "market_impact_sell": mi["sell"],
+                "directional_liquidity": mi.get("directional_liquidity"),
 
                 "top_n": self.top_n,
                 "ob_limit": self.ob_limit_fetch,

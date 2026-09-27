@@ -755,6 +755,8 @@ def _build_orderbook(event_data: dict) -> dict:
     if s100:
         b_val = s100.get("buy")
         s_val = s100.get("sell")
+        # NOTA P2-B2: slip_b e slip_s mantêm o scaling legado (* 100) por backward
+        # compatibility com testes/parsers legados de compact payload.
         if b_val is not None:
             ob["slip_b"] = round(b_val * 100, 2)
         if s_val is not None:

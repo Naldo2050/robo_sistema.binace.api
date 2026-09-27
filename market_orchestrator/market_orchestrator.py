@@ -1988,6 +1988,15 @@ class EnhancedMarketBot:
             else:
                 execution_quality = "INSUFFICIENT" if (insuf_100k_buy or insuf_100k_sell) else None
 
+            dir_liq = ob_event.get("directional_liquidity")
+            if dir_liq is None:
+                mid_val = (
+                    (ob_event.get("spread_metrics") or {}).get("mid")
+                    or (ob_event.get("orderbook_data") or {}).get("mid")
+                )
+                from orderbook_analyzer.directional_liquidity import build_directional_liquidity
+                dir_liq = build_directional_liquidity(mi_buy, mi_sell, mid_val)
+
             signal["market_impact"] = {
                 "slippage_matrix": slippage_matrix,
                 "observed_partial_matrix": observed_partial_slippage_matrix,
@@ -1998,7 +2007,17 @@ class EnhancedMarketBot:
                 "insufficient_liquidity": insufficient_liquidity,
                 "liquidity_score": liquidity_score,
                 "execution_quality": execution_quality,
+                "legacy_metadata": {
+                    "status": "AGGREGATED_LEGACY",
+                    "execution_gate": "NOT_DIRECTIONAL_EXECUTION_GATE",
+                    "notes": (
+                        "liquidity_score and execution_quality are aggregated legacy metrics "
+                        "and do not represent directional execution gates for BUY or SELL."
+                    ),
+                },
+                "directional_liquidity": dir_liq,
             }
+            signal["directional_liquidity"] = dir_liq
         except Exception as e:
             logging.debug(f"Falha ao construir market_impact: {e}")
 

@@ -607,8 +607,8 @@ class AIPayloadOptimizer:
                     if isinstance(v, dict):
                         short = k.replace("_usd", "")
                         imp[short] = {
-                            "b": _r(v.get("buy"), "percent"),
-                            "s": _r(v.get("sell"), "percent"),
+                            "b": _r(v.get("buy"), "price"),
+                            "s": _r(v.get("sell"), "price"),
                         }
                 if imp:
                     result["imp"] = imp

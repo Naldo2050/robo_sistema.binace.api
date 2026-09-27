@@ -9,6 +9,7 @@ from .core import (
     _sum_depth_usd,
     _simulate_market_impact,
 )
+from .directional_liquidity import build_directional_liquidity
 from .spread_tracker import SpreadTracker
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "_to_float_list",
     "_sum_depth_usd",
     "_simulate_market_impact",
+    "build_directional_liquidity",
 ]
 
 
