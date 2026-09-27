@@ -347,38 +347,264 @@ def test_j1_forensic_payload_v3_mixed_directions():
 # 8. FORENSE J2 REAL (MISSING POSITIONING NO FABRICATION)
 # ==============================================================================
 
-def test_j2_forensic_payload_v3_missing_data_honesty():
+# ==============================================================================
+# 8. FORENSE J2 REAL (MIXED_DIRECTIONS & MISSING CONTEXT HONESTY)
+# ==============================================================================
+
+def test_j2_forensic_payload_v3_mixed_directions_and_missing_context():
     """
     Cenário J2 real auditado:
-    - Derivativos/Posicionamento indisponíveis no domingo.
-    - O payload v3 NÃO fabrica zero nem neutralidade; relata MISSING/null.
+    - Executed Flow BULLISH (compra agressiva)
+    - Orderbook Snapshot BEARISH (ask-heavy / imbalance negativo)
+    - Market Structure BEARISH (BOS breakdown)
+    - Absorption BEARISH (absorção de compra no topo)
+    => reconciler.status DEVE ser MIXED_DIRECTIONS.
+
+    Contexto ausente no domingo:
+    - Derivativos/Posicionamento: MISSING
+    - Calendário Macro: MISSING
+    => Registrados exclusivamente em data_quality.missing_context.
+    
+    Separação Causal:
+    - A justificativa factual para action="WAIT" e assessment="MIXED_DIRECTIONS"
+      é a divergência entre fluxo e estrutura/livro, NUNCA "porque é domingo" ou
+      "porque falta posicionamento".
     """
     event_j2 = {
         "symbol": "BTCUSDT",
         "epoch_ms": 1775177400000,
+        "preco_fechamento": 67100.0,
         "fluxo_continuo": {
             "order_flow": {
-                "net_flow_1m": 0.0,
-                "flow_imbalance": 0.0,
-            }
+                "net_flow_1m": 25000.0,  # BULLISH
+                "flow_imbalance": 0.35,
+            },
+            "absorption_analysis": {
+                "current_absorption": {
+                    "label": "Forte Compradora",  # BEARISH
+                    "index": 0.88,
+                }
+            },
         },
         "orderbook_data": {
-            "imbalance": 0.0,
+            "bid_depth_usd": 120000.0,
+            "ask_depth_usd": 480000.0,
+            "imbalance": -0.60,  # BEARISH
         },
-        # Sem derivatives, sem macro
+        "market_structure": {
+            "bos": "BEAR_BREAKDOWN_67050",  # BEARISH
+        },
+        # Sem derivatives (MISSING)
+        # Sem macro_calendar (MISSING)
     }
 
     payload = build_semantic_payload_v3(event_j2, symbol="BTCUSDT")
+    rec = payload["confluence_reconciler"]
+    dq = payload["data_quality"]
     nv = payload["non_voting_context"]
 
-    # Open interest e funding rate devem ser None/null, sem invenção de dados
+    # 1. Reconciler acusa divergência observada
+    assert rec["status"] == ReconcilerStatus.MIXED_DIRECTIONS.value
+    assert "bullish" in rec["directions_present"]
+    assert "bearish" in rec["directions_present"]
+
+    # 2. Derivativos e Macro ausentes são honestamente reportados como null/MISSING
     assert nv["derivatives"]["open_interest_contracts"] is None
     assert nv["derivatives"]["funding_rate_decimal"] is None
+    assert nv["derivatives"]["validity"] == "MISSING"
     assert nv["macro_calendar"]["provider_status"] == "MISSING"
+
+    # 3. Data quality expõe fatos sem booleano inventado
+    assert dq["reconciler_status"] == ReconcilerStatus.MIXED_DIRECTIONS.value
+    assert "derivatives" in dq["missing_context"]
+    assert "macro_calendar" in dq["missing_context"]
+    assert "is_sufficient_for_assessment" not in dq
+    assert "data_staleness_warning" not in dq
 
 
 # ==============================================================================
-# 9. RFC 8259 SERIALIZATION
+# 9. LIQUIDATION ZERO VS MISSING TEST
+# ==============================================================================
+
+def test_liquidation_telemetry_absent_vs_zero_observed():
+    """
+    Testa a distinção inegociável entre:
+    A) Telemetria de liquidação AUSENTE -> status MISSING, valores null.
+    B) Telemetria com stream FULL e 0 eventos -> status VALID, valores 0.0, reason ZERO_OBSERVED_HEALTHY_STREAM.
+    """
+    # A) Ausente
+    event_no_liq = {"symbol": "BTCUSDT", "epoch_ms": 1775177400000}
+    payload_a = build_semantic_payload_v3(event_no_liq)
+    liq_a = payload_a["non_voting_context"]["liquidations"]
+
+    assert liq_a["status"] == "MISSING"
+    assert liq_a["observed_notional_usd_total"] is None
+    assert liq_a["estimated_notional_usd_total"] is None
+    assert liq_a["event_count"] is None
+    assert "liquidations" in payload_a["data_quality"]["missing_context"]
+
+    # B) Saudável, cobertura FULL e 0 eventos
+    event_zero_liq = {
+        "symbol": "BTCUSDT",
+        "epoch_ms": 1775177400000,
+        "liquidation_telemetry": {
+            "coverage": "FULL",
+            "validity": "VALID",
+            "stream_healthy": True,
+            "event_count": 0,
+            "observed_notional_usd_total": 0.0,
+            "estimated_notional_usd_total": 0.0,
+        },
+    }
+    payload_b = build_semantic_payload_v3(event_zero_liq)
+    liq_b = payload_b["non_voting_context"]["liquidations"]
+
+    assert liq_b["status"] == "VALID"
+    assert liq_b["reason"] == "ZERO_OBSERVED_HEALTHY_STREAM"
+    assert liq_b["observed_notional_usd_total"] == 0.0
+    assert liq_b["estimated_notional_usd_total"] == 0.0
+    assert liq_b["event_count"] == 0
+    assert "liquidations" not in payload_b["data_quality"]["missing_context"]
+
+
+# ==============================================================================
+# 10. EXECUTION CONTEXT THREE-STATE TEST
+# ==============================================================================
+
+def test_execution_context_fillability_three_state():
+    """
+    Testa os 3 estados estritos de is_fillable:
+    A) fill_ratio >= 1.0 e slippage presente -> is_fillable = True
+    B) fill_ratio < 1.0 ou insuficiente -> is_fillable = False
+    C) fill_ratio ausente (None) -> is_fillable = None
+    Nunca colapsar B e C!
+    """
+    base_event = {"symbol": "BTCUSDT", "preco_fechamento": 67000.0}
+
+    # A) Fillable observado
+    evt_a = {
+        **base_event,
+        "market_impact": {
+            "slippage_matrix": {"100k_usd": {"buy": 2.0, "sell": 2.0}},
+            "fill_ratio_matrix": {"100k_usd": {"buy": 1.0, "sell": 1.0}},
+        },
+    }
+    pay_a = build_semantic_payload_v3(evt_a)
+    assert pay_a["execution_context"]["buy"]["is_fillable"] is True
+    assert pay_a["execution_context"]["buy"]["fill_ratio"] == 1.0
+
+    # B) Insuficiente observado
+    evt_b = {
+        **base_event,
+        "market_impact": {
+            "slippage_matrix": {"100k_usd": {"buy": 2.0, "sell": 2.0}},
+            "fill_ratio_matrix": {"100k_usd": {"buy": 0.65, "sell": 0.40}},
+        },
+    }
+    pay_b = build_semantic_payload_v3(evt_b)
+    assert pay_b["execution_context"]["buy"]["is_fillable"] is False
+    assert pay_b["execution_context"]["buy"]["fill_ratio"] == 0.65
+    assert pay_b["execution_context"]["sell"]["is_fillable"] is False
+
+    # C) Missing (desconhecido)
+    evt_c = {
+        **base_event,
+        "market_impact": {
+            "slippage_matrix": {"100k_usd": {"buy": 2.0, "sell": 2.0}},
+            # Sem fill_ratio_matrix
+        },
+    }
+    pay_c = build_semantic_payload_v3(evt_c)
+    assert pay_c["execution_context"]["buy"]["fill_ratio"] is None
+    assert pay_c["execution_context"]["buy"]["is_fillable"] is None
+    assert pay_c["execution_context"]["sell"]["fill_ratio"] is None
+    assert pay_c["execution_context"]["sell"]["is_fillable"] is None
+
+
+# ==============================================================================
+# 11. DERIVATIVES FUNDING ZERO VS MISSING TEST
+# ==============================================================================
+
+def test_derivatives_funding_zero_vs_missing():
+    """
+    Testa que funding = 0.0 é um dado válido observado, não missing.
+    - funding=0.0 + OI válido -> VALID
+    - funding=None + OI válido -> PARTIAL
+    - ambos None -> MISSING
+    """
+    # 1. Funding 0.0 observado
+    evt_zero = {
+        "symbol": "BTCUSDT",
+        "derivatives": {"BTCUSDT": {"open_interest": 85000.0, "funding_rate": 0.0}},
+    }
+    pay_zero = build_semantic_payload_v3(evt_zero)
+    d_zero = pay_zero["non_voting_context"]["derivatives"]
+    assert d_zero["validity"] == "VALID"
+    assert d_zero["funding_rate_decimal"] == 0.0
+    assert d_zero["is_observed_funding_zero"] is True
+
+    # 2. Funding missing + OI válido
+    evt_partial = {
+        "symbol": "BTCUSDT",
+        "derivatives": {"BTCUSDT": {"open_interest": 85000.0}},
+    }
+    pay_partial = build_semantic_payload_v3(evt_partial)
+    d_partial = pay_partial["non_voting_context"]["derivatives"]
+    assert d_partial["validity"] == "PARTIAL"
+    assert d_partial["funding_rate_decimal"] is None
+    assert d_partial["is_observed_funding_zero"] is False
+
+    # 3. Ambos missing
+    evt_miss = {"symbol": "BTCUSDT"}
+    pay_miss = build_semantic_payload_v3(evt_miss)
+    d_miss = pay_miss["non_voting_context"]["derivatives"]
+    assert d_miss["validity"] == "MISSING"
+    assert "derivatives" in pay_miss["data_quality"]["missing_context"]
+
+
+# ==============================================================================
+# 12. MACRO REFERENCE TIME & MISSING PRICE FOR BPS TEST
+# ==============================================================================
+
+def test_macro_reference_and_execution_missing_price():
+    """
+    Testa que:
+    1. Evento macro agendado sem reference_time e sem as_of_ms não gera número gigante.
+    2. Slippage USD presente sem preço de fechamento não calcula bps com fallback 1.0.
+    """
+    # 1. Macro time to event
+    evt_macro = {
+        "symbol": "BTCUSDT",
+        "macro_calendar_snapshot": {
+            "provider_status": "AVAILABLE",
+            "nearest_upcoming_event": {
+                "event_type": "FOMC_RATE_DECISION",
+                "scheduled_at_ms": 1800000000000,
+            },
+        },
+    }
+    pay_m = build_semantic_payload_v3(evt_macro, as_of_ms=1799000000000)
+    nearest = pay_m["non_voting_context"]["macro_calendar"]["nearest_event"]
+    assert nearest["time_to_event_ms"] == 1000000000  # 1800000000000 - 1799000000000
+
+    # 2. Missing price for BPS
+    evt_no_px = {
+        "symbol": "BTCUSDT",
+        "market_impact": {
+            "slippage_matrix": {"100k_usd": {"buy": 3.50, "sell": 2.00}},
+            "fill_ratio_matrix": {"100k_usd": {"buy": 1.0, "sell": 1.0}},
+        },
+        # Sem preco_fechamento e sem ohlc close
+    }
+    pay_px = build_semantic_payload_v3(evt_no_px)
+    ex = pay_px["execution_context"]
+    assert ex["buy"]["execution_slippage_usd"] == 3.50
+    assert ex["buy"]["execution_slippage_bps"] is None  # Não calcula dividindo por 1.0!
+    assert ex["reason"] == "MISSING_REFERENCE_PRICE_FOR_BPS"
+
+
+# ==============================================================================
+# 13. RFC 8259 SERIALIZATION
 # ==============================================================================
 
 def test_semantic_payload_v3_rfc8259():
@@ -395,7 +621,7 @@ def test_semantic_payload_v3_rfc8259():
 
 
 # ==============================================================================
-# 10. BACKWARD COMPATIBILITY: PAYLOAD V2 REMAINS OPERATIONAL
+# 14. BACKWARD COMPATIBILITY: PAYLOAD V2 REMAINS OPERATIONAL
 # ==============================================================================
 
 def test_legacy_payload_v2_regression_preserved():
@@ -409,3 +635,4 @@ def test_legacy_payload_v2_regression_preserved():
     assert "flow" in payload_v2
     assert "ob" in payload_v2
     assert "regime" in payload_v2
+
