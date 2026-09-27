@@ -14,18 +14,36 @@ from flow_analyzer import effort_response as er
 from flow_analyzer.effort_response import compute_effort_response
 
 
+# Fixture REAL_J2: baseada nos valores reais observados na janela J2
+# (window_open_ms=1788702361157, window_close_ms=1788702418610, 2026-09-06 Sunday)
+REAL_J2 = {
+    "buy_notional_usd": 6816945.1591,
+    "sell_notional_usd": 1149280.5758,
+    "open": 79776.9,
+    "high": 79810.8,
+    "low": 79776.9,
+    "close": 79792.7,
+    "window_duration_ms": 57453,
+    "vwap": 79803.5,
+    "poc": 79804.9,
+}
+
+# Fixture SYNTHETIC_J2_LIKE: exemplo canônico didático 2.5M/1M @50k (não a J2 real)
+SYNTHETIC_J2_LIKE = {
+    "buy_notional_usd": 2500000.0,
+    "sell_notional_usd": 1000000.0,
+    "open": 50000.0,
+    "high": 50050.0,
+    "low": 49980.0,
+    "close": 50020.0,
+    "window_duration_ms": 60000,
+    "vwap": 50010.0,
+    "poc": 50005.0,
+}
+
+
 def _j2():
-    return {
-        "buy_notional_usd": 6816945.1591,
-        "sell_notional_usd": 1149280.5758,
-        "open": 79776.9,
-        "high": 79810.8,
-        "low": 79776.9,
-        "close": 79792.7,
-        "window_duration_ms": 57453,
-        "vwap": 79803.5,
-        "poc": 79804.9,
-    }
+    return dict(REAL_J2)
 
 
 def test_exact_formulas():
@@ -80,6 +98,27 @@ def test_j2_numbers():
     assert r["close_vs_vwap_bps"] == pytest.approx(-10.8 / 79776.9 * 10000)
     assert r["close_vs_poc_usd"] == pytest.approx(-12.2)
     assert r["close_vs_poc_bps"] == pytest.approx(-12.2 / 79776.9 * 10000)
+
+
+def test_synthetic_j2_like_numbers():
+    r = compute_effort_response(**SYNTHETIC_J2_LIKE)
+    assert r["validity"] == "VALID"
+    assert r["total_aggressive_notional_usd"] == pytest.approx(3500000.0)
+    assert r["net_aggressive_notional_usd"] == pytest.approx(1500000.0)
+    assert r["buy_share"] == pytest.approx(0.7142857142857143)
+    assert r["sell_share"] == pytest.approx(0.2857142857142857)
+    assert r["price_displacement_usd"] == pytest.approx(20.0)
+    assert r["price_displacement_bps"] == pytest.approx(4.0)
+    assert r["range_usd"] == pytest.approx(70.0)
+    assert r["range_bps"] == pytest.approx(14.0)
+    assert r["close_from_high_usd"] == pytest.approx(-30.0)
+    assert r["close_from_high_bps"] == pytest.approx(-6.0)
+    assert r["close_from_low_usd"] == pytest.approx(40.0)
+    assert r["close_from_low_bps"] == pytest.approx(8.0)
+    assert r["close_vs_vwap_usd"] == pytest.approx(10.0)
+    assert r["close_vs_vwap_bps"] == pytest.approx(2.0)
+    assert r["close_vs_poc_usd"] == pytest.approx(15.0)
+    assert r["close_vs_poc_bps"] == pytest.approx(3.0)
 
 
 def test_zero_net_allowed():
