@@ -555,6 +555,16 @@ _ENTRIES = [
         "effort.price.close_vs_poc_bps"),
        CAL_NA, is_composite=True,
        notes="container sem julgamento; sem direito a voto"),
+    # ── MACRO SCHEDULED EVENTS (institutional/macro_calendar; NON_VOTING)
+    _e("macro.scheduled_event.time_to_event", FAM_MACRO, T_SLOW,
+       "institutional.macro_calendar", None, (), CAL_NA,
+       notes="milissegundos até o evento agendado de referência (negativo se passado)"),
+    _e("macro.scheduled_event.importance", FAM_MACRO, T_SLOW,
+       "institutional.macro_calendar", None, (), CAL_NA,
+       notes="importância declarada pela fonte (ex: HIGH_IMPACT_TARGET_SET)"),
+    _e("macro.scheduled_event.type", FAM_MACRO, T_SLOW,
+       "institutional.macro_calendar", None, (), CAL_NA,
+       notes="tipo canônico do evento agendado (ex: FOMC_RATE_DECISION, US_CPI)"),
 ]
 
 FIELDS: dict[str, TaxonomyEntry] = {e.field_id: e for e in _ENTRIES}
@@ -617,6 +627,10 @@ ALIASES: dict[str, str] = {
     "prob_trend": "regime.distribution",
     "prob_rev": "regime.distribution",
     "prob_break": "regime.distribution",
+    # macro (compacto)
+    "macro_tte": "macro.scheduled_event.time_to_event",
+    "macro_imp": "macro.scheduled_event.importance",
+    "macro_type": "macro.scheduled_event.type",
 }
 
 
