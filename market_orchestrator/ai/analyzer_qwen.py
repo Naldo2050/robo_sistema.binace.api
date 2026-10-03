@@ -3473,6 +3473,7 @@ class AIAnalyzer:
         )
         for attempt in range(max_retries):
             strict_json_modes = [True, False] if _supports_json_mode else [False]
+            request_attempted = False
             try:
                 for strict_json in strict_json_modes:
                     messages: List[ChatMessage] = [
@@ -3489,12 +3490,17 @@ class AIAnalyzer:
                     if strict_json:
                         create_kwargs["response_format"] = {"type": "json_object"}
 
-                    try:
-                        if params.get("reasoning_effort"):
-                            create_kwargs["reasoning_effort"] = params["reasoning_effort"]
-                        if params.get("top_p") is not None:
-                            create_kwargs["top_p"] = params["top_p"]
+                    if params.get("reasoning_effort"):
+                        create_kwargs["reasoning_effort"] = params["reasoning_effort"]
+                    if params.get("top_p") is not None:
+                        create_kwargs["top_p"] = params["top_p"]
 
+                    from common.ai_throttler import get_throttler
+                    _throttler = get_throttler()
+                    _throttler.record_attempt()
+
+                    try:
+                        request_attempted = True
                         response = self.client.chat.completions.create(**create_kwargs)
 
                         # Sucesso: registrar no throttler
@@ -3571,7 +3577,10 @@ class AIAnalyzer:
                     last_error_reason = "empty_response"
                     if strict_json and self.mode == "groq":
                         continue
-            except Exception:
+            except Exception as e:
+                if not request_attempted:
+                    # Falha antes do envio fisico (ex: throttler): propagar imediatamente (fail-closed)
+                    raise
                 if attempt < max_retries - 1:
                     wait_time = base_delay * (2 ** attempt)
                     logging.info(

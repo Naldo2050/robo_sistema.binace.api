@@ -64,6 +64,8 @@ class SmartAIThrottler:
 
     # --- Estado interno (não passar no construtor) ---
     _last_call_ts: float = field(default=0.0, repr=False, init=False)
+    _last_attempt_ts: float = field(default=0.0, repr=False, init=False)
+    _total_attempts: int = field(default=0, repr=False, init=False)
     _last_imbalance: Optional[float] = field(default=None, repr=False, init=False)
     _last_bsr: Optional[float] = field(default=None, repr=False, init=False)
     _calls_this_hour: int = field(default=0, repr=False, init=False)
@@ -168,8 +170,9 @@ class SmartAIThrottler:
             )
 
         # 4) Hard min interval (NUNCA bypassed, exceto primeiros eventos)
-        elapsed = now - self._last_call_ts
-        if self._last_call_ts > 0 and elapsed < self.hard_min_interval:
+        last_cadence_ts = self._last_attempt_ts if self._last_attempt_ts > 0 else self._last_call_ts
+        elapsed = now - last_cadence_ts
+        if last_cadence_ts > 0 and elapsed < self.hard_min_interval:
             return False, (
                 f"hard_min_interval "
                 f"({elapsed:.0f}s < {self.hard_min_interval:.0f}s)"
@@ -180,7 +183,7 @@ class SmartAIThrottler:
             return True, f"priority_event ({event_type})"
 
         # 6) Soft min interval
-        if self._last_call_ts > 0 and elapsed < self.min_interval:
+        if last_cadence_ts > 0 and elapsed < self.min_interval:
             is_sig = self._is_significant(delta, volume, avg_volume)
             if is_sig:
                 return True, f"significant_change (delta={delta:+.2f}, elapsed={elapsed:.0f}s)"
@@ -211,6 +214,15 @@ class SmartAIThrottler:
     # ──────────────────────────────────────────────
     # Registro de chamadas e erros
     # ──────────────────────────────────────────────
+
+    def record_attempt(self) -> None:
+        """
+        Registrar inicio de tentativa fisica de chamada externa a IA.
+        Atualiza apenas _last_attempt_ts e contador observacional para controle de cadencia,
+        sem alterar calls_this_hour, tokens_used ou estado de rate limit.
+        """
+        self._last_attempt_ts = time.time()
+        self._total_attempts += 1
 
     def record_call(self, tokens_used: int = 0):
         """Registrar chamada realizada com sucesso."""
@@ -328,6 +340,9 @@ class SmartAIThrottler:
             "consecutive_skips": self._consecutive_skips,
             "seconds_since_last_call": now - self._last_call_ts
                 if self._last_call_ts > 0 else None,
+            "seconds_since_last_attempt": now - self._last_attempt_ts
+                if self._last_attempt_ts > 0 else None,
+            "total_attempts": self._total_attempts,
         }
 
 
