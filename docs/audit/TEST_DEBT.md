@@ -116,5 +116,22 @@ Identificados durante a execução e validação da Coleta Oficial de 2 Horas (I
 * **Guarda de SLA de offset do orderbook** (`market_orchestrator/orderbook/orderbook_wrapper.py`, commit `c2df8fa`): snapshots `live_sync` com `snapshot_offset_ms > 1500ms` são descartados em favor do `cache_bg` (com `refresh_orderbook_async`); semântica de offset do fallback harmonizada para valor absoluto positivo + campo `cache_age_ms`. Mudança conservadora (aumenta fallback, nunca aceita dado estagnado como live). Cobertura: `tests/unit/test_orderbook_sync_snapshot.py::test_orderbook_sync_excessive_offset_triggers_fallback`. Validada na observação go-live de 18/09 (seção 4 do sign-off): 0 vazamentos >1500ms, p90 1272ms.
 * **Nota V3/18-09:** 3.272 sinais `is_signal=1` sem bloco `orderbook_data` no DB completo datam de **08/09 18:09 UTC a 15/09** (3.271 `Absorção` slim + 1 `ANALYSIS_TRIGGER` variante iceberg de 11/09) — i.e., **fora** das janelas auditadas e **após** o fix do Item 4 (`e696ee2`, 05/09): emissores alternativos não cobertos pelo contrato do Item 4. Investigação dedicada pendente (novo débito proposto: cobertura de schema para o emissor slim de `Absorção` e variantes de detectores).
 * **INV-A/18-09 — Emissor slim MORTO, sem Item 9:** (i) `events/event_stats_model.py::create_absorption_event` (legado, sem `orderbook_data`) tem **zero imports** no repo — só listagens de inventário citam o nome do arquivo; (ii) único `pipeline.detect_signals` produtivo (`window_processor.py:727`) sempre passa `orderbook_data=ob_event`; (iii) `TradeFlowAnalyzer.analyze_window` (sem orderbook) é instanciado mas **nunca invocado**; (iv) `orderbook_fallback` nunca retorna `None` (cache_bg/emergency/invalid); (v) **17/17 `Absorção real_time`** no DB (10 das sessões auditadas + 7 de 11–12/09) têm orderbook completo `live_sync` — os 3.271 incompletos são 100% `data_context=historical` (carimbado pelo saver para timestamps 2023, cadência bulk de ~109–436/h), i.e., **resíduo de replays/backfills gravados no DB de produção, não bug vivo**. Nenhum cron/scheduler ativo referencia replay com escrita (runners shadow são live-stream). Ação: higiene — seções de validação futuras devem filtrar `data_context='real_time'`; considerar DB separado para backfills.
+---
 
+## 6. Dívidas Técnicas Pré-Existentes Identificadas na Fase 2B (2026-10-02)
 
+Identificadas durante a execução completa da suíte hermética de testes unitários (`tests/unit/` com secrets ausentes e `-m "not network"`). Nenhuma dessas falhas está relacionada às remediações de segurança da Fase 2 (bugs #5 e #27).
+
+### DT-05 — Asserção Rígida de Quantidade de Campos na Taxonomia de Evidências
+
+* **Teste:** `tests/unit/test_effort_response_metrics.py::test_taxonomy_effort_fields`
+* **Status:** Não corrigido nesta fase (registrado como dívida técnica).
+* **Causa Raiz:** O teste possui uma asserção estática desatualizada: `assert len(tx.FIELDS) == 103 + 19` (esperava 122 campos). Com a adição subsequente de 16 novos campos no contrato de liquidação forçada (`institutional/evidence_taxonomy.py`), o tamanho total passou a 138 campos.
+* **Resolução Planejada:** Atualizar a asserção no teste para refletir o schema expandido ou validar a presença das chaves de interesse sem assert de tamanho global rígido.
+
+### DT-06 — Microbenchmark Sensível à Carga de CPU em Liquidação Forçada
+
+* **Teste:** `tests/unit/test_forced_liquidation_contract.py::test_benchmark_dispatch_parse_aggregate_percentiles`
+* **Status:** Não corrigido nesta fase (registrado como dívida técnica).
+* **Causa Raiz:** Teste de microbenchmark de latência e percentis de parsing/agregação. O teste passa com 100% de sucesso quando executado isoladamente, mas pode falhar sob alta concorrência ou contenção de CPU durante a execução concorrente da suíte completa de ~2600 testes.
+* **Resolução Planejada:** Candidato a marcação com `@pytest.mark.flaky` ou revisão dos thresholds temporais para absorver flutuações de jitter do runner sem mascarar regressões de complexidade algorítmica.
