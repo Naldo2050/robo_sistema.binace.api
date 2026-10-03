@@ -30,6 +30,9 @@ except ImportError:
     ORDERBOOK_REST_JITTER_RANGE = 0.25
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class FallbackConfig:
     """Configuração do fallback REST API."""
@@ -56,13 +59,11 @@ class OrderBookFallback:
     
     def __init__(self, config: Optional[FallbackConfig] = None):
         self.config = config or FallbackConfig()
-        self.logger = logging.getLogger(__name__)
+        self.logger = logger
         
-        # Multiple endpoints para redundância
+        # Endpoints exclusivos de USD-M Futures (Spot e Binance US removidos)
         self.endpoints = [
-            "https://api.binance.com/api/v3/depth",  # Spot API
-            "https://api.binance.us/api/v3/depth",   # US API
-            "https://fapi.binance.com/fapi/v1/depth", # Futures API
+            "https://fapi.binance.com/fapi/v1/depth", # Futures API USD-M
         ]
         
         # Rate limiting

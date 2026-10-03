@@ -1058,6 +1058,8 @@ class OrderBookAnalyzer:
             allow_stale = self.cfg.use_fallback
 
         self._total_fetches += 1
+        # ✅ P4B-FIX: inicializar lim antes de qualquer ramificação
+        lim = limit or self.ob_limit_fetch
 
         # 1. CACHE (leitura protegida)
         if use_cache:
@@ -1088,63 +1090,12 @@ class OrderBookAnalyzer:
         live_attempted = False  # vamos marcar True quando realmente tentar rede
 
         if not self._circuit_breaker.allow_request():
-            # circuito OPEN: tenta fallback REST primeiro
+            # circuito OPEN: respeita a política fail-closed; não contorna o breaker
+            # fazendo novas requisições para o mesmo serviço de Futures.
             self._last_fetch_source = "circuit_open"
             self._last_fetch_age_seconds = 0.0
             skip_live_fetch = True
-
-            # 🆕 FALLBACK ROBUSTO: tenta endpoints alternativos
-            fallback = get_fallback_instance()
-            if fallback.is_healthy():
-                logging.warning(f"🔄 Circuit OPEN para {self.symbol} - tentando fallback REST...")
-                try:
-                    fallback_data = await fallback.fetch_orderbook_fallback(
-                        symbol=self.symbol, 
-                        limit=lim,
-                        session=await self._get_session()
-                    )
-                    
-                    if fallback_data:
-                        # Valida dados do fallback
-                        is_valid, issues, converted = self._validate_snapshot(fallback_data)
-                        if is_valid:
-                            # Salva no cache
-                            now_ts_mono = time.monotonic()
-                            with self._cache_lock:
-                                safe_copy = self._snapshot_copy(converted)
-                                self._cached_snapshot = safe_copy
-                                self._cache_timestamp_mono = now_ts_mono
-    
-                                self._last_valid_snapshot = self._snapshot_copy(converted)
-                                self._last_valid_timestamp_mono = now_ts_mono
-    
-                                exchange_ts = converted.get("E") or converted.get("T")
-                                if exchange_ts:
-                                    self._last_valid_exchange_ts = int(exchange_ts)
-                            
-                            self._last_fetch_source = "fallback_rest"
-                            self._last_fetch_age_seconds = 0.0
-                            
-                            # Métricas de sucesso do fallback
-                            self.metrics.inc_fetch(symbol=self.symbol, status="ok", source="fallback")
-                            self.metrics.set_data_age(symbol=self.symbol, source="fallback", age_seconds=0.0)
-                            
-                            # Registra sucesso no circuit breaker
-                            self._circuit_breaker.record_success()
-                            
-                            logging.info(f"✅ Fallback REST bem-sucedido para {self.symbol}")
-                            return self._snapshot_copy(safe_copy)
-                        else:
-                            logging.warning(f"⚠️ Fallback retornou dados inválidos: {', '.join(issues)}")
-                    else:
-                        logging.warning(f"⚠️ Fallback REST falhou para {self.symbol}")
-                        
-                except Exception as e:
-                    logging.error(f"💥 Erro no fallback REST para {self.symbol}: {e}")
-            else:
-                logging.warning(f"🔴 Fallback não está saudável para {self.symbol}")
-
-            logging.warning(f"🔌 Circuit OPEN para {self.symbol} - pulando fetch live")
+            logging.warning(f"🔌 Circuit OPEN para {self.symbol} - pulando fetch live (fail-closed)")
 
         # 2. RATE LIMITING
         if not self._check_rate_limit():
@@ -1155,7 +1106,6 @@ class OrderBookAnalyzer:
             await asyncio.sleep(wait_time)  # ✅ ASYNC
 
         # 3. FETCH COM RETRY
-        lim = limit or self.ob_limit_fetch
         url = f"https://fapi.binance.com/fapi/v1/depth?symbol={self.symbol}&limit={lim}"
 
         max_retries = self.cfg.max_retries
