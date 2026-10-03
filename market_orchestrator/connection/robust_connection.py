@@ -110,8 +110,9 @@ class RobustConnectionManager:
         self.current_delay = initial_delay
         self.reconnect_count = 0
         self.is_connected = False
-        self.should_stop = False
+        self._should_stop = False
         self._disconnect_called = False
+        self._stop_event = asyncio.Event()
 
         # Estatísticas
         self.total_messages_received = 0
@@ -138,6 +139,16 @@ class RobustConnectionManager:
             symbol=self.symbol,
         )
 
+    @property
+    def should_stop(self) -> bool:
+        return self._should_stop
+
+    @should_stop.setter
+    def should_stop(self, val: bool) -> None:
+        self._should_stop = bool(val)
+        if self._should_stop and hasattr(self, "_stop_event") and self._stop_event is not None:
+            self._stop_event.set()
+
     def set_callbacks(
         self,
         on_message=None,
@@ -161,6 +172,8 @@ class RobustConnectionManager:
         Bloqueia a execução enquanto a conexão estiver ativa.
         """
         self.should_stop = False
+        self._disconnect_called = False
+        self._stop_event.clear()
 
         # Configurações de timeout e ping/pong
         ping_interval = getattr(config, "WS_PING_INTERVAL", 20)
@@ -265,6 +278,7 @@ class RobustConnectionManager:
         except Exception as e:
             logger.warning(f"Erro ignorado: {e}")
         self.should_stop = True
+        self._stop_event.set()
         if self._ws and not self._ws.closed:
             await self._ws.close()
         if self._session and not self._session.closed:
@@ -333,8 +347,7 @@ class RobustConnectionManager:
                             
                     except json.JSONDecodeError as json_err:
                         logger.error(f"Erro ao decodificar JSON: {json_err}. Mensagem: {msg.data[:200]}")
-                        # Implementar lógica de fallback ou reconexão aqui
-                        await self._handle_reconnect()
+                        # JSON inválido isolado não indica falha de transporte; descarta e prossegue
                         return
                     except ValueError as val_err:
                         logger.error(f"JSON inválido: {val_err}. Mensagem: {msg.data[:200]}")
@@ -351,12 +364,8 @@ class RobustConnectionManager:
                         
                 except Exception as e:
                     logger.error(f"Erro no callback on_message: {e}", exc_info=True)
-                    # Em caso de erro no callback, tentamos reconectar
-                    try:
-                        await self._handle_reconnect()
-                    except Exception as e:
-                        logger.error(f"Erro em operação async: {e}")
-                        raise
+                    # Propaga para que connect() trate o erro e realize reconnect de forma única
+                    raise
         
         elif msg.type == WSMsgType.ERROR:
             logger.error(f"Erro no WebSocket: {msg.data}")
@@ -423,7 +432,16 @@ class RobustConnectionManager:
                 f"⏳ Reconectando em {self.current_delay:.1f}s "
                 f"(Tentativa {self.reconnect_count}/{self.max_reconnect_attempts})..."
             )
-            await asyncio.sleep(self.current_delay)
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=self.current_delay,
+                )
+            except asyncio.TimeoutError:
+                pass
+
+            if self.should_stop:
+                return
             
             # Backoff exponencial com jitter melhorado
             import random
