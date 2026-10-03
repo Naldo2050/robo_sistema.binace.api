@@ -468,6 +468,20 @@ class EnhancedMarketBot:
             getattr(config, "OOO_LOG_INTERVAL_SEC", 60)
         )
 
+        # ====== Contadores de ingestão (on_message) ======
+        self._invalid_json_count: int = 0
+        self._invalid_json_log_step: int = int(
+            getattr(config, "INVALID_JSON_LOG_STEP", 100) or 100
+        )
+        self._missing_field_counts: dict = {"p": 0, "q": 0, "T": 0}
+        self._missing_field_log_step: int = int(
+            getattr(config, "MISSING_FIELD_LOG_STEP", 100) or 100
+        )
+        self._invalid_trade_count: int = 0
+        self._invalid_trade_log_step: int = int(
+            getattr(config, "INVALID_TRADE_LOG_STEP", 100) or 100
+        )
+
 
         # ====== Hist?ricos de Volume e Delta ======
         self.delta_history = deque(maxlen=100)  # Hist?rico de deltas
