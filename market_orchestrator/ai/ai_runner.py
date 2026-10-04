@@ -838,13 +838,27 @@ def run_ai_analysis_threaded(
         bot.ai_thread_pool = [th for th in bot.ai_thread_pool if th.is_alive()]
 
         if len(bot.ai_thread_pool) >= bot.max_ai_threads:
-            logging.warning("⚠️ Thread pool da IA cheio, aguardando...")
-            bot.ai_thread_pool[0].join(timeout=5.0)
-            bot.ai_thread_pool = [
-                th for th in bot.ai_thread_pool if th.is_alive()
-            ]
+            logging.warning(
+                "⚠️ Thread pool da IA cheio (%d/%d), análise descartada para evitar bloqueio.",
+                len(bot.ai_thread_pool),
+                bot.max_ai_threads,
+            )
+            try:
+                slog.warning(
+                    "ai_pool_saturated",
+                    active_threads=len(bot.ai_thread_pool),
+                    max_threads=bot.max_ai_threads,
+                    tipo_evento=event_data.get("tipo_evento"),
+                )
+            except Exception:
+                pass
+            return
 
         bot.ai_thread_pool.append(t)
-
-    t.start()
+        try:
+            t.start()
+        except Exception as e:
+            bot.ai_thread_pool.remove(t)
+            logging.error(f"❌ Falha ao iniciar thread de análise da IA: {e}", exc_info=True)
+            raise
 
