@@ -28,6 +28,7 @@ class ExecutorConfig:
     """Configuration parameters for simulated execution latency and order lifecycles."""
 
     order_ttl_ms: int = 5000
+    max_open_positions: Optional[int] = None
 
 
 @dataclass
@@ -64,6 +65,12 @@ class PaperExecutor:
         self.cost_model = cost_model or CostModel()
         self.position_manager = position_manager or PositionManager(cost_model=self.cost_model)
         self.config = config or ExecutorConfig()
+        if self.config.max_open_positions is not None:
+            max_pos = self.config.max_open_positions
+            if isinstance(max_pos, bool) or not isinstance(max_pos, int) or max_pos <= 0:
+                raise ValueError(
+                    f"max_open_positions must be a positive integer or None, got {max_pos!r}"
+                )
         self.pending_orders: Dict[str, PaperOrder] = {}
         # Pending symbol map: (cohort_id, decision_provider, symbol) -> order_id
         self._pending_symbol_map: Dict[Tuple[str, str, str], str] = {}
@@ -349,6 +356,21 @@ class PaperExecutor:
                 details=f"An active position or pending order already exists for {key}.",
                 rejected_at=rejected_at_ts,
             )
+
+        # Capacity limit enforcement: open positions + pending orders
+        if self.config.max_open_positions is not None:
+            effective_positions = len(self.position_manager.open_positions) + len(self.pending_orders)
+            if effective_positions >= self.config.max_open_positions:
+                return None, Rejection(
+                    decision_id=order.decision_id,
+                    cohort_id=order.cohort_id,
+                    decision_provider=order.decision_provider,
+                    symbol=order.symbol,
+                    decision_timestamp=rejected_at_ts,
+                    reason="POSITION_LIMIT_EXCEEDED",
+                    details=f"Effective positions {effective_positions} reached capacity limit {self.config.max_open_positions}.",
+                    rejected_at=rejected_at_ts,
+                )
 
         self.pending_orders[order.order_id] = order
         self._pending_symbol_map[key] = order.order_id

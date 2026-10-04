@@ -23,7 +23,7 @@ from paper_trading.decision_providers import (
 from paper_trading.adapters.signal_adapter import SignalDecisionAdapter
 from paper_trading.adapters.risk_adapter import RiskAdapter
 from paper_trading.execution_sink import ExecutionSink
-from paper_trading.executor import PaperExecutor
+from paper_trading.executor import ExecutorConfig, PaperExecutor
 from paper_trading.prediction import PredictionTrackerConfig
 from paper_trading.prediction_tracker import PredictionTracker
 from risk_management.risk_manager import RiskConfig, RiskManager
@@ -190,13 +190,33 @@ class ShadowPaperRuntime:
                     order_ttl_ms=config.order_ttl_ms or 5000,
                 )
 
+            # Resolve effective max open positions from RiskConfig
+            effective_max_positions = (
+                self.risk_adapter.risk_manager.config.max_open_positions
+                if hasattr(self.risk_adapter, "risk_manager")
+                and hasattr(self.risk_adapter.risk_manager, "config")
+                else None
+            )
+
             # 4. Execution Sink
             if execution_sink is not None:
                 self.execution_sink = execution_sink
+                # Fail-fast on capacity policy mismatch between RiskConfig and injected ExecutionSink
+                injected_cfg = getattr(getattr(self.execution_sink, "executor", None), "config", None)
+                injected_max = getattr(injected_cfg, "max_open_positions", None) if injected_cfg else None
+                if injected_max is not None and effective_max_positions is not None and injected_max != effective_max_positions:
+                    raise ValueError(
+                        f"Capacity limit mismatch: RiskConfig has {effective_max_positions} "
+                        f"but injected ExecutionSink executor has {injected_max}."
+                    )
             else:
                 cost_model = CostModel(config.to_cost_config())
                 executor = PaperExecutor(
                     cost_model=cost_model,
+                    config=ExecutorConfig(
+                        order_ttl_ms=config.order_ttl_ms or 5000,
+                        max_open_positions=effective_max_positions,
+                    ),
                 )
                 self.execution_sink = ExecutionSink(
                     symbol=config.symbol,
@@ -228,6 +248,23 @@ class ShadowPaperRuntime:
         """Indicate whether the shadow runtime is actively processing events."""
         with self._lock:
             return self._active and self.config.enabled
+
+    @property
+    def is_risk_position_limit_active(self) -> bool:
+        """
+        Indicate whether the position limit is actively enforced by the underlying executor.
+
+        Factually derived from the actual execution_sink in use.
+        """
+        if not self.config.enabled:
+            return False
+        if self.execution_sink is None or not hasattr(self.execution_sink, "executor"):
+            return False
+        executor = getattr(self.execution_sink, "executor", None)
+        if executor is None or not hasattr(executor, "config"):
+            return False
+        limit = getattr(executor.config, "max_open_positions", None)
+        return isinstance(limit, int) and limit > 0
 
     @property
     def accepts_new_exposure(self) -> bool:
@@ -285,7 +322,7 @@ class ShadowPaperRuntime:
                             else None
                         )
                     },
-                    "risk_position_limit_active": False,
+                    "risk_position_limit_active": self.is_risk_position_limit_active,
                     "risk_daily_loss_active": False,
                 }
                 cohort_created = self.ledger.create_cohort(
@@ -602,7 +639,11 @@ class ShadowPaperRuntime:
             if self.ledger is not None:
                 open_pos_count = 0
                 pending_orders_count = 0
-                if self.execution_sink is not None and hasattr(self.execution_sink, "executor"):
+                if self.execution_sink is not None and hasattr(self.execution_sink, "get_capacity_snapshot"):
+                    snap = self.execution_sink.get_capacity_snapshot()
+                    open_pos_count = snap["open_positions"]
+                    pending_orders_count = snap["pending_orders"]
+                elif self.execution_sink is not None and hasattr(self.execution_sink, "executor"):
                     open_pos_count = len(self.execution_sink.executor.position_manager.open_positions)
                     pending_orders_count = len(self.execution_sink.executor.pending_orders)
 
@@ -640,7 +681,7 @@ class ShadowPaperRuntime:
                 "provider": self.config.provider,
                 "symbol": self.config.symbol,
                 "timeframe": self.config.timeframe,
-                "risk_position_limit_active": False,
+                "risk_position_limit_active": self.is_risk_position_limit_active,
                 "risk_daily_loss_active": False,
                 "counters": self.get_counters(),
             }

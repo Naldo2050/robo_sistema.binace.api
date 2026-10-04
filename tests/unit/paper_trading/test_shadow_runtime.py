@@ -357,7 +357,7 @@ def test_25_counters_coherent():
 
     status = runtime.get_status()
     assert status["active"] is True
-    assert status["risk_position_limit_active"] is False
+    assert status["risk_position_limit_active"] is True
     assert status["risk_daily_loss_active"] is False
 
 

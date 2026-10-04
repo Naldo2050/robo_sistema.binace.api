@@ -162,6 +162,7 @@ class Rejection:
         "CIRCUIT_BREAKER",
         "EXPIRED_NO_MARKET_DATA",
         "INVALID_DECISION",
+        "POSITION_LIMIT_EXCEEDED",
     ]
     details: str
     rejected_at: int

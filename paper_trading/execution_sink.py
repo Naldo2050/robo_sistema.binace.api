@@ -421,3 +421,23 @@ class ExecutionSink:
                 "dedup_cache_size": len(self._dedup_set),
                 "registered_orders": len(self._registered_ingest_seq),
             }
+
+    def get_capacity_snapshot(self) -> Dict[str, Any]:
+        """
+        Return an atomic snapshot of current position and pending order capacity.
+
+        Thread-safe under ExecutionSink._lock.
+        """
+        with self._lock:
+            open_count = len(self.executor.position_manager.open_positions)
+            pending_count = len(self.executor.pending_orders)
+            effective_count = open_count + pending_count
+            max_limit = self.executor.config.max_open_positions
+            avail = max(0, max_limit - effective_count) if max_limit is not None else None
+            return {
+                "open_positions": open_count,
+                "pending_orders": pending_count,
+                "effective_positions": effective_count,
+                "max_open_positions": max_limit,
+                "available_capacity": avail,
+            }

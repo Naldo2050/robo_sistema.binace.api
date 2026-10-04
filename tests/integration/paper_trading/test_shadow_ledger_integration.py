@@ -184,7 +184,7 @@ def test_2_cohort_metadata():
     assert meta["cost_source"] == "binance_vip0"
     assert meta["cost_effective_at"] == "2026-01-01T00:00:00Z"
     assert "risk_config" in meta
-    assert meta["risk_position_limit_active"] is False
+    assert meta["risk_position_limit_active"] is True
     assert meta["risk_daily_loss_active"] is False
 
     runtime.shutdown()
