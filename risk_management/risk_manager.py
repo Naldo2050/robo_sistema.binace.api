@@ -1,7 +1,8 @@
 # risk_management/risk_manager.py
+import math
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Dict, Any, List, Optional, Tuple
 import numpy as np
 import pandas as pd
@@ -73,7 +74,7 @@ class Position:
     @property
     def pnl_percentage(self) -> float:
         """Calculate P&L as percentage."""
-        if self.entry_price == 0:
+        if self.entry_price == 0 or self.size == 0:
             return 0.0
         return self.unrealized_pnl / (self.entry_price * self.size)
 
@@ -115,11 +116,16 @@ class RiskManager:
     - Buffer de retornos para cálculos estatísticos
     """
 
+    @staticmethod
+    def _get_utc_date() -> date:
+        """Obtem a data corrente em UTC."""
+        return datetime.now(timezone.utc).date()
+
     def __init__(self, config: RiskConfig):
         self.config = config
         self.positions: Dict[str, Position] = {}
         self.daily_pnl: float = 0.0
-        self._last_reset_date: date = date.today()
+        self._last_reset_date: date = self._get_utc_date()
 
         # Buffer de retornos por símbolo para cálculos de VaR
         self._returns_buffer: Dict[str, deque] = {}
@@ -128,8 +134,8 @@ class RiskManager:
         self._price_history: Dict[str, deque] = {}
 
     def _check_daily_reset(self) -> None:
-        """Reseta o daily PnL automaticamente quando o dia muda."""
-        today = date.today()
+        """Reseta o daily PnL automaticamente quando o dia UTC muda."""
+        today = self._get_utc_date()
         if today != self._last_reset_date:
             old_pnl = self.daily_pnl
             self.daily_pnl = 0.0
@@ -231,6 +237,73 @@ class RiskManager:
         """Check if trade request is approved based on risk rules."""
         self._check_daily_reset()
 
+        # Validacao defensiva previa: side
+        side = getattr(trade_request, "side", None)
+        if not isinstance(side, str) or side not in ("BUY", "SELL"):
+            return {
+                'approved': False,
+                'reason': 'invalid side',
+                'max_size': 0
+            }
+
+        # Validacao defensiva previa: price
+        price = getattr(trade_request, "price", None)
+        if (
+            isinstance(price, bool)
+            or not isinstance(price, (int, float))
+            or not math.isfinite(price)
+            or price <= 0
+        ):
+            return {
+                'approved': False,
+                'reason': 'invalid price',
+                'max_size': 0
+            }
+
+        # Validacao defensiva previa: size
+        size = getattr(trade_request, "size", None)
+        if (
+            isinstance(size, bool)
+            or not isinstance(size, (int, float))
+            or not math.isfinite(size)
+            or size <= 0
+        ):
+            return {
+                'approved': False,
+                'reason': 'invalid size',
+                'max_size': 0
+            }
+
+        # Validacao defensiva previa: stop_loss
+        sl = getattr(trade_request, "stop_loss", None)
+        if sl is not None:
+            if (
+                isinstance(sl, bool)
+                or not isinstance(sl, (int, float))
+                or not math.isfinite(sl)
+                or sl < 0
+            ):
+                return {
+                    'approved': False,
+                    'reason': 'invalid stop loss',
+                    'max_size': 0
+                }
+
+        # Validacao defensiva previa: take_profit
+        tp = getattr(trade_request, "take_profit", None)
+        if tp is not None:
+            if (
+                isinstance(tp, bool)
+                or not isinstance(tp, (int, float))
+                or not math.isfinite(tp)
+                or tp < 0
+            ):
+                return {
+                    'approved': False,
+                    'reason': 'invalid take profit',
+                    'max_size': 0
+                }
+
         # Check position limit
         if len(self.positions) >= self.max_open_positions:
             return {
@@ -240,12 +313,12 @@ class RiskManager:
             }
 
         # Check position size limit
-        position_value = trade_request.size * trade_request.price
+        position_value = size * price
         if position_value > self.max_position_size:
             return {
                 'approved': False,
                 'reason': 'position size limit exceeded',
-                'max_size': self.max_position_size / trade_request.price
+                'max_size': self.max_position_size / price
             }
 
         # Check daily loss limit
@@ -258,8 +331,8 @@ class RiskManager:
             }
 
         # Check per-trade loss limit
-        if trade_request.stop_loss > 0:
-            potential_loss = abs(trade_request.price - trade_request.stop_loss) * trade_request.size
+        if sl is not None and sl > 0:
+            potential_loss = abs(price - sl) * size
             loss_percentage = potential_loss / position_value
             if loss_percentage > self.max_loss_per_trade:
                 return {
@@ -271,7 +344,7 @@ class RiskManager:
         return {
             'approved': True,
             'reason': 'approved',
-            'max_size': self.max_position_size / trade_request.price
+            'max_size': self.max_position_size / price
         }
 
     def _compute_position_var(
@@ -883,6 +956,6 @@ class RiskManager:
         }
 
     def reset_daily_pnl(self) -> None:
-        """Reset daily P&L (typically called at start of new trading day)."""
+        """Reset daily P&L (typically called at start of new trading day in UTC)."""
         self.daily_pnl = 0.0
-        self._last_reset_date = date.today()
+        self._last_reset_date = self._get_utc_date()
