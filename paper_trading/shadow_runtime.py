@@ -9,9 +9,12 @@ Zero network access, zero AI coupling, zero real order capability, fail-closed b
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import threading
 import time
 from typing import Any, Callable, Dict, Literal, Optional
+
+logger = logging.getLogger(__name__)
 
 from paper_trading.config import ShadowPaperConfig, ShadowProviderType
 from paper_trading.cost_model import CostModel
@@ -127,6 +130,7 @@ class ShadowPaperRuntime:
         self._active: bool = bool(config.enabled)
         self._accept_new_exposure: bool = bool(config.enabled)
         self._persistence_failed: bool = False
+        self._risk_block_reason: Optional[str] = None
 
         # In-memory operational counters
         self._counters: Dict[str, int] = {
@@ -250,6 +254,30 @@ class ShadowPaperRuntime:
             return self._active and self.config.enabled
 
     @property
+    def risk_daily_loss_enforced(self) -> bool:
+        rm = getattr(self.risk_adapter, "risk_manager", None)
+        if rm is None:
+            return False
+        return bool(getattr(rm, "risk_daily_loss_enforced", False))
+
+    @property
+    def risk_pnl_complete(self) -> bool:
+        rm = getattr(self.risk_adapter, "risk_manager", None)
+        if rm is None:
+            return True
+        return bool(getattr(rm, "risk_pnl_complete", True))
+
+    @property
+    def new_exposure_blocked(self) -> bool:
+        with self._lock:
+            return not self._accept_new_exposure
+
+    @property
+    def risk_block_reason(self) -> Optional[str]:
+        with self._lock:
+            return self._risk_block_reason
+
+    @property
     def is_risk_position_limit_active(self) -> bool:
         """
         Indicate whether the position limit is actively enforced by the underlying executor.
@@ -324,6 +352,9 @@ class ShadowPaperRuntime:
                     },
                     "risk_position_limit_active": self.is_risk_position_limit_active,
                     "risk_daily_loss_active": False,
+                    "risk_daily_loss_enforced": self.risk_daily_loss_enforced,
+                    "risk_pnl_complete": self.risk_pnl_complete,
+                    "risk_daily_loss_recovery_level": "SESSION_SAFE",
                 }
                 cohort_created = self.ledger.create_cohort(
                     cohort_id=self.config.cohort_id or "CH_SHADOW_DEFAULT",
@@ -359,8 +390,13 @@ class ShadowPaperRuntime:
         without escaping into the orchestrator or EventBus.
         """
         with self._lock:
-            if not self._active or not self._accept_new_exposure or not self.config.enabled:
+            if not self._active or not self.config.enabled:
                 return ShadowSignalResult(status="INACTIVE")
+            if not self._accept_new_exposure:
+                return ShadowSignalResult(
+                    status="INACTIVE",
+                    error=f"New exposure blocked: {self._risk_block_reason or 'exposure disabled'}",
+                )
 
             try:
                 # 0. Health gate check
@@ -544,6 +580,39 @@ class ShadowPaperRuntime:
                     closed_count = len(sink_res.events.closed_trades)
                     rejections_count = len(sink_res.events.rejections)
 
+                    # Update RiskManager synchronously under runtime lock
+                    if self.risk_adapter is not None and hasattr(self.risk_adapter, "on_closed_trade"):
+                        for trade in sink_res.events.closed_trades:
+                            try:
+                                risk_res = self.risk_adapter.on_closed_trade(trade)
+                            except Exception as exc:
+                                logger.error(
+                                    "🚨 Erro inesperado no accounting de ClosedTrade %s: %s",
+                                    getattr(trade, "trade_id", "<unknown>"),
+                                    exc,
+                                    exc_info=True,
+                                )
+                                self._accept_new_exposure = False
+                                self._risk_block_reason = "ACCOUNTING_ERROR"
+                                rm = getattr(self.risk_adapter, "risk_manager", None)
+                                if rm is not None and hasattr(rm, "risk_pnl_complete"):
+                                    rm.risk_pnl_complete = False
+                                continue
+
+                            if risk_res is not None:
+                                if risk_res.status == "INVALID_TRADE":
+                                    self._accept_new_exposure = False
+                                    self._risk_block_reason = "INVALID_CLOSED_TRADE"
+                                elif risk_res.status == "PNL_INCOMPLETE":
+                                    self._accept_new_exposure = False
+                                    self._risk_block_reason = "PNL_INCOMPLETE"
+                                elif risk_res.status == "FUTURE_TRADE_DATE":
+                                    self._accept_new_exposure = False
+                                    self._risk_block_reason = "FUTURE_TRADE_DATE"
+                                elif risk_res.limit_exceeded:
+                                    self._accept_new_exposure = False
+                                    self._risk_block_reason = "DAILY_LOSS_LIMIT_REACHED"
+
                     # Persist discrete events to ledger if configured
                     if self.ledger is not None:
                         for rej in sink_res.events.rejections:
@@ -672,6 +741,7 @@ class ShadowPaperRuntime:
         Return runtime status metadata, explicitly documenting operational limitations.
         """
         with self._lock:
+            rm = getattr(self.risk_adapter, "risk_manager", None)
             return {
                 "active": self._active,
                 "enabled": self.config.enabled,
@@ -683,5 +753,12 @@ class ShadowPaperRuntime:
                 "timeframe": self.config.timeframe,
                 "risk_position_limit_active": self.is_risk_position_limit_active,
                 "risk_daily_loss_active": False,
+                "risk_daily_loss_enforced": self.risk_daily_loss_enforced,
+                "risk_pnl_complete": self.risk_pnl_complete,
+                "risk_daily_loss_recovery_level": "SESSION_SAFE",
+                "daily_pnl": getattr(rm, "daily_pnl", 0.0) if rm else 0.0,
+                "daily_loss_limit_usdt": getattr(rm, "daily_loss_limit_usdt", 0.0) if rm else 0.0,
+                "new_exposure_blocked": not self._accept_new_exposure,
+                "risk_block_reason": self._risk_block_reason,
                 "counters": self.get_counters(),
             }

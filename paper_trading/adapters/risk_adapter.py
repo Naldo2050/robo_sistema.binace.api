@@ -296,5 +296,16 @@ class RiskAdapter:
             context={**base_context, "order_id": order_id},
         )
 
+    def on_closed_trade(self, trade: Any) -> Any:
+        """
+        Relay a completed ClosedTrade event to RiskManager.record_closed_trade().
+        Thread-safe under RiskAdapter._lock.
+        Does not assume position ownership.
+        """
+        with self._lock:
+            if hasattr(self.risk_manager, "record_closed_trade"):
+                return self.risk_manager.record_closed_trade(trade)
+            return None
+
     # Alias for flexibility
     evaluate_decision = evaluate

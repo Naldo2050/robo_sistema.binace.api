@@ -1,9 +1,9 @@
 # risk_management/risk_manager.py
 import math
-from collections import deque
+from collections import deque, OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime, date, timezone
-from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime, date, timezone, timedelta
+from typing import Dict, Any, List, Optional, Tuple, Literal
 import numpy as np
 import pandas as pd
 import logging
@@ -40,6 +40,17 @@ class RiskConfig:
     enable_stress_testing: bool = True
     # Tamanho do buffer de retornos para cálculos de VaR
     returns_buffer_size: int = 500
+    seen_trades_cache_size: int = 50_000
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.seen_trades_cache_size, bool)
+            or not isinstance(self.seen_trades_cache_size, int)
+            or self.seen_trades_cache_size <= 0
+        ):
+            raise ValueError(
+                f"Invalid seen_trades_cache_size: {self.seen_trades_cache_size}. Must be a positive integer."
+            )
 
 
 @dataclass
@@ -103,6 +114,23 @@ class RiskMetrics:
     var: float = 0.0
 
 
+@dataclass(frozen=True)
+class RiskClosedTradeResult:
+    status: Literal[
+        "APPLIED",
+        "DUPLICATE_IGNORED",
+        "IGNORED_PAST_DATE",
+        "PNL_INCOMPLETE",
+        "FUTURE_TRADE_DATE",
+        "INVALID_TRADE",
+    ]
+    trade_id: str
+    daily_pnl: float
+    limit_exceeded: bool
+    pnl_complete: bool
+    reason: Optional[str] = None
+
+
 class RiskManager:
     """
     Risk management system for trading operations.
@@ -122,10 +150,22 @@ class RiskManager:
         return datetime.now(timezone.utc).date()
 
     def __init__(self, config: RiskConfig):
+        cache_size = getattr(config, "seen_trades_cache_size", 50_000)
+        if (
+            isinstance(cache_size, bool)
+            or not isinstance(cache_size, int)
+            or cache_size <= 0
+        ):
+            raise ValueError(
+                f"Invalid seen_trades_cache_size: {cache_size}. Must be a positive integer."
+            )
         self.config = config
         self.positions: Dict[str, Position] = {}
         self.daily_pnl: float = 0.0
         self._last_reset_date: date = self._get_utc_date()
+        self.risk_daily_loss_enforced: bool = True
+        self.risk_pnl_complete: bool = True
+        self._seen_trades: OrderedDict[str, date] = OrderedDict()
 
         # Buffer de retornos por símbolo para cálculos de VaR
         self._returns_buffer: Dict[str, deque] = {}
@@ -144,6 +184,11 @@ class RiskManager:
                 "📅 Daily PnL resetado (novo dia): anterior=%.2f",
                 old_pnl,
             )
+            # Prune de trades mais antigos que 2 dias para manter cache bounded
+            cutoff_date = today - timedelta(days=2)
+            keys_to_remove = [tid for tid, tdate in self._seen_trades.items() if tdate < cutoff_date]
+            for tid in keys_to_remove:
+                self._seen_trades.pop(tid, None)
 
     def _get_returns_buffer(self, symbol: str) -> deque:
         """Obtém ou cria o buffer de retornos para um símbolo."""
@@ -173,6 +218,141 @@ class RiskManager:
                 ret = (price - last_price) / last_price
                 self._get_returns_buffer(symbol).append(ret)
         history.append(price)
+
+    @property
+    def daily_loss_limit_usdt(self) -> float:
+        return float(self.max_daily_loss * self.config.initial_capital)
+
+    @property
+    def is_daily_loss_exceeded(self) -> bool:
+        return self.daily_pnl <= -self.daily_loss_limit_usdt
+
+    def _remember_trade(self, trade_id: str, trade_date: date) -> None:
+        """Registra um trade_id no cache ordenado bounded multi-day."""
+        self._seen_trades[trade_id] = trade_date
+        cache_limit = getattr(self.config, "seen_trades_cache_size", 50_000)
+        while len(self._seen_trades) > cache_limit:
+            self._seen_trades.popitem(last=False)
+
+    def record_closed_trade(self, trade: Any) -> RiskClosedTradeResult:
+        """
+        Record a completed simulated round-trip trade to track daily realized PnL.
+        Thread-safe under caller's lock; validates trade attributes defensively.
+        Preserves NET realized daily PnL and fails closed on incomplete or future trades.
+        """
+        trade_id = getattr(trade, "trade_id", None)
+        if not isinstance(trade_id, str) or not trade_id.strip():
+            self.risk_pnl_complete = False
+            return RiskClosedTradeResult(
+                status="INVALID_TRADE",
+                trade_id=str(trade_id or ""),
+                daily_pnl=self.daily_pnl,
+                limit_exceeded=self.is_daily_loss_exceeded,
+                pnl_complete=self.risk_pnl_complete,
+                reason="Invalid trade_id: must be non-empty string",
+            )
+
+        closed_ts_ms = getattr(trade, "closed_ts_ms", None)
+        if (
+            isinstance(closed_ts_ms, bool)
+            or not isinstance(closed_ts_ms, (int, float))
+            or not math.isfinite(closed_ts_ms)
+            or closed_ts_ms <= 0
+        ):
+            self.risk_pnl_complete = False
+            return RiskClosedTradeResult(
+                status="INVALID_TRADE",
+                trade_id=trade_id,
+                daily_pnl=self.daily_pnl,
+                limit_exceeded=self.is_daily_loss_exceeded,
+                pnl_complete=self.risk_pnl_complete,
+                reason="Invalid closed_ts_ms: must be positive finite number",
+            )
+
+        self._check_daily_reset()
+
+        if trade_id in self._seen_trades:
+            return RiskClosedTradeResult(
+                status="DUPLICATE_IGNORED",
+                trade_id=trade_id,
+                daily_pnl=self.daily_pnl,
+                limit_exceeded=self.is_daily_loss_exceeded,
+                pnl_complete=self.risk_pnl_complete,
+                reason="Trade already processed",
+            )
+
+        try:
+            trade_date = datetime.fromtimestamp(closed_ts_ms / 1000.0, tz=timezone.utc).date()
+        except (OverflowError, OSError, ValueError) as exc:
+            self.risk_pnl_complete = False
+            return RiskClosedTradeResult(
+                status="INVALID_TRADE",
+                trade_id=trade_id,
+                daily_pnl=self.daily_pnl,
+                limit_exceeded=self.is_daily_loss_exceeded,
+                pnl_complete=self.risk_pnl_complete,
+                reason=f"Timestamp conversion error: {exc}",
+            )
+
+        current_utc = self._get_utc_date()
+
+        if trade_date > current_utc:
+            self.risk_pnl_complete = False
+            self._remember_trade(trade_id, trade_date)
+            return RiskClosedTradeResult(
+                status="FUTURE_TRADE_DATE",
+                trade_id=trade_id,
+                daily_pnl=self.daily_pnl,
+                limit_exceeded=self.is_daily_loss_exceeded,
+                pnl_complete=self.risk_pnl_complete,
+                reason=f"Future trade date {trade_date} ahead of current UTC {current_utc}",
+            )
+
+        if trade_date < current_utc:
+            self._remember_trade(trade_id, trade_date)
+            return RiskClosedTradeResult(
+                status="IGNORED_PAST_DATE",
+                trade_id=trade_id,
+                daily_pnl=self.daily_pnl,
+                limit_exceeded=self.is_daily_loss_exceeded,
+                pnl_complete=self.risk_pnl_complete,
+                reason=f"Trade date {trade_date} belongs to past UTC day",
+            )
+
+        # trade_date == current_utc
+        costs_complete = getattr(trade, "costs_complete", False)
+        net_pnl = getattr(trade, "net_pnl_usdt", None)
+
+        if (
+            not costs_complete
+            or net_pnl is None
+            or isinstance(net_pnl, bool)
+            or not isinstance(net_pnl, (int, float))
+            or not math.isfinite(net_pnl)
+        ):
+            self.risk_pnl_complete = False
+            self._remember_trade(trade_id, trade_date)
+            return RiskClosedTradeResult(
+                status="PNL_INCOMPLETE",
+                trade_id=trade_id,
+                daily_pnl=self.daily_pnl,
+                limit_exceeded=self.is_daily_loss_exceeded,
+                pnl_complete=self.risk_pnl_complete,
+                reason="Trade costs incomplete or net_pnl_usdt is None/non-finite",
+            )
+
+        self.daily_pnl += float(net_pnl)
+        self._remember_trade(trade_id, trade_date)
+        limit_reached = self.is_daily_loss_exceeded
+
+        return RiskClosedTradeResult(
+            status="APPLIED",
+            trade_id=trade_id,
+            daily_pnl=self.daily_pnl,
+            limit_exceeded=limit_reached,
+            pnl_complete=self.risk_pnl_complete,
+            reason="Daily loss limit reached" if limit_reached else "Trade applied successfully",
+        )
 
     @property
     def max_position_size(self) -> float:
@@ -321,9 +501,17 @@ class RiskManager:
                 'max_size': self.max_position_size / price
             }
 
+        # Check risk PnL completeness
+        if not self.risk_pnl_complete:
+            return {
+                'approved': False,
+                'reason': 'daily pnl incomplete',
+                'max_size': 0
+            }
+
         # Check daily loss limit
         # daily_pnl é PnL realizado em USD; max_daily_loss é percentual do capital
-        if self.daily_pnl < 0 and abs(self.daily_pnl) > self.max_daily_loss * self.config.initial_capital:
+        if self.is_daily_loss_exceeded:
             return {
                 'approved': False,
                 'reason': 'daily loss limit exceeded',
