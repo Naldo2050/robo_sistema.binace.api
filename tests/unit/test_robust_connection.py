@@ -219,3 +219,67 @@ async def test_cancelled_error_is_not_swallowed():
 
     with pytest.raises(asyncio.CancelledError):
         await reconnect_task
+
+
+# ==============================================================================
+# 7. test_ws_retry_exhaustion_raises_terminal_failure
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_ws_retry_exhaustion_raises_terminal_failure():
+    """Valida que quando retries se esgotam sem parada solicitada, APIConnectionError e levantado."""
+    from common.exceptions import APIConnectionError
+
+    manager = RobustConnectionManager(
+        stream_url="wss://dummy/ws",
+        symbol="BTCUSDT",
+        initial_delay=0.01,
+        max_reconnect_attempts=2,
+    )
+
+    mock_session = MagicMock()
+    mock_session.ws_connect.side_effect = aiohttp.ClientError("Simulated Network Drop")
+
+    with patch("aiohttp.ClientSession") as mock_session_cls:
+        mock_session_cls.return_value.__aenter__.return_value = mock_session
+        mock_session_cls.return_value.__aexit__.return_value = None
+
+        assert manager.should_stop is False
+        with pytest.raises(APIConnectionError, match="esgotou o limite de 2 tentativas"):
+            await manager.connect()
+
+        assert manager.reconnect_count >= 2
+
+
+# ==============================================================================
+# 8. test_ws_retry_exhaustion_during_requested_stop_is_graceful
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_ws_retry_exhaustion_during_requested_stop_is_graceful():
+    """Valida que se should_stop=True for acionado antes da decisao terminal, connect encerra sem exception."""
+    manager = RobustConnectionManager(
+        stream_url="wss://dummy/ws",
+        symbol="BTCUSDT",
+        initial_delay=0.01,
+        max_reconnect_attempts=2,
+    )
+
+    mock_session = MagicMock()
+    mock_session.ws_connect.side_effect = aiohttp.ClientError("Simulated Network Drop")
+
+    orig_handle_reconnect = manager._handle_reconnect
+
+    async def stop_on_second_reconnect():
+        await orig_handle_reconnect()
+        if manager.reconnect_count >= 2:
+            manager.should_stop = True
+
+    with patch("aiohttp.ClientSession") as mock_session_cls, \
+         patch.object(manager, "_handle_reconnect", side_effect=stop_on_second_reconnect):
+        mock_session_cls.return_value.__aenter__.return_value = mock_session
+        mock_session_cls.return_value.__aexit__.return_value = None
+
+        # Deve encerrar graciosamente sem exception
+        await manager.connect()
+
+        assert manager.should_stop is True
+        assert manager.reconnect_count >= 2

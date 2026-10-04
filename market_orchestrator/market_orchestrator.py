@@ -3043,6 +3043,7 @@ class EnhancedMarketBot:
                 f"❌ Erro crítico ao executar o bot: {e}",
                 exc_info=True,
             )
+            raise
         finally:
             # Garante que o gerenciador de conexão pare e feche o WS
             try:

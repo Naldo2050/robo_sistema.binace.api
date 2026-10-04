@@ -24,6 +24,7 @@ import threading
 
 from orderbook_core.structured_logging import StructuredLogger
 from orderbook_core.tracing_utils import TracerWrapper
+from common.exceptions import APIConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +257,9 @@ class RobustConnectionManager:
                     await asyncio.sleep(self.initial_delay)
 
                 if self.reconnect_count >= self.max_reconnect_attempts:
+                    if self.should_stop:
+                        logger.info("🛑 Parada solicitada durante reconexão. Encerrando normalmente.")
+                        break
                     logger.critical("⛔ Máximo de tentativas de reconexão atingido. Parando.")
                     try:
                         self.slog.error(
@@ -265,7 +269,10 @@ class RobustConnectionManager:
                         )
                     except Exception as e:
                         logger.warning(f"Erro ignorado: {e}")
-                    break
+                    raise APIConnectionError(
+                        f"WebSocket para {self.symbol} esgotou o limite de "
+                        f"{self.max_reconnect_attempts} tentativas consecutivas de reconexão."
+                    )
 
     async def disconnect(self) -> None:
         """Fecha a conexão graciosamente."""

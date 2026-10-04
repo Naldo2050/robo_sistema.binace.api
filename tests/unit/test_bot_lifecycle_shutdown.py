@@ -100,3 +100,163 @@ async def test_cooperative_shutdown_event_triggers_cleanly():
 
         assert bot._is_shutdown is True
         assert bot.should_stop is True
+
+
+# ==============================================================================
+# NOVOS TESTES - FASE 5.2: Propagacao de Falhas Fatais e Exit Code (#4)
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_bot_run_propagates_initialize_failure():
+    """Garante que falha em initialize() propaga para o caller e executa shutdown limpo."""
+    with patch("market_orchestrator.market_orchestrator.RobustConnectionManager") as mock_cm, \
+         patch("market_orchestrator.market_orchestrator.AsyncTradeBuffer") as mock_tb, \
+         patch("market_orchestrator.market_orchestrator.WindowProcessor") as mock_wp:
+
+        bot = EnhancedMarketBot(
+            stream_url="wss://test.stream",
+            symbol="BTCUSDT",
+            window_size_minutes=1,
+            vol_factor_exh=1.0,
+            history_size=10,
+            delta_std_dev_factor=1.0,
+            context_sma_period=10,
+            liquidity_flow_alert_percentage=10.0,
+            wall_std_dev_factor=1.0,
+        )
+
+        bot.initialize = AsyncMock(side_effect=RuntimeError("Simulated init failure"))
+        bot.context_collector = MagicMock()
+        bot.connection_manager.disconnect = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="Simulated init failure"):
+            await bot.run()
+
+        assert bot._is_shutdown is True
+
+
+@pytest.mark.asyncio
+async def test_bot_run_propagates_connection_failure():
+    """Garante que falha em connection_manager.connect() propaga para o caller."""
+    from common.exceptions import APIConnectionError
+
+    with patch("market_orchestrator.market_orchestrator.RobustConnectionManager") as mock_cm, \
+         patch("market_orchestrator.market_orchestrator.AsyncTradeBuffer") as mock_tb, \
+         patch("market_orchestrator.market_orchestrator.WindowProcessor") as mock_wp:
+
+        bot = EnhancedMarketBot(
+            stream_url="wss://test.stream",
+            symbol="BTCUSDT",
+            window_size_minutes=1,
+            vol_factor_exh=1.0,
+            history_size=10,
+            delta_std_dev_factor=1.0,
+            context_sma_period=10,
+            liquidity_flow_alert_percentage=10.0,
+            wall_std_dev_factor=1.0,
+        )
+
+        bot.initialize = AsyncMock(return_value=None)
+        bot.context_collector = MagicMock()
+        bot.connection_manager = MagicMock()
+        bot.connection_manager.connect = AsyncMock(
+            side_effect=APIConnectionError("Simulated terminal WS failure")
+        )
+        bot.connection_manager.disconnect = AsyncMock()
+
+        with pytest.raises(APIConnectionError, match="Simulated terminal WS failure"):
+            await bot.run()
+
+        assert bot._is_shutdown is True
+        assert bot.connection_manager.disconnect.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_bot_run_fatal_failure_still_shutdowns():
+    """Garante que qualquer erro fatal em run() ainda executa shutdown de recursos."""
+    with patch("market_orchestrator.market_orchestrator.RobustConnectionManager") as mock_cm, \
+         patch("market_orchestrator.market_orchestrator.AsyncTradeBuffer") as mock_tb, \
+         patch("market_orchestrator.market_orchestrator.WindowProcessor") as mock_wp:
+
+        bot = EnhancedMarketBot(
+            stream_url="wss://test.stream",
+            symbol="BTCUSDT",
+            window_size_minutes=1,
+            vol_factor_exh=1.0,
+            history_size=10,
+            delta_std_dev_factor=1.0,
+            context_sma_period=10,
+            liquidity_flow_alert_percentage=10.0,
+            wall_std_dev_factor=1.0,
+        )
+
+        bot.initialize = AsyncMock(side_effect=ValueError("Corrupted internal state"))
+        bot.context_collector = MagicMock()
+        bot.connection_manager.disconnect = AsyncMock()
+
+        with pytest.raises(ValueError, match="Corrupted internal state"):
+            await bot.run()
+
+        assert bot._is_shutdown is True
+        assert bot.should_stop is True
+
+        # Idempotencia estrita preservada
+        await bot.shutdown()
+        assert bot._is_shutdown is True
+
+
+@pytest.mark.asyncio
+async def test_main_returns_1_on_fatal_bot_error():
+    """Garante que main() retorna exit code 1 quando bot_task falha com erro fatal."""
+    import main
+
+    mock_bot = MagicMock()
+    mock_bot.run = AsyncMock(side_effect=RuntimeError("Fatal bot crash"))
+    mock_bot.shutdown = AsyncMock()
+
+    with patch("main.EnhancedMarketBot", return_value=mock_bot), \
+         patch("monitoring.pipeline_health.serve_metrics_and_health"), \
+         patch("monitoring.pipeline_health.start_pipeline_health"), \
+         patch("monitoring.pipeline_health.attach_ws_connected_provider"), \
+         patch("monitoring.pipeline_health.attach_message_age_provider"), \
+         patch("monitoring.pipeline_health.attach_window_age_provider"), \
+         patch("fetchers.macro_update_service.start_macro_service", new_callable=AsyncMock), \
+         patch("fetchers.macro_update_service.stop_macro_service", new_callable=AsyncMock):
+
+        exit_code = await main.main()
+        assert exit_code == 1, f"Esperado exit code 1, obteve {exit_code}"
+        assert mock_bot.shutdown.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_main_returns_0_on_graceful_shutdown():
+    """Garante que main() retorna exit code 0 em shutdown cooperativo normal."""
+    import main
+
+    mock_bot = MagicMock()
+    stop_event = asyncio.Event()
+
+    async def fake_run():
+        await stop_event.wait()
+
+    mock_bot.run = fake_run
+    mock_bot.shutdown = AsyncMock(side_effect=lambda: stop_event.set())
+
+    with patch("main.EnhancedMarketBot", return_value=mock_bot), \
+         patch("monitoring.pipeline_health.serve_metrics_and_health"), \
+         patch("monitoring.pipeline_health.start_pipeline_health"), \
+         patch("monitoring.pipeline_health.attach_ws_connected_provider"), \
+         patch("monitoring.pipeline_health.attach_message_age_provider"), \
+         patch("monitoring.pipeline_health.attach_window_age_provider"), \
+         patch("fetchers.macro_update_service.start_macro_service", new_callable=AsyncMock), \
+         patch("fetchers.macro_update_service.stop_macro_service", new_callable=AsyncMock), \
+         patch("sys.argv", ["main.py", "--duration-seconds", "0"]):
+
+        async def trigger_shutdown():
+            await asyncio.sleep(0.05)
+            stop_event.set()
+
+        asyncio.create_task(trigger_shutdown())
+
+        exit_code = await main.main()
+        assert exit_code == 0, f"Esperado exit code 0, obteve {exit_code}"
