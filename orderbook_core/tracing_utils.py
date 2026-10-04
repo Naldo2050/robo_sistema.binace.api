@@ -68,13 +68,16 @@ class TracerWrapper:
             attrs.update(attributes)
 
         try:
-            with self._tracer.start_as_current_span(
+            span_cm = self._tracer.start_as_current_span(
                 name,
                 kind=SpanKind.INTERNAL if SpanKind else None,
                 attributes=attrs,
-            ):
-                yield
+            )
         except Exception as e:
-            # tracing não pode derrubar o fluxo principal
+            # falha ao criar span não pode derrubar o fluxo principal
             logging.debug(f"Tracing span error ({name}): {e}", exc_info=True)
+            yield
+            return
+
+        with span_cm:
             yield
