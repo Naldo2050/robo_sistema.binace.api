@@ -221,28 +221,40 @@ class WindowProcessor:
                 continue
 
             bot, window_data, close_ms = item
+            executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+            is_timeout = False
             try:
                 start_time = time.perf_counter()
-                
-                # FIX P2: Timeout de 45s por janela — proteção contra travamento
-                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                future = executor.submit(process_window_snapshot, bot, window_data, close_ms)
                 try:
-                    future.result(timeout=45.0)
-                    elapsed = time.perf_counter() - start_time
-                    logging.info(
-                        "✅ Janela #%d processada em %.2fs (close_ms=%d)",
-                        self.window_count + 1, elapsed, close_ms
+                    executor = concurrent.futures.ThreadPoolExecutor(
+                        max_workers=1,
+                        thread_name_prefix=f"win_exec_{self.symbol}",
                     )
-                except concurrent.futures.TimeoutError:
-                    self.logger.error(
-                        "⏰ TIMEOUT: Janela demorou >45s para processar. Pulando. (Possível trava na IA)"
+                    future = executor.submit(
+                        process_window_snapshot, bot, window_data, close_ms
                     )
-                    # Não esperamos pelo shutdown se travou (pode causar leaks de thead, mas previne travamento do worker)
-                    executor.shutdown(wait=False, cancel_futures=True)
-                else:
-                    executor.shutdown(wait=True)
-                    self.window_count += 1
+                    try:
+                        future.result(timeout=45.0)
+                        elapsed = time.perf_counter() - start_time
+                        logging.info(
+                            "✅ Janela #%d processada em %.2fs (close_ms=%d)",
+                            self.window_count + 1, elapsed, close_ms
+                        )
+                        self.window_count += 1
+                    except concurrent.futures.TimeoutError:
+                        is_timeout = True
+                        self.logger.error(
+                            "⏰ TIMEOUT: Janela demorou >45s para processar. Pulando. (Possível trava na IA)"
+                        )
+                finally:
+                    if executor is not None:
+                        try:
+                            if is_timeout:
+                                executor.shutdown(wait=False, cancel_futures=True)
+                            else:
+                                executor.shutdown(wait=True, cancel_futures=True)
+                        except Exception as shut_err:
+                            self.logger.debug(f"Falha ao fechar executor de janela: {shut_err}")
             except Exception as e:
                 self.logger.error(f"Erro no worker de janelas: {e}", exc_info=True)
             finally:
