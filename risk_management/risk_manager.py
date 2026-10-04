@@ -354,6 +354,135 @@ class RiskManager:
             reason="Daily loss limit reached" if limit_reached else "Trade applied successfully",
         )
 
+
+    def restore_daily_closed_trades(
+        self,
+        trades: List[Any],
+        expected_date: date,
+    ) -> RiskClosedTradeResult:
+        """
+        Rehydrate daily realized PnL and dedup cache from persisted trades on clean startup.
+        Strict fail-closed and transactional:
+        Validates all trades first in-memory.
+        If ANY trade is incomplete, invalid, belongs to a different UTC day,
+        or has non-finite PnL, fails WITHOUT publishing partial daily_pnl or partial cache.
+        """
+        if not isinstance(expected_date, date):
+            self.risk_pnl_complete = False
+            return RiskClosedTradeResult(
+                status="INVALID_TRADE",
+                trade_id="",
+                daily_pnl=self.daily_pnl,
+                limit_exceeded=self.is_daily_loss_exceeded,
+                pnl_complete=False,
+                reason="Invalid expected_date provided for rehydration",
+            )
+
+        # In-memory transactional staging
+        temp_daily_pnl = 0.0
+        temp_seen_trades: List[Tuple[str, date]] = []
+        temp_seen_ids = set()
+
+        for trade in trades:
+            trade_id = getattr(trade, "trade_id", None)
+            if not isinstance(trade_id, str) or not trade_id.strip():
+                self.risk_pnl_complete = False
+                return RiskClosedTradeResult(
+                    status="INVALID_TRADE",
+                    trade_id=str(trade_id or ""),
+                    daily_pnl=self.daily_pnl,
+                    limit_exceeded=self.is_daily_loss_exceeded,
+                    pnl_complete=False,
+                    reason="Invalid trade_id in persisted trade",
+                )
+
+            closed_ts_ms = getattr(trade, "closed_ts_ms", None)
+            if (
+                isinstance(closed_ts_ms, bool)
+                or not isinstance(closed_ts_ms, (int, float))
+                or not math.isfinite(closed_ts_ms)
+                or closed_ts_ms <= 0
+            ):
+                self.risk_pnl_complete = False
+                return RiskClosedTradeResult(
+                    status="INVALID_TRADE",
+                    trade_id=trade_id,
+                    daily_pnl=self.daily_pnl,
+                    limit_exceeded=self.is_daily_loss_exceeded,
+                    pnl_complete=False,
+                    reason="Invalid closed_ts_ms in persisted trade",
+                )
+
+            try:
+                trade_date = datetime.fromtimestamp(closed_ts_ms / 1000.0, tz=timezone.utc).date()
+            except (OverflowError, OSError, ValueError) as exc:
+                self.risk_pnl_complete = False
+                return RiskClosedTradeResult(
+                    status="INVALID_TRADE",
+                    trade_id=trade_id,
+                    daily_pnl=self.daily_pnl,
+                    limit_exceeded=self.is_daily_loss_exceeded,
+                    pnl_complete=False,
+                    reason=f"Timestamp conversion error in persisted trade: {exc}",
+                )
+
+            if trade_date != expected_date:
+                self.risk_pnl_complete = False
+                return RiskClosedTradeResult(
+                    status="INVALID_TRADE",
+                    trade_id=trade_id,
+                    daily_pnl=self.daily_pnl,
+                    limit_exceeded=self.is_daily_loss_exceeded,
+                    pnl_complete=False,
+                    reason=f"Persisted trade date {trade_date} does not match expected {expected_date}",
+                )
+
+            costs_complete = getattr(trade, "costs_complete", False)
+            net_pnl = getattr(trade, "net_pnl_usdt", None)
+
+            if (
+                not costs_complete
+                or net_pnl is None
+                or isinstance(net_pnl, bool)
+                or not isinstance(net_pnl, (int, float))
+                or not math.isfinite(net_pnl)
+            ):
+                self.risk_pnl_complete = False
+                return RiskClosedTradeResult(
+                    status="PNL_INCOMPLETE",
+                    trade_id=trade_id,
+                    daily_pnl=self.daily_pnl,
+                    limit_exceeded=self.is_daily_loss_exceeded,
+                    pnl_complete=False,
+                    reason="Persisted trade costs incomplete or net_pnl_usdt is None/non-finite",
+                )
+
+            # Deduplication during staging
+            if trade_id in temp_seen_ids:
+                continue
+
+            temp_seen_ids.add(trade_id)
+            temp_seen_trades.append((trade_id, trade_date))
+            temp_daily_pnl += float(net_pnl)
+
+        # Atomic commit: only published if all trades are fully valid
+        self.daily_pnl = temp_daily_pnl
+        self._last_reset_date = expected_date
+        self.risk_pnl_complete = True
+        self._seen_trades.clear()
+        for tid, dt in temp_seen_trades:
+            self._remember_trade(tid, dt)
+
+        limit_reached = self.is_daily_loss_exceeded
+        return RiskClosedTradeResult(
+            status="APPLIED",
+            trade_id="REHYDRATION_COMPLETE",
+            daily_pnl=self.daily_pnl,
+            limit_exceeded=limit_reached,
+            pnl_complete=self.risk_pnl_complete,
+            reason="Daily loss limit reached" if limit_reached else "Recovery applied successfully",
+        )
+
     @property
     def max_position_size(self) -> float:
         return self.config.max_position_size

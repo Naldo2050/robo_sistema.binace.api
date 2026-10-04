@@ -131,6 +131,7 @@ def test_3_main_causal_scenario():
     clock = FakeClock(1000)
     config = make_test_config(provider="fixed_long", ttl_ms=5000)
     runtime = ShadowPaperRuntime(config=config, clock_ms=clock)
+    runtime.start()
 
     # T0 chega (e fecha a janela conceitual)
     t0 = make_norm_trade(price=50000.0, qty=1.0, T=1000, trade_id=100)
@@ -190,6 +191,7 @@ def test_4_same_millisecond_causality():
     clock = FakeClock(1000)
     config = make_test_config(provider="fixed_long")
     runtime = ShadowPaperRuntime(config=config, clock_ms=clock)
+    runtime.start()
 
     # Tick A chega em T=1000
     tick_a = make_norm_trade(price=50000.0, qty=1.0, T=1000, trade_id=1)
@@ -223,6 +225,7 @@ def test_5_eventbus_latency_simulation():
     clock = FakeClock(1000)
     config = make_test_config(provider="fixed_long")
     runtime = ShadowPaperRuntime(config=config, clock_ms=clock)
+    runtime.start()
 
     for i in range(10):
         t = make_norm_trade(price=50000.0 + i, qty=1.0, T=1000 + (i * 10), trade_id=i + 1)
@@ -256,6 +259,7 @@ def test_6_duplicate_signal_behavior():
     clock = FakeClock(1000)
     config = make_test_config(provider="fixed_long")
     runtime = ShadowPaperRuntime(config=config, clock_ms=clock)
+    runtime.start()
 
     sig = {"epoch_ms": 1000, "price": 50000.0, "symbol": "BTCUSDT"}
 
@@ -284,6 +288,7 @@ def test_7_multi_event_same_window():
     clock = FakeClock(1000)
     config = make_test_config(provider="fixed_long")
     runtime = ShadowPaperRuntime(config=config, clock_ms=clock)
+    runtime.start()
 
     event1 = {
         "epoch_ms": 1000,
@@ -325,6 +330,7 @@ def test_8_neutral_follow_signal():
         timeframe=config.timeframe,
     )
     runtime = ShadowPaperRuntime(config=config, signal_adapter=custom_adapter)
+    runtime.start()
 
     neutral_signal = {
         "epoch_ms": 1000,
@@ -355,6 +361,8 @@ def test_9_baseline_seeded_random_deterministic():
     clock = FakeClock(1000)
     rt1 = ShadowPaperRuntime(config=cfg1, clock_ms=clock)
     rt2 = ShadowPaperRuntime(config=cfg2, clock_ms=clock)
+    rt1.start()
+    rt2.start()
 
     sides1 = []
     sides2 = []
@@ -396,6 +404,7 @@ def test_10_risk_rejection():
     rm = RiskManager(RiskConfig(max_position_size=500.0))
     config = make_test_config(notional=1000.0)  # 1000 > 500
     runtime = ShadowPaperRuntime(config=config, risk_manager=rm)
+    runtime.start()
 
     sig = {"epoch_ms": 1000, "price": 50000.0, "symbol": "BTCUSDT"}
     res = runtime.on_signal(sig)
@@ -418,6 +427,7 @@ def test_11_order_ttl_expiry():
     clock = FakeClock(1000)
     config = make_test_config(provider="fixed_long", ttl_ms=1000)
     runtime = ShadowPaperRuntime(config=config, clock_ms=clock)
+    runtime.start()
 
     sig = {"epoch_ms": 1000, "price": 50000.0, "symbol": "BTCUSDT"}
     res_sig = runtime.on_signal(sig)
@@ -453,6 +463,7 @@ def test_12_horizon_exit():
     clock = FakeClock(1000)
     config = make_test_config(provider="fixed_long", horizon_s=60, ttl_ms=5000)
     runtime = ShadowPaperRuntime(config=config, clock_ms=clock)
+    runtime.start()
 
     # 1. Submeter e preencher ordem em T=1050
     runtime.on_signal({"epoch_ms": 1000, "price": 50000.0, "symbol": "BTCUSDT"})
@@ -497,6 +508,7 @@ def test_13_funding_incomplete_crossing():
     clock = FakeClock(t_open)
     config = make_test_config(provider="fixed_long", horizon_s=120)
     runtime = ShadowPaperRuntime(config=config, clock_ms=clock)
+    runtime.start()
 
     # Submeter ordem com funding_rate_at_decision=None
     sig = {"epoch_ms": t_open, "price": 50000.0, "symbol": "BTCUSDT"}
@@ -530,6 +542,7 @@ def test_14_thread_concurrency():
     clock = FakeClock(1000)
     config = make_test_config(provider="fixed_long")
     runtime = ShadowPaperRuntime(config=config, clock_ms=clock)
+    runtime.start()
 
     barrier = threading.Barrier(2)
     exceptions: List[Exception] = []
@@ -579,6 +592,7 @@ def test_15_exception_isolation():
     """
     config = make_test_config()
     runtime = ShadowPaperRuntime(config=config)
+    runtime.start()
 
     # Injetar falha forçada em on_signal
     def broken_signal(event):
@@ -611,6 +625,7 @@ def test_16_shutdown_behavior():
     clock = FakeClock(1000)
     config = make_test_config(provider="fixed_long")
     runtime = ShadowPaperRuntime(config=config, clock_ms=clock)
+    runtime.start()
 
     # Criar e preencher posição
     runtime.on_signal({"epoch_ms": 1000, "price": 50000.0, "symbol": "BTCUSDT"})
@@ -646,6 +661,7 @@ def test_17_coverage_accounting():
         timeframe=config.timeframe,
     )
     runtime = ShadowPaperRuntime(config=config, signal_adapter=custom_adapter)
+    runtime.start()
 
     # 1. Sinal inválido (não é dict)
     runtime.on_signal("bad_signal")
@@ -694,6 +710,7 @@ def test_18_zero_side_effects(monkeypatch):
     clock = FakeClock(1000)
     config = make_test_config(provider="fixed_long")
     runtime = ShadowPaperRuntime(config=config, clock_ms=clock)
+    runtime.start()
 
     res_sig = runtime.on_signal({"epoch_ms": 1000, "price": 50000.0, "symbol": "BTCUSDT"})
     assert res_sig.status == "ORDER_SUBMITTED"

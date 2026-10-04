@@ -67,6 +67,7 @@ def test_13_fixed_long_creates_long_decision():
     current_time = 1700000000000
     config = make_valid_config(provider="fixed_long")
     runtime = ShadowPaperRuntime(config=config, clock_ms=lambda: current_time)
+    runtime.start()
 
     signal = {
         "epoch_ms": 1700000000000,
@@ -89,6 +90,7 @@ def test_14_fixed_short_creates_short_decision():
     current_time = 1700000000000
     config = make_valid_config(provider="fixed_short")
     runtime = ShadowPaperRuntime(config=config, clock_ms=lambda: current_time)
+    runtime.start()
 
     signal = {
         "epoch_ms": 1700000000000,
@@ -111,6 +113,8 @@ def test_15_seeded_random_deterministic():
     current_ts = 1700000000000
     runtime1 = ShadowPaperRuntime(config=config1, clock_ms=lambda: current_ts)
     runtime2 = ShadowPaperRuntime(config=config2, clock_ms=lambda: current_ts)
+    runtime1.start()
+    runtime2.start()
 
     sides1 = []
     sides2 = []
@@ -149,6 +153,7 @@ def test_16_signal_to_risk_to_order_to_sink():
     current_time = 1700000000000
     config = make_valid_config()
     runtime = ShadowPaperRuntime(config=config, clock_ms=lambda: current_time)
+    runtime.start()
 
     signal = {
         "epoch_ms": 1700000000000,
@@ -175,6 +180,7 @@ def test_17_risk_rejection_does_not_submit_order():
     config = make_valid_config(notional=1000.0)  # Excede 500.0!
 
     runtime = ShadowPaperRuntime(config=config, risk_manager=rm, clock_ms=lambda: current_time)
+    runtime.start()
 
     signal = {
         "epoch_ms": 1700000000000,
@@ -207,6 +213,7 @@ def test_18_neutral_follow_signal_coverage_preserved():
         timeframe=config.timeframe,
     )
     runtime = ShadowPaperRuntime(config=config, signal_adapter=custom_adapter)
+    runtime.start()
 
     # Sinal neutro / sem direção
     neutral_signal = {
@@ -232,6 +239,7 @@ def test_19_on_market_trade_delegates_to_sink():
     current_time = 1700000000000
     config = make_valid_config(provider="fixed_long")
     runtime = ShadowPaperRuntime(config=config, clock_ms=lambda: current_time)
+    runtime.start()
 
     # 1. Submete ordem a 50000
     sig_res = runtime.on_signal({"epoch_ms": 1700000000000, "price": 50000.0, "symbol": "BTCUSDT"})
@@ -297,6 +305,7 @@ def test_23_signal_exception_does_not_escape():
     """23. exceção signal não escapa."""
     config = make_valid_config()
     runtime = ShadowPaperRuntime(config=config)
+    runtime.start()
 
     # Monkeypatch no signal_adapter para lançar exceção
     def explosive_signal(event):
@@ -337,6 +346,7 @@ def test_25_counters_coherent():
     """25. counters coerentes."""
     config = make_valid_config(provider="fixed_long")
     runtime = ShadowPaperRuntime(config=config, clock_ms=lambda: 1700000000000)
+    runtime.start()
 
     # 1 sinal inválido
     runtime.on_signal("not_a_dict")
@@ -366,6 +376,7 @@ def test_26_cohort_preserved():
     cohort_id = "CH_IMMUTABLE_COHORT_2026"
     config = make_valid_config(cohort_id=cohort_id)
     runtime = ShadowPaperRuntime(config=config, clock_ms=lambda: 1700000000000)
+    runtime.start()
 
     res = runtime.on_signal({"epoch_ms": 1700000000000, "price": 50000.0, "symbol": "BTCUSDT"})
     assert res.status == "ORDER_SUBMITTED"
@@ -385,6 +396,7 @@ def test_27_zero_network_access(monkeypatch):
 
     config = make_valid_config()
     runtime = ShadowPaperRuntime(config=config, clock_ms=lambda: 1700000000000)
+    runtime.start()
 
     res_sig = runtime.on_signal({"epoch_ms": 1700000000000, "price": 50000.0, "symbol": "BTCUSDT"})
     assert res_sig.status == "ORDER_SUBMITTED"

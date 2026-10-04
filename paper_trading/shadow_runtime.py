@@ -9,6 +9,7 @@ Zero network access, zero AI coupling, zero real order capability, fail-closed b
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, date, timezone, timedelta
 import logging
 import threading
 import time
@@ -126,11 +127,12 @@ class ShadowPaperRuntime:
         self._ledger_is_owner = ledger_is_owner
         self._lock = threading.RLock()
 
-        # Lifecycle flags
+        # Lifecycle flags (initially closed before explicit verified start)
         self._active: bool = bool(config.enabled)
-        self._accept_new_exposure: bool = bool(config.enabled)
+        self._accept_new_exposure: bool = False
         self._persistence_failed: bool = False
-        self._risk_block_reason: Optional[str] = None
+        self._risk_block_reason: Optional[str] = "STARTUP_PENDING"
+        self._recovery_level: str = "SESSION_SAFE"
 
         # In-memory operational counters
         self._counters: Dict[str, int] = {
@@ -268,6 +270,20 @@ class ShadowPaperRuntime:
         return bool(getattr(rm, "risk_pnl_complete", True))
 
     @property
+    def is_risk_daily_loss_active(self) -> bool:
+        """
+        Indicate whether daily-loss enforcement has verified recovery for this startup.
+        Active ONLY when recovery level is CLEAN_RESTART_SAFE.
+        """
+        with self._lock:
+            return self._recovery_level == "CLEAN_RESTART_SAFE"
+
+    @property
+    def risk_daily_loss_recovery_level(self) -> str:
+        with self._lock:
+            return self._recovery_level
+
+    @property
     def new_exposure_blocked(self) -> bool:
         with self._lock:
             return not self._accept_new_exposure
@@ -300,15 +316,109 @@ class ShadowPaperRuntime:
         with self._lock:
             return self._active and self._accept_new_exposure and self.config.enabled
 
+    @staticmethod
+    def get_utc_day_range_ms(ref_date: date) -> tuple[int, int]:
+        """Compute [start_ms, end_ms) for the given UTC calendar date."""
+        dt_start = datetime(ref_date.year, ref_date.month, ref_date.day, 0, 0, 0, tzinfo=timezone.utc)
+        next_date = ref_date + timedelta(days=1)
+        dt_end = datetime(next_date.year, next_date.month, next_date.day, 0, 0, 0, tzinfo=timezone.utc)
+        return int(dt_start.timestamp() * 1000), int(dt_end.timestamp() * 1000)
+
+    def _perform_startup_recovery(self) -> tuple[bool, str, Optional[str]]:
+        """
+        Audit existing database state for the current UTC day before cohort creation.
+        Returns (success: bool, recovery_level: str, block_reason: Optional[str]).
+        Fail-closed on any reading error, orphan positions, missing graceful shutdown,
+        persistence failure, crash event, or incomplete trade data.
+        """
+        current_utc = datetime.fromtimestamp(self.clock_ms() / 1000.0, tz=timezone.utc).date()
+        start_ms, end_ms = self.get_utc_day_range_ms(current_utc)
+
+        try:
+            # a. Check open positions (orphan positions from previous sessions across all cohorts)
+            open_pos_count = self.ledger.get_open_positions_count()
+            if open_pos_count > 0:
+                return False, "UNVERIFIED_AFTER_RESTART", "ORPHAN_POSITIONS_DETECTED"
+
+            # b. Audit all existing cohorts and their lifecycle events across entire history
+            cohort_lifecycles = self.ledger.get_all_cohort_lifecycles()
+
+            for cohort_info in cohort_lifecycles:
+                cid = cohort_info["cohort_id"]
+                evts = cohort_info.get("events", [])
+
+                # Fail-closed if cohort exists but has no lifecycle events
+                if not evts:
+                    return False, "UNVERIFIED_AFTER_RESTART", "COHORT_WITHOUT_LIFECYCLE_EVENTS"
+
+                # Fail-closed on explicit crash or persistence failure
+                if any(e.get("event_type") == "CRASH_DETECTED" for e in evts):
+                    return False, "UNVERIFIED_AFTER_RESTART", "CRASH_DETECTED"
+
+                if any(e.get("event_type") == "PERSISTENCE_FAILURE" for e in evts):
+                    return False, "UNVERIFIED_AFTER_RESTART", "PERSISTENCE_FAILURE"
+
+                # Check event sequence integrity
+                started_events = [e for e in evts if e.get("event_type") == "STARTED"]
+                graceful_events = [e for e in evts if e.get("event_type") == "GRACEFUL_SHUTDOWN"]
+
+                # Must have at least one STARTED and start with STARTED
+                if not started_events or evts[0].get("event_type") != "STARTED":
+                    return False, "UNVERIFIED_AFTER_RESTART", "MALFORMED_COHORT_LIFECYCLE"
+
+                # Multiple STARTED in the same cohort is malformed
+                if len(started_events) > 1:
+                    return False, "UNVERIFIED_AFTER_RESTART", "MALFORMED_COHORT_LIFECYCLE"
+
+                # If no graceful shutdown, unexpected previous shutdown
+                if not graceful_events:
+                    return False, "UNVERIFIED_AFTER_RESTART", "UNEXPECTED_PREVIOUS_SHUTDOWN"
+
+                # Multiple GRACEFUL_SHUTDOWN in the same cohort is malformed
+                if len(graceful_events) > 1:
+                    return False, "UNVERIFIED_AFTER_RESTART", "MALFORMED_COHORT_LIFECYCLE"
+
+                # GRACEFUL_SHUTDOWN must be the terminal event of the cohort
+                if evts[-1].get("event_type") != "GRACEFUL_SHUTDOWN":
+                    return False, "UNVERIFIED_AFTER_RESTART", "UNEXPECTED_PREVIOUS_SHUTDOWN"
+
+                # Validate graceful shutdown metadata
+                meta = graceful_events[0].get("metadata") or {}
+                open_c = meta.get("open_positions_count", 0)
+                pending_c = meta.get("pending_orders_count", 0)
+                if open_c > 0 or pending_c > 0:
+                    return False, "UNVERIFIED_AFTER_RESTART", "SHUTDOWN_WITH_OPEN_POSITIONS"
+
+            # c. Retrieve all closed trades in the UTC day
+            trades = self.ledger.get_closed_trades_by_timerange(start_ms, end_ms)
+
+            # d. Restore closed trades in RiskManager
+            rm = getattr(self.risk_adapter, "risk_manager", None)
+            if rm is not None and hasattr(rm, "restore_daily_closed_trades"):
+                restore_res = rm.restore_daily_closed_trades(trades, current_utc)
+                if restore_res.status != "APPLIED" or not restore_res.pnl_complete:
+                    block_reason = restore_res.status if restore_res.status in ("PNL_INCOMPLETE", "INVALID_TRADE") else (restore_res.reason or "PERSISTED_TRADE_INCOMPLETE")
+                    return False, "UNVERIFIED_AFTER_RESTART", block_reason
+
+                if rm.is_daily_loss_exceeded:
+                    return True, "CLEAN_RESTART_SAFE", "DAILY_LOSS_LIMIT_REACHED"
+
+            return True, "CLEAN_RESTART_SAFE", None
+
+        except Exception as exc:
+            logger.error("🚨 Erro durante startup recovery do ledger: %s", exc, exc_info=True)
+            return False, "UNVERIFIED_AFTER_RESTART", "PERSISTENCE_RECOVERY_ERROR"
+
     def start(self) -> bool:
         """
         Explicit lifecycle start for shadow runtime.
 
         When ledger is configured:
           1. Verify persistence health.
-          2. Attempt strict cohort creation (fail-closed on duplicates).
-          3. Record STARTED cohort event.
-          4. Enable runtime operations for new exposures.
+          2. Audit and recover daily risk state from ledger across all cohorts (C3.5.3).
+          3. Attempt strict cohort creation (fail-closed on duplicates).
+          4. Record STARTED cohort event and ensure durable flush.
+          5. Enable runtime operations for new exposures if clean and limits allow.
         """
         with self._lock:
             if not self.config.enabled:
@@ -324,9 +434,22 @@ class ShadowPaperRuntime:
                     self._persistence_failed = True
                     self._accept_new_exposure = False
                     self._active = False
+                    self._risk_block_reason = "PERSISTENCE_HEALTH_CHECK_FAILED"
                     return False
 
-                # 2. Strict cohort creation
+                # 2. Audit and recover daily risk state
+                recovery_ok, recovery_level, recovery_block_reason = self._perform_startup_recovery()
+                self._recovery_level = recovery_level
+                if not recovery_ok:
+                    self._active = False
+                    self._accept_new_exposure = False
+                    self._risk_block_reason = recovery_block_reason
+                    rm = getattr(self.risk_adapter, "risk_manager", None)
+                    if rm is not None:
+                        rm.risk_pnl_complete = False
+                    return False
+
+                # 3. Strict cohort creation
                 meta = {
                     "git_sha": self._git_sha,
                     "strategy_version": self.config.strategy_version,
@@ -354,7 +477,7 @@ class ShadowPaperRuntime:
                     "risk_daily_loss_active": False,
                     "risk_daily_loss_enforced": self.risk_daily_loss_enforced,
                     "risk_pnl_complete": self.risk_pnl_complete,
-                    "risk_daily_loss_recovery_level": "SESSION_SAFE",
+                    "risk_daily_loss_recovery_level": self.risk_daily_loss_recovery_level,
                 }
                 cohort_created = self.ledger.create_cohort(
                     cohort_id=self.config.cohort_id or "CH_SHADOW_DEFAULT",
@@ -366,9 +489,10 @@ class ShadowPaperRuntime:
                     # Duplicate or failed cohort creation: fail closed
                     self._active = False
                     self._accept_new_exposure = False
+                    self._risk_block_reason = "COHORT_CREATION_FAILED"
                     return False
 
-                # 3. Record STARTED cohort event
+                # 4. Record STARTED cohort event and ensure durable flush
                 self.ledger.record_cohort_event(
                     cohort_id=self.config.cohort_id or "CH_SHADOW_DEFAULT",
                     event_type="STARTED",
@@ -376,10 +500,31 @@ class ShadowPaperRuntime:
                     reason="Runtime started",
                     metadata={"git_sha": self._git_sha},
                 )
-                self.ledger.flush_status()
+                flush_res = self.ledger.flush_status(timeout=10.0)
+                if flush_res != "SUCCESS":
+                    self._persistence_failed = True
+                    self._accept_new_exposure = False
+                    self._active = False
+                    self._risk_block_reason = f"LEDGER_FLUSH_{flush_res}"
+                    self._recovery_level = "UNVERIFIED_AFTER_RESTART"
+                    return False
+            else:
+                self._recovery_level = "SESSION_SAFE"
 
+            # 5. Evaluate final readiness for new exposure
             self._active = True
-            self._accept_new_exposure = True
+            rm = getattr(self.risk_adapter, "risk_manager", None)
+            if rm is not None and rm.is_daily_loss_exceeded:
+                self._accept_new_exposure = False
+                self._risk_block_reason = "DAILY_LOSS_LIMIT_REACHED"
+            elif self._recovery_level == "UNVERIFIED_AFTER_RESTART":
+                self._accept_new_exposure = False
+            elif self._risk_block_reason and self._risk_block_reason != "STARTUP_PENDING":
+                self._accept_new_exposure = False
+            else:
+                self._accept_new_exposure = True
+                self._risk_block_reason = None
+
             return True
 
     def on_signal(self, event: Dict[str, Any]) -> ShadowSignalResult:
@@ -752,10 +897,10 @@ class ShadowPaperRuntime:
                 "symbol": self.config.symbol,
                 "timeframe": self.config.timeframe,
                 "risk_position_limit_active": self.is_risk_position_limit_active,
-                "risk_daily_loss_active": False,
+                "risk_daily_loss_active": self.is_risk_daily_loss_active,
                 "risk_daily_loss_enforced": self.risk_daily_loss_enforced,
                 "risk_pnl_complete": self.risk_pnl_complete,
-                "risk_daily_loss_recovery_level": "SESSION_SAFE",
+                "risk_daily_loss_recovery_level": self.risk_daily_loss_recovery_level,
                 "daily_pnl": getattr(rm, "daily_pnl", 0.0) if rm else 0.0,
                 "daily_loss_limit_usdt": getattr(rm, "daily_loss_limit_usdt", 0.0) if rm else 0.0,
                 "new_exposure_blocked": not self._accept_new_exposure,

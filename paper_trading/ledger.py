@@ -315,6 +315,8 @@ CREATE INDEX IF NOT EXISTS idx_cohort_events_cohort ON cohort_events(cohort_id);
 CREATE INDEX IF NOT EXISTS idx_pred_outcomes_cohort ON prediction_outcomes(cohort_id);
 CREATE INDEX IF NOT EXISTS idx_pred_outcomes_decision ON prediction_outcomes(decision_id);
 CREATE INDEX IF NOT EXISTS idx_pred_outcomes_result ON prediction_outcomes(result);
+CREATE INDEX IF NOT EXISTS idx_closed_trades_ts ON closed_trades(closed_ts_ms);
+CREATE INDEX IF NOT EXISTS idx_cohort_events_ts ON cohort_events(timestamp_ms);
 """
 
 
@@ -1419,6 +1421,184 @@ class PaperLedger:
         events = self.get_cohort_events(cohort_id)
         has_graceful = any(e.get("event_type") == "GRACEFUL_SHUTDOWN" for e in events)
         return not has_graceful
+
+
+    def get_closed_trades_by_timerange(self, start_ms: int, end_ms: int) -> List[ClosedTrade]:
+        """
+        Synchronously fetch closed trades closed in [start_ms, end_ms) across all cohorts.
+        Propagates SQLite exceptions and persistence errors fail-closed.
+        """
+        flush_res = self.flush_status()
+        if flush_res == "UNHEALTHY":
+            raise sqlite3.DatabaseError("Ledger is unhealthy during closed trades read")
+        elif flush_res == "TIMEOUT":
+            raise TimeoutError("Ledger flush timed out before closed trades read")
+
+        cur = self._conn.cursor()
+        cur.execute(
+            """
+            SELECT * FROM closed_trades
+            WHERE closed_ts_ms >= ? AND closed_ts_ms < ?
+            ORDER BY closed_ts_ms ASC, trade_id ASC
+            """,
+            (start_ms, end_ms),
+        )
+        rows = cur.fetchall()
+
+        trades = []
+        for r in rows:
+            ctx = json.loads(r["context_json"]) if r["context_json"] else {}
+            tw = bool(r["trade_win"]) if r["trade_win"] is not None else None
+            dir_prof = bool(r["trade_direction_profitable"]) if r["trade_direction_profitable"] is not None else None
+            pred_corr = bool(r["prediction_direction_correct"]) if r["prediction_direction_correct"] is not None else None
+
+            tr = ClosedTrade(
+                trade_id=r["trade_id"],
+                decision_id=r["decision_id"],
+                cohort_id=r["cohort_id"],
+                decision_provider=r["decision_provider"],
+                symbol=r["symbol"],
+                side=r["side"],
+                entry_price=r["entry_price"],
+                exit_price=r["exit_price"],
+                quantity=r["quantity"],
+                notional_usdt=r["notional_usdt"],
+                opened_ts_ms=r["opened_ts_ms"],
+                closed_ts_ms=r["closed_ts_ms"],
+                exit_reason=r["exit_reason"],
+                trade_direction_profitable=dir_prof,
+                prediction_direction_correct=pred_corr,
+                trade_win=tw,
+                gross_pnl_bps=r["gross_pnl_bps"],
+                net_pnl_bps=r["net_pnl_bps"],
+                fees_bps=r["fees_bps"],
+                slippage_bps=r["slippage_bps"],
+                funding_bps=r["funding_bps"],
+                gross_pnl_usdt=r["gross_pnl_usdt"],
+                fees_usdt=r["fees_usdt"],
+                slippage_usdt=r["slippage_usdt"],
+                funding_usdt=r["funding_usdt"],
+                net_pnl_usdt=r["net_pnl_usdt"],
+                pnl_R=r["pnl_R"],
+                costs_complete=bool(r["costs_complete"]),
+                data_gap=bool(r["data_gap"]),
+                mae_bps=r["mae_bps"],
+                mfe_bps=r["mfe_bps"],
+                ticks_count=r["ticks_count"],
+                direction_correct=dir_prof,
+                context=ctx,
+            )
+            trades.append(tr)
+        return trades
+
+    def get_open_positions_count(self) -> int:
+        """
+        Synchronously return count of open positions (is_open = 1) across all cohorts.
+        Propagates SQLite exceptions fail-closed.
+        """
+        flush_res = self.flush_status()
+        if flush_res == "UNHEALTHY":
+            raise sqlite3.DatabaseError("Ledger is unhealthy during open positions read")
+        elif flush_res == "TIMEOUT":
+            raise TimeoutError("Ledger flush timed out before open positions read")
+
+        cur = self._conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM positions WHERE is_open = 1")
+        row = cur.fetchone()
+        if row is None:
+            raise sqlite3.DatabaseError("Unexpected empty result from COUNT(*)")
+        return int(row[0])
+
+    def get_cohort_events_by_timerange(
+        self,
+        start_ms: int,
+        end_ms: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Synchronously fetch cohort events with timestamp_ms >= start_ms (and < end_ms if provided).
+        Does NOT swallow OperationalError or DatabaseError.
+        """
+        flush_res = self.flush_status()
+        if flush_res == "UNHEALTHY":
+            raise sqlite3.DatabaseError("Ledger is unhealthy during cohort events read")
+        elif flush_res == "TIMEOUT":
+            raise TimeoutError("Ledger flush timed out before cohort events read")
+
+        cur = self._conn.cursor()
+        if end_ms is not None:
+            cur.execute(
+                """
+                SELECT * FROM cohort_events
+                WHERE timestamp_ms >= ? AND timestamp_ms < ?
+                ORDER BY timestamp_ms ASC
+                """,
+                (start_ms, end_ms),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT * FROM cohort_events
+                WHERE timestamp_ms >= ?
+                ORDER BY timestamp_ms ASC
+                """,
+                (start_ms,),
+            )
+        rows = cur.fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["metadata"] = json.loads(d["metadata_json"]) if d.get("metadata_json") else {}
+            results.append(d)
+        return results
+
+    def get_all_cohort_lifecycles(self) -> List[Dict[str, Any]]:
+        """
+        Synchronously fetch lifecycle history for all registered cohorts.
+        Returns a list of cohorts, each with its ordered list of cohort_events.
+        Propagates SQLite exceptions and persistence failures fail-closed.
+        """
+        flush_res = self.flush_status()
+        if flush_res == "UNHEALTHY":
+            raise sqlite3.DatabaseError("Ledger is unhealthy during cohort lifecycles read")
+        elif flush_res == "TIMEOUT":
+            raise TimeoutError("Ledger flush timed out before cohort lifecycles read")
+
+        cur = self._conn.cursor()
+        cur.execute(
+            """
+            SELECT c.cohort_id, c.created_at_ms, c.description,
+                   e.event_id, e.event_type, e.timestamp_ms, e.reason, e.metadata_json
+            FROM cohorts c
+            LEFT JOIN cohort_events e ON c.cohort_id = e.cohort_id
+            ORDER BY c.created_at_ms ASC, c.cohort_id ASC, e.timestamp_ms ASC, e.rowid ASC
+            """
+        )
+        rows = cur.fetchall()
+
+        cohorts_map: Dict[str, Dict[str, Any]] = {}
+        for r in rows:
+            cid = r["cohort_id"]
+            if cid not in cohorts_map:
+                cohorts_map[cid] = {
+                    "cohort_id": cid,
+                    "created_at_ms": r["created_at_ms"],
+                    "description": r["description"],
+                    "events": [],
+                }
+            if r["event_type"] is not None:
+                meta = json.loads(r["metadata_json"]) if r["metadata_json"] else {}
+                cohorts_map[cid]["events"].append(
+                    {
+                        "event_id": r["event_id"],
+                        "cohort_id": cid,
+                        "event_type": r["event_type"],
+                        "timestamp_ms": r["timestamp_ms"],
+                        "reason": r["reason"],
+                        "metadata": meta,
+                    }
+                )
+
+        return list(cohorts_map.values())
 
     def get_prediction_outcomes(self, cohort_id: Optional[str] = None) -> List[PredictionOutcome]:
         """Synchronously query all persisted prediction outcomes."""

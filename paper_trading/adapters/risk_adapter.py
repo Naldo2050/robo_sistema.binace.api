@@ -307,5 +307,16 @@ class RiskAdapter:
                 return self.risk_manager.record_closed_trade(trade)
             return None
 
+
+    def restore_daily_closed_trades(self, trades: Any, expected_date: Any) -> Any:
+        """
+        Relay rehydration to RiskManager.restore_daily_closed_trades().
+        Thread-safe under RiskAdapter._lock.
+        """
+        with self._lock:
+            if hasattr(self.risk_manager, "restore_daily_closed_trades"):
+                return self.risk_manager.restore_daily_closed_trades(trades, expected_date)
+            return None
+
     # Alias for flexibility
     evaluate_decision = evaluate
