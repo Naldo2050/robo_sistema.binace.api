@@ -123,29 +123,47 @@ class SimulatedSummary(SimulatedMetric):
 # ----------------------------------------------------------------------
 
 def create_counter(name: str, description: str, labelnames: Optional[Sequence[str]] = None):
-    """Cria um contador Prometheus ou simulado"""
+    """Cria um contador Prometheus ou simulado com protecao contra duplicacao em reload"""
     if PROMETHEUS_AVAILABLE:
-        if labelnames:
-            return Counter(name, description, labelnames)
-        return Counter(name, description)
+        try:
+            if labelnames:
+                return Counter(name, description, labelnames)
+            return Counter(name, description)
+        except ValueError:
+            collector = getattr(REGISTRY, "_names_to_collectors", {}).get(name)
+            if collector is not None:
+                return collector
+            return SimulatedCounter(name, description)
     return SimulatedCounter(name, description)
 
 
 def create_histogram(name: str, description: str, buckets: Optional[Sequence[float]] = None):
-    """Cria um histograma Prometheus ou simulado"""
+    """Cria um histograma Prometheus ou simulado com protecao contra duplicacao em reload"""
     default_buckets = (0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0)
     bucket_list = buckets or default_buckets
     if PROMETHEUS_AVAILABLE:
-        return Histogram(name, description, buckets=bucket_list)
+        try:
+            return Histogram(name, description, buckets=bucket_list)
+        except ValueError:
+            collector = getattr(REGISTRY, "_names_to_collectors", {}).get(name)
+            if collector is not None:
+                return collector
+            return SimulatedHistogram(name, description, buckets=bucket_list)
     return SimulatedHistogram(name, description, buckets=bucket_list)
 
 
 def create_gauge(name: str, description: str, labelnames: Optional[Sequence[str]] = None):
-    """Cria um gauge Prometheus ou simulado"""
+    """Cria um gauge Prometheus ou simulado com protecao contra duplicacao em reload"""
     if PROMETHEUS_AVAILABLE:
-        if labelnames:
-            return Gauge(name, description, labelnames)
-        return Gauge(name, description)
+        try:
+            if labelnames:
+                return Gauge(name, description, labelnames)
+            return Gauge(name, description)
+        except ValueError:
+            collector = getattr(REGISTRY, "_names_to_collectors", {}).get(name)
+            if collector is not None:
+                return collector
+            return SimulatedGauge(name, description)
     return SimulatedGauge(name, description)
 
 
@@ -196,6 +214,17 @@ connection_losses = create_counter(
     'trading_connection_losses_total',
     'Perdas de conexão',
     labelnames=['type']
+)
+
+# Contadores para perdas no buffer de trades
+trades_dropped_overflow = create_counter(
+    'trading_trades_dropped_overflow_total',
+    'Total de trades antigos descartados por overflow no buffer'
+)
+
+trades_dropped_shutdown = create_counter(
+    'trading_trades_dropped_shutdown_total',
+    'Total de trades descartados durante o encerramento do buffer (timeout expirado)'
 )
 
 # Histogramas de latência
@@ -360,6 +389,18 @@ def record_connection_loss(connection_type: str = "websocket"):
 def update_active_trades_buffer(count: int):
     """Atualiza o número de trades no buffer"""
     active_trades_buffer.set(count)
+
+
+def record_trades_dropped_overflow(count: int = 1):
+    """Registra trades descartados por overflow."""
+    if count > 0:
+        trades_dropped_overflow.inc(count)
+
+
+def record_trades_dropped_shutdown(count: int = 1):
+    """Registra trades descartados durante o shutdown."""
+    if count > 0:
+        trades_dropped_shutdown.inc(count)
 
 
 def update_active_connections(count: int):

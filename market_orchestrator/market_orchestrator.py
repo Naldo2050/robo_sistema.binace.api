@@ -311,6 +311,9 @@ class EnhancedMarketBot:
             max_processing_time_ms=getattr(
                 config, "TRADES_BUFFER_MAX_PROCESSING_MS", 500.0
             ),
+            drain_timeout_ms=getattr(
+                config, "TRADES_BUFFER_DRAIN_TIMEOUT_MS", 2000.0
+            ),
             warning_callback=self._on_buffer_warning,
             heartbeat_callback=lambda module: (
                 self.health_monitor.heartbeat(module)
@@ -1051,7 +1054,7 @@ class EnhancedMarketBot:
             success = self.trades_buffer.add_trade_sync(norm, process_trade_sync)
             
             if not success:
-                logging.warning(f"⚠️ Trade descartado por buffer overflow")
+                logging.warning("⚠️ Trade descartado pelo buffer (não aceito)")
                 # FORENSIC-AUDIT: contabiliza drop de buffer (observacional)
                 try:
                     from audit_live.forensic_context import CTX as _fctx
