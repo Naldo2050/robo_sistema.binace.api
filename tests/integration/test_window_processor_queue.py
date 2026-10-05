@@ -14,7 +14,7 @@ async def test_submit_window_processes_snapshot_in_background(monkeypatch):
     processed = []
     done = threading.Event()
 
-    def _fake_process(bot, window_data, close_ms):
+    def _fake_process(bot, window_data, close_ms, **kwargs):
         processed.append(
             {
                 "bot": bot,

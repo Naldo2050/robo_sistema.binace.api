@@ -110,7 +110,7 @@ class GoldenBot:
     def _process_signals(self, signals, pipeline, flow_metrics,
                          historical_profile, macro_context, ob_event, enriched,
                          close_ms, total_buy_volume, total_sell_volume,
-                         valid_window_data):
+                         valid_window_data, cancel_event=None, **kwargs):
         self.recorded = {"signals": signals, "pipeline": pipeline,
                          "flow_metrics": flow_metrics,
                          "macro_context": macro_context, "ob_event": ob_event,

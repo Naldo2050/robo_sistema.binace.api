@@ -12,7 +12,8 @@ Nenhuma lógica foi alterada.
 """
 
 import logging
-from typing import Any, Dict, List
+import threading
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -48,6 +49,7 @@ def process_signals(
     total_buy_volume: float,
     total_sell_volume: float,
     valid_window_data: List[Dict[str, Any]],
+    cancel_event: Optional[threading.Event] = None,
 ) -> None:
     """
     Equivalente ao método EnhancedMarketBot._process_signals original.
@@ -118,10 +120,12 @@ def process_signals(
     # Features finais + persistência no FeatureStore
     # --------------------------------------------------------
     features = pipeline.get_final_features()
-    bot.feature_store.save_features(
-        window_id=str(close_ms),
-        features=features,
-    )
+    _is_canc = cancel_event is not None and cancel_event.is_set()
+    if not _is_canc:
+        bot.feature_store.save_features(
+            window_id=str(close_ms),
+            features=features,
+        )
 
     ml_payload = features.get("ml_features", {}) or {}
     enriched_snapshot = features.get("enriched", {}) or {}
@@ -243,6 +247,12 @@ def process_signals(
             if price_targets:
                 signal["price_targets"] = price_targets
 
+            if cancel_event is not None and cancel_event.is_set():
+                logging.warning(
+                    f"⚠️ Janela {close_ms} cancelada/expirada. Descartando publicação do sinal {signal.get('tipo_evento')}."
+                )
+                return
+
             bot._enrich_signal(
                 signal,
                 derivatives_context,
@@ -258,6 +268,7 @@ def process_signals(
                 valid_window_data,
                 support_resistance,
                 defense_zones_data,
+                cancel_event=cancel_event,
             )
 
     # ─── Fase 2 (pós-enrichment): propagar dados que o institutional enricher
@@ -288,6 +299,12 @@ def process_signals(
     # --------------------------------------------------------
     # PÓS-PROCESSAMENTO (históricos, alerts, logs)
     # --------------------------------------------------------
+    if cancel_event is not None and cancel_event.is_set():
+        logging.warning(
+            f"⚠️ Janela {close_ms} cancelada/expirada antes de pós-processamento. Abortando históricos e alertas."
+        )
+        return
+
     bot._check_zone_touches(enriched, signals)
     bot._update_histories(enriched, ml_payload)
     bot._log_ml_features(ml_payload)
@@ -296,6 +313,9 @@ def process_signals(
     bot._log_window_summary(enriched, historical_profile, macro_context)
     # FORENSIC-AUDIT: captura triggers + constrói payload futuro SEM transmitir à IA
     # (seções 13-14; llm_transmitted=false; ativo só se FORENSIC_CAPTURE=1)
+    if cancel_event is not None and cancel_event.is_set():
+        return
+
     try:
         from audit_live.hooks import on_trigger as _ftrig
 

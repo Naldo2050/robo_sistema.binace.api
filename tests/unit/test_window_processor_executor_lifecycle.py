@@ -42,7 +42,7 @@ def test_success_calls_shutdown_wait_true():
         shutdown_calls.append({"args": args, "kwargs": kwargs})
         return orig_shutdown(self, *args, **kwargs)
 
-    def _dummy_process(b, wd, close_ms):
+    def _dummy_process(b, wd, close_ms, **kwargs):
         pass
 
     with patch.object(concurrent.futures.ThreadPoolExecutor, "shutdown", _spy_shutdown), \
@@ -69,7 +69,7 @@ def test_worker_exception_calls_shutdown_wait_true():
         shutdown_calls.append({"args": args, "kwargs": kwargs})
         return orig_shutdown(self, *args, **kwargs)
 
-    def _failing_process(b, wd, close_ms):
+    def _failing_process(b, wd, close_ms, **kwargs):
         raise ValueError("Simulated pipeline failure")
 
     with patch.object(concurrent.futures.ThreadPoolExecutor, "shutdown", _spy_shutdown), \
@@ -151,7 +151,7 @@ def test_timeout_returns_control_immediately_without_waiting_long_thread():
     started_ev = threading.Event()
     release_ev = threading.Event()
 
-    def _slow_task(b, wd, close_ms):
+    def _slow_task(b, wd, close_ms, **kwargs):
         started_ev.set()
         release_ev.wait(timeout=5.0)
 
@@ -189,7 +189,7 @@ def test_20_failing_windows_do_not_accumulate_orphan_threads():
     bot = DummyBot()
     window_data = [{"p": 100.0, "q": 1.0, "T": 1000}]
 
-    def _failing_task(b, wd, close_ms):
+    def _failing_task(b, wd, close_ms, **kwargs):
         raise RuntimeError("Task failed")
 
     baseline_threads = threading.active_count()
@@ -225,7 +225,7 @@ def test_queue_task_done_called_exactly_once_per_item():
 
     call_index = 0
 
-    def _variable_behavior(b, wd, close_ms):
+    def _variable_behavior(b, wd, close_ms, **kwargs):
         nonlocal call_index
         call_index += 1
         if call_index == 1:
@@ -255,7 +255,7 @@ def test_nominal_window_count_behavior_preserved():
 
     calls = 0
 
-    def _selective_process(b, wd, close_ms):
+    def _selective_process(b, wd, close_ms, **kwargs):
         nonlocal calls
         calls += 1
         if calls in (2, 4):

@@ -1150,6 +1150,7 @@ class EnhancedMarketBot:
         total_buy_volume,
         total_sell_volume,
         valid_window_data,
+        cancel_event: Optional[threading.Event] = None,
     ):
         return process_signals(
             self,
@@ -1164,6 +1165,7 @@ class EnhancedMarketBot:
             total_buy_volume,
             total_sell_volume,
             valid_window_data,
+            cancel_event=cancel_event,
         )
 
     def _setup_ai(self) -> None:
@@ -1514,6 +1516,7 @@ class EnhancedMarketBot:
         valid_window_data: List[Dict[str, Any]],
         support_resistance: Dict[str, Any],
         defense_zones_data: Dict[str, Any],
+        cancel_event: Optional[threading.Event] = None,
     ) -> None:
         """Enriquece sinal com dados adicionais e gera evento institucional."""
 
@@ -1788,6 +1791,12 @@ class EnhancedMarketBot:
             locals().get("_t_inst_ms", 0.0),
             _t_enrich_ms,
         )
+
+        if cancel_event is not None and cancel_event.is_set():
+            logging.warning(
+                f"[SignalEnricher] Janela expirada/cancelada antes de publicar sinal: {signal.get('tipo_evento')}. Descartando publicação."
+            )
+            return
 
         if signal.get("tipo_evento") == "ANALYSIS_TRIGGER":
             key = (

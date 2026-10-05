@@ -61,6 +61,11 @@ from common.json_safe import is_non_finite_number
 last_window_processed_ts: float = 0.0
 
 
+def _window_cancelled(cancel_event: Optional[threading.Event]) -> bool:
+    """Retorna True se a execução da janela foi sinalizada como expirada ou cancelada."""
+    return cancel_event is not None and cancel_event.is_set()
+
+
 class WindowProcessor:
     """
     Processador de janelas para o EnhancedMarketBot.
@@ -94,6 +99,8 @@ class WindowProcessor:
         
         self.window_count = 0
         self._shutdown_event = asyncio.Event()
+        self._active_cancel_event: Optional[threading.Event] = None
+        self._active_cancel_lock = threading.Lock()
         
     async def start(self) -> None:
         """Inicia o WindowProcessor criando tarefas internas."""
@@ -131,6 +138,10 @@ class WindowProcessor:
         self._running = False
         self._shutdown_event.set()
         self._worker_stop.set()
+
+        with self._active_cancel_lock:
+            if self._active_cancel_event is not None:
+                self._active_cancel_event.set()
 
         try:
             self._queue.put_nowait(None)
@@ -221,6 +232,10 @@ class WindowProcessor:
                 continue
 
             bot, window_data, close_ms = item
+            cancel_event = threading.Event()
+            with self._active_cancel_lock:
+                self._active_cancel_event = cancel_event
+
             executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
             is_timeout = False
             try:
@@ -231,7 +246,11 @@ class WindowProcessor:
                         thread_name_prefix=f"win_exec_{self.symbol}",
                     )
                     future = executor.submit(
-                        process_window_snapshot, bot, window_data, close_ms
+                        process_window_snapshot,
+                        bot,
+                        window_data,
+                        close_ms,
+                        cancel_event=cancel_event,
                     )
                     try:
                         future.result(timeout=45.0)
@@ -243,6 +262,7 @@ class WindowProcessor:
                         self.window_count += 1
                     except concurrent.futures.TimeoutError:
                         is_timeout = True
+                        cancel_event.set()
                         self.logger.error(
                             "⏰ TIMEOUT: Janela demorou >45s para processar. Pulando. (Possível trava na IA)"
                         )
@@ -258,6 +278,9 @@ class WindowProcessor:
             except Exception as e:
                 self.logger.error(f"Erro no worker de janelas: {e}", exc_info=True)
             finally:
+                with self._active_cancel_lock:
+                    if self._active_cancel_event is cancel_event:
+                        self._active_cancel_event = None
                 self._queue.task_done()
 
 
@@ -610,6 +633,7 @@ def process_window_snapshot(
     bot,
     window_data: List[Dict[str, Any]],
     close_ms: Optional[int],
+    cancel_event: Optional[threading.Event] = None,
 ) -> None:
     """
     Processa uma janela a partir de um snapshot imutável.
@@ -802,6 +826,12 @@ def process_window_snapshot(
             # Atualiza níveis de VP
             bot.levels.update_from_vp(historical_profile)
 
+            if _window_cancelled(cancel_event):
+                logging.info(
+                    f"[WindowProcessor] Janela #{bot.window_count} (close_ms={close_ms}) cancelada antes do pipeline. Abortando."
+                )
+                return
+
             # ----------------------------
             # Criação do DataPipeline
             # ----------------------------
@@ -910,6 +940,12 @@ def process_window_snapshot(
             # ----------------------------
             # IA Quantitativa: features finais + probabilidade de alta
             # ----------------------------
+            if _window_cancelled(cancel_event):
+                logging.info(
+                    f"[WindowProcessor] Janela #{bot.window_count} (close_ms={close_ms}) cancelada antes da inferência ML. Abortando."
+                )
+                return
+
             final_features = None
             ml_prob_up = None
 
@@ -1041,6 +1077,12 @@ def process_window_snapshot(
                 locals().get("computed_features", {}),
                 macro_context.get("mtf_trends"),
             )
+            if _window_cancelled(cancel_event):
+                logging.warning(
+                    f"[WindowProcessor] Janela #{bot.window_count} (close_ms={close_ms}) expirada/cancelada antes de finalize_window. Abortando commit."
+                )
+                return
+
             ws_errors = state_mgr.finalize_window()
             if ws_errors:
                 logging.warning(
@@ -1048,7 +1090,13 @@ def process_window_snapshot(
                     f"{len(ws_errors)} problemas de validacao"
                 )
 
-            # Encaminha para o processador de sinais original
+            if _window_cancelled(cancel_event):
+                logging.warning(
+                    f"[WindowProcessor] Janela #{bot.window_count} (close_ms={close_ms}) expirada/cancelada antes de process_signals. Descartando sinais."
+                )
+                return
+
+            # Encaminha para o processador de sinais original com propagação cooperativa
             bot._process_signals(
                 signals,
                 pipeline,
@@ -1061,6 +1109,7 @@ def process_window_snapshot(
                 total_buy_volume,
                 total_sell_volume,
                 valid_window_data,
+                cancel_event=cancel_event,
             )
 
             # ----------------------------
@@ -1072,7 +1121,7 @@ def process_window_snapshot(
                 # caso contrário usa as final_features do pipeline.
                 features_to_save = locals().get('enriched_features', final_features)
                 
-                if feature_store is not None and features_to_save is not None:
+                if not _window_cancelled(cancel_event) and feature_store is not None and features_to_save is not None:
                     window_id = f"{bot.symbol}_{close_ms}"
                     feature_store.save_features(window_id, features_to_save)
             except Exception as e:
@@ -1154,44 +1203,45 @@ def process_window_snapshot(
             except Exception:
                 pass
             # FORENSIC-AUDIT: captura janela física 1m (observacional, seção 7)
-            try:
-                from audit_live.hooks import on_window as _fwin
+            if not _window_cancelled(cancel_event):
+                try:
+                    from audit_live.hooks import on_window as _fwin
 
-                _ohlc = (enriched.get("ohlc", {}) or {}) if isinstance(enriched, dict) else {}
-                _Ts = [int(t.get("T", 0)) for t in valid_window_data if t.get("T")]
-                # CVD: arquitetura atual só expõe estado FINAL (flow_metrics pós-janela).
-                # NÃO inventar BEFORE: registra AFTER + null/NOT_OBSERVED (seção 3).
-                _cvd_after = (flow_metrics.get("cvd") if isinstance(flow_metrics, dict) else None)
-                _fwin({
-                    "window_number": bot.window_count,
-                    "symbol": getattr(bot, "symbol", "BTCUSDT"),
-                    "window_start_ms": close_ms - 60000,
-                    "window_end_ms": close_ms,
-                    "first_normalized_T": min(_Ts) if _Ts else None,
-                    "last_normalized_T": max(_Ts) if _Ts else None,
-                    "raw_trade_count": None,
-                    "normalized_trade_count": len(valid_window_data),
-                    "open": _ohlc.get("open"),
-                    "high": _ohlc.get("high"),
-                    "low": _ohlc.get("low"),
-                    "close": _ohlc.get("close"),
-                    "buy_base": float(total_buy_volume),
-                    "sell_base": float(total_sell_volume),
-                    "total_base": float(total_volume),
-                    "delta_base": float(total_buy_volume) - float(total_sell_volume),
-                    "enriched": enriched,
-                    "CVD_before": None,
-                    "cvd_before_status": "NOT_OBSERVED",
-                    "CVD_after": _cvd_after,
-                    "flow_metrics_ref": {
-                        "cvd": _cvd_after,
-                        "net_flow_1m": ((flow_metrics.get("order_flow", {}) or {}).get("net_flow_1m") if isinstance(flow_metrics, dict) else None),
-                    },
-                    "t_end_wall_ms": t_end_wall_ms,
-                    "pipeline_processing_ms": pipeline_processing_ms,
-                })
-            except Exception as _fe:
-                logging.warning("FORENSIC on_window falhou: %s", _fe, exc_info=True)
+                    _ohlc = (enriched.get("ohlc", {}) or {}) if isinstance(enriched, dict) else {}
+                    _Ts = [int(t.get("T", 0)) for t in valid_window_data if t.get("T")]
+                    # CVD: arquitetura atual só expõe estado FINAL (flow_metrics pós-janela).
+                    # NÃO inventar BEFORE: registra AFTER + null/NOT_OBSERVED (seção 3).
+                    _cvd_after = (flow_metrics.get("cvd") if isinstance(flow_metrics, dict) else None)
+                    _fwin({
+                        "window_number": bot.window_count,
+                        "symbol": getattr(bot, "symbol", "BTCUSDT"),
+                        "window_start_ms": close_ms - 60000,
+                        "window_end_ms": close_ms,
+                        "first_normalized_T": min(_Ts) if _Ts else None,
+                        "last_normalized_T": max(_Ts) if _Ts else None,
+                        "raw_trade_count": None,
+                        "normalized_trade_count": len(valid_window_data),
+                        "open": _ohlc.get("open"),
+                        "high": _ohlc.get("high"),
+                        "low": _ohlc.get("low"),
+                        "close": _ohlc.get("close"),
+                        "buy_base": float(total_buy_volume),
+                        "sell_base": float(total_sell_volume),
+                        "total_base": float(total_volume),
+                        "delta_base": float(total_buy_volume) - float(total_sell_volume),
+                        "enriched": enriched,
+                        "CVD_before": None,
+                        "cvd_before_status": "NOT_OBSERVED",
+                        "CVD_after": _cvd_after,
+                        "flow_metrics_ref": {
+                            "cvd": _cvd_after,
+                            "net_flow_1m": ((flow_metrics.get("order_flow", {}) or {}).get("net_flow_1m") if isinstance(flow_metrics, dict) else None),
+                        },
+                        "t_end_wall_ms": t_end_wall_ms,
+                        "pipeline_processing_ms": pipeline_processing_ms,
+                    })
+                except Exception as _fe:
+                    logging.warning("FORENSIC on_window falhou: %s", _fe, exc_info=True)
 
         except Exception as e:
             logging.error(

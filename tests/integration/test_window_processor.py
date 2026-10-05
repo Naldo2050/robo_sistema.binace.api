@@ -192,6 +192,8 @@ class FakeBot:
         total_buy_volume,
         total_sell_volume,
         valid_window_data,
+        cancel_event=None,
+        **kwargs,
     ):
         # Guarda os parâmetros para inspeção no teste
         self.last_process_signals_args = {
