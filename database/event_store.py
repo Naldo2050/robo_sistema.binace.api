@@ -6,6 +6,7 @@ import logging
 import asyncio
 from pathlib import Path
 from typing import List, Dict, Any
+from dataclasses import dataclass
 
 # Otimização de eventos (auto-adicionado)
 from pathlib import Path
@@ -14,6 +15,24 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # ETAPA 6: NaN/±Inf -> None antes de serializar (JSON RFC 8259)
 from common.json_safe import sanitize_json_safe
+
+
+@dataclass(frozen=True)
+class BatchSaveResult:
+    """
+    Contrato imutável de resultado da operação de persistência em batch (Gate G2).
+
+    Status explícito:
+      - COMMITTED: Transação concluída com confirmação.
+      - FAILED: Falha comprovada sem commit bem-sucedido.
+      - UNKNOWN: Resultado da transação não pôde ser determinado com segurança.
+    """
+    total_received: int
+    persisted: int
+    rejected_pre_commit: int
+    commit_status: str  # "COMMITTED" | "FAILED" | "UNKNOWN"
+    error_type: str | None = None
+    error_message: str | None = None
 
 
 class EventStore:
@@ -128,25 +147,63 @@ class EventStore:
             self.logger.critical(f"Erro fatal ao inicializar banco de dados: {e}")
             raise
 
-    def save_event(self, event: Dict[str, Any]):
+    def save_event(self, event: Dict[str, Any]) -> BatchSaveResult:
         """Salva um único evento no banco (Síncrono)."""
-        self.save_batch([event])
+        return self.save_batch([event])
 
     async def save_event_async(self, event: Dict[str, Any]):
         """Salva um único evento no banco (Assíncrono)."""
         return await asyncio.to_thread(self.save_event, event)
 
-    def save_batch(self, events: List[Dict[str, Any]]):
+    def _determine_failure_status(self, conn: Any, stage: str) -> str:
         """
-        Salva uma lista de eventos de forma atômica (transação única) - Síncrono.
+        Determina determinística e conservadoramente se a falha é FAILED ou UNKNOWN (Gate G2).
+
+        Regras:
+          1. Falha em CONNECTING: conexão não aberta -> FAILED comprovado (ausência de transação).
+          2. Falha em COMMITTING: commit não pôde ser confirmado -> UNKNOWN.
+          3. Falha em EXECUTING: tenta conn.rollback().
+             - Se rollback for concluído sem exceção -> FAILED comprovado (transação revertida).
+             - Se rollback falhar ou levantar exceção -> UNKNOWN (estado transacional não comprovado).
+          4. Qualquer outro estado ou objeto inválido -> UNKNOWN.
+        """
+        if stage in ("CONNECTING", "CONNECTING_RETRY"):
+            return "FAILED"
+        if stage in ("COMMITTING", "COMMITTING_RETRY"):
+            return "UNKNOWN"
+        if stage in ("EXECUTING", "EXECUTING_RETRY"):
+            if conn is not None:
+                try:
+                    conn.rollback()
+                    return "FAILED"
+                except Exception as rb_err:
+                    self.logger.error(f"Falha ao executar rollback no SQLite: {rb_err}")
+                    return "UNKNOWN"
+            return "UNKNOWN"
+        return "UNKNOWN"
+
+    def save_batch(self, events: List[Dict[str, Any]]) -> BatchSaveResult:
+        """
+        Salva uma lista de eventos de forma atômica (transação única) - Síncrono (Gate G2).
 
         Args:
             events: Lista de dicionários contendo os dados dos eventos.
+
+        Returns:
+            BatchSaveResult com confirmação explícita do status de persistência.
         """
         if not events:
-            return
+            return BatchSaveResult(
+                total_received=0,
+                persisted=0,
+                rejected_pre_commit=0,
+                commit_status="COMMITTED",
+                error_type=None,
+            )
 
+        total_received = len(events)
         data = []
+        rejected_pre_commit = 0
         for e in events:
             try:
                 # Extração segura de campos para colunas indexadas
@@ -160,13 +217,21 @@ class EventStore:
                 payload = json.dumps(sanitize_json_safe(e), default=str)
                 data.append((ts, etype, sym, wid, is_sig, payload))
             except Exception as err:
+                rejected_pre_commit += 1
                 self.logger.error(
                     f"Erro ao preparar evento para salvar: {err} | Evento parcial: {str(e)[:100]}"
                 )
                 continue
 
         if not data:
-            return
+            return BatchSaveResult(
+                total_received=total_received,
+                persisted=0,
+                rejected_pre_commit=rejected_pre_commit,
+                commit_status="FAILED",
+                error_type="PreCommitValidationError",
+                error_message="Todos os eventos foram rejeitados na preparação pré-commit",
+            )
 
         insert_sql = """
             INSERT INTO events (
@@ -175,31 +240,96 @@ class EventStore:
             VALUES (?, ?, ?, ?, ?, ?)
         """
 
+        conn = None
+        stage = "CONNECTING"
         try:
-            with self._get_conn() as conn:
-                conn.executemany(insert_sql, data)
+            conn = self._get_conn()
+            stage = "EXECUTING"
+            conn.executemany(insert_sql, data)
+            stage = "COMMITTING"
+            conn.commit()
+            stage = "COMMITTED"
+            return BatchSaveResult(
+                total_received=total_received,
+                persisted=len(data),
+                rejected_pre_commit=rejected_pre_commit,
+                commit_status="COMMITTED",
+                error_type=None,
+            )
         except sqlite3.OperationalError as e:
             # Auto-recuperação: se a tabela ainda não existe por qualquer motivo,
             # recria o schema e tenta 1 vez.
             msg = str(e).lower()
             if "no such table" in msg and "events" in msg:
+                conn2 = None
                 try:
                     self.logger.warning(
                         "Tabela 'events' ausente no SQLite; recriando schema e tentando novamente..."
                     )
                     self._init_db()
-                    with self._get_conn() as conn:
-                        conn.executemany(insert_sql, data)
-                    return
+                    stage = "CONNECTING_RETRY"
+                    conn2 = self._get_conn()
+                    stage = "EXECUTING_RETRY"
+                    conn2.executemany(insert_sql, data)
+                    stage = "COMMITTING_RETRY"
+                    conn2.commit()
+                    stage = "COMMITTED"
+                    return BatchSaveResult(
+                        total_received=total_received,
+                        persisted=len(data),
+                        rejected_pre_commit=rejected_pre_commit,
+                        commit_status="COMMITTED",
+                        error_type=None,
+                    )
                 except Exception as e2:
                     self.logger.error(
                         f"Erro ao recriar schema do SQLite e regravar batch ({len(data)} eventos): {e2}"
                     )
+                    status = self._determine_failure_status(conn2, stage)
+                    return BatchSaveResult(
+                        total_received=total_received,
+                        persisted=0,
+                        rejected_pre_commit=rejected_pre_commit,
+                        commit_status=status,
+                        error_type=type(e2).__name__,
+                        error_message=str(e2),
+                    )
+                finally:
+                    if conn2 is not None:
+                        try:
+                            conn2.close()
+                        except Exception:
+                            pass
+
             self.logger.error(
                 f"Erro ao gravar batch no SQLite ({len(data)} eventos): {e}"
             )
+            status = self._determine_failure_status(conn, stage)
+            return BatchSaveResult(
+                total_received=total_received,
+                persisted=0,
+                rejected_pre_commit=rejected_pre_commit,
+                commit_status=status,
+                error_type=type(e).__name__,
+                error_message=str(e),
+            )
         except Exception as e:
             self.logger.error(f"Erro ao gravar batch no SQLite ({len(data)} eventos): {e}")
+            status = self._determine_failure_status(conn, stage)
+            return BatchSaveResult(
+                total_received=total_received,
+                persisted=0,
+                rejected_pre_commit=rejected_pre_commit,
+                commit_status=status,
+                error_type=type(e).__name__,
+                error_message=str(e),
+            )
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     async def save_batch_async(self, events: List[Dict[str, Any]]):
         """Salva uma lista de eventos de forma atômica (Assíncrono)."""

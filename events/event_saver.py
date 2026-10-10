@@ -35,11 +35,44 @@ except Exception:
 
 # ===== IMPORT DO NOVO BACKEND SQLITE =====
 try:
-    from database.event_store import EventStore
+    from database.event_store import EventStore, BatchSaveResult
     HAS_SQLITE_STORE = True
 except ImportError:
+    EventStore = None
+    BatchSaveResult = None
     HAS_SQLITE_STORE = False
     logging.warning("⚠️ Módulo database.event_store não encontrado. Escrita no SQLite desabilitada.")
+
+
+def _is_valid_batch_save_result(res: Any, expected_count: int) -> bool:
+    """Valida consistência interna e matemática de um BatchSaveResult (Gate G2)."""
+    if BatchSaveResult is None or not isinstance(res, BatchSaveResult):
+        return False
+    if not (
+        isinstance(res.total_received, int)
+        and isinstance(res.persisted, int)
+        and isinstance(res.rejected_pre_commit, int)
+        and isinstance(res.commit_status, str)
+    ):
+        return False
+    if res.total_received < 0 or res.persisted < 0 or res.rejected_pre_commit < 0:
+        return False
+    if res.total_received != expected_count:
+        return False
+    if res.persisted > res.total_received or res.rejected_pre_commit > res.total_received:
+        return False
+    if res.commit_status not in ("COMMITTED", "FAILED", "UNKNOWN"):
+        return False
+    if res.commit_status == "COMMITTED":
+        if res.persisted + res.rejected_pre_commit != res.total_received:
+            return False
+    elif res.commit_status == "FAILED":
+        if res.persisted != 0:
+            return False
+    elif res.commit_status == "UNKNOWN":
+        if res.persisted > res.total_received:
+            return False
+    return True
 
 # ETAPA 6: NaN/±Inf -> None antes de serializar (JSON RFC 8259)
 try:
@@ -110,42 +143,42 @@ except ImportError:
     except ImportError:
         logging.warning("Nenhuma biblioteca de timezone disponível. Usando offsets dinâmicos.")
         UTC_TZ = timezone.utc
-        
+
         class DynamicNYTZ:
             """Timezone de NY com detecção de DST."""
             def __init__(self):
                 self.utc = timezone.utc
-                
+
             def _is_dst(self, dt: datetime) -> bool:
                 """Verifica se está em horário de verão (DST)."""
                 year = dt.year
-                
+
                 # Encontra segundo domingo de março
                 march = datetime(year, 3, 1)
                 days_to_sunday = (6 - march.weekday()) % 7
                 first_sunday = march + timedelta(days=days_to_sunday)
                 second_sunday = first_sunday + timedelta(days=7)
                 dst_start = second_sunday.replace(hour=2, minute=0, second=0, microsecond=0, tzinfo=self.utc)
-                
+
                 # Encontra primeiro domingo de novembro
                 november = datetime(year, 11, 1)
                 days_to_sunday = (6 - november.weekday()) % 7
                 first_sunday = november + timedelta(days=days_to_sunday)
                 dst_end = first_sunday.replace(hour=2, minute=0, second=0, microsecond=0, tzinfo=self.utc)
-                
+
                 # Compara
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=self.utc)
-                
+
                 return dst_start <= dt < dst_end
-            
+
             def get_offset(self, dt: datetime) -> timezone:
                 """Retorna timezone com offset correto."""
                 if self._is_dst(dt):
                     return timezone(timedelta(hours=-4))  # EDT
                 else:
                     return timezone(timedelta(hours=-5))  # EST
-        
+
         NY_TZ = DynamicNYTZ()
         SP_TZ = timezone(timedelta(hours=-3))
 
@@ -204,7 +237,7 @@ try:
     HAS_FORMAT_UTILS = True
 except ImportError:
     HAS_FORMAT_UTILS = False
-    
+
     def format_price(value):
         if value is None:
             return "null"
@@ -292,7 +325,7 @@ def acquire_file_lock(file_obj, blocking=True, timeout=5.0):
     """
     if LOCK_METHOD is None:
         return True  # Sem locking disponível
-    
+
     try:
         if LOCK_METHOD == 'fcntl':
             if blocking:
@@ -308,7 +341,7 @@ def acquire_file_lock(file_obj, blocking=True, timeout=5.0):
             else:
                 fcntl_module.flock(file_obj.fileno(), fcntl_module.LOCK_EX | fcntl_module.LOCK_NB)
                 return True
-                
+
         elif LOCK_METHOD == 'msvcrt':
             if blocking:
                 start_time = time.time()
@@ -323,11 +356,11 @@ def acquire_file_lock(file_obj, blocking=True, timeout=5.0):
             else:
                 msvcrt_module.locking(file_obj.fileno(), msvcrt_module.LK_NBLCK, 1)
                 return True
-                
+
     except Exception as e:
         logging.debug(f"Erro ao adquirir lock: {e}")
         return False
-    
+
     return True
 
 
@@ -335,7 +368,7 @@ def release_file_lock(file_obj):
     """Libera lock de arquivo multiplataforma."""
     if LOCK_METHOD is None:
         return
-    
+
     try:
         if LOCK_METHOD == 'fcntl':
             fcntl_module.flock(file_obj.fileno(), fcntl_module.LOCK_UN)
@@ -348,7 +381,7 @@ def release_file_lock(file_obj):
 class EventSaver:
     """
     Classe responsável por salvar e formatar eventos de trading.
-    
+
     ✅ v5.0.0: Migração completa para SQLite (JSON/JSONL removidos)
     ✅ v4.6.0: Dual Write (SQLite + Files)
     ✅ v4.5.5: Lock em _janelas_processadas + timezone mais robusto
@@ -443,16 +476,16 @@ class EventSaver:
         self._janelas_processadas = set()      # Rastreia janelas que já tiveram separador
         self._last_janela_numero = None        # Última janela com separador escrito
         self._janelas_lock = threading.Lock()  # lock dedicado para _janelas_processadas
-        
+
         # _seen_in_block com timestamp para limpeza
         self._seen_in_block: Dict[Tuple, float] = {}
         self._last_cleanup_time = time.time()
-        
+
         # 🆕 Rastreador de timestamps para deduplicação
         self._last_event_timestamp_ms: Optional[int] = None
         self._duplicate_event_count = 0
         self._max_timestamp_gap_ms = 100  # Detecta saltos de tempo fora do esperado
-        
+
         # Buffer de escrita + thread de flush (Gate G1)
         self._write_buffer: List[Dict] = []
         self._buffer_lock = threading.Lock()
@@ -471,19 +504,42 @@ class EventSaver:
         self._events_finalized = 0
         self._events_failed_terminal = 0
 
+        # Gate G2: Contabilidade por destino independente
+        self._sqlite_events_attempted = 0
+        self._sqlite_events_persisted = 0
+        self._sqlite_events_failed = 0
+        self._sqlite_events_unknown = 0
+        self._sqlite_events_rejected_pre_commit = 0
+
+        self._jsonl_events_attempted = 0
+        self._jsonl_events_written = 0
+        self._jsonl_events_failed = 0
+        self._jsonl_events_unknown = 0
+
+        self._fallback_events_attempted = 0
+        self._fallback_events_written = 0
+        self._fallback_events_failed = 0
+        self._fallback_events_unknown = 0
+
+        # Gate G2: Rate-limited warning do worker
+        self._rejection_warn_interval = 60.0
+        self._last_rejection_warn_time = 0.0
+        self._last_warn_overflow = 0
+        self._last_warn_after_stop = 0
+
         self._flush_thread = threading.Thread(
             target=self._flush_loop, daemon=True, name="EventSaverFlushWorker"
         )
         self._flush_thread.start()
-        
+
         # Thread de cleanup
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
-        
+
         # Stats
         self._buffer_overflow_count = 0
         self._lock_timeout_count = 0
-        
+
         # ✅ Inicializa Clock Sync
         if HAS_CLOCK_SYNC:
             try:
@@ -491,7 +547,7 @@ class EventSaver:
                 if _clock_sync_instance is None:
                     self.logger.info("🕐 Inicializando Clock Sync...")
                     _clock_sync_instance = get_clock_sync()
-                    
+
                     # Aguarda primeira sincronização (até 5s para HTTP completar)
                     synced = _clock_sync_instance.wait_for_sync(timeout=5.0)
 
@@ -510,22 +566,22 @@ class EventSaver:
                             )
                     else:
                         self.logger.warning("⚠️ Clock Sync: sincronização inicial pendente (timeout 5s)")
-                        
+
             except Exception as e:
                 self.logger.warning(f"⚠️ Clock Sync não disponível: {e}")
                 _clock_sync_instance = None
         else:
             self.logger.info("ℹ️ Clock Sync não disponível (usando timestamps locais)")
-        
+
         # Encerra limpo no exit
         atexit.register(self.stop)
-        
+
         # Verificação inicial
         self._debug_timezone_check()
-        
+
         lock_status = "HABILITADO" if LOCK_METHOD else "DESABILITADO"
         lock_type = f"({LOCK_METHOD})" if LOCK_METHOD else ""
-        
+
         self.logger.info(
             "✅ EventSaver v5.0.0 inicializado | "
             "Buffer max: %d | Cleanup: %ds | File locking: %s %s",
@@ -546,7 +602,7 @@ class EventSaver:
                 self.logger.info(f"   UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC")
                 self.logger.info(f"   NY:  {now_ny.strftime('%Y-%m-%d %H:%M:%S')} (EST/EDT)")
                 self.logger.info(f"   SP:  {now_sp.strftime('%Y-%m-%d %H:%M:%S')} (BRT)")
-                
+
                 if hasattr(now_ny, 'utcoffset') and now_ny.utcoffset():
                     utc_offset_ny = now_ny.utcoffset().total_seconds() / 3600
                     self.logger.info(f"   Offset NY vs UTC: {utc_offset_ny:.1f} horas")
@@ -576,7 +632,7 @@ class EventSaver:
                 else:
                     dt_utc = dt.replace(tzinfo=UTC_TZ)
                     return dt_utc.astimezone(offset_tz)
-            
+
             # Se já tem timezone
             if dt.tzinfo is not None:
                 if hasattr(target_tz, 'normalize'):
@@ -647,29 +703,29 @@ class EventSaver:
                 self._cleanup_seen_in_block()
             except Exception as e:
                 self.logger.error(f"Erro no cleanup: {e}")
-    
+
     def _cleanup_seen_in_block(self):
         """Limpa entradas antigas de _seen_in_block."""
         try:
             now = time.time()
             cutoff = now - SEEN_BLOCK_TTL
-            
+
             cleaned = {
                 k: v for k, v in self._seen_in_block.items()
                 if v > cutoff
             }
-            
+
             removed = len(self._seen_in_block) - len(cleaned)
-            
+
             if removed > 0:
                 self._seen_in_block = cleaned
                 self.logger.debug(
                     f"🧹 Cleanup: {removed} entradas antigas removidas de _seen_in_block "
                     f"({len(cleaned)} restantes)"
                 )
-                
+
             self._last_cleanup_time = now
-            
+
         except Exception as e:
             self.logger.error(f"Erro ao limpar _seen_in_block: {e}")
 
@@ -743,8 +799,8 @@ class EventSaver:
                 return False
 
     def _clean_numeric_value(
-        self, 
-        value: Any, 
+        self,
+        value: Any,
         field_type: str = "generic"
     ) -> Optional[Union[int, float]]:
         """Limpa e arredonda um valor numérico."""
@@ -758,7 +814,7 @@ class EventSaver:
             num_value = float(value)
             if self._is_nan_or_inf(num_value):
                 return None
-            
+
             precision_map = {
                 "price": 4,
                 "quantity": 3,
@@ -769,7 +825,7 @@ class EventSaver:
             }
             precision = precision_map.get(field_type, 4)
             rounded_value = round(num_value, precision)
-            
+
             if rounded_value == int(rounded_value) and field_type != "scientific":
                 return int(rounded_value)
             return rounded_value
@@ -780,12 +836,12 @@ class EventSaver:
         """Limpa recursivamente todos os campos numéricos do evento."""
         if not isinstance(event, dict):
             return event
-            
+
         try:
             cleaned = {}
-            
+
             field_types = {
-                'price': {'preco', 'price', 'close', 'open', 'high', 'low', 'poc', 'val', 'vah', 
+                'price': {'preco', 'price', 'close', 'open', 'high', 'low', 'poc', 'val', 'vah',
                          'level', 'bid_price', 'ask_price', 'wall_price', 'anchor'},
                 'quantity': {'volume', 'quantity', 'size', 'count', 'trades', 'interest'},
                 'delta': {'delta', 'flow', 'imbalance', 'net'},
@@ -806,7 +862,7 @@ class EventSaver:
 
             for key, value in event.items():
                 field_type = get_field_type(key)
-                
+
                 if field_type == 'timestamp':
                     cleaned[key] = value
                 elif isinstance(value, (int, float)):
@@ -834,7 +890,7 @@ class EventSaver:
                                 cleaned_list.append(clean_value)
                         elif item is not None:
                             cleaned_list.append(item)
-                    
+
                     if key.lower() in ['hvns', 'lvns', 'historical_volumes'] and len(cleaned_list) > 10:
                         cleaned[key] = cleaned_list
                     elif cleaned_list:
@@ -971,10 +1027,21 @@ class EventSaver:
 
         return event_copy
 
-    def _save_to_jsonl(self, event: Dict) -> None:
-        """Salva evento em arquivo JSONL (historico) com retry."""
+    def _inc_stat(self, field: str, amount: int = 1) -> None:
+        """Incrementa contador de forma thread-safe e defensiva a instâncias incompletas (Gate G2)."""
+        lock = getattr(self, "_buffer_lock", None)
+        if lock is not None:
+            with lock:
+                setattr(self, field, getattr(self, field, 0) + amount)
+        elif hasattr(self, field):
+            setattr(self, field, getattr(self, field, 0) + amount)
+
+    def _save_to_jsonl(self, event: Dict) -> str:
+        """Salva evento em arquivo JSONL (historico) com retry (Gate G2)."""
         if not self.write_jsonl:
-            return
+            return "DISABLED"
+
+        self._inc_stat("_jsonl_events_attempted", 1)
 
         max_retries = 3
         retry_delay = 0.5
@@ -1028,7 +1095,9 @@ class EventSaver:
                                 )
                     f.write(json_line + "\n")
                     f.flush()
-                return
+
+                self._inc_stat("_jsonl_events_written", 1)
+                return "WRITTEN"
             except Exception as e:
                 self.logger.error(
                     "Erro ao salvar JSONL (tentativa %d): %s",
@@ -1038,10 +1107,16 @@ class EventSaver:
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay * (2 ** attempt))
                 else:
+                    self._inc_stat("_jsonl_events_failed", 1)
                     self._save_fallback(event, "jsonl")
+                    return "FAILED"
 
-    def _save_fallback(self, event: Dict, format_type: str) -> None:
-        """Salva evento em fallback_events quando JSON falha."""
+        return "UNKNOWN"
+
+    def _save_fallback(self, event: Dict, format_type: str) -> str:
+        """Salva evento em fallback_events quando JSON falha (Gate G2)."""
+        self._inc_stat("_fallback_events_attempted", 1)
+
         try:
             fallback_dir = Path("fallback_events")
             fallback_dir.mkdir(exist_ok=True)
@@ -1105,11 +1180,16 @@ class EventSaver:
                     f.write(
                         json.dumps(
                             event_json, ensure_ascii=False, default=str
-                        )
-                        + "\n"
+                        ) + "\n"
                     )
+                f.flush()
+
+            self._inc_stat("_fallback_events_written", 1)
+            return "WRITTEN"
         except Exception as e:
             self.logger.error(f"Falha ao salvar fallback: {e}")
+            self._inc_stat("_fallback_events_failed", 1)
+            return "FAILED"
 
     def _flush_loop(self):
         """
@@ -1122,10 +1202,53 @@ class EventSaver:
             self._wake_flush_event.clear()
 
             self._process_single_flush_batch()
+            self._check_and_log_rejection_warnings()
 
         # Drenagem segura pós-stop: processa o que restou no buffer antes de encerrar
         while self._process_single_flush_batch():
             pass
+
+        # Verificação final pós-drenagem (Gate G2)
+        self._check_and_log_rejection_warnings(force=True)
+
+    def _check_and_log_rejection_warnings(self, force: bool = False) -> None:
+        """
+        Emite aviso rate-limited sobre eventos descartados por backpressure (Gate G2).
+        Executa EXCLUSIVAMENTE na thread do worker, fora de _buffer_lock e fora de save_event().
+        """
+        now = time.monotonic()
+        if not force and (now - self._last_rejection_warn_time < self._rejection_warn_interval):
+            return
+
+        with self._buffer_lock:
+            cur_overflow = self._events_rejected_overflow
+            cur_after_stop = self._events_rejected_after_stop
+
+        delta_overflow = cur_overflow - self._last_warn_overflow
+        delta_after_stop = cur_after_stop - self._last_warn_after_stop
+
+        if delta_overflow > 0 or delta_after_stop > 0:
+            try:
+                elapsed = (
+                    now - self._last_rejection_warn_time
+                    if self._last_rejection_warn_time > 0
+                    else self._rejection_warn_interval
+                )
+                self.logger.warning(
+                    "Backpressure warning: %d eventos descartados nos últimos %.1fs "
+                    "(overflow=+%d [total=%d], after_stop=+%d [total=%d])",
+                    delta_overflow + delta_after_stop,
+                    elapsed,
+                    delta_overflow,
+                    cur_overflow,
+                    delta_after_stop,
+                    cur_after_stop,
+                )
+            except Exception:
+                pass  # Proteção absoluta: erro no logger não mata worker
+            self._last_warn_overflow = cur_overflow
+            self._last_warn_after_stop = cur_after_stop
+            self._last_rejection_warn_time = now
 
     def _process_single_flush_batch(self) -> bool:
         """
@@ -1159,14 +1282,31 @@ class EventSaver:
         return True
 
     def _flush_buffer(self, events: List[Dict]):
-        """Escreve eventos em lote no banco de dados e log visual."""
-        
+        """Escreve eventos em lote no banco de dados e log visual (Gate G2)."""
+
         # 1. Escrita no SQLite (Principal)
         if self.db:
             try:
-                self.db.save_batch(events)
+                batch_res = self.db.save_batch(events)
+                if _is_valid_batch_save_result(batch_res, len(events)):
+                    self._inc_stat("_sqlite_events_attempted", batch_res.total_received)
+                    self._inc_stat("_sqlite_events_rejected_pre_commit", batch_res.rejected_pre_commit)
+                    if batch_res.commit_status == "COMMITTED":
+                        self._inc_stat("_sqlite_events_persisted", batch_res.persisted)
+                        self._inc_stat("_sqlite_events_failed", batch_res.rejected_pre_commit)
+                    elif batch_res.commit_status == "FAILED":
+                        self._inc_stat("_sqlite_events_failed", batch_res.total_received)
+                    elif batch_res.commit_status == "UNKNOWN":
+                        self._inc_stat("_sqlite_events_persisted", batch_res.persisted)
+                        self._inc_stat("_sqlite_events_unknown", batch_res.total_received - batch_res.persisted)
+                else:
+                    # Retorno None, MagicMock não tipado, dict ou inconsistente
+                    self._inc_stat("_sqlite_events_attempted", len(events))
+                    self._inc_stat("_sqlite_events_unknown", len(events))
             except Exception as e:
                 self.logger.error(f"Erro ao salvar batch no SQLite: {e}")
+                self._inc_stat("_sqlite_events_attempted", len(events))
+                self._inc_stat("_sqlite_events_failed", len(events))
 
         # 2. Escrita no Log Visual (Debug) + JSONs (snapshot/historico)
         for event in events:
@@ -1267,7 +1407,7 @@ class EventSaver:
                 if not epoch_ms:
                     epoch_ms = _clock_sync_instance.get_server_time_ms()
                     event["epoch_ms"] = epoch_ms
-            
+
             # 🆕 DEDUPLICAÇÃO DE TIMESTAMPS
             # Detecta e avisa quando eventos com timestamps duplicados são salvos
             if epoch_ms is not None:
@@ -1296,7 +1436,7 @@ class EventSaver:
                         self._last_event_timestamp_ms = epoch_ms_int
                 except Exception as dedup_err:
                     self.logger.debug(f"Erro na deduplicação: {dedup_err}")
-            
+
             # 🆕 Garante ID único para rastreabilidade
             if "event_id" not in event:
                 # Gera ID determinístico baseado em timestamp e tipo se possível, ou aleatório
@@ -1409,7 +1549,7 @@ class EventSaver:
         janela_num = event.get('janela_numero')
         if not janela_num:
             return
-        
+
         with self._janelas_lock:
             if janela_num in self._janelas_processadas:
                 return
@@ -1486,15 +1626,15 @@ class EventSaver:
             separator += f"📍 São Paulo: {timestamp_sp}\n"
             separator += f"📊 Contexto: {event.get('data_context', 'real_time')}\n"
             separator += f"{'='*100}\n"
-            
+
             lock_file = None
             lock_acquired = False
-            
+
             try:
                 lock_file_path = self.visual_log_file.with_suffix('.lock')
                 lock_file = open(lock_file_path, 'w')
                 lock_acquired = acquire_file_lock(lock_file, blocking=True, timeout=10.0)
-                
+
                 if lock_acquired:
                     with open(self.visual_log_file, "a", encoding="utf-8") as f:
                         f.write(separator)
@@ -1512,7 +1652,7 @@ class EventSaver:
                         lock_file_path.unlink(missing_ok=True)
                     except Exception:
                         pass
-                
+
         except Exception as e:
             self.logger.error(f"Erro ao adicionar separador: {e}")
 
@@ -1527,7 +1667,7 @@ class EventSaver:
                 return f"{value:,.4f}" if isinstance(value, float) else str(value)
             else:
                 return str(value)
-        
+
         key_lower = key.lower()
         try:
             if isinstance(value, bool):
@@ -1743,16 +1883,16 @@ class EventSaver:
         fields_to_remove = ['time_ny', 'time_sp', 'time_utc', '_id', '_rev', '_key']
         for field in fields_to_remove:
             clean.pop(field, None)
-        
+
         if 'contextual_snapshot' in clean:
             contextual = clean.get('contextual_snapshot', {})
             if isinstance(contextual, dict) and 'flow_metrics' in contextual:
                 if 'flow_metrics' in clean:
                     clean['contextual_snapshot'] = {
-                        k: v for k, v in contextual.items() 
+                        k: v for k, v in contextual.items()
                         if k != 'flow_metrics'
                     }
-        
+
         def remove_empty(obj):
             if isinstance(obj, dict):
                 result = {}
@@ -1767,7 +1907,7 @@ class EventSaver:
                 result = [remove_empty(item) for item in obj if item is not None]
                 return result if result else None
             return obj
-        
+
         cleaned_event = remove_empty(clean)
         return cleaned_event if cleaned_event else clean
 
@@ -1919,8 +2059,25 @@ class EventSaver:
                 "events_finalized": self._events_finalized,
                 "events_failed_terminal": self._events_failed_terminal,
                 "shutdown_incomplete": self._shutdown_incomplete,
+
+                # Gate G2: Contabilidade por destino independente
+                "sqlite_events_attempted": self._sqlite_events_attempted,
+                "sqlite_events_persisted": self._sqlite_events_persisted,
+                "sqlite_events_failed": self._sqlite_events_failed,
+                "sqlite_events_unknown": self._sqlite_events_unknown,
+                "sqlite_events_rejected_pre_commit": self._sqlite_events_rejected_pre_commit,
+
+                "jsonl_events_attempted": self._jsonl_events_attempted,
+                "jsonl_events_written": self._jsonl_events_written,
+                "jsonl_events_failed": self._jsonl_events_failed,
+                "jsonl_events_unknown": self._jsonl_events_unknown,
+
+                "fallback_events_attempted": self._fallback_events_attempted,
+                "fallback_events_written": self._fallback_events_written,
+                "fallback_events_failed": self._fallback_events_failed,
+                "fallback_events_unknown": self._fallback_events_unknown,
             }
-        
+
         if HAS_CLOCK_SYNC and _clock_sync_instance:
             try:
                 clock_stats = _clock_sync_instance.get_stats()
@@ -1934,10 +2091,10 @@ class EventSaver:
                 stats["clock_sync"] = {"enabled": False}
         else:
             stats["clock_sync"] = {"enabled": False}
-        
+
         if self.db:
             stats["sqlite"] = self.db.get_stats()
-        
+
         return stats
 
 
@@ -1981,13 +2138,13 @@ if __name__ == "__main__":
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
-    
+
     print("\n" + "="*80)
     print("🧪 TESTE DO EVENTSAVER v5.0.0 - SQLITE ONLY")
     print("="*80 + "\n")
-    
+
     saver = EventSaver(sound_alert=False)
-    
+
     now_ms = int(time.time() * 1000)
     test_event = {
         "tipo_evento": "TesteSQLiteOnly",
@@ -1998,12 +2155,12 @@ if __name__ == "__main__":
         "msg": "Este evento deve ir APENAS para SQLite e Log Visual"
     }
     saver.save_event(test_event)
-    
+
     print("1. Evento enviado. Aguardando flush...")
     time.sleep(6)
-    
+
     stats = saver.get_stats()
     print("\n2. Estatísticas:", stats)
-    
+
     saver.stop()
     print("\n✅ Teste concluído. Verifique 'dados/trading_bot.db' e 'dados/eventos_visuais.log'.")
