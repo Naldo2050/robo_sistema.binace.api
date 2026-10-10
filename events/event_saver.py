@@ -13,6 +13,7 @@ EventSaver v5.0.0 - Sistema de salvamento de eventos de trading
   ✅ v4.5.5: Lock em _janelas_processadas + timezone mais robusto
 """
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -77,6 +78,7 @@ except ImportError:
 
 # ===== CONFIGURACOES =====
 MAX_BUFFER_SIZE = 10000  # Limite maximo de eventos no buffer
+BACKPRESSURE_WAKE_THRESHOLD = 5000  # Acorda worker antecipadamente se backlog crescer (Gate G1)
 MAX_JSON_FILE_SIZE = 50 * 1024 * 1024  # 50MB maximo por snapshot
 MAX_JSONL_BYTES = 5000  # Limite duro por linha (JSONL)
 CLEANUP_INTERVAL = 300  # Limpa cache a cada 5 min
@@ -451,12 +453,27 @@ class EventSaver:
         self._duplicate_event_count = 0
         self._max_timestamp_gap_ms = 100  # Detecta saltos de tempo fora do esperado
         
-        # Buffer de escrita + thread de flush
+        # Buffer de escrita + thread de flush (Gate G1)
         self._write_buffer: List[Dict] = []
         self._buffer_lock = threading.Lock()
         self._flush_interval = 5
         self._stop_event = threading.Event()
-        self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
+        self._wake_flush_event = threading.Event()
+        self._stop_lock = threading.Lock()
+        self._shutdown_incomplete = False
+
+        # Contabilidade estrita de eventos (Gate G1)
+        self._events_received = 0
+        self._events_accepted = 0
+        self._events_rejected_overflow = 0
+        self._events_rejected_after_stop = 0
+        self._events_in_flight = 0
+        self._events_finalized = 0
+        self._events_failed_terminal = 0
+
+        self._flush_thread = threading.Thread(
+            target=self._flush_loop, daemon=True, name="EventSaverFlushWorker"
+        )
         self._flush_thread.start()
         
         # Thread de cleanup
@@ -662,19 +679,41 @@ class EventSaver:
                 self._janelas_processadas.clear()
                 self.logger.info("🧹 Set de janelas processadas limpo")
 
-    def stop(self):
-        """Para threads e realiza flush final."""
-        if not self._stop_event.is_set():
-            self._stop_event.set()
+    def stop(self, timeout: float = 5.0):
+        """
+        Para threads e coordena o encerramento seguro (Gate G1).
+        1. Rejeita novas admissões;
+        2. Solicita encerramento;
+        3. Acorda o worker para permitir drain;
+        4. Aguarda término bounded (timeout);
+        5. Informa shutdown incompleto se worker permanecer ativo;
+        6. NUNCA executa flush concorrente;
+        7. NUNCA limpa buffer de worker vivo;
+        8. Idempotente: chamadas repetidas não causam deadlock.
+        """
+        with self._stop_lock:
+            if not self._stop_event.is_set():
+                self._stop_event.set()
+                self._wake_flush_event.set()
 
-            # Para threads
+            # Aguarda o worker de persistência terminar o drain até o timeout bounded
             try:
-                if self._flush_thread.is_alive():
-                    self._flush_thread.join(timeout=2.0)
-                if self._cleanup_thread.is_alive():
+                if self._flush_thread is not None and self._flush_thread.is_alive():
+                    self._flush_thread.join(timeout=timeout)
+                    if self._flush_thread.is_alive():
+                        self._shutdown_incomplete = True
+                        self.logger.warning(
+                            f"⚠️ Worker de persistência ainda ativo após timeout ({timeout}s). Shutdown incompleto."
+                        )
+            except Exception as e:
+                self.logger.error(f"Erro ao aguardar flush worker no stop: {e}")
+
+            # Para thread de cleanup
+            try:
+                if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
                     self._cleanup_thread.join(timeout=1.0)
             except Exception as e:
-                self.logger.error(f"Erro ao parar threads: {e}")
+                self.logger.error(f"Erro ao parar cleanup thread: {e}")
 
             # Para worker de áudio (não espera beep em curso além do limite)
             try:
@@ -682,18 +721,9 @@ class EventSaver:
                 thread, self._sound_thread = self._sound_thread, None
                 if (thread is not None and thread.is_alive()
                         and thread is not threading.current_thread()):
-                    thread.join(timeout=2.0)
+                    thread.join(timeout=1.0)
             except Exception as e:
                 self.logger.error(f"Erro ao parar thread de áudio: {e}")
-            
-            # Flush final
-            with self._buffer_lock:
-                buffer_copy = self._write_buffer.copy()
-                self._write_buffer.clear()
-            
-            if buffer_copy:
-                self._flush_buffer(buffer_copy)
-                self.logger.info(f"Flush final: {len(buffer_copy)} eventos")
 
     def _is_nan_or_inf(self, value) -> bool:
         """Verifica se um valor é NaN ou Inf."""
@@ -1082,15 +1112,51 @@ class EventSaver:
             self.logger.error(f"Falha ao salvar fallback: {e}")
 
     def _flush_loop(self):
-        """Thread que periodicamente esvazia o buffer."""
-        while not self._stop_event.wait(self._flush_interval):
+        """
+        Worker thread única responsável pela persistência periódica e sob demanda (Gate G1).
+        Garante que apenas esta thread execute operações de flush/persistência.
+        """
+        while not self._stop_event.is_set():
+            # Aguarda até o flush interval periódico OU sinal de wake-up antecipado
+            self._wake_flush_event.wait(timeout=self._flush_interval)
+            self._wake_flush_event.clear()
+
+            self._process_single_flush_batch()
+
+        # Drenagem segura pós-stop: processa o que restou no buffer antes de encerrar
+        while self._process_single_flush_batch():
+            pass
+
+    def _process_single_flush_batch(self) -> bool:
+        """
+        Retira um lote do buffer e executa persistência fora de _buffer_lock.
+        Retorna True se houve eventos processados, False se buffer estava vazio.
+        """
+        with self._buffer_lock:
+            if not self._write_buffer:
+                return False
+            batch = self._write_buffer.copy()
+            self._write_buffer.clear()
+            self._events_in_flight += len(batch)
+
+        try:
+            self._flush_buffer(batch)
+        except asyncio.CancelledError:
             with self._buffer_lock:
-                if not self._write_buffer:
-                    continue
-                buffer_copy = self._write_buffer.copy()
-                self._write_buffer.clear()
-            if buffer_copy:
-                self._flush_buffer(buffer_copy)
+                self._events_in_flight -= len(batch)
+                self._events_failed_terminal += len(batch)
+            raise
+        except Exception as e:
+            self.logger.error(f"Erro inesperado durante flush do lote no worker: {e}", exc_info=True)
+            with self._buffer_lock:
+                self._events_in_flight -= len(batch)
+                self._events_failed_terminal += len(batch)
+        else:
+            with self._buffer_lock:
+                self._events_in_flight -= len(batch)
+                self._events_finalized += len(batch)
+
+        return True
 
     def _flush_buffer(self, events: List[Dict]):
         """Escreve eventos em lote no banco de dados e log visual."""
@@ -1303,18 +1369,26 @@ class EventSaver:
                     event["_needs_separator"] = True
                     self._last_janela_numero = janela_num
 
-            # Buffer com limite
+            # Buffer com limite bounded e contabilidade mínima (Gate G1)
             with self._buffer_lock:
+                self._events_received += 1
+                if self._stop_event.is_set():
+                    self._events_rejected_after_stop += 1
+                    return None
+
                 if len(self._write_buffer) >= MAX_BUFFER_SIZE:
-                    self._buffer_overflow_count += 1
-                    self.logger.warning(
-                        f"⚠️ Buffer overflow ({len(self._write_buffer)}/{MAX_BUFFER_SIZE}), forçando flush..."
-                    )
-                    buffer_copy = self._write_buffer.copy()
-                    self._write_buffer.clear()
-                    self._flush_buffer(buffer_copy)
-                
+                    self._events_rejected_overflow += 1
+                    self._buffer_overflow_count = self._events_rejected_overflow
+                    self._wake_flush_event.set()
+                    return None
+
                 self._write_buffer.append(event)
+                self._events_accepted += 1
+
+                # Sinalização antecipada de wake-up para backpressure
+                wake_threshold = min(BACKPRESSURE_WAKE_THRESHOLD, max(1, MAX_BUFFER_SIZE // 2))
+                if len(self._write_buffer) >= wake_threshold:
+                    self._wake_flush_event.set()
 
                 # Heartbeat de progresso: evento enfileirado com sucesso
                 if self.health_monitor is not None:
@@ -1776,19 +1850,76 @@ class EventSaver:
             self.logger.debug(f"Som não disponível: {e}")
             print("\n🔔 ALERTA: Sinal detectado! 🔔\n")
 
+    # ===== PROPRIEDADES THREAD-SAFE DE CONTABILIDADE (GATE G1) =====
+    @property
+    def events_received(self) -> int:
+        with self._buffer_lock:
+            return self._events_received
+
+    @property
+    def events_accepted(self) -> int:
+        with self._buffer_lock:
+            return self._events_accepted
+
+    @property
+    def events_rejected_overflow(self) -> int:
+        with self._buffer_lock:
+            return self._events_rejected_overflow
+
+    @property
+    def events_rejected_after_stop(self) -> int:
+        with self._buffer_lock:
+            return self._events_rejected_after_stop
+
+    @property
+    def events_waiting(self) -> int:
+        with self._buffer_lock:
+            return len(self._write_buffer)
+
+    @property
+    def events_in_flight(self) -> int:
+        with self._buffer_lock:
+            return self._events_in_flight
+
+    @property
+    def events_finalized(self) -> int:
+        with self._buffer_lock:
+            return self._events_finalized
+
+    @property
+    def events_failed_terminal(self) -> int:
+        with self._buffer_lock:
+            return self._events_failed_terminal
+
+    @property
+    def shutdown_incomplete(self) -> bool:
+        with self._buffer_lock:
+            return self._shutdown_incomplete
+
     def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas de operação."""
-        stats = {
-            "buffer_size": len(self._write_buffer),
-            "buffer_max": MAX_BUFFER_SIZE,
-            "buffer_overflow_count": self._buffer_overflow_count,
-            "lock_timeout_count": self._lock_timeout_count,
-            "seen_in_block_size": len(self._seen_in_block),
-            "seen_block_ttl_sec": SEEN_BLOCK_TTL,
-            "last_cleanup_sec_ago": time.time() - self._last_cleanup_time,
-            "cleanup_interval_sec": CLEANUP_INTERVAL,
-            "lock_method": LOCK_METHOD or "disabled",
-        }
+        with self._buffer_lock:
+            waiting = len(self._write_buffer)
+            stats = {
+                "buffer_size": waiting,
+                "buffer_max": MAX_BUFFER_SIZE,
+                "buffer_overflow_count": self._buffer_overflow_count,
+                "lock_timeout_count": self._lock_timeout_count,
+                "seen_in_block_size": len(self._seen_in_block),
+                "seen_block_ttl_sec": SEEN_BLOCK_TTL,
+                "last_cleanup_sec_ago": time.time() - self._last_cleanup_time,
+                "cleanup_interval_sec": CLEANUP_INTERVAL,
+                "lock_method": LOCK_METHOD or "disabled",
+                "events_received": self._events_received,
+                "events_accepted": self._events_accepted,
+                "events_rejected_overflow": self._events_rejected_overflow,
+                "events_rejected_after_stop": self._events_rejected_after_stop,
+                "events_waiting": waiting,
+                "events_in_flight": self._events_in_flight,
+                "events_finalized": self._events_finalized,
+                "events_failed_terminal": self._events_failed_terminal,
+                "shutdown_incomplete": self._shutdown_incomplete,
+            }
         
         if HAS_CLOCK_SYNC and _clock_sync_instance:
             try:
