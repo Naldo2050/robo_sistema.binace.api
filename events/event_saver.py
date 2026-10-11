@@ -494,6 +494,9 @@ class EventSaver:
         self._wake_flush_event = threading.Event()
         self._stop_lock = threading.Lock()
         self._shutdown_incomplete = False
+        # Gate G3-A: Rastreamento estrito de lifecycle do worker
+        self._worker_exited_cleanly = False
+        self._worker_exception: Optional[str] = None
 
         # Contabilidade estrita de eventos (Gate G1)
         self._events_received = 0
@@ -752,17 +755,36 @@ class EventSaver:
                 self._stop_event.set()
                 self._wake_flush_event.set()
 
+            warn_msg = None
+            error_msg = None
+
             # Aguarda o worker de persistência terminar o drain até o timeout bounded
             try:
                 if self._flush_thread is not None and self._flush_thread.is_alive():
                     self._flush_thread.join(timeout=timeout)
                     if self._flush_thread.is_alive():
-                        self._shutdown_incomplete = True
-                        self.logger.warning(
+                        with self._buffer_lock:
+                            self._shutdown_incomplete = True
+                        warn_msg = (
                             f"⚠️ Worker de persistência ainda ativo após timeout ({timeout}s). Shutdown incompleto."
                         )
+
+                # Gate G3-A: Verificação do estado do worker pós-join (ou se já havia encerrado)
+                with self._buffer_lock:
+                    worker_alive = self._flush_thread.is_alive() if self._flush_thread else False
+                    if not worker_alive and not self._worker_exited_cleanly:
+                        self._shutdown_incomplete = True
+                        error_msg = "❌ Worker de persistência encerrou de forma anômala. Shutdown incompleto."
+                    elif not worker_alive and (len(self._write_buffer) > 0 or self._events_in_flight > 0):
+                        self._shutdown_incomplete = True
+                        error_msg = "⚠️ Eventos pendentes no buffer após término do worker. Shutdown incompleto."
             except Exception as e:
                 self.logger.error(f"Erro ao aguardar flush worker no stop: {e}")
+
+            if warn_msg:
+                self.logger.warning(warn_msg)
+            if error_msg:
+                self.logger.error(error_msg)
 
             # Para thread de cleanup
             try:
@@ -1196,20 +1218,41 @@ class EventSaver:
         Worker thread única responsável pela persistência periódica e sob demanda (Gate G1).
         Garante que apenas esta thread execute operações de flush/persistência.
         """
-        while not self._stop_event.is_set():
-            # Aguarda até o flush interval periódico OU sinal de wake-up antecipado
-            self._wake_flush_event.wait(timeout=self._flush_interval)
-            self._wake_flush_event.clear()
+        try:
+            while not self._stop_event.is_set():
+                # Aguarda até o flush interval periódico OU sinal de wake-up antecipado
+                self._wake_flush_event.wait(timeout=self._flush_interval)
+                self._wake_flush_event.clear()
 
-            self._process_single_flush_batch()
-            self._check_and_log_rejection_warnings()
+                self._process_single_flush_batch()
+                self._check_and_log_rejection_warnings()
 
-        # Drenagem segura pós-stop: processa o que restou no buffer antes de encerrar
-        while self._process_single_flush_batch():
-            pass
+            # Drenagem segura pós-stop: processa o que restou no buffer antes de encerrar
+            while self._process_single_flush_batch():
+                pass
 
-        # Verificação final pós-drenagem (Gate G2)
-        self._check_and_log_rejection_warnings(force=True)
+            # Verificação final pós-drenagem (Gate G2)
+            self._check_and_log_rejection_warnings(force=True)
+
+            with self._buffer_lock:
+                if (
+                    self._stop_event.is_set()
+                    and len(self._write_buffer) == 0
+                    and self._events_in_flight == 0
+                ):
+                    self._worker_exited_cleanly = True
+        except BaseException as e:
+            err_diag = f"{type(e).__name__}: {str(e)[:200]}"
+            with self._buffer_lock:
+                self._worker_exception = err_diag
+            try:
+                self.logger.critical(
+                    f"Worker de persistência encerrou por exceção fatal: {err_diag}",
+                    exc_info=True,
+                )
+            except Exception:
+                pass
+            raise
 
     def _check_and_log_rejection_warnings(self, force: bool = False) -> None:
         """
@@ -2036,10 +2079,62 @@ class EventSaver:
         with self._buffer_lock:
             return self._shutdown_incomplete
 
+    @property
+    def worker_alive(self) -> bool:
+        return self._flush_thread.is_alive() if self._flush_thread is not None else False
+
+    @property
+    def worker_exited_cleanly(self) -> bool:
+        with self._buffer_lock:
+            return self._worker_exited_cleanly
+
+    @property
+    def worker_exception(self) -> Optional[str]:
+        with self._buffer_lock:
+            return self._worker_exception
+
+    @property
+    def shutdown_status(self) -> str:
+        stop_req = self._stop_event.is_set()
+        worker_alive = self.worker_alive
+        with self._buffer_lock:
+            exited_clean = self._worker_exited_cleanly
+            waiting = len(self._write_buffer)
+            in_flight = self._events_in_flight
+            incomplete = self._shutdown_incomplete
+
+        if not stop_req:
+            return "RUNNING" if worker_alive else "WORKER_DIED_UNEXPECTEDLY"
+        if worker_alive:
+            return "INCOMPLETE_STOP" if incomplete else "STOPPING"
+        if not exited_clean:
+            return "WORKER_DIED_UNEXPECTEDLY"
+        if waiting > 0 or in_flight > 0 or incomplete:
+            return "INCOMPLETE_STOP"
+        return "CLEAN_STOP"
+
     def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas de operação."""
+        stop_req = self._stop_event.is_set()
+        worker_alive = self._flush_thread.is_alive() if self._flush_thread is not None else False
         with self._buffer_lock:
             waiting = len(self._write_buffer)
+            in_flight = self._events_in_flight
+            exited_clean = self._worker_exited_cleanly
+            worker_exc = self._worker_exception
+            incomplete = self._shutdown_incomplete
+
+            if not stop_req:
+                status = "RUNNING" if worker_alive else "WORKER_DIED_UNEXPECTEDLY"
+            elif worker_alive:
+                status = "INCOMPLETE_STOP" if incomplete else "STOPPING"
+            elif not exited_clean:
+                status = "WORKER_DIED_UNEXPECTEDLY"
+            elif waiting > 0 or in_flight > 0 or incomplete:
+                status = "INCOMPLETE_STOP"
+            else:
+                status = "CLEAN_STOP"
+
             stats = {
                 "buffer_size": waiting,
                 "buffer_max": MAX_BUFFER_SIZE,
@@ -2055,10 +2150,14 @@ class EventSaver:
                 "events_rejected_overflow": self._events_rejected_overflow,
                 "events_rejected_after_stop": self._events_rejected_after_stop,
                 "events_waiting": waiting,
-                "events_in_flight": self._events_in_flight,
+                "events_in_flight": in_flight,
                 "events_finalized": self._events_finalized,
                 "events_failed_terminal": self._events_failed_terminal,
-                "shutdown_incomplete": self._shutdown_incomplete,
+                "shutdown_incomplete": incomplete,
+                "worker_alive": worker_alive,
+                "worker_exited_cleanly": exited_clean,
+                "worker_exception": worker_exc,
+                "shutdown_status": status,
 
                 # Gate G2: Contabilidade por destino independente
                 "sqlite_events_attempted": self._sqlite_events_attempted,
