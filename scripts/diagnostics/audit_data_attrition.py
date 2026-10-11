@@ -8,6 +8,7 @@ Rastreia exatamente onde e por que registros são filtrados.
 import json
 import os
 import sqlite3
+from pathlib import Path
 import pandas as pd
 
 def audit_attrition():
@@ -34,11 +35,24 @@ def audit_attrition():
     total_outcomes = cur.fetchone()[0]
     conn.close()
 
-    # 2. JSONL
+    # 2. JSONL (Arquivo Ativo + Segmentos Arquivados - Gate G4-C)
     total_jsonl = 0
     jsonl_by_type = {}
-    if os.path.exists(jsonl_path):
-        with open(jsonl_path, "r", encoding="utf-8") as f:
+    jsonl_files_read = []
+
+    # Segmentos arquivados em dados/archive/ (ordenados)
+    archive_dir = Path("dados/archive")
+    if archive_dir.is_dir():
+        for arch_file in sorted(archive_dir.glob("eventos_fluxo_*.jsonl")):
+            jsonl_files_read.append(arch_file)
+
+    # Arquivo ativo (se existir)
+    active_path = Path(jsonl_path)
+    if active_path.exists():
+        jsonl_files_read.append(active_path)
+
+    for fpath in jsonl_files_read:
+        with open(fpath, "r", encoding="utf-8") as f:
             for line in f:
                 if line.strip():
                     total_jsonl += 1
@@ -83,7 +97,7 @@ def audit_attrition():
     print(f"\n1. CONTAGEM BRUTA POR FONTE (RAW ROWS):")
     print(f"   - Tabela 'events' (SQLite):                  {total_events} linhas")
     print(f"     * Por tipo: {events_by_type}")
-    print(f"   - Arquivo 'eventos_fluxo.jsonl':            {total_jsonl} linhas")
+    print(f"   - Arquivos JSONL ({len(jsonl_files_read)} fonte(s): ativo + archive):  {total_jsonl} linhas")
     print(f"     * Por tipo: {jsonl_by_type}")
     print(f"   - Tabela 'positioning_shadow_dataset':       {total_pos} linhas")
     print(f"   - Tabela 'signal_outcomes':                  {total_outcomes} linhas")

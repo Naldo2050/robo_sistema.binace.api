@@ -177,6 +177,17 @@ EVENT_SAVER_VISUAL_LOG_BACKUPS = os.getenv(
     "EVENT_SAVER_VISUAL_LOG_BACKUPS", "2"
 )
 
+# EventSaver JSONL rotation and non-destructive archiving (Gate G4-C)
+EVENT_SAVER_JSONL_MAX_MB = os.getenv(
+    "EVENT_SAVER_JSONL_MAX_MB", "20"
+)
+EVENT_SAVER_JSONL_AUTO_ARCHIVE = os.getenv(
+    "EVENT_SAVER_JSONL_AUTO_ARCHIVE", "true"
+)
+EVENT_SAVER_JSONL_ARCHIVE_DIR = os.getenv(
+    "EVENT_SAVER_JSONL_ARCHIVE_DIR", "dados/archive"
+)
+
 # ===== CREDENCIAIS BINANCE =====
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")

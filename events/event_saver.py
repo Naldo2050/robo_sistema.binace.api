@@ -16,6 +16,7 @@ EventSaver v5.0.0 - Sistema de salvamento de eventos de trading
 import asyncio
 import json
 import os
+import errno
 from pathlib import Path
 import platform
 import logging
@@ -26,6 +27,38 @@ import atexit
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Union, Tuple
 import re
+
+# ===== LINUX ATOMIC RENAMEAT2 SUPPORT (Gate G4-C Hardened) =====
+_linux_renameat2_func = None
+_linux_renameat2_checked = False
+
+def _get_linux_renameat2():
+    """Retorna função libc.renameat2 se disponível no Linux; None caso contrário."""
+    global _linux_renameat2_func, _linux_renameat2_checked
+    if _linux_renameat2_checked:
+        return _linux_renameat2_func
+    _linux_renameat2_checked = True
+    if platform.system() != "Linux":
+        return None
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        if hasattr(libc, "renameat2"):
+            func = libc.renameat2
+            func.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            func.restype = ctypes.c_int
+            _linux_renameat2_func = func
+            return _linux_renameat2_func
+    except Exception:
+        pass
+    return None
+
 
 # ===== CONFIG (opcional) =====
 try:
@@ -501,6 +534,43 @@ class EventSaver:
                     self.visual_log_backups = val_backups
             except Exception:
                 self.visual_log_backups = default_backups
+
+        # Configurações de Rotação e Arquivamento Não Destrutivo do JSONL (Gate G4-C)
+        self.auto_archive_jsonl = True
+        default_jsonl_mb = 20.0
+        max_allowed_jsonl_mb = 1024.0  # Limite máximo seguro (1 GB)
+        min_allowed_jsonl_mb = 0.001   # Permite testes com limites pequenos (~1 KB)
+        self.max_jsonl_file_bytes = int(default_jsonl_mb * 1024 * 1024)
+        self.archive_dir = DATA_DIR / "archive"
+
+        if config is not None:
+            # 1. EVENT_SAVER_JSONL_AUTO_ARCHIVE
+            raw_auto_archive = getattr(config, "EVENT_SAVER_JSONL_AUTO_ARCHIVE", True)
+            if isinstance(raw_auto_archive, str):
+                self.auto_archive_jsonl = raw_auto_archive.strip().lower() in ("true", "1", "yes", "on")
+            else:
+                self.auto_archive_jsonl = bool(raw_auto_archive)
+
+            # 2. EVENT_SAVER_JSONL_MAX_MB
+            try:
+                raw_jsonl_mb = getattr(config, "EVENT_SAVER_JSONL_MAX_MB", default_jsonl_mb)
+                val_jsonl_mb = float(raw_jsonl_mb)
+                import math
+                if math.isnan(val_jsonl_mb) or math.isinf(val_jsonl_mb) or val_jsonl_mb < min_allowed_jsonl_mb:
+                    self.max_jsonl_file_bytes = int(default_jsonl_mb * 1024 * 1024)
+                elif val_jsonl_mb > max_allowed_jsonl_mb:
+                    self.max_jsonl_file_bytes = int(max_allowed_jsonl_mb * 1024 * 1024)
+                else:
+                    self.max_jsonl_file_bytes = int(val_jsonl_mb * 1024 * 1024)
+            except Exception:
+                self.max_jsonl_file_bytes = int(default_jsonl_mb * 1024 * 1024)
+
+            # 3. EVENT_SAVER_JSONL_ARCHIVE_DIR
+            try:
+                raw_archive_dir = getattr(config, "EVENT_SAVER_JSONL_ARCHIVE_DIR", "dados/archive")
+                self.archive_dir = Path(raw_archive_dir)
+            except Exception:
+                self.archive_dir = DATA_DIR / "archive"
 
         self.last_window_id = None  # compat legada
         self.time_manager = TimeManager()
@@ -1112,6 +1182,12 @@ class EventSaver:
 
         self._inc_stat("_jsonl_events_attempted", 1)
 
+        # Rotação não destrutiva por tamanho antes de abrir para escrita (Gate G4-C)
+        try:
+            self._rotate_jsonl_if_needed()
+        except Exception as rot_err:
+            self.logger.warning("Erro inesperado em _rotate_jsonl_if_needed: %s", rot_err)
+
         max_retries = 3
         retry_delay = 0.5
 
@@ -1689,6 +1765,183 @@ class EventSaver:
         except Exception as e:
             self.logger.error(f"Erro inesperado durante rotação do log visual: {e}")
             return False
+
+    @staticmethod
+    def _safe_move_segment_no_overwrite(src: Path, dst: Path) -> bool:
+        """
+        Move arquivo de src para dst com garantia absoluta anti-sobrescrita
+        compatível com Windows e Linux (Gate G4-C Hardened).
+
+        Windows:
+          Usa os.rename (MoveFileW), que falha nativamente com FileExistsError
+          se dst já existir, sem jamais sobrescrever.
+
+        Linux:
+          Usa renameat2 com RENAME_NOREPLACE (atômico de passo único no mesmo FS).
+          Se dst já existir, retorna EEXIST (FileExistsError).
+          Se renameat2 não estiver disponível no kernel/glibc ou o FS retornar
+          EOPNOTSUPP/ENOSYS/EINVAL, a operação é rejeitada (NÃO há fallback para
+          os.rename destrutivo, nem cópia com exclusão, nem hardlinks residuais),
+          adiando a rotação para preservar a integridade dos eventos e a imutabilidade do histórico.
+        """
+        if not src.exists():
+            return False
+
+        sys_name = platform.system()
+
+        if sys_name == "Windows":
+            # No Windows NTFS, os.rename chama MoveFileW, que falha nativamente
+            # com FileExistsError se dst existir, sem jamais sobrescrever.
+            os.rename(src, dst)
+            return True
+
+        elif sys_name == "Linux":
+            renameat2_func = _get_linux_renameat2()
+            if renameat2_func is None:
+                raise NotImplementedError(
+                    "renameat2 com RENAME_NOREPLACE não disponível no ambiente Linux. "
+                    "Rotação adiada para evitar sobrescrita ou hardlinks residuais."
+                )
+
+            AT_FDCWD = -100
+            RENAME_NOREPLACE = 1
+
+            src_bytes = os.fsencode(str(src))
+            dst_bytes = os.fsencode(str(dst))
+
+            ret = renameat2_func(AT_FDCWD, src_bytes, AT_FDCWD, dst_bytes, RENAME_NOREPLACE)
+            if ret != 0:
+                import ctypes
+                errno_val = ctypes.get_errno()
+                if errno_val == errno.EEXIST:
+                    raise FileExistsError(
+                        errno.EEXIST, f"Destino {dst} já existe (EEXIST via renameat2)", str(dst)
+                    )
+                elif errno_val in (errno.EACCES, errno.EPERM):
+                    raise PermissionError(
+                        errno_val, f"Permissão negada ao renomear {src} para {dst}", str(src)
+                    )
+                elif errno_val == errno.ENOSYS:
+                    raise OSError(
+                        errno.ENOSYS, "renameat2 syscall não implementada no kernel Linux (ENOSYS)"
+                    )
+                elif hasattr(errno, "EOPNOTSUPP") and errno_val == errno.EOPNOTSUPP:
+                    raise OSError(
+                        errno.EOPNOTSUPP, "renameat2(RENAME_NOREPLACE) não suportado pelo filesystem (EOPNOTSUPP)"
+                    )
+                elif errno_val == errno.EINVAL:
+                    raise OSError(
+                        errno.EINVAL, "Flag inválida ou filesystem sem suporte a RENAME_NOREPLACE (EINVAL)"
+                    )
+                elif errno_val == errno.EXDEV:
+                    raise OSError(
+                        errno.EXDEV, f"Origem e destino em pontos de montagem distintos (EXDEV)"
+                    )
+                elif errno_val == errno.ENOSPC:
+                    raise OSError(
+                        errno.ENOSPC, f"Sem espaço no disco ao renomear segmento (ENOSPC)"
+                    )
+                else:
+                    raise OSError(
+                        errno_val, f"Erro ao executar renameat2: {os.strerror(errno_val)}"
+                    )
+            return True
+        else:
+            raise NotImplementedError(
+                f"Sistema operacional '{sys_name}' sem suporte a renomeação garantida anti-sobrescrita. Rotação adiada."
+            )
+
+    def _rotate_jsonl_if_needed(self) -> bool:
+        """
+        Executa rotação não destrutiva por tamanho do JSONL principal (Gate G4-C).
+        Move o arquivo ativo para dados/archive/eventos_fluxo_YYYYMMDD_HHMMSS_MONOTONIC_SEQ.jsonl.
+        Garante:
+          - Zero sobrescrita de segmentos existentes;
+          - Prioridade total à persistência de eventos;
+          - Se a rotação falhar, continua gravando no arquivo ativo existente;
+          - Ignorada durante shutdown para priorizar drenagem rápida e bounded do buffer.
+        Retorna True se houve rotação com sucesso ou se não era necessária;
+        Retorna False se houve adiamento/falha na rotação.
+        """
+        if not self.write_jsonl:
+            return True
+
+        if not self.auto_archive_jsonl:
+            return True
+
+        # Durante shutdown, NUNCA inicia rotação: prioridade absoluta à drenagem (Gate G4-C / Etapa 4)
+        if self._stop_event.is_set():
+            return False
+
+        try:
+            if not self.history_file.exists():
+                return True
+            current_size = self.history_file.stat().st_size
+        except Exception as e:
+            self.logger.warning("Falha ao obter tamanho do JSONL para verificação de rotação: %s", e)
+            return False
+
+        if current_size < self.max_jsonl_file_bytes:
+            return True
+
+        # Limiar de tamanho atingido: rotação necessária
+        try:
+            archive_dir = self.archive_dir
+            archive_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self.logger.warning(
+                "Falha ao criar diretório de arquivamento '%s': %s. Adiada rotação.",
+                self.archive_dir,
+                e,
+            )
+            return False
+
+        stamp_utc = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        monotonic_ms = int((time.monotonic_ns() // 1_000_000) % 1_000_000)
+
+        # Loop anti-colisão com garantia anti-sobrescrita (máximo 10 tentativas)
+        rotated = False
+        for seq in range(1, 11):
+            segment_name = f"eventos_fluxo_{stamp_utc}_{monotonic_ms:06d}_{seq:03d}.jsonl"
+            candidate_dst = archive_dir / segment_name
+
+            if candidate_dst.exists():
+                continue
+
+            try:
+                self._safe_move_segment_no_overwrite(self.history_file, candidate_dst)
+                rotated = True
+                self.logger.info(
+                    "JSONL principal rotacionado com sucesso: %s -> %s (%d bytes)",
+                    self.history_file,
+                    candidate_dst,
+                    current_size,
+                )
+                break
+            except FileExistsError:
+                self.logger.debug(
+                    "Destino %s já existente durante movimentação atômica; incrementando sequência.",
+                    candidate_dst,
+                )
+                continue
+            except (PermissionError, OSError, NotImplementedError) as e:
+                # Lock externo no Windows (WinError 32), renameat2 ausente/não suportado (Linux) ou erro de SO:
+                # PRESERVAR EVENTOS: adia rotação e continua gravando no arquivo ativo
+                self.logger.warning(
+                    "Falha ao mover arquivo ativo para %s (%s: %s). Rotação adiada para preservar eventos.",
+                    candidate_dst,
+                    type(e).__name__,
+                    e,
+                )
+                return False
+
+        if not rotated:
+            self.logger.warning(
+                "Não foi possível encontrar nome exclusivo para segmento após 10 tentativas. Rotação adiada."
+            )
+            return False
+
+        return True
 
     def _add_visual_separator(self, event: Dict):
         """Adiciona separador visual para nova janela de tempo."""
@@ -2285,6 +2538,9 @@ class EventSaver:
                 "jsonl_events_written": self._jsonl_events_written,
                 "jsonl_events_failed": self._jsonl_events_failed,
                 "jsonl_events_unknown": self._jsonl_events_unknown,
+                "jsonl_max_file_bytes": self.max_jsonl_file_bytes,
+                "jsonl_auto_archive": self.auto_archive_jsonl,
+                "jsonl_archive_dir": str(self.archive_dir),
 
                 "fallback_events_attempted": self._fallback_events_attempted,
                 "fallback_events_written": self._fallback_events_written,

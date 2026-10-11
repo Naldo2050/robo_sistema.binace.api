@@ -160,6 +160,19 @@ def load_jsonl_events(jsonl_path, symbol_filter=None, event_type_filter=None, si
     if not os.path.exists(jsonl_path):
         return []
     
+    # Alerta de histórico segmentado (Gate G4-C)
+    try:
+        archive_dir = Path("dados/archive")
+        if archive_dir.is_dir():
+            arch_files = list(archive_dir.glob("eventos_fluxo_*.jsonl"))
+            if arch_files and Path(jsonl_path).name == "eventos_fluxo.jsonl":
+                sys.stderr.write(
+                    f"ℹ️ [G4-C Aviso] Auditando apenas o arquivo ativo '{jsonl_path}'. "
+                    f"Existem {len(arch_files)} segmento(s) histórico(s) em 'dados/archive/'.\n"
+                )
+    except Exception:
+        pass
+
     events = []
     try:
         with open(jsonl_path, "r", encoding="utf-8") as f:
