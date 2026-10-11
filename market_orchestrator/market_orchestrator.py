@@ -290,6 +290,7 @@ class EnhancedMarketBot:
         self._ai_init_lock = threading.Lock()
         self._is_shutdown = False
         self._shutdown_async_lock: Optional[asyncio.Lock] = None
+        self._shutdown_completed_event: Optional[asyncio.Event] = None
 
         self.warming_up = False
         self._warmup_lock = threading.Lock()
@@ -2815,201 +2816,243 @@ class EnhancedMarketBot:
         """Shutdown limpo (chamar com await, dentro do loop). Idempotente."""
         if self._shutdown_async_lock is None:
             self._shutdown_async_lock = asyncio.Lock()
+        if not hasattr(self, "_shutdown_completed_event") or self._shutdown_completed_event is None:
+            self._shutdown_completed_event = asyncio.Event()
 
+        should_wait = False
         async with self._shutdown_async_lock:
             if self._is_shutdown:
-                logging.debug("Bot já foi encerrado (shutdown idempotente), ignorando chamada duplicada.")
-                return
-            self._is_shutdown = True
+                should_wait = True
+            else:
+                self._is_shutdown = True
 
-            # Marcar cleanup iniciado para evitar handler duplicado (atexit/signal)
+                # Marcar cleanup iniciado para evitar handler duplicado (atexit/signal)
+                try:
+                    with self._cleanup_lock:
+                        self._cleanup_started.set()
+                        self.is_cleaning_up = True
+                except Exception:
+                    pass
+
+                self.should_stop = True
+
+                # Cancela periodic_sync task
+                if hasattr(self, "_periodic_sync_task") and self._periodic_sync_task:
+                    self._periodic_sync_task.cancel()
+
+        if should_wait:
+            logging.debug("Bot já foi encerrado (shutdown idempotente), aguardando conclusão se em andamento...")
+            if not self._shutdown_completed_event.is_set():
+                await self._shutdown_completed_event.wait()
+            return
+
+        cancelled_during_stop: Optional[asyncio.CancelledError] = None
+        try:
+            # 1) Para geradores de trabalho primeiro
             try:
-                with self._cleanup_lock:
-                    self._cleanup_started.set()
-                    self.is_cleaning_up = True
+                if self.connection_manager:
+                    try:
+                        self.connection_manager.should_stop = True
+                    except Exception:
+                        pass
+                    try:
+                        await self.connection_manager.disconnect()
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
-            self.should_stop = True
+            try:
+                if self.trades_buffer is not None:
+                    await self.trades_buffer.stop()
+            except Exception as e:
+                logging.warning(f"Falha ao parar trade buffer: {e}")
 
-            # Cancela periodic_sync task
-            if hasattr(self, "_periodic_sync_task") and self._periodic_sync_task:
-                self._periodic_sync_task.cancel()
+            try:
+                if self.window_processor:
+                    await self.window_processor.stop()
+            except Exception as e:
+                logging.warning(f"Falha ao parar WindowProcessor: {e}")
 
-        # 1) Para geradores de trabalho primeiro
-        try:
-            if self.connection_manager:
-                try:
-                    self.connection_manager.should_stop = True
-                except Exception:
-                    pass
-                try:
-                    await self.connection_manager.disconnect()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            # 2) Fecha IA (async) antes do loop encerrar
+            try:
+                if self.ai_analyzer is not None:
+                    if hasattr(self.ai_analyzer, "aclose"):
+                        await self.ai_analyzer.aclose()
+                    elif hasattr(self.ai_analyzer, "close"):
+                        self.ai_analyzer.close()
+            except Exception as e:
+                logging.warning(f"Falha ao fechar AI Analyzer: {e}")
 
-        try:
-            if self.trades_buffer is not None:
-                await self.trades_buffer.stop()
-        except Exception as e:
-            logging.warning(f"Falha ao parar trade buffer: {e}")
+            # 3) Componentes síncronos
+            try:
+                if self.context_collector:
+                    self.context_collector.stop()
+            except Exception:
+                pass
 
-        try:
-            if self.window_processor:
-                await self.window_processor.stop()
-        except Exception as e:
-            logging.warning(f"Falha ao parar WindowProcessor: {e}")
+            try:
+                if getattr(self, "onchain_updater", None) is not None:
+                    self.onchain_updater.stop()
+            except Exception:
+                pass
 
-        # 2) Fecha IA (async) antes do loop encerrar
-        try:
-            if self.ai_analyzer is not None:
-                if hasattr(self.ai_analyzer, "aclose"):
-                    await self.ai_analyzer.aclose()
-                elif hasattr(self.ai_analyzer, "close"):
-                    self.ai_analyzer.close()
-        except Exception as e:
-            logging.warning(f"Falha ao fechar AI Analyzer: {e}")
+            try:
+                if getattr(self, "cross_asset_updater", None) is not None:
+                    self.cross_asset_updater.stop()
+            except Exception:
+                pass
 
-        # 3) Componentes síncronos
-        try:
-            if self.context_collector:
-                self.context_collector.stop()
-        except Exception:
-            pass
+            try:
+                if getattr(self, "cftc_cot_updater", None) is not None:
+                    self.cftc_cot_updater.stop()
+            except Exception:
+                pass
 
-        try:
-            if getattr(self, "onchain_updater", None) is not None:
-                self.onchain_updater.stop()
-        except Exception:
-            pass
+            # PF-M3: ownership explícito das sessões MacroDataProvider.
+            # Consumidores (onchain/cross/context) já parados acima; para o
+            # MacroUpdateService e SÓ ENTÃO fecha as sessões. close_all_sessions
+            # é idempotente, tolera sessão já fechada, esvazia o registry e
+            # recria sob demanda (_get_session) se houver fetch tardio.
+            try:
+                from fetchers.macro_update_service import stop_macro_service
+                await stop_macro_service()
+            except Exception:
+                pass
 
-        try:
-            if getattr(self, "cross_asset_updater", None) is not None:
-                self.cross_asset_updater.stop()
-        except Exception:
-            pass
+            try:
+                from fetchers.macro_data_provider import get_macro_provider
+                await get_macro_provider().close_all_sessions()
+            except Exception:
+                pass
 
-        try:
-            if getattr(self, "cftc_cot_updater", None) is not None:
-                self.cftc_cot_updater.stop()
-        except Exception:
-            pass
+            # Shadow Paper Trading Shutdown (Gate C3-C-B3-B)
+            try:
+                if getattr(self, "shadow_runtime", None) is not None:
+                    self.shadow_runtime.shutdown()
+            except Exception as e:
+                logging.warning(f"Falha ao encerrar shadow_runtime: {e}")
 
-        # PF-M3: ownership explícito das sessões MacroDataProvider.
-        # Consumidores (onchain/cross/context) já parados acima; para o
-        # MacroUpdateService e SÓ ENTÃO fecha as sessões. close_all_sessions
-        # é idempotente, tolera sessão já fechada, esvazia o registry e
-        # recria sob demanda (_get_session) se houver fetch tardio.
-        try:
-            from fetchers.macro_update_service import stop_macro_service
-            await stop_macro_service()
-        except Exception:
-            pass
+            # Shadow Effort/Response Transport Shutdown (Gate C1 Hardening)
+            try:
+                from flow_analyzer.effort_response_transport import ShadowAsyncTransport
+                shadow_transport = ShadowAsyncTransport.get_if_initialized()
+                if shadow_transport is not None:
+                    shadow_transport.close(timeout=5.0)
+                    logging.info("✅ ShadowAsyncTransport drenado e encerrado com sucesso.")
+            except Exception as e_shadow:
+                logging.warning(f"Falha ao encerrar ShadowAsyncTransport: {e_shadow}")
 
-        try:
-            from fetchers.macro_data_provider import get_macro_provider
-            await get_macro_provider().close_all_sessions()
-        except Exception:
-            pass
+            # Fechamento do BinanceLiquidationListener (P2-D2 / C1)
+            try:
+                if hasattr(self, "liquidation_listener") and self.liquidation_listener is not None:
+                    await self.liquidation_listener.stop()
+                    logging.info("✅ BinanceLiquidationListener encerrado com sucesso.")
+            except Exception as e_liq:
+                logging.warning(f"Falha ao encerrar BinanceLiquidationListener: {e_liq}")
+            finally:
+                self.liquidation_listener = None
 
-        # Shadow Paper Trading Shutdown (Gate C3-C-B3-B)
-        try:
-            if getattr(self, "shadow_runtime", None) is not None:
-                self.shadow_runtime.shutdown()
-        except Exception as e:
-            logging.warning(f"Falha ao encerrar shadow_runtime: {e}")
+            try:
+                if hasattr(self, "event_bus") and self.event_bus:
+                    self.event_bus.shutdown()
+            except Exception:
+                pass
 
-        # Shadow Effort/Response Transport Shutdown (Gate C1 Hardening)
-        try:
-            from flow_analyzer.effort_response_transport import ShadowAsyncTransport
-            shadow_transport = ShadowAsyncTransport.get_if_initialized()
-            if shadow_transport is not None:
-                shadow_transport.close(timeout=5.0)
-                logging.info("✅ ShadowAsyncTransport drenado e encerrado com sucesso.")
-        except Exception as e_shadow:
-            logging.warning(f"Falha ao encerrar ShadowAsyncTransport: {e_shadow}")
+            try:
+                if hasattr(self, "health_monitor") and self.health_monitor:
+                    self.health_monitor.stop()
+            except Exception:
+                pass
 
-        # Fechamento do BinanceLiquidationListener (P2-D2 / C1)
-        try:
-            if hasattr(self, "liquidation_listener") and self.liquidation_listener is not None:
-                await self.liquidation_listener.stop()
-                logging.info("✅ BinanceLiquidationListener encerrado com sucesso.")
-        except Exception as e_liq:
-            logging.warning(f"Falha ao encerrar BinanceLiquidationListener: {e_liq}")
-        finally:
-            self.liquidation_listener = None
-
-        try:
-            if hasattr(self, "event_bus") and self.event_bus:
-                self.event_bus.shutdown()
-        except Exception:
-            pass
-
-        try:
-            if hasattr(self, "health_monitor") and self.health_monitor:
-                self.health_monitor.stop()
-        except Exception:
-            pass
-
-        try:
+            # Gate G3-B: Parada assíncrona do EventSaver fora do event loop
+            stop_task: Optional[asyncio.Task] = None
             if (
                 hasattr(self, "event_saver")
                 and self.event_saver
                 and hasattr(self.event_saver, "stop")
             ):
-                self.event_saver.stop()
-        except Exception:
-            pass
-
-        # 4) Encerrar loop asyncio dedicado do OrderBookAnalyzer + executor
-        try:
-            if (
-                hasattr(self, "orderbook_analyzer")
-                and self.orderbook_analyzer
-                and hasattr(self.orderbook_analyzer, "close")
-            ):
-                # Aguarda a corrotina de fechamento do OrderBookAnalyzer
-                await self.orderbook_analyzer.close()
-        except Exception as e:
-            logging.debug(f"Falha ao fechar OrderBookAnalyzer: {e}")
-
-        try:
-            if hasattr(self, "_async_loop"):
                 try:
-                    self._async_loop.call_soon_threadsafe(self._async_loop.stop)
-                except Exception:
-                    pass
+                    stop_fn = self.event_saver.stop
+                    if asyncio.iscoroutinefunction(stop_fn):
+                        stop_coro = stop_fn()
+                    else:
+                        stop_coro = asyncio.to_thread(stop_fn)
+                    stop_task = asyncio.create_task(stop_coro)
+                except Exception as e_sub:
+                    logging.warning(f"Falha ao agendar parada do EventSaver: {e_sub}")
+
+            if stop_task is not None:
                 try:
-                    if hasattr(self, "_async_loop_thread"):
-                        self._async_loop_thread.join(timeout=2.0)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                    await asyncio.shield(stop_task)
+                except asyncio.CancelledError as ce:
+                    cancelled_during_stop = ce
+                    logging.warning("⚠️ Cancelamento recebido durante EventSaver.stop; aguardando conclusão real da tarefa...")
+                    while not stop_task.done():
+                        try:
+                            await asyncio.shield(stop_task)
+                        except asyncio.CancelledError as repeated_ce:
+                            cancelled_during_stop = repeated_ce
+                            logging.warning("⚠️ Cancelamento repetido recebido durante aguardo de EventSaver.stop.")
+                        except Exception as e_task_exc:
+                            logging.warning(f"Falha ao parar EventSaver sob cancelamento: {e_task_exc}")
+                            break
+                except Exception as e:
+                    logging.warning(f"Falha ao parar EventSaver: {e}")
 
-        try:
-            if hasattr(self, "_async_executor") and self._async_executor:
-                self._async_executor.shutdown(wait=True, cancel_futures=True)
-        except Exception:
-            pass
+            # 4) Encerrar loop asyncio dedicado do OrderBookAnalyzer + executor
+            try:
+                if (
+                    hasattr(self, "orderbook_analyzer")
+                    and self.orderbook_analyzer
+                    and hasattr(self.orderbook_analyzer, "close")
+                ):
+                    # Aguarda a corrotina de fechamento do OrderBookAnalyzer
+                    await self.orderbook_analyzer.close()
+            except Exception as e:
+                logging.debug(f"Falha ao fechar OrderBookAnalyzer: {e}")
 
-        try:
-            if hasattr(self, "feature_store") and self.feature_store is not None:
-                self.feature_store.close()
-        except Exception:
-            pass
+            try:
+                if hasattr(self, "_async_loop"):
+                    try:
+                        self._async_loop.call_soon_threadsafe(self._async_loop.stop)
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self, "_async_loop_thread"):
+                            self._async_loop_thread.join(timeout=2.0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
-        try:
-            if hasattr(self, "_raw_trades_file") and self._raw_trades_file is not None:
-                with self._raw_trades_lock:
-                    self._raw_trades_file.flush()
-                    self._raw_trades_file.close()
-                    self._raw_trades_file = None
-                logging.info("💾 Arquivo de dump de trades brutos encerrado com sucesso.")
-        except Exception:
-            pass
+            try:
+                if hasattr(self, "_async_executor") and self._async_executor:
+                    self._async_executor.shutdown(wait=True, cancel_futures=True)
+            except Exception:
+                pass
+
+            try:
+                if hasattr(self, "feature_store") and self.feature_store is not None:
+                    self.feature_store.close()
+            except Exception:
+                pass
+
+            try:
+                if hasattr(self, "_raw_trades_file") and self._raw_trades_file is not None:
+                    with self._raw_trades_lock:
+                        self._raw_trades_file.flush()
+                        self._raw_trades_file.close()
+                        self._raw_trades_file = None
+                    logging.info("💾 Arquivo de dump de trades brutos encerrado com sucesso.")
+            except Exception:
+                pass
+        finally:
+            if hasattr(self, "_shutdown_completed_event") and self._shutdown_completed_event is not None:
+                self._shutdown_completed_event.set()
+
+        if cancelled_during_stop is not None:
+            raise cancelled_during_stop
 
     def shutdown_sync(self):
         """
