@@ -114,6 +114,8 @@ MAX_BUFFER_SIZE = 10000  # Limite maximo de eventos no buffer
 BACKPRESSURE_WAKE_THRESHOLD = 5000  # Acorda worker antecipadamente se backlog crescer (Gate G1)
 MAX_JSON_FILE_SIZE = 50 * 1024 * 1024  # 50MB maximo por snapshot
 MAX_JSONL_BYTES = 5000  # Limite duro por linha (JSONL)
+MAX_VISUAL_LOG_SIZE = 10 * 1024 * 1024  # 10MB maximo por log visual (Gate G4-A)
+VISUAL_LOG_MAX_BACKUPS = 2  # Maximo de backups do log visual (Gate G4-A)
 CLEANUP_INTERVAL = 300  # Limpa cache a cada 5 min
 SEEN_BLOCK_TTL = 3600  # Mantem seen_in_block por 1h
 
@@ -455,6 +457,51 @@ class EventSaver:
                 self.max_json_file_size = int(max_mb * 1024 * 1024)
             except Exception:
                 self.max_json_file_size = MAX_JSON_FILE_SIZE
+
+        # Configurações do Log Visual (Gate G4-A)
+        self.write_visual_log = True
+        self.max_visual_log_bytes = MAX_VISUAL_LOG_SIZE
+        self.visual_log_backups = VISUAL_LOG_MAX_BACKUPS
+
+        if config is not None:
+            # 1. WRITE_VISUAL_LOG
+            raw_write_visual = getattr(config, "EVENT_SAVER_WRITE_VISUAL_LOG", True)
+            if isinstance(raw_write_visual, str):
+                self.write_visual_log = raw_write_visual.strip().lower() in ("true", "1", "yes", "on")
+            else:
+                self.write_visual_log = bool(raw_write_visual)
+
+            # 2. MAX_VISUAL_LOG_MB
+            default_visual_mb = 10.0
+            max_allowed_visual_mb = 1024.0  # Limite máximo seguro (1 GB)
+            try:
+                raw_max_mb = getattr(config, "EVENT_SAVER_MAX_VISUAL_LOG_MB", default_visual_mb)
+                val_mb = float(raw_max_mb)
+                import math
+                if math.isnan(val_mb) or math.isinf(val_mb) or val_mb <= 0:
+                    self.max_visual_log_bytes = int(default_visual_mb * 1024 * 1024)
+                elif val_mb > max_allowed_visual_mb:
+                    self.max_visual_log_bytes = int(max_allowed_visual_mb * 1024 * 1024)
+                else:
+                    self.max_visual_log_bytes = int(val_mb * 1024 * 1024)
+            except Exception:
+                self.max_visual_log_bytes = int(default_visual_mb * 1024 * 1024)
+
+            # 3. VISUAL_LOG_BACKUPS
+            default_backups = 2
+            max_allowed_backups = 10
+            try:
+                raw_backups = getattr(config, "EVENT_SAVER_VISUAL_LOG_BACKUPS", default_backups)
+                val_backups = int(raw_backups)
+                if val_backups <= 0:
+                    self.visual_log_backups = default_backups
+                elif val_backups > max_allowed_backups:
+                    self.visual_log_backups = max_allowed_backups
+                else:
+                    self.visual_log_backups = val_backups
+            except Exception:
+                self.visual_log_backups = default_backups
+
         self.last_window_id = None  # compat legada
         self.time_manager = TimeManager()
         self._window_counter = 0   # pode ser usado por código legado sem janela_numero
@@ -1587,8 +1634,67 @@ class EventSaver:
         except Exception as e:
             self.logger.error(f"Erro crítico ao processar evento: {e}", exc_info=True)
 
+    def _rotate_visual_log_if_needed(self) -> bool:
+        """
+        Executa rotação atômica por tamanho do log visual (Gate G4-A).
+        Deve ser executado EXCLUSIVAMENTE sob o lock de arquivo do log visual.
+        Retorna True se houve rotação com sucesso ou se não era necessária;
+        Retorna False se houve falha na rotação.
+        """
+        if not self.write_visual_log:
+            return True
+
+        if self.visual_log_backups <= 0:
+            return True
+
+        try:
+            if not self.visual_log_file.exists():
+                return True
+            current_size = self.visual_log_file.stat().st_size
+        except Exception as e:
+            self.logger.warning(f"Falha ao obter tamanho do log visual para rotação: {e}")
+            return False
+
+        if current_size < self.max_visual_log_bytes:
+            return True
+
+        # Rotação necessária
+        try:
+            # Cascata de backups de trás para frente (ex: log.1 -> log.2)
+            for i in range(self.visual_log_backups - 1, 0, -1):
+                sfn = Path(f"{self.visual_log_file}.{i}")
+                dfn = Path(f"{self.visual_log_file}.{i + 1}")
+                if sfn.exists():
+                    try:
+                        os.replace(sfn, dfn)
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Falha ao rotacionar backup {sfn} para {dfn}: {e}. Interrompendo rotação."
+                        )
+                        return False
+
+            # Rotaciona o arquivo ativo para .1
+            target_first = Path(f"{self.visual_log_file}.1")
+            try:
+                os.replace(self.visual_log_file, target_first)
+                self.logger.info(
+                    f"Log visual rotacionado com sucesso: {self.visual_log_file} -> {target_first} ({current_size} bytes)"
+                )
+                return True
+            except Exception as e:
+                self.logger.warning(
+                    f"Falha ao rotacionar arquivo ativo {self.visual_log_file} para {target_first}: {e}"
+                )
+                return False
+        except Exception as e:
+            self.logger.error(f"Erro inesperado durante rotação do log visual: {e}")
+            return False
+
     def _add_visual_separator(self, event: Dict):
         """Adiciona separador visual para nova janela de tempo."""
+        if not self.write_visual_log:
+            return
+
         janela_num = event.get('janela_numero')
         if not janela_num:
             return
@@ -1610,11 +1716,12 @@ class EventSaver:
             lock_acquired = False
             lock_file_path = self.visual_log_file.with_suffix(".lock")
             try:
-                lock_file = open(lock_file_path, "w")
+                lock_file = open(lock_file_path, "a")
                 lock_acquired = acquire_file_lock(
                     lock_file, blocking=True, timeout=10.0
                 )
                 if lock_acquired:
+                    self._rotate_visual_log_if_needed()
                     with open(self.visual_log_file, "a", encoding="utf-8") as f:
                         f.write(separator)
                         f.flush()
@@ -1627,9 +1734,8 @@ class EventSaver:
                             release_file_lock(lock_file)
                     except Exception:
                         pass
-                    lock_file.close()
                     try:
-                        lock_file_path.unlink(missing_ok=True)
+                        lock_file.close()
                     except Exception:
                         pass
             return
@@ -1675,10 +1781,11 @@ class EventSaver:
 
             try:
                 lock_file_path = self.visual_log_file.with_suffix('.lock')
-                lock_file = open(lock_file_path, 'w')
+                lock_file = open(lock_file_path, 'a')
                 lock_acquired = acquire_file_lock(lock_file, blocking=True, timeout=10.0)
 
                 if lock_acquired:
+                    self._rotate_visual_log_if_needed()
                     with open(self.visual_log_file, "a", encoding="utf-8") as f:
                         f.write(separator)
                         f.flush()
@@ -1688,11 +1795,13 @@ class EventSaver:
                 self.logger.error(f"Erro ao escrever separador: {e}")
             finally:
                 if lock_file:
-                    if lock_acquired:
-                        release_file_lock(lock_file)
-                    lock_file.close()
                     try:
-                        lock_file_path.unlink(missing_ok=True)
+                        if lock_acquired:
+                            release_file_lock(lock_file)
+                    except Exception:
+                        pass
+                    try:
+                        lock_file.close()
                     except Exception:
                         pass
 
@@ -1735,6 +1844,9 @@ class EventSaver:
 
     def _add_visual_log_entry(self, event: Dict):
         """Adiciona entrada formatada ao log visual."""
+        if not self.write_visual_log:
+            return
+
         try:
             epoch_ms = event.get("epoch_ms")
             timestamp = event.get("timestamp")
@@ -1819,9 +1931,10 @@ class EventSaver:
             lock_acquired = False
             lock_file_path = self.visual_log_file.with_suffix('.lock')
             try:
-                lock_file = open(lock_file_path, 'w')
+                lock_file = open(lock_file_path, 'a')
                 lock_acquired = acquire_file_lock(lock_file, blocking=True, timeout=10.0)
                 if lock_acquired:
+                    self._rotate_visual_log_if_needed()
                     with open(self.visual_log_file, "a", encoding="utf-8") as f:
                         f.write(entry)
                         f.flush()
@@ -1829,11 +1942,13 @@ class EventSaver:
                     self.logger.warning("Timeout ao adquirir lock do visual log para entrada de evento")
             finally:
                 if lock_file:
-                    if lock_acquired:
-                        release_file_lock(lock_file)
-                    lock_file.close()
                     try:
-                        lock_file_path.unlink(missing_ok=True)
+                        if lock_acquired:
+                            release_file_lock(lock_file)
+                    except Exception:
+                        pass
+                    try:
+                        lock_file.close()
                     except Exception:
                         pass
 
