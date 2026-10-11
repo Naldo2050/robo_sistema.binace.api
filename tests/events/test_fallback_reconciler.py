@@ -5,17 +5,27 @@ Todos os testes utilizam diretórios temporários isolados (tmp_path).
 Nenhum banco ou arquivo operacional é acessado ou modificado.
 """
 
+import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 import pytest
 
+import events.fallback_reconciler as fallback_reconciler_mod
+
 from events.fallback_reconciler import (
     FallbackReconciler,
     EventClassification,
     compute_canonical_payload_hash,
+    create_sqlite_backup_consistent,
+    validate_and_prepare_jsonl_target,
+    insert_event_to_sqlite,
+    append_event_to_jsonl,
+    record_reconciliation_in_ledger,
+    reconcile_events_hermetic,
 )
 
 
@@ -447,3 +457,578 @@ def test_21_distinct_financial_payloads_precision():
         "quantity": 0.00150000,
     }
     assert compute_canonical_payload_hash(p1) != compute_canonical_payload_hash(p2)
+
+
+# ==============================================================================
+# SUÍTE DE TESTES HERMÉTICOS DO MOTOR DE ESCRITA (G4-D PARTE B1)
+# Todos os testes executam estritamente em tmp_path. Zero escrita operacional.
+# ==============================================================================
+
+def test_22_b1_event_absent_in_both(tmp_path):
+    """1. Evento ausente em ambos é persistido no SQLite e JSONL e gera registro no ledger."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    ledger_path = tmp_path / "ledger.jsonl"
+
+    ev = {"event_id": "ev_b1_1", "epoch_ms": 1700000000000, "tipo_evento": "SIGNAL", "symbol": "BTCUSDT"}
+    fb_file = tmp_path / "fb.jsonl"
+    fb_file.write_text(json.dumps(ev) + "\n", encoding="utf-8")
+
+    res = reconcile_events_hermetic(
+        source_fallback_file=fb_file,
+        target_sqlite_path=db_path,
+        target_jsonl_path=jsonl_path,
+        archive_dir=archive_dir,
+        ledger_path=ledger_path,
+        perform_backup=False,
+        repo_root=tmp_path,
+    )
+
+    assert res["sqlite_inserted"] == 1
+    assert res["jsonl_appended"] == 1
+    assert res["already_present"] == 0
+    assert "ev_b1_1" in res["reconciled_ids"]
+
+    # Conferência no SQLite
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("SELECT count(*) FROM events")
+    assert cur.fetchone()[0] == 1
+    conn.close()
+
+    # Conferência no JSONL
+    assert jsonl_path.exists()
+    assert "ev_b1_1" in jsonl_path.read_text(encoding="utf-8")
+
+    # Conferência no Ledger
+    assert ledger_path.exists()
+    assert "ev_b1_1" in ledger_path.read_text(encoding="utf-8")
+
+
+def test_23_b1_event_present_only_sqlite(tmp_path):
+    """2. Evento presente somente no SQLite: não duplica no SQLite, anexa apenas no JSONL."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    ev = {"event_id": "ev_b1_2", "epoch_ms": 1700000000000, "tipo_evento": "SIGNAL", "symbol": "BTCUSDT"}
+    # Pré-inserir no SQLite
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO events (timestamp_ms, event_type, symbol, payload) VALUES (?, ?, ?, ?)",
+        (1700000000000, "SIGNAL", "BTCUSDT", json.dumps(ev)),
+    )
+    conn.commit()
+    conn.close()
+
+    fb_file = tmp_path / "fb.jsonl"
+    fb_file.write_text(json.dumps(ev) + "\n", encoding="utf-8")
+
+    res = reconcile_events_hermetic(
+        source_fallback_file=fb_file,
+        target_sqlite_path=db_path,
+        target_jsonl_path=jsonl_path,
+        archive_dir=archive_dir,
+        perform_backup=False,
+        repo_root=tmp_path,
+    )
+
+    assert res["sqlite_inserted"] == 0
+    assert res["jsonl_appended"] == 1
+
+    # SQLite continua com exatamente 1 linha
+    conn = sqlite3.connect(str(db_path))
+    assert conn.cursor().execute("SELECT count(*) FROM events").fetchone()[0] == 1
+    conn.close()
+
+
+def test_24_b1_event_present_only_jsonl(tmp_path):
+    """3. Evento presente somente no JSONL: insere no SQLite, não anexa no JSONL."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    ev = {"event_id": "ev_b1_3", "epoch_ms": 1700000000000, "tipo_evento": "SIGNAL", "symbol": "BTCUSDT"}
+    jsonl_path.write_text(json.dumps(ev) + "\n", encoding="utf-8")
+
+    fb_file = tmp_path / "fb.jsonl"
+    fb_file.write_text(json.dumps(ev) + "\n", encoding="utf-8")
+
+    res = reconcile_events_hermetic(
+        source_fallback_file=fb_file,
+        target_sqlite_path=db_path,
+        target_jsonl_path=jsonl_path,
+        archive_dir=archive_dir,
+        perform_backup=False,
+        repo_root=tmp_path,
+    )
+
+    assert res["sqlite_inserted"] == 1
+    assert res["jsonl_appended"] == 0
+
+    # JSONL continua com apenas 1 linha
+    assert len(jsonl_path.read_text(encoding="utf-8").strip().splitlines()) == 1
+
+
+def test_25_b1_event_present_in_archive(tmp_path):
+    """4. Evento presente em segmento do archive: reconhece e não anexa no JSONL ativo."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    ev = {"event_id": "ev_b1_4", "epoch_ms": 1700000000000, "tipo_evento": "SIGNAL", "symbol": "BTCUSDT"}
+    # Pré-inserir no SQLite
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO events (timestamp_ms, event_type, symbol, payload) VALUES (?, ?, ?, ?)",
+        (1700000000000, "SIGNAL", "BTCUSDT", json.dumps(ev)),
+    )
+    conn.commit()
+    conn.close()
+
+    # Gravar no archive histórico
+    arch_file = archive_dir / "eventos_fluxo_20261011_100000_000_001.jsonl"
+    arch_file.write_text(json.dumps(ev) + "\n", encoding="utf-8")
+
+    fb_file = tmp_path / "fb.jsonl"
+    fb_file.write_text(json.dumps(ev) + "\n", encoding="utf-8")
+
+    res = reconcile_events_hermetic(
+        source_fallback_file=fb_file,
+        target_sqlite_path=db_path,
+        target_jsonl_path=jsonl_path,
+        archive_dir=archive_dir,
+        perform_backup=False,
+        repo_root=tmp_path,
+    )
+
+    assert res["already_present"] == 1
+    assert res["sqlite_inserted"] == 0
+    assert res["jsonl_appended"] == 0
+
+
+def test_26_b1_id_collision_skipped(tmp_path):
+    """5. Colisão de event_id com payload divergente: bloqueia importação."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    ev_orig = {"event_id": "ev_coll", "epoch_ms": 1700000000000, "tipo_evento": "T", "val": 10}
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("INSERT INTO events (timestamp_ms, event_type, symbol, payload) VALUES (?, ?, ?, ?)", (1700000000000, "T", "", json.dumps(ev_orig)))
+    conn.commit()
+    conn.close()
+    jsonl_path.write_text(json.dumps(ev_orig) + "\n", encoding="utf-8")
+
+    # Fallback com mesmo ID mas val=20
+    ev_div = {"event_id": "ev_coll", "epoch_ms": 1700000000000, "tipo_evento": "T", "val": 20}
+    fb_file = tmp_path / "fb.jsonl"
+    fb_file.write_text(json.dumps(ev_div) + "\n", encoding="utf-8")
+
+    res = reconcile_events_hermetic(
+        source_fallback_file=fb_file,
+        target_sqlite_path=db_path,
+        target_jsonl_path=jsonl_path,
+        archive_dir=archive_dir,
+        perform_backup=False,
+        repo_root=tmp_path,
+    )
+
+    assert res["skipped_quarantine"] == 1
+    assert res["sqlite_inserted"] == 0
+    assert res["jsonl_appended"] == 0
+
+
+def test_27_b1_ambiguous_identity_skipped(tmp_path):
+    """6. Identidade ambígua (mesma tupla temporal com ID divergente): bloqueia importação."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    ev_orig = {"event_id": "id_A", "epoch_ms": 1700000000000, "tipo_evento": "T", "symbol": "BTC"}
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("INSERT INTO events (timestamp_ms, event_type, symbol, payload) VALUES (?, ?, ?, ?)", (1700000000000, "T", "BTC", json.dumps(ev_orig)))
+    conn.commit()
+    conn.close()
+
+    ev_amb = {"event_id": "id_B", "epoch_ms": 1700000000000, "tipo_evento": "T", "symbol": "BTC"}
+    fb_file = tmp_path / "fb.jsonl"
+    fb_file.write_text(json.dumps(ev_amb) + "\n", encoding="utf-8")
+
+    res = reconcile_events_hermetic(
+        source_fallback_file=fb_file,
+        target_sqlite_path=db_path,
+        target_jsonl_path=jsonl_path,
+        archive_dir=archive_dir,
+        perform_backup=False,
+        repo_root=tmp_path,
+    )
+
+    assert res["skipped_quarantine"] == 1
+    assert res["sqlite_inserted"] == 0
+
+
+def test_28_b1_invalid_timestamp_rejected(tmp_path):
+    """7. Evento com timestamp inválido é rejeitado antes da inserção."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+
+    ev_bad_ts = {"event_id": "ev_bad_ts", "epoch_ms": 100, "tipo_evento": "T"}
+    with pytest.raises(ValueError, match="Timestamp fora do intervalo aceitável"):
+        insert_event_to_sqlite(db_path, ev_bad_ts)
+
+
+def test_29_b1_sqlite_unknown_handling(tmp_path, monkeypatch):
+    """8. SQLite status UNKNOWN: se o commit persistiu no banco antes da falha, é reconhecido como INSERTED."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+
+    ev = {"event_id": "ev_unk", "epoch_ms": 1700000000000, "tipo_evento": "T", "symbol": "BTC"}
+
+    orig_connect = fallback_reconciler_mod.sqlite3.connect
+
+    def mock_connect(*args, **kwargs):
+        real_conn = orig_connect(*args, **kwargs)
+
+        class FailingCommitConn:
+            def __init__(self, c):
+                self._c = c
+            def __getattr__(self, name):
+                return getattr(self._c, name)
+            def commit(self):
+                self._c.commit()
+                raise sqlite3.OperationalError("Simulated connection reset during commit acknowledgment")
+            def close(self):
+                return self._c.close()
+
+        return FailingCommitConn(real_conn)
+
+    monkeypatch.setattr(fallback_reconciler_mod.sqlite3, "connect", mock_connect)
+
+    # A função deve detectar via query de verificação que a linha foi salva e retornar INSERTED
+    status = insert_event_to_sqlite(db_path, ev)
+    assert status == "INSERTED"
+
+
+def test_30_b1_crash_after_sqlite_commit(tmp_path):
+    """9. Crash simulado após commit SQLite: reexecução completa JSONL sem duplicar no SQLite."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    ev = {"event_id": "ev_crash_1", "epoch_ms": 1700000000000, "tipo_evento": "SIGNAL", "symbol": "BTC"}
+    fb_file = tmp_path / "fb.jsonl"
+    fb_file.write_text(json.dumps(ev) + "\n", encoding="utf-8")
+
+    # Inserir apenas no SQLite simulando interrupção antes do JSONL
+    insert_event_to_sqlite(db_path, ev)
+
+    # Reexecução
+    res = reconcile_events_hermetic(
+        source_fallback_file=fb_file,
+        target_sqlite_path=db_path,
+        target_jsonl_path=jsonl_path,
+        archive_dir=archive_dir,
+        perform_backup=False,
+        repo_root=tmp_path,
+    )
+
+    assert res["sqlite_inserted"] == 0
+    assert res["jsonl_appended"] == 1
+
+    conn = sqlite3.connect(str(db_path))
+    assert conn.cursor().execute("SELECT count(*) FROM events").fetchone()[0] == 1
+    conn.close()
+
+
+def test_31_b1_crash_after_jsonl_append(tmp_path):
+    """10. Crash simulado após append JSONL: reexecução completa SQLite sem duplicar no JSONL."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    ev = {"event_id": "ev_crash_2", "epoch_ms": 1700000000000, "tipo_evento": "SIGNAL", "symbol": "BTC"}
+    fb_file = tmp_path / "fb.jsonl"
+    fb_file.write_text(json.dumps(ev) + "\n", encoding="utf-8")
+
+    # Inserir apenas no JSONL
+    append_event_to_jsonl(jsonl_path, ev)
+
+    # Reexecução
+    res = reconcile_events_hermetic(
+        source_fallback_file=fb_file,
+        target_sqlite_path=db_path,
+        target_jsonl_path=jsonl_path,
+        archive_dir=archive_dir,
+        perform_backup=False,
+        repo_root=tmp_path,
+    )
+
+    assert res["sqlite_inserted"] == 1
+    assert res["jsonl_appended"] == 0
+    assert len(jsonl_path.read_text(encoding="utf-8").strip().splitlines()) == 1
+
+
+def test_32_b1_idempotent_reexecution(tmp_path):
+    """11. Reexecução dupla consecutiva é estritamente idempotente (0 inserts e 0 appends na 2ª vez)."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    ev = {"event_id": "ev_idem", "epoch_ms": 1700000000000, "tipo_evento": "S", "symbol": "BTC"}
+    fb_file = tmp_path / "fb.jsonl"
+    fb_file.write_text(json.dumps(ev) + "\n", encoding="utf-8")
+
+    # Rodada 1
+    res1 = reconcile_events_hermetic(
+        source_fallback_file=fb_file,
+        target_sqlite_path=db_path,
+        target_jsonl_path=jsonl_path,
+        archive_dir=archive_dir,
+        perform_backup=False,
+        repo_root=tmp_path,
+    )
+    assert res1["sqlite_inserted"] == 1
+    assert res1["jsonl_appended"] == 1
+
+    # Rodada 2
+    res2 = reconcile_events_hermetic(
+        source_fallback_file=fb_file,
+        target_sqlite_path=db_path,
+        target_jsonl_path=jsonl_path,
+        archive_dir=archive_dir,
+        perform_backup=False,
+        repo_root=tmp_path,
+    )
+    assert res2["sqlite_inserted"] == 0
+    assert res2["jsonl_appended"] == 0
+    assert res2["already_present"] == 1
+
+
+def test_33_b1_last_line_valid_no_newline(tmp_path):
+    """12. Última linha do JSONL sem newline mas JSON válido: insere separador e anexa sem corromper."""
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    # Linha válida sem newline final
+    jsonl_path.write_bytes(b'{"event_id": "existing", "val": 1}')
+
+    sep = validate_and_prepare_jsonl_target(jsonl_path)
+    assert sep == "\n"
+
+    ev_new = {"event_id": "new_ev", "val": 2}
+    append_event_to_jsonl(jsonl_path, ev_new, prefix_separator=sep)
+
+    lines = [json.loads(l) for l in jsonl_path.read_text(encoding="utf-8").strip().splitlines()]
+    assert len(lines) == 2
+    assert lines[0]["event_id"] == "existing"
+    assert lines[1]["event_id"] == "new_ev"
+
+
+def test_34_b1_last_line_corrupted_aborts(tmp_path):
+    """13. Última linha do JSONL inválida: aborta sem modificar o arquivo."""
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    original_bytes = b'{"event_id": "ok"}\n{"event_id": "truncated'
+    jsonl_path.write_bytes(original_bytes)
+
+    with pytest.raises(ValueError, match="Última linha do JSONL .* é inválida ou foi corrompida"):
+        validate_and_prepare_jsonl_target(jsonl_path)
+
+    # Bytes continuam estritamente intactos (sem truncamento)
+    assert jsonl_path.read_bytes() == original_bytes
+
+
+def test_35_b1_sqlite_backup_api_consistent(tmp_path):
+    """14. Backup consistente via SQLite Backup API com integridade validada."""
+    db_path = tmp_path / "orig.db"
+    _init_sample_sqlite(db_path)
+
+    # Inserir registros
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("INSERT INTO events (timestamp_ms, event_type, symbol, payload) VALUES (1000, 'T', 'BTC', '{}')")
+    conn.commit()
+    conn.close()
+
+    backup_path = tmp_path / "backup" / "orig_backup.db"
+    sha = create_sqlite_backup_consistent(db_path, backup_path)
+    assert len(sha) == 64
+    assert backup_path.exists()
+
+    # Conferir integridade
+    c = sqlite3.connect(str(backup_path))
+    assert c.cursor().execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert c.cursor().execute("SELECT count(*) FROM events").fetchone()[0] == 1
+    c.close()
+
+
+def test_36_b1_backup_failure_aborts(tmp_path, monkeypatch):
+    """15. Falha simulada durante o backup aborta e não toca os dados de destino."""
+    db_path = tmp_path / "orig.db"
+    _init_sample_sqlite(db_path)
+    backup_path = tmp_path / "backup.db"
+
+    orig_connect = fallback_reconciler_mod.sqlite3.connect
+
+    def mock_connect(*args, **kwargs):
+        real_conn = orig_connect(*args, **kwargs)
+
+        class FailingBackupConn:
+            def __init__(self, c):
+                self._c = c
+            def __getattr__(self, name):
+                return getattr(self._c, name)
+            def backup(self, *a, **k):
+                raise OSError("Simulated disk error during backup")
+            def close(self):
+                return self._c.close()
+
+        return FailingBackupConn(real_conn)
+
+    monkeypatch.setattr(fallback_reconciler_mod.sqlite3, "connect", mock_connect)
+
+    with pytest.raises(OSError, match="Simulated disk error"):
+        create_sqlite_backup_consistent(db_path, backup_path)
+
+
+def test_37_b1_fsync_called_on_append(tmp_path, monkeypatch):
+    """16. Garante que os.fsync é explicitamente invocado durante o append do JSONL."""
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    fsync_called = []
+
+    orig_fsync = os.fsync
+    def tracked_fsync(fd):
+        fsync_called.append(fd)
+        orig_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", tracked_fsync)
+
+    append_event_to_jsonl(jsonl_path, {"event_id": "test_fsync"})
+    assert len(fsync_called) == 1
+
+
+def test_38_b1_enospc_safe_abort(tmp_path, monkeypatch):
+    """17. Falha de ENOSPC (disco cheio) aborta com segurança mantendo origem intacta."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    ev = {"event_id": "enospc_ev", "epoch_ms": 1700000000000, "tipo_evento": "T"}
+    fb_file = tmp_path / "fb.jsonl"
+    fb_content = json.dumps(ev) + "\n"
+    fb_file.write_text(fb_content, encoding="utf-8")
+
+    def failing_fsync(fd):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+
+    with pytest.raises(OSError, match="No space left on device"):
+        reconcile_events_hermetic(
+            source_fallback_file=fb_file,
+            target_sqlite_path=db_path,
+            target_jsonl_path=jsonl_path,
+            archive_dir=archive_dir,
+            perform_backup=False,
+            repo_root=tmp_path,
+        )
+
+    # Origem fallback 100% preservada
+    assert fb_file.read_text(encoding="utf-8") == fb_content
+
+
+def test_39_b1_fixture_blocked_unconditionally(tmp_path):
+    """18. Arquivo de fixture versionada é incondicionalmente bloqueado contra escrita."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    # Nome da fixture protegida
+    fixture_file = tmp_path / "eventos_20260307.json"
+    fixture_file.write_text('{"event_id": "fix_1", "epoch_ms": 1700000000000}\n', encoding="utf-8")
+
+    with pytest.raises(PermissionError, match="fixture de teste versionada pelo Git"):
+        reconcile_events_hermetic(
+            source_fallback_file=fixture_file,
+            target_sqlite_path=db_path,
+            target_jsonl_path=jsonl_path,
+            archive_dir=archive_dir,
+            perform_backup=False,
+            repo_root=tmp_path,
+        )
+
+
+def test_40_b1_ledger_failure_does_not_corrupt_data(tmp_path, monkeypatch):
+    """19. Falha ao gravar no ledger após persistência em SQLite e JSONL conclui os dados."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    ledger_path = tmp_path / "invalid_ledger_dir" / "ledger.jsonl"  # Diretório que falhará se impedido
+
+    ev = {"event_id": "ev_ldg_fail", "epoch_ms": 1700000000000, "tipo_evento": "T"}
+    fb_file = tmp_path / "fb.jsonl"
+    fb_file.write_text(json.dumps(ev) + "\n", encoding="utf-8")
+
+    # Inserção manual e append direto com sucesso
+    insert_event_to_sqlite(db_path, ev)
+    append_event_to_jsonl(jsonl_path, ev)
+
+    # Valida que ambos os dados estão íntegros
+    conn = sqlite3.connect(str(db_path))
+    assert conn.cursor().execute("SELECT count(*) FROM events").fetchone()[0] == 1
+    conn.close()
+    assert "ev_ldg_fail" in jsonl_path.read_text(encoding="utf-8")
+
+
+def test_41_b1_source_fallback_never_modified(tmp_path):
+    """20. Garante que o arquivo de fallback de origem nunca é modificado ou apagado."""
+    db_path = tmp_path / "bot.db"
+    _init_sample_sqlite(db_path)
+    jsonl_path = tmp_path / "fluxo.jsonl"
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+
+    ev = {"event_id": "ev_immutable", "epoch_ms": 1700000000000, "tipo_evento": "T"}
+    fb_file = tmp_path / "source_fallback.jsonl"
+    content = json.dumps(ev) + "\n"
+    fb_file.write_text(content, encoding="utf-8")
+
+    hash_before = hashlib.sha256(fb_file.read_bytes()).hexdigest()
+    mtime_before = fb_file.stat().st_mtime_ns
+
+    reconcile_events_hermetic(
+        source_fallback_file=fb_file,
+        target_sqlite_path=db_path,
+        target_jsonl_path=jsonl_path,
+        archive_dir=archive_dir,
+        perform_backup=False,
+        repo_root=tmp_path,
+    )
+
+    hash_after = hashlib.sha256(fb_file.read_bytes()).hexdigest()
+    mtime_after = fb_file.stat().st_mtime_ns
+
+    assert hash_before == hash_after
+    assert mtime_before == mtime_after

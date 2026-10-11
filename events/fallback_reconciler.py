@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import sqlite3
 import subprocess
 from dataclasses import dataclass, field
@@ -634,3 +635,350 @@ class FallbackReconciler:
                 report.errors.append(f"Erro ao abrir arquivo {file_path}: {read_err}")
 
         return report
+
+
+# ==============================================================================
+# MOTOR DE RECONCILIAÇÃO COM ESCRITA (HERMÉTICO — FASE G4-D B1)
+# Funções puras e isoladas para testes herméticos em diretórios temporários.
+# Proibido o uso de caminhos operacionais como default.
+# ==============================================================================
+
+def create_sqlite_backup_consistent(source_sqlite_path: Path, backup_dest_path: Path) -> str:
+    """
+    Cria cópia transacionalmente consistente do SQLite via SQLite Backup API nativa.
+
+    Lê páginas ativas do banco e do WAL e consolida em um único arquivo de destino.
+    Valida integridade com PRAGMA integrity_check e calcula hash SHA256 do arquivo fechado.
+    """
+    source_sqlite_path = Path(source_sqlite_path)
+    backup_dest_path = Path(backup_dest_path)
+
+    if not source_sqlite_path.exists():
+        raise FileNotFoundError(f"Banco SQLite de origem não encontrado: {source_sqlite_path}")
+
+    backup_dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 1. Abertura segura da origem em modo leitura e destino em nova conexão
+    uri_source = f"file:{source_sqlite_path.resolve().as_posix()}?mode=ro"
+    source_conn = sqlite3.connect(uri_source, uri=True, timeout=10.0)
+    dest_conn = sqlite3.connect(str(backup_dest_path), timeout=10.0)
+
+    try:
+        # 2. Execução da Backup API oficial do SQLite
+        source_conn.backup(dest_conn, pages=-1)
+    finally:
+        dest_conn.close()
+        source_conn.close()
+
+    # 3. Validação rigorosa pós-cópia: PRAGMA integrity_check
+    check_conn = sqlite3.connect(str(backup_dest_path))
+    try:
+        cur = check_conn.cursor()
+        cur.execute("PRAGMA integrity_check")
+        row = cur.fetchone()
+        if not row or row[0] != "ok":
+            if backup_dest_path.exists():
+                backup_dest_path.unlink()
+            raise ValueError(f"Integridade do backup SQLite falhou: {row}")
+    finally:
+        check_conn.close()
+
+    # 4. Cálculo SHA256 do arquivo gerado e fechado
+    h = hashlib.sha256()
+    with open(backup_dest_path, "rb") as bf:
+        while chunk := bf.read(65536):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def validate_and_prepare_jsonl_target(jsonl_path: Path) -> str:
+    """
+    Valida o arquivo JSONL de destino e determina se é necessário prefixar um newline.
+
+    Regras:
+    - Se o arquivo não existir ou tiver 0 bytes: retorna '' (append direto).
+    - Se a última linha terminar em newline e for JSON válido: retorna '' (append direto).
+    - Se a última linha NÃO terminar em newline, mas for JSON válido: retorna '\n' (preserva dados e separa).
+    - Se a última linha for JSON inválido (truncado): levanta ValueError e aborta sem modificar nada.
+    """
+    jsonl_path = Path(jsonl_path)
+    if not jsonl_path.exists() or jsonl_path.stat().st_size == 0:
+        jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+        return ""
+
+    with open(jsonl_path, "rb") as f:
+        content = f.read()
+
+    if not content:
+        return ""
+
+    ends_with_newline = content.endswith(b"\n") or content.endswith(b"\r\n")
+    lines = content.splitlines()
+    if not lines:
+        return ""
+
+    last_line_bytes = lines[-1].strip()
+    if not last_line_bytes:
+        return ""
+
+    # Validação sintática estrita da última linha
+    try:
+        last_line_str = last_line_bytes.decode("utf-8", errors="strict")
+        json.loads(last_line_str)
+    except Exception as err:
+        raise ValueError(
+            f"Última linha do JSONL ({jsonl_path}) é inválida ou foi corrompida/truncada: {err}. "
+            f"Append abortado sem modificação de nenhum byte."
+        )
+
+    return "" if ends_with_newline else "\n"
+
+
+def insert_event_to_sqlite(sqlite_path: Path, event: Dict[str, Any]) -> str:
+    """
+    Insere um único evento de forma atômica no SQLite dentro de transação BEGIN IMMEDIATE.
+
+    Preserva integralmente o timestamp original.
+    Verifica desduplicação pré-insert por timestamp_ms e hash canônico.
+    """
+    sqlite_path = Path(sqlite_path)
+    if not sqlite_path.exists():
+        raise FileNotFoundError(f"Banco SQLite não encontrado em {sqlite_path}")
+
+    raw_eid = event.get("event_id") or event.get("id")
+    if not raw_eid:
+        raise ValueError("Evento não possui event_id válido para inserção.")
+    event_id = str(raw_eid)
+
+    raw_ts = event.get("epoch_ms") or event.get("timestamp_ms")
+    if raw_ts is None:
+        raise ValueError(f"Evento {event_id} não possui timestamp_ms ou epoch_ms.")
+
+    try:
+        ts_int = int(raw_ts)
+        if not (946684800000 <= ts_int <= 4102444800000):
+            raise ValueError(f"Timestamp fora do intervalo aceitável: {ts_int}")
+    except (ValueError, TypeError) as ts_err:
+        raise ValueError(f"Timestamp inválido no evento {event_id}: {ts_err}")
+
+    canonical_hash = compute_canonical_payload_hash(event)
+    ev_type = str(event.get("tipo_evento") or event.get("event_type") or event.get("type", "UNKNOWN"))
+    sym = str(event.get("symbol") or event.get("ativo", ""))
+    wid = str(event.get("window_id", ""))
+    is_sig_val = event.get("is_signal")
+    is_sig = 1 if (is_sig_val is True or str(is_sig_val).lower() == "true") else 0
+    payload_str = json.dumps(event, ensure_ascii=False, default=str, separators=(",", ":"))
+
+    conn = sqlite3.connect(str(sqlite_path), timeout=15.0)
+    try:
+        # 1. Consulta indexada prévia de desduplicação
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, payload FROM events WHERE timestamp_ms = ? AND event_type = ?",
+            (ts_int, ev_type),
+        )
+        for row_id, existing_payload_raw in cur.fetchall():
+            try:
+                ex_payload = json.loads(existing_payload_raw)
+                ex_eid = str(ex_payload.get("event_id") or ex_payload.get("id") or "")
+                if ex_eid == event_id:
+                    if compute_canonical_payload_hash(ex_payload) == canonical_hash:
+                        return "ALREADY_PRESENT"
+                    raise ValueError(f"Colisão de ID no SQLite: event_id {event_id} já existe com payload divergente.")
+            except json.JSONDecodeError:
+                pass
+
+        # 2. Inserção transacional atômica com write lock antecipado
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """
+            INSERT INTO events (timestamp_ms, event_type, symbol, window_id, is_signal, payload)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (ts_int, ev_type, sym, wid, is_sig, payload_str),
+        )
+        conn.commit()
+        return "INSERTED"
+    except Exception as commit_err:
+        # Tratamento de status UNKNOWN: verifica se o commit gravou antes de propagar falha
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, payload FROM events WHERE timestamp_ms = ? AND event_type = ?",
+                (ts_int, ev_type),
+            )
+            for _, existing_payload_raw in cur.fetchall():
+                try:
+                    ex_payload = json.loads(existing_payload_raw)
+                    if str(ex_payload.get("event_id")) == event_id:
+                        if compute_canonical_payload_hash(ex_payload) == canonical_hash:
+                            return "INSERTED"
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        raise commit_err
+    finally:
+        conn.close()
+
+
+def append_event_to_jsonl(jsonl_path: Path, event: Dict[str, Any], prefix_separator: str = "") -> None:
+    """
+    Anexa um único evento ao arquivo JSONL ativo aplicando flush() e os.fsync() mandatórios.
+    """
+    jsonl_path = Path(jsonl_path)
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+
+    json_line = json.dumps(event, ensure_ascii=False, default=str, separators=(",", ":"))
+    with open(jsonl_path, "a", encoding="utf-8") as f:
+        if prefix_separator:
+            f.write(prefix_separator)
+        f.write(json_line + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def record_reconciliation_in_ledger(ledger_path: Path, entry: Dict[str, Any]) -> None:
+    """
+    Registra checkpoint de reconciliação no ledger de auditoria derivado com fsync.
+    """
+    ledger_path = Path(ledger_path)
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+
+    line = json.dumps(entry, ensure_ascii=False, default=str, separators=(",", ":"))
+    with open(ledger_path, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def reconcile_events_hermetic(
+    source_fallback_file: Path,
+    target_sqlite_path: Path,
+    target_jsonl_path: Path,
+    archive_dir: Path,
+    ledger_path: Optional[Path] = None,
+    backup_dir: Optional[Path] = None,
+    perform_backup: bool = True,
+    repo_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Orquestrador hermético do motor de reconciliação com escrita para testes isolados.
+
+    Exige caminhos explícitos do chamador.
+    Bloqueia caminhos de produção e arquivos de fixture versionados no Git.
+    """
+    source_fallback_file = Path(source_fallback_file)
+    target_sqlite_path = Path(target_sqlite_path)
+    target_jsonl_path = Path(target_jsonl_path)
+    archive_dir = Path(archive_dir)
+
+    # 1. Salvaguarda incondicional contra caminhos operacionais de produção
+    prod_markers = [Path("dados/trading_bot.db"), Path("dados/eventos_fluxo.jsonl")]
+    for marker in prod_markers:
+        if marker in [target_sqlite_path, target_jsonl_path]:
+            raise PermissionError("Uso de caminhos operacionais de produção é estritamente proibido nesta fase.")
+
+    # 2. Salvaguarda incondicional contra modificação de fixtures de teste Git
+    reconciler = FallbackReconciler(
+        sqlite_path=target_sqlite_path,
+        jsonl_path=target_jsonl_path,
+        archive_dir=archive_dir,
+        repo_root=repo_root,
+    )
+    if reconciler.is_git_tracked_fixture(source_fallback_file):
+        raise PermissionError(
+            f"Arquivo '{source_fallback_file.name}' é uma fixture de teste versionada pelo Git. "
+            f"Modificação ou reconciliação com escrita é ESTRITAMENTE PROIBIDA."
+        )
+
+    # 3. Execução e validação do backup consistente se solicitado
+    backup_hash = None
+    if perform_backup and backup_dir and target_sqlite_path.exists():
+        backup_file = Path(backup_dir) / f"{target_sqlite_path.stem}_backup.db"
+        backup_hash = create_sqlite_backup_consistent(target_sqlite_path, backup_file)
+
+    # 4. Validação da terminação do arquivo JSONL ativo
+    prefix_sep = validate_and_prepare_jsonl_target(target_jsonl_path)
+
+    # 5. Leitura dos catálogos dos destinos
+    sq_by_id, sq_by_corr = reconciler.load_sqlite_catalog()
+    jl_by_id, jl_by_corr = reconciler.load_jsonl_catalog()
+
+    results = {
+        "sqlite_inserted": 0,
+        "jsonl_appended": 0,
+        "already_present": 0,
+        "skipped_quarantine": 0,
+        "backup_sha256": backup_hash,
+        "reconciled_ids": [],
+    }
+
+    # 6. Processamento do arquivo de fallback
+    with open(source_fallback_file, "r", encoding="utf-8", errors="replace") as f:
+        line_num = 0
+        for line in f:
+            line_num += 1
+            s = line.strip()
+            if not s:
+                continue
+
+            event = None
+            raw_err = None
+            try:
+                event = json.loads(s)
+                if not isinstance(event, dict):
+                    raw_err = "Não é dict"
+            except Exception as pe:
+                raw_err = str(pe)
+
+            rec = reconciler.classify_event(
+                event=event,
+                source_file=str(source_fallback_file),
+                line_num=line_num,
+                is_fixture=False,
+                raw_error=raw_err,
+                sqlite_catalog_by_id=sq_by_id,
+                sqlite_catalog_by_corr=sq_by_corr,
+                jsonl_catalog_by_id=jl_by_id,
+                jsonl_catalog_by_corr=jl_by_corr,
+            )
+
+            if rec.classification == EventClassification.EVENTO_JA_PRESENTE:
+                results["already_present"] += 1
+            elif rec.classification == EventClassification.EVENTO_AUSENTE:
+                eid = rec.event_id
+                inserted_sqlite = False
+                appended_jsonl = False
+
+                if not rec.in_sqlite:
+                    res_sq = insert_event_to_sqlite(target_sqlite_path, event)
+                    if res_sq == "INSERTED":
+                        results["sqlite_inserted"] += 1
+                        inserted_sqlite = True
+                    elif res_sq == "ALREADY_PRESENT":
+                        results["already_present"] += 1
+
+                if not (rec.in_jsonl or rec.in_archive):
+                    append_event_to_jsonl(target_jsonl_path, event, prefix_separator=prefix_sep)
+                    prefix_sep = ""  # Prefixo usado apenas na primeira linha se necessário
+                    results["jsonl_appended"] += 1
+                    appended_jsonl = True
+
+                if (inserted_sqlite or appended_jsonl) and ledger_path:
+                    record_reconciliation_in_ledger(
+                        ledger_path,
+                        {
+                            "event_id": eid,
+                            "canonical_hash": rec.canonical_hash,
+                            "source_file": str(source_fallback_file),
+                            "inserted_sqlite": inserted_sqlite,
+                            "appended_jsonl": appended_jsonl,
+                        },
+                    )
+
+                results["reconciled_ids"].append(eid)
+            else:
+                results["skipped_quarantine"] += 1
+
+    return results
