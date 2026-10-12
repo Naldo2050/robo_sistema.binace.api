@@ -73,6 +73,7 @@ class OperationalRuntimeLock:
         self._file_obj = None
         self._is_locked = False
         self._is_retained = False
+        self.previous_persisted_state: Optional[Union[RuntimeState, str]] = None
         self._thread_lock = threading.Lock()
         self._system = platform.system()
 
@@ -156,15 +157,24 @@ class OperationalRuntimeLock:
         with self._thread_lock:
             self._persist_state(state, reason=reason)
 
-    def acquire(self, timeout: float = 0.0) -> None:
+    def acquire(
+        self,
+        timeout: float = 0.0,
+        require_previous_state: Optional[Union[RuntimeState, str]] = None,
+    ) -> None:
         """
         Adquire o lock exclusivo no arquivo e registra estado RUNNING com fsync.
 
         Args:
             timeout: Tempo máximo em segundos para tentar adquirir. Se 0.0, é puramente não-bloqueante.
+            require_previous_state: Estado anterior exigido no arquivo sob trava física do SO
+                (ex: RuntimeState.CLEAN). Se especificado e o estado prévio em disco diferir,
+                aborta imediatamente sem modificar o arquivo de lock e libera o descritor no SO
+                (sem criar janela TOCTOU e preservando evidências de crash/inconsistência intactas).
 
         Raises:
-            RuntimeLockError: Se o lock já estiver detido por outro processo ou falhar ao persistir RUNNING.
+            RuntimeLockError: Se o lock já estiver detido por outro processo, se o estado
+                anterior diferir do exigido, ou se falhar ao persistir RUNNING.
         """
         with self._thread_lock:
             if self._is_locked:
@@ -241,6 +251,54 @@ class OperationalRuntimeLock:
 
             self._file_obj = f
             self._is_locked = True
+
+            # Gate G4-D B3-B1: Validação atômica de estado anterior sob trava física do SO (sem TOCTOU)
+            if require_previous_state is not None:
+                existing_meta = self._read_existing_metadata_safe(f)
+                prev_status = existing_meta.get("status") if existing_meta else None
+                expected_val = (
+                    require_previous_state.value
+                    if isinstance(require_previous_state, RuntimeState)
+                    else str(require_previous_state)
+                )
+                if prev_status != expected_val:
+                    # Rollback seguro: libera a trava física no kernel SEM tocar no arquivo em disco
+                    try:
+                        if self._system == "Windows":
+                            import msvcrt
+                            f.seek(0)
+                            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                        else:
+                            import fcntl
+                            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        pass
+                    try:
+                        f.close()
+                    except Exception:
+                        pass
+                    self._file_obj = None
+                    self._is_locked = False
+
+                    reason_msg = (
+                        f"Estado anterior '{prev_status}' diverge do exigido '{expected_val}'"
+                        if prev_status is not None
+                        else f"Estado anterior ausente ou corrompido (exigia estritamente '{expected_val}')"
+                    )
+                    logger.warning(
+                        "Aquisição de lock em %s rejeitada: %s. Estado persistido em disco preservado inalterado.",
+                        self.lock_path,
+                        reason_msg,
+                    )
+                    raise RuntimeLockError(
+                        f"Transição proibida: {reason_msg} no lock {self.lock_path}."
+                    )
+
+                self.previous_persisted_state = (
+                    RuntimeState(prev_status) if prev_status in RuntimeState._value2member_map_ else prev_status
+                )
+            else:
+                self.previous_persisted_state = None
 
             # Registra estado RUNNING de forma atômica e com fsync (fail-closed)
             try:

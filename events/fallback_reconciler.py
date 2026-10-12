@@ -852,6 +852,221 @@ def record_reconciliation_in_ledger(ledger_path: Path, entry: Dict[str, Any]) ->
         os.fsync(f.fileno())
 
 
+def verify_operational_lock_authorization(
+    operational_lock: Any,
+    target_sqlite_path: Path,
+    target_jsonl_path: Path,
+) -> None:
+    """
+    Valida a autorização física e de kernel para escrita em dados operacionais (Gate G4-D B3-B1).
+
+    Exige lock operacional real, ativamente detido pelo processo atual, confinado
+    canonicamente no mesmo diretório pai das bases de dados.
+    """
+    from common.runtime_lock import OperationalRuntimeLock
+
+    if operational_lock is None or not isinstance(operational_lock, OperationalRuntimeLock):
+        raise PermissionError(
+            "Autorização negada: objeto de lock operacional ausente ou inválido. "
+            "Acesso aos dados operacionais exige uma instância real de OperationalRuntimeLock."
+        )
+
+    if not operational_lock.is_locked or operational_lock._file_obj is None:
+        raise PermissionError(
+            "Autorização negada: o lock operacional não está ativamente detido pelo processo atual. "
+            "Operação abortada para evitar colisão."
+        )
+
+    sqlite_resolved = Path(target_sqlite_path).expanduser().resolve()
+    jsonl_resolved = Path(target_jsonl_path).expanduser().resolve()
+    lock_resolved = operational_lock.lock_path.expanduser().resolve()
+
+    norm_data_dir = os.path.normcase(str(sqlite_resolved.parent))
+    norm_jsonl_dir = os.path.normcase(str(jsonl_resolved.parent))
+    norm_lock_dir = os.path.normcase(str(lock_resolved.parent))
+
+    # 1. Confinamento no mesmo diretório canônico
+    if norm_data_dir != norm_lock_dir or norm_jsonl_dir != norm_lock_dir:
+        raise PermissionError(
+            f"Violação de confinamento: os dados operacionais ({norm_data_dir}) "
+            f"não residem no mesmo diretório protegido pelo lock ({norm_lock_dir})."
+        )
+
+    # 2. Identidade exata do arquivo de lock
+    expected_lock_file = os.path.normcase(str(sqlite_resolved.parent / ".operational_runtime.lock"))
+    if os.path.normcase(str(lock_resolved)) != expected_lock_file:
+        raise PermissionError(
+            f"Identidade de lock incorreta: esperado '{expected_lock_file}', "
+            f"fornecido '{lock_resolved}'."
+        )
+
+
+def verify_sqlite_integrity(sqlite_path: Path) -> Tuple[bool, str]:
+    """
+    Executa verificação diagnóstica offline de integridade estrutural e referencial no SQLite (Gate G4-D B3-B1).
+    Zero checkpoint WAL, abre em modo read-only URI (?mode=ro).
+    """
+    p = Path(sqlite_path).expanduser().resolve()
+    if not p.exists():
+        return True, "Banco SQLite não existe (será criado na primeira operação)"
+
+    uri = f"file:{p.as_posix()}?mode=ro"
+    conn = None
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=10.0)
+        cur = conn.cursor()
+
+        # PRAGMA integrity_check
+        cur.execute("PRAGMA integrity_check")
+        row = cur.fetchone()
+        if not row or row[0] != "ok":
+            return False, f"PRAGMA integrity_check falhou: {row}"
+
+        # PRAGMA foreign_key_check
+        cur.execute("PRAGMA foreign_key_check")
+        fk_rows = cur.fetchall()
+        if fk_rows:
+            return False, f"PRAGMA foreign_key_check encontrou violações: {fk_rows}"
+
+        return True, "Integridade SQLite íntegra (integrity_check e FKs OK)"
+    except Exception as e:
+        return False, f"Erro ao verificar integridade do SQLite: {e}"
+    finally:
+        if conn:
+            conn.close()
+
+
+def verify_jsonl_integrity(jsonl_path: Path) -> Tuple[bool, str]:
+    """
+    Valida a terminação e integridade da última linha do arquivo JSONL ativo (Gate G4-D B3-B1).
+    """
+    p = Path(jsonl_path).expanduser().resolve()
+    if not p.exists() or p.stat().st_size == 0:
+        return True, "JSONL ativo inexistente ou vazio (pronto para append)"
+
+    try:
+        with open(p, "rb") as f:
+            content = f.read()
+        if not content:
+            return True, "JSONL vazio"
+
+        lines = content.splitlines()
+        if not lines:
+            return True, "JSONL sem linhas"
+
+        last_line_bytes = lines[-1].strip()
+        if not last_line_bytes:
+            return True, "JSONL termina com linha em branco limpa"
+
+        last_line_str = last_line_bytes.decode("utf-8", errors="strict")
+        json.loads(last_line_str)
+        return True, "JSONL ativo íntegro (última linha é JSON válido)"
+    except Exception as e:
+        return False, f"Última linha do JSONL é inválida ou corrompida: {e}"
+
+
+def verify_archive_integrity(archive_dir: Path) -> Tuple[bool, str]:
+    """
+    Verifica ausência de arquivos temporários residuais (.tmp) e integridade dos segmentos no archive G4-C.
+    Valida legibilidade e estrutura JSON linha a linha de todos os arquivos de segmento (.jsonl).
+    """
+    p = Path(archive_dir).expanduser().resolve()
+    if not p.exists():
+        return True, "Diretório de archive não existe ainda (nenhuma rotação pendente)"
+
+    # 1. Verifica se há arquivos residuais .tmp
+    tmp_files = list(p.glob("*.tmp"))
+    if tmp_files:
+        tmp_names = [f.name for f in tmp_files[:5]]
+        return False, f"Arquivos temporários residuais detectados no archive (rotação incompleta): {tmp_names}"
+
+    # 2. Varredura e validação de legibilidade e sintaxe de cada segmento .jsonl
+    seg_files = sorted(p.glob("*.jsonl"))
+    for seg in seg_files:
+        if not os.access(seg, os.R_OK):
+            return False, f"Segmento arquivado '{seg.name}' inacessível para leitura (permissão negada)"
+
+        try:
+            with open(seg, "r", encoding="utf-8", errors="strict") as f:
+                for line_idx, line in enumerate(f, start=1):
+                    s = line.strip()
+                    if not s:
+                        continue
+                    try:
+                        obj = json.loads(s)
+                        if not isinstance(obj, dict):
+                            return False, f"Segmento arquivado '{seg.name}' possui linha {line_idx} que não é JSON dict"
+                    except Exception as json_err:
+                        return False, f"Segmento arquivado '{seg.name}' corrompido na linha {line_idx}: {json_err}"
+        except Exception as read_err:
+            return False, f"Falha de leitura no segmento arquivado '{seg.name}': {read_err}"
+
+    return True, f"Diretório de archive G4-C limpo e íntegro ({len(seg_files)} segmentos validados)"
+
+
+def verify_reconciliation_preflight(
+    source_fallback_file: Path,
+    target_sqlite_path: Path,
+    target_jsonl_path: Path,
+    archive_dir: Path,
+    operational_lock: Optional[Any] = None,
+    repo_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Orquestra a cadeia serial de verificações pré-apply (Gate G4-D B3-B1).
+    Estritamente read-only. Retorna dicionário estruturado com o veredito de cada gate.
+    """
+    checks: Dict[str, Tuple[bool, str]] = {}
+    errors: List[str] = []
+
+    # 1. Validação de Fixtures versionadas no Git
+    reconciler = FallbackReconciler(
+        sqlite_path=target_sqlite_path,
+        jsonl_path=target_jsonl_path,
+        archive_dir=archive_dir,
+        repo_root=repo_root,
+    )
+    if reconciler.is_git_tracked_fixture(source_fallback_file):
+        msg = f"Arquivo '{source_fallback_file.name}' é uma fixture versionada no Git. Modificação proibida."
+        checks["fixture_check"] = (False, msg)
+        errors.append(msg)
+    else:
+        checks["fixture_check"] = (True, "Arquivo de fallback não é fixture rastreada no Git")
+
+    # 2. Verificação de autorização de Lock Operacional
+    try:
+        verify_operational_lock_authorization(operational_lock, target_sqlite_path, target_jsonl_path)
+        checks["lock_authorization"] = (True, "Lock operacional ativo, autêntico e confinado no mesmo diretório")
+    except Exception as lock_err:
+        checks["lock_authorization"] = (False, str(lock_err))
+        errors.append(str(lock_err))
+
+    # 3. Verificação de Integridade do SQLite
+    sq_ok, sq_msg = verify_sqlite_integrity(target_sqlite_path)
+    checks["sqlite_integrity"] = (sq_ok, sq_msg)
+    if not sq_ok:
+        errors.append(sq_msg)
+
+    # 4. Verificação de Integridade do JSONL
+    jl_ok, jl_msg = verify_jsonl_integrity(target_jsonl_path)
+    checks["jsonl_integrity"] = (jl_ok, jl_msg)
+    if not jl_ok:
+        errors.append(jl_msg)
+
+    # 5. Verificação de Integridade do Archive
+    arch_ok, arch_msg = verify_archive_integrity(archive_dir)
+    checks["archive_integrity"] = (arch_ok, arch_msg)
+    if not arch_ok:
+        errors.append(arch_msg)
+
+    is_ready = len(errors) == 0
+    return {
+        "ready": is_ready,
+        "checks": checks,
+        "errors": errors,
+    }
+
+
 def reconcile_events_hermetic(
     source_fallback_file: Path,
     target_sqlite_path: Path,
@@ -861,30 +1076,100 @@ def reconcile_events_hermetic(
     backup_dir: Optional[Path] = None,
     perform_backup: bool = True,
     repo_root: Optional[Path] = None,
+    operational_lock: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
-    Orquestrador hermético do motor de reconciliação com escrita para testes isolados.
+    Orquestrador hermético do motor de reconciliação com escrita para testes isolados (Gate G4-D B1/B3-B1).
 
     Exige caminhos explícitos do chamador.
-    Bloqueia caminhos de produção e arquivos de fixture versionados no Git.
+    Bloqueia caminhos de produção a menos que comprovada autorização ativa via OperationalRuntimeLock,
+    preflight 100% aprovado e backup obrigatório bem-sucedido.
+    Bloqueia arquivos de fixture versionados no Git incondicionalmente.
     """
     source_fallback_file = Path(source_fallback_file)
     target_sqlite_path = Path(target_sqlite_path)
     target_jsonl_path = Path(target_jsonl_path)
     archive_dir = Path(archive_dir)
 
-    # 1. Salvaguarda incondicional contra caminhos operacionais de produção
-    prod_markers = [Path("dados/trading_bot.db"), Path("dados/eventos_fluxo.jsonl")]
-    for marker in prod_markers:
-        if marker in [target_sqlite_path, target_jsonl_path]:
-            raise PermissionError("Uso de caminhos operacionais de produção é estritamente proibido nesta fase.")
+    # 1. Determinação canônica e segura da raiz do repositório (independente de cwd)
+    try:
+        if repo_root is None:
+            canonical_repo = Path(__file__).resolve().parent.parent
+        else:
+            canonical_repo = Path(repo_root).resolve()
+    except Exception as root_err:
+        raise PermissionError(f"Fail-closed: impossível determinar raiz canônica do repositório: {root_err}")
 
-    # 2. Salvaguarda incondicional contra modificação de fixtures de teste Git
+    # 2. Resolução canônica dos caminhos operacionais protegidos e dos destinos
+    try:
+        target_sqlite_res = target_sqlite_path.resolve()
+        target_jsonl_res = target_jsonl_path.resolve()
+        prod_dir_res = (canonical_repo / "dados").resolve()
+        prod_sqlite_res = (prod_dir_res / "trading_bot.db").resolve()
+        prod_jsonl_res = (prod_dir_res / "eventos_fluxo.jsonl").resolve()
+
+        norm_sqlite = os.path.normcase(str(target_sqlite_res))
+        norm_jsonl = os.path.normcase(str(target_jsonl_res))
+        norm_prod_dir = os.path.normcase(str(prod_dir_res))
+        norm_prod_sqlite = os.path.normcase(str(prod_sqlite_res))
+        norm_prod_jsonl = os.path.normcase(str(prod_jsonl_res))
+
+        is_prod_target = (
+            norm_sqlite == norm_prod_sqlite
+            or norm_jsonl == norm_prod_jsonl
+            or os.path.normcase(str(target_sqlite_res.parent)) == norm_prod_dir
+            or os.path.normcase(str(target_jsonl_res.parent)) == norm_prod_dir
+        )
+        if not is_prod_target and target_sqlite_res.exists() and prod_sqlite_res.exists():
+            if os.path.samefile(target_sqlite_res, prod_sqlite_res):
+                is_prod_target = True
+        if not is_prod_target and target_jsonl_res.exists() and prod_jsonl_res.exists():
+            if os.path.samefile(target_jsonl_res, prod_jsonl_res):
+                is_prod_target = True
+    except Exception as id_err:
+        raise PermissionError(f"Fail-closed: falha ao determinar identidade física dos recursos: {id_err}")
+
+    # 3. Salvaguarda e autorização sob exclusividade operacional (Gate G4-D B3-B1)
+    if is_prod_target:
+        # A. Validação estrita de autorização de lock operacional
+        verify_operational_lock_authorization(operational_lock, target_sqlite_path, target_jsonl_path)
+
+        # B. Backup obrigatório: rejeita desativação externa e exige backup_dir válido
+        if not perform_backup:
+            raise PermissionError(
+                "Operação proibida: desativação de backup em caminhos operacionais de produção "
+                "é expressamente vedada por contrato de segurança."
+            )
+        if not backup_dir:
+            raise ValueError(
+                "Operação proibida: backup_dir é estritamente obrigatório para caminhos operacionais de produção."
+            )
+
+        # C. Preflight obrigatório antes de qualquer escrita
+        preflight = verify_reconciliation_preflight(
+            source_fallback_file=source_fallback_file,
+            target_sqlite_path=target_sqlite_path,
+            target_jsonl_path=target_jsonl_path,
+            archive_dir=archive_dir,
+            operational_lock=operational_lock,
+            repo_root=canonical_repo,
+        )
+        if not preflight["ready"]:
+            err_details = "; ".join(preflight["errors"])
+            raise RuntimeError(
+                f"Preflight de reconciliação falhou com impedimentos críticos: {err_details}. "
+                f"Escrita em produção abortada antes de tocar em qualquer dado."
+            )
+    elif operational_lock is not None:
+        # Em ambiente isolado/teste, se um lock foi fornecido, valida sua consistência
+        verify_operational_lock_authorization(operational_lock, target_sqlite_path, target_jsonl_path)
+
+    # 4. Salvaguarda incondicional contra modificação de fixtures de teste Git
     reconciler = FallbackReconciler(
         sqlite_path=target_sqlite_path,
         jsonl_path=target_jsonl_path,
         archive_dir=archive_dir,
-        repo_root=repo_root,
+        repo_root=canonical_repo,
     )
     if reconciler.is_git_tracked_fixture(source_fallback_file):
         raise PermissionError(
@@ -892,16 +1177,24 @@ def reconcile_events_hermetic(
             f"Modificação ou reconciliação com escrita é ESTRITAMENTE PROIBIDA."
         )
 
-    # 3. Execução e validação do backup consistente se solicitado
+    # 5. Execução e validação do backup consistente (aborto seguro em caso de falha)
     backup_hash = None
     if perform_backup and backup_dir and target_sqlite_path.exists():
-        backup_file = Path(backup_dir) / f"{target_sqlite_path.stem}_backup.db"
-        backup_hash = create_sqlite_backup_consistent(target_sqlite_path, backup_file)
+        backup_dir_path = Path(backup_dir)
+        try:
+            backup_dir_path.mkdir(parents=True, exist_ok=True)
+            backup_file = backup_dir_path / f"{target_sqlite_path.stem}_backup.db"
+            backup_hash = create_sqlite_backup_consistent(target_sqlite_path, backup_file)
+        except Exception as bkp_err:
+            raise RuntimeError(
+                f"Falha crítica na criação do backup consistente em {backup_dir}: {bkp_err}. "
+                f"Operação abortada antes de qualquer escrita."
+            ) from bkp_err
 
-    # 4. Validação da terminação do arquivo JSONL ativo
+    # 6. Validação da terminação do arquivo JSONL ativo
     prefix_sep = validate_and_prepare_jsonl_target(target_jsonl_path)
 
-    # 5. Leitura dos catálogos dos destinos
+    # 7. Leitura dos catálogos dos destinos
     sq_by_id, sq_by_corr = reconciler.load_sqlite_catalog()
     jl_by_id, jl_by_corr = reconciler.load_jsonl_catalog()
 
@@ -947,6 +1240,10 @@ def reconcile_events_hermetic(
             if rec.classification == EventClassification.EVENTO_JA_PRESENTE:
                 results["already_present"] += 1
             elif rec.classification == EventClassification.EVENTO_AUSENTE:
+                # Revalidação de exclusividade contínua antes de operações de escrita
+                if operational_lock is not None and not operational_lock.is_locked:
+                    raise PermissionError("Lock operacional foi liberado ou perdido durante a reconciliação!")
+
                 eid = rec.event_id
                 inserted_sqlite = False
                 appended_jsonl = False
