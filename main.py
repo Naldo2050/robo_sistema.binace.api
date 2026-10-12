@@ -63,6 +63,7 @@ import logging
 import asyncio
 import signal
 import traceback
+from typing import Any, Tuple, List, Optional
 
 from config.env_policy import maybe_load_dotenv
 
@@ -195,6 +196,67 @@ async def _heartbeat_during_run(heartbeat: HeartbeatManager):
         logging.error(f"Erro na task de heartbeat: {e}")
 
 
+def check_operational_writers_alive(bot: Any) -> tuple[bool, list[str]]:
+    """
+    Inspeciona defensivamente todos os componentes do robô para verificar se
+    existem writers operacionais ou threads de persistência ainda ativas (Gate G4-D B2).
+
+    Retorna:
+        (has_active_writers, active_writer_descriptions)
+    """
+    if bot is None:
+        return False, []
+
+    active_writers: list[str] = []
+
+    # 1. EventSaver e threads de persistência
+    if hasattr(bot, "event_saver") and bot.event_saver is not None:
+        saver = bot.event_saver
+
+        flush_th = getattr(saver, "_flush_thread", None)
+        if flush_th is not None and flush_th.is_alive():
+            active_writers.append(f"EventSaverFlushWorker (thread_id={getattr(flush_th, 'ident', 'active')})")
+
+        cleanup_th = getattr(saver, "_cleanup_thread", None)
+        if cleanup_th is not None and cleanup_th.is_alive():
+            active_writers.append(f"EventSaverCleanupWorker (thread_id={getattr(cleanup_th, 'ident', 'active')})")
+
+        sound_th = getattr(saver, "_sound_thread", None)
+        if sound_th is not None and sound_th.is_alive():
+            active_writers.append(f"EventSaverSoundWorker (thread_id={getattr(sound_th, 'ident', 'active')})")
+
+        # Buffers e eventos pendentes no EventSaver
+        buf = getattr(saver, "_write_buffer", None)
+        if buf and len(buf) > 0:
+            active_writers.append(f"EventSaver._write_buffer com {len(buf)} eventos pendentes")
+
+        in_flight = getattr(saver, "_events_in_flight", 0)
+        if in_flight > 0:
+            active_writers.append(f"EventSaver._events_in_flight com {in_flight} eventos em curso")
+
+        if getattr(saver, "_shutdown_incomplete", False):
+            active_writers.append("EventSaver._shutdown_incomplete flag ativa")
+
+    # 2. Dump contínuo de trades brutos
+    raw_file = getattr(bot, "_raw_trades_file", None)
+    if raw_file is not None and not getattr(raw_file, "closed", True):
+        active_writers.append("bot._raw_trades_file ainda aberto")
+
+    # 3. Thread pool de IA
+    ai_threads = getattr(bot, "ai_thread_pool", None)
+    if ai_threads:
+        for i, th in enumerate(ai_threads):
+            if th is not None and th.is_alive():
+                active_writers.append(f"AIThreadPool worker #{i} ainda ativo")
+
+    # 4. Loop thread assíncrono dedicado
+    async_th = getattr(bot, "_async_loop_thread", None)
+    if async_th is not None and async_th.is_alive():
+        active_writers.append("bot._async_loop_thread ainda ativo")
+
+    return len(active_writers) > 0, active_writers
+
+
 async def main() -> int:
     """
     Entry point principal com cleanup garantido.
@@ -303,6 +365,18 @@ async def main() -> int:
     )
 
     bot = None  # ✅ Inicializa fora do try
+
+    # Gate G4-D B2: Exclusividade cooperativa do runtime operacional
+    from common.runtime_lock import OperationalRuntimeLock, RuntimeLockError
+    runtime_lock = OperationalRuntimeLock(
+        lock_path=Path("dados/.operational_runtime.lock"),
+        holder_name="market_bot",
+    )
+    try:
+        runtime_lock.acquire(timeout=0.0)
+    except RuntimeLockError as e_lock:
+        logger.critical("❌ Falha de exclusividade de runtime: %s", e_lock)
+        return 2
 
     try:
         # ✅ Validação mais específica (não captura AttributeError genérico)
@@ -535,6 +609,20 @@ async def main() -> int:
             await bot.shutdown()
         await heartbeat.stop()
         return 1
+    finally:
+        # Gate G4-D B2 Hardened: Verificação e liberação ou retenção segura do lock
+        if runtime_lock.is_locked:
+            has_writers, details = check_operational_writers_alive(bot)
+            if has_writers:
+                details_str = ", ".join(details)
+                logger.critical(
+                    "❌ Shutdown incompleto comprovado: writers operacionais ativos: %s. "
+                    "Lock operacional RETIDO no kernel para impedir que outro processo assuma os mesmos dados.",
+                    details_str,
+                )
+                runtime_lock.retain(reason=f"Writers ativos: {details_str}")
+            else:
+                runtime_lock.release()
 
 
 if __name__ == "__main__":
