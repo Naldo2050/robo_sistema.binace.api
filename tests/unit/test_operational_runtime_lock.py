@@ -8,8 +8,12 @@ finalizador __del__, liberação pelo SO após crash e verificação de writers.
 Todos os testes rodam estritamente em tmp_path. Zero acesso a dados operacionais.
 """
 
+import errno
 import gc
+import json
+import logging
 import os
+import platform
 import sys
 import time
 import subprocess
@@ -20,6 +24,7 @@ import pytest
 from common.runtime_lock import (
     OperationalRuntimeLock,
     RuntimeLockError,
+    RuntimeState,
     _RETAINED_LOCKS,
     _RETAINED_FILE_HANDLES,
 )
@@ -550,3 +555,416 @@ def test_21_writer_finishes_after_retention_deadlock_free(tmp_path):
     assert completed.is_set()
     assert not th.is_alive()
     assert lock.is_locked
+
+
+# ==============================================================================
+# TESTES DO GATE G4-D B3-A: ESTADOS PERSISTENTES E SINALIZAÇÃO DE INTEGRIDADE
+# ==============================================================================
+
+def test_22_state_running_on_startup(tmp_path):
+    """22. Após aquisição do lock, o estado persistido é estritamente RUNNING."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+    lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="startup_bot")
+    lock.acquire()
+
+    assert lock.persisted_state == RuntimeState.RUNNING
+    info = OperationalRuntimeLock.read_persisted_state(lock_file)
+    assert info["status"] == RuntimeState.RUNNING
+    assert info["metadata"]["holder"] == "startup_bot"
+    assert info["metadata"]["pid"] == os.getpid()
+
+    lock.release()
+
+
+def test_23_state_clean_after_clean_shutdown(tmp_path):
+    """23. Após shutdown comprovadamente limpo e release(), o estado é CLEAN."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+    lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="clean_bot")
+    lock.acquire()
+    assert lock.persisted_state == RuntimeState.RUNNING
+
+    lock.release()
+    assert lock.persisted_state == RuntimeState.CLEAN
+    info = OperationalRuntimeLock.read_persisted_state(lock_file)
+    assert info["status"] == RuntimeState.CLEAN
+    assert info["metadata"]["holder"] == "clean_bot"
+
+
+def test_24_state_dirty_after_incomplete_shutdown(tmp_path):
+    """24. Após shutdown incompleto com retain(), o estado persistido é DIRTY."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+    lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="dirty_bot")
+    lock.acquire()
+
+    lock.retain(reason="EventSaverFlushWorker ainda ativo")
+    assert lock.persisted_state == RuntimeState.DIRTY
+    info = OperationalRuntimeLock.read_persisted_state(lock_file)
+    assert info["status"] == RuntimeState.DIRTY
+    assert "EventSaverFlushWorker" in info["metadata"].get("reason", "")
+
+
+def test_25_state_unknown_after_crash_without_cleanup(tmp_path):
+    """25. Se o processo sofreu crash com status RUNNING mas sem trava no SO, detecta UNKNOWN."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+    # Simula arquivo gravado por processo que crasheou
+    stale_payload = {
+        "status": "RUNNING",
+        "holder": "crashed_process",
+        "pid": 99999,
+        "timestamp_utc": "2026-10-12T00:00:00+00:00",
+        "host": "TEST_HOST",
+    }
+    lock_file.write_text(json.dumps(stale_payload), encoding="utf-8")
+
+    info = OperationalRuntimeLock.read_persisted_state(lock_file)
+    assert info["status"] == RuntimeState.UNKNOWN
+    assert info["reason"] == "crash_detected_running_status_without_kernel_lock"
+
+
+def test_26_state_unknown_missing_file_or_empty(tmp_path):
+    """26. Arquivo inexistente ou com 0 bytes é classificado como UNKNOWN."""
+    non_existent = tmp_path / "non_existent.lock"
+    info = OperationalRuntimeLock.read_persisted_state(non_existent)
+    assert info["status"] == RuntimeState.UNKNOWN
+    assert info["reason"] == "missing_or_empty_lock_file"
+
+    empty_file = tmp_path / "empty.lock"
+    empty_file.touch()
+    info_empty = OperationalRuntimeLock.read_persisted_state(empty_file)
+    assert info_empty["status"] == RuntimeState.UNKNOWN
+    assert info_empty["reason"] == "missing_or_empty_lock_file"
+
+
+def test_27_state_unknown_invalid_or_truncated_json(tmp_path):
+    """27. JSON corrompido ou truncado por encerramento abrupto é classificado como UNKNOWN."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+
+    # Truncado no meio
+    lock_file.write_text('{"status": "RUNN', encoding="utf-8")
+    info = OperationalRuntimeLock.read_persisted_state(lock_file)
+    assert info["status"] == RuntimeState.UNKNOWN
+    assert "invalid_or_truncated_json" in info["reason"]
+
+    # Conteúdo não-JSON
+    lock_file.write_text("CORRUPTED_NON_JSON_DATA_12345", encoding="utf-8")
+    info2 = OperationalRuntimeLock.read_persisted_state(lock_file)
+    assert info2["status"] == RuntimeState.UNKNOWN
+    assert "invalid_or_truncated_json" in info2["reason"]
+
+
+def test_28_enospc_failure_fail_closed(tmp_path, monkeypatch):
+    """28. Falha de ENOSPC na gravação do estado aborta aquisição (fail-closed) e desfaz lock no SO."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+    lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="enospc_test")
+
+    def mock_write_fail(self, state, reason=""):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(OperationalRuntimeLock, "_persist_state", mock_write_fail)
+
+    with pytest.raises(RuntimeLockError) as exc_info:
+        lock.acquire()
+
+    assert "No space left on device" in str(exc_info.value) or "Falha ao persistir" in str(exc_info.value)
+    assert not lock.is_locked
+    assert lock._file_obj is None
+
+    # Verifica que outro processo consegue adquirir em seguida (lock foi desfeito)
+    monkeypatch.undo()
+    lock2 = OperationalRuntimeLock(lock_path=lock_file, holder_name="successor")
+    lock2.acquire(timeout=0.0)
+    assert lock2.is_locked
+    lock2.release()
+
+
+def test_29_fsync_failure_fail_closed(tmp_path, monkeypatch):
+    """29. Falha de fsync durante a persistência do estado é tratada como fail-closed."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+    lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="fsync_test")
+
+    def mock_fsync_fail(fd):
+        raise OSError(errno.EIO, "I/O error during fsync")
+
+    monkeypatch.setattr(os, "fsync", mock_fsync_fail)
+
+    with pytest.raises(RuntimeLockError) as exc_info:
+        lock.acquire()
+
+    assert not lock.is_locked
+    assert lock._file_obj is None
+
+
+def test_30_concurrent_processes_state_not_corrupted(tmp_path):
+    """30. Processo concorrente bloqueado não sobrescreve nem corrompe o estado RUNNING do detentor."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+
+    child_code = f"""
+import sys, time
+from pathlib import Path
+sys.path.insert(0, r'{Path(__file__).resolve().parent.parent.parent}')
+from common.runtime_lock import OperationalRuntimeLock
+lock = OperationalRuntimeLock(lock_path=r'{lock_file}', holder_name='owner_proc')
+lock.acquire()
+print('OWNER_ACQUIRED', flush=True)
+time.sleep(5)
+lock.release()
+"""
+    proc = subprocess.Popen([sys.executable, "-c", child_code], stdout=subprocess.PIPE, text=True)
+    line = proc.stdout.readline().strip()
+    assert line == "OWNER_ACQUIRED"
+
+    try:
+        # Segundo processo tenta e falha
+        competitor = OperationalRuntimeLock(lock_path=lock_file, holder_name="competitor_proc")
+        with pytest.raises(RuntimeLockError):
+            competitor.acquire(timeout=0.0)
+
+        # O estado em disco continua RUNNING com o owner_proc
+        info = OperationalRuntimeLock.read_persisted_state(lock_file)
+        assert info["status"] == RuntimeState.RUNNING
+        assert info["metadata"]["holder"] == "owner_proc"
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_31_state_does_not_replace_kernel_lock(tmp_path):
+    """31. O estado persistente serve como integridade, mas a exclusividade depende estritamente do kernel."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+    # Grava estado "CLEAN" no arquivo
+    clean_payload = {
+        "status": "CLEAN",
+        "holder": "previous_proc",
+        "pid": 1234,
+        "timestamp_utc": "2026-10-12T00:00:00+00:00",
+        "host": "TEST_HOST",
+    }
+    lock_file.write_text(json.dumps(clean_payload), encoding="utf-8")
+
+    # Porém, um descritor independente trava fisicamente o byte 0 via SO
+    f_holder = open(lock_file, "a+b")
+    system = platform.system()
+    if system == "Windows":
+        import msvcrt
+        f_holder.seek(0)
+        msvcrt.locking(f_holder.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(f_holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    try:
+        # Novo processo tenta adquirir. Mesmo com o arquivo dizendo "CLEAN", o SO bloqueia!
+        incoming = OperationalRuntimeLock(lock_path=lock_file, holder_name="incoming_proc")
+        with pytest.raises(RuntimeLockError):
+            incoming.acquire(timeout=0.0)
+    finally:
+        if system == "Windows":
+            import msvcrt
+            f_holder.seek(0)
+            msvcrt.locking(f_holder.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f_holder.fileno(), fcntl.LOCK_UN)
+        f_holder.close()
+
+
+def test_32_gc_and_retention_preserves_dirty_state(tmp_path):
+    """32. Retenção anti-GC preserva a trava física no SO e o estado persistido DIRTY."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+
+    def _retain_scope():
+        inner_lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="dirty_scope")
+        inner_lock.acquire()
+        inner_lock.retain(reason="testing dirty GC survival")
+        return lock_file
+
+    path = _retain_scope()
+    gc.collect()
+
+    # O lock continua retido no SO e o arquivo diz DIRTY
+    info = OperationalRuntimeLock.read_persisted_state(path)
+    assert info["status"] == RuntimeState.DIRTY
+    assert "testing dirty GC survival" in info["reason"]
+
+    # Concorrente é bloqueado
+    competitor = OperationalRuntimeLock(lock_path=path, holder_name="competitor")
+    with pytest.raises(RuntimeLockError):
+        competitor.acquire(timeout=0.0)
+
+
+def test_33_state_cannot_be_overwritten_without_lock(tmp_path):
+    """33. Processo sem exclusividade do lock é proibido de sobrescrever o estado."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+    lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="unauthorized")
+
+    # Sem chamar acquire()
+    with pytest.raises(RuntimeLockError) as exc_info:
+        lock.update_state(RuntimeState.CLEAN)
+
+    assert "sem deter o lock exclusivo" in str(exc_info.value)
+
+
+def test_34_recovery_after_crash(tmp_path):
+    """34. Recuperação consistente após crash: novo processo adquire, atualiza RUNNING e encerra CLEAN."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+
+    child_code = f"""
+import sys, time
+from pathlib import Path
+sys.path.insert(0, r'{Path(__file__).resolve().parent.parent.parent}')
+from common.runtime_lock import OperationalRuntimeLock
+lock = OperationalRuntimeLock(lock_path=r'{lock_file}', holder_name='crash_victim')
+lock.acquire()
+print('CRASH_READY', flush=True)
+time.sleep(30)
+"""
+    proc = subprocess.Popen([sys.executable, "-c", child_code], stdout=subprocess.PIPE, text=True)
+    line = proc.stdout.readline().strip()
+    assert line == "CRASH_READY"
+
+    # Crash abrupto via kill()
+    proc.kill()
+    proc.wait()
+
+    # Imediatamente após o crash, o arquivo dizia RUNNING, mas sem lock físico => UNKNOWN (crash detectado)
+    pre_recovery_info = OperationalRuntimeLock.read_persisted_state(lock_file)
+    assert pre_recovery_info["status"] == RuntimeState.UNKNOWN
+    assert pre_recovery_info["reason"] == "crash_detected_running_status_without_kernel_lock"
+
+    # Novo processo recupera com sucesso
+    recovery_lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="recovery_bot")
+    recovery_lock.acquire(timeout=1.0)
+    assert recovery_lock.persisted_state == RuntimeState.RUNNING
+
+    recovery_lock.release()
+    assert recovery_lock.persisted_state == RuntimeState.CLEAN
+
+
+def test_35_windows_and_linux_primitives_with_state(tmp_path):
+    """35. Validação de ciclo completo de estados com as primitivas nativas do SO."""
+    lock_file = tmp_path / "lifecycle_primitive.lock"
+    lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="primitive_bot")
+
+    assert OperationalRuntimeLock.read_persisted_state(lock_file)["status"] == RuntimeState.UNKNOWN
+
+    lock.acquire()
+    assert lock.persisted_state == RuntimeState.RUNNING
+
+    lock.update_state(RuntimeState.RUNNING, reason="checkpoint")
+    assert lock.persisted_state == RuntimeState.RUNNING
+
+    lock.release()
+    assert lock.persisted_state == RuntimeState.CLEAN
+
+
+def test_36_fsync_failure_in_release_unlocks_cleanly_not_clean_state(tmp_path, monkeypatch, caplog):
+    """36. Falha de fsync em release(): erro é registrado, lock é liberado e estado não é CLEAN válido."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+    lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="fsync_release_bot")
+    lock.acquire()
+    assert lock.is_locked
+
+    # Mock fsync para falhar exclusivamente após o acquire inicial
+    def mock_fsync_fail(fd):
+        raise OSError(errno.EIO, "Simulated I/O error during fsync on release")
+
+    monkeypatch.setattr(os, "fsync", mock_fsync_fail)
+
+    with caplog.at_level(logging.ERROR):
+        # A chamada release() não deve explodir com exceção inesperada
+        lock.release()
+
+    # Confirma que erro crítico/erro foi registrado nos logs
+    assert any("Erro ao persistir estado CLEAN durante release" in record.message for record in caplog.records)
+
+    # Lock físico foi liberado no SO e descritor anulado
+    assert not lock.is_locked
+    assert lock._file_obj is None
+
+    # O estado no arquivo NÃO é CLEAN válido (destravado no SO sem CLEAN persistido => UNKNOWN)
+    info = OperationalRuntimeLock.read_persisted_state(lock_file)
+    assert info["status"] != RuntimeState.CLEAN
+    assert info["status"] == RuntimeState.UNKNOWN
+
+
+def test_37_fsync_failure_in_retain_keeps_kernel_lock_strong_reference(tmp_path, monkeypatch, caplog):
+    """37. Falha de fsync em retain(): lock e referências fortes continuam retidos no SO e estado é UNKNOWN."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+    lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="fsync_retain_bot")
+    lock.acquire()
+    assert lock.is_locked
+
+    # Mock os.fsync para falhar durante retain
+    def mock_fsync_fail(fd):
+        raise OSError(errno.EIO, "I/O error during fsync in retain")
+
+    monkeypatch.setattr(os, "fsync", mock_fsync_fail)
+
+    with caplog.at_level(logging.CRITICAL):
+        lock.retain(reason="falha de persistência simulada")
+
+    # Erro de gravação foi devidamente registrado em log
+    assert any("Falha ao gravar estado DIRTY no lock" in record.message for record in caplog.records)
+
+    # Lock físico e descritores permanecem retidos no SO e nas âncoras globais
+    assert lock.is_locked
+    assert lock.is_retained
+    assert lock in _RETAINED_LOCKS
+    assert lock._file_obj in _RETAINED_FILE_HANDLES
+
+    # Outro processo não consegue adquirir exclusividade
+    competitor = OperationalRuntimeLock(lock_path=lock_file, holder_name="competitor_bot")
+    with pytest.raises(RuntimeLockError):
+        competitor.acquire(timeout=0.0)
+
+    # Estado em disco considerado UNKNOWN caso persistência falhe
+    info = OperationalRuntimeLock.read_persisted_state(lock_file)
+    assert info["status"] == RuntimeState.UNKNOWN
+
+
+def test_38_concurrent_metadata_read_with_byte_zero_locked(tmp_path):
+    """38. Segundo processo lê metadados a partir do byte 1 enquanto o byte 0 está travado no SO (Windows msvcrt)."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+    owner_lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="primary_owner")
+    owner_lock.acquire()
+
+    try:
+        # Segundo processo abre o arquivo e lê metadados via _read_existing_metadata_safe sem PermissionError
+        with open(lock_file, "r+b") as competitor_file:
+            competitor_lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="reader_process")
+            meta = competitor_lock._read_existing_metadata_safe(competitor_file)
+
+            # Confirma que os metadados do titular foram lidos com precisão
+            assert meta is not None
+            assert meta.get("holder") == "primary_owner"
+            assert meta.get("status") == RuntimeState.RUNNING.value
+            assert meta.get("pid") == os.getpid()
+
+        # Confirma que read_persisted_state também lê com sucesso
+        info = OperationalRuntimeLock.read_persisted_state(lock_file)
+        assert info["status"] == RuntimeState.RUNNING
+        assert info["metadata"]["holder"] == "primary_owner"
+
+        # Confirma que o lock original permanece intacto e sem alteração
+        assert owner_lock.is_locked
+        assert owner_lock.persisted_state == RuntimeState.RUNNING
+    finally:
+        owner_lock.release()
+
+
+def test_39_concurrent_metadata_read_invalid_data_unknown(tmp_path):
+    """39. Leitura de metadados com payload corrompido não lança exceção e é classificada como UNKNOWN."""
+    lock_file = tmp_path / ".operational_runtime.lock"
+    lock = OperationalRuntimeLock(lock_path=lock_file, holder_name="corrupt_meta_test")
+
+    # Arquivo contendo byte 0 '#' e payload inválido
+    with open(lock_file, "wb") as f:
+        f.write(b"#NOT_VALID_JSON_BODY_12345")
+
+    with open(lock_file, "r+b") as f:
+        meta = lock._read_existing_metadata_safe(f)
+        assert meta is None  # Não lança exceção não tratada, retorna None
+
+    info = OperationalRuntimeLock.read_persisted_state(lock_file)
+    assert info["status"] == RuntimeState.UNKNOWN
+    assert "invalid_or_truncated_json" in info["reason"]

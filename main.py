@@ -366,8 +366,8 @@ async def main() -> int:
 
     bot = None  # ✅ Inicializa fora do try
 
-    # Gate G4-D B2: Exclusividade cooperativa do runtime operacional
-    from common.runtime_lock import OperationalRuntimeLock, RuntimeLockError
+    # Gate G4-D B2/B3-A: Exclusividade cooperativa e sinalização de estado do runtime operacional
+    from common.runtime_lock import OperationalRuntimeLock, RuntimeLockError, RuntimeState
     runtime_lock = OperationalRuntimeLock(
         lock_path=Path("dados/.operational_runtime.lock"),
         holder_name="market_bot",
@@ -610,14 +610,14 @@ async def main() -> int:
         await heartbeat.stop()
         return 1
     finally:
-        # Gate G4-D B2 Hardened: Verificação e liberação ou retenção segura do lock
+        # Gate G4-D B2/B3-A: Verificação e liberação ou retenção segura com estado CLEAN/DIRTY
         if runtime_lock.is_locked:
             has_writers, details = check_operational_writers_alive(bot)
             if has_writers:
                 details_str = ", ".join(details)
                 logger.critical(
                     "❌ Shutdown incompleto comprovado: writers operacionais ativos: %s. "
-                    "Lock operacional RETIDO no kernel para impedir que outro processo assuma os mesmos dados.",
+                    "Lock operacional RETIDO no kernel (status=DIRTY) para impedir que outro processo assuma os mesmos dados.",
                     details_str,
                 )
                 runtime_lock.retain(reason=f"Writers ativos: {details_str}")

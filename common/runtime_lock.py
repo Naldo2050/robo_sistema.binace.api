@@ -21,35 +21,46 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any, Union, List
 
 logger = logging.getLogger("common.runtime_lock")
 
 # Âncora global de módulo contra desalocação prematura pelo Garbage Collector (GC)
-# durante encerramento com threads ativas (Gate G4-D B2 Hardened).
+# durante encerramento com threads ativas (Gate G4-D B2/B3-A).
 _RETAINED_LOCKS: List["OperationalRuntimeLock"] = []
 _RETAINED_FILE_HANDLES: List[Any] = []
 
 
+class RuntimeState(str, Enum):
+    """Estados do ciclo de vida persistidos no lock operacional (Gate G4-D B3-A)."""
+    RUNNING = "RUNNING"
+    CLEAN = "CLEAN"
+    DIRTY = "DIRTY"
+    UNKNOWN = "UNKNOWN"
+
+
 class RuntimeLockError(RuntimeError):
-    """Exceção levantada quando a aquisição do lock operacional falha (fail-closed)."""
+    """Exceção levantada quando a aquisição ou operação no lock falha (fail-closed)."""
     pass
 
 
 class OperationalRuntimeLock:
     """
-    Gerenciador de lock cooperativo multiplataforma baseado em descritores de arquivo do kernel.
+    Gerenciador de lock cooperativo multiplataforma baseado em descritores de arquivo do kernel
+    com sinalização de estado persistente do ciclo de vida (Gate G4-D B3-A).
 
     Características de Segurança:
     1. Multiplataforma nativa: fcntl.flock no Linux, msvcrt.locking no Windows.
-    2. Zero dependência de texto volátil: o lock é mantido pelo descritor de arquivo aberto.
-    3. Liberação automática pelo SO em caso de crash (SIGKILL, segfault, power loss).
-    4. Não-bloqueante por padrão com política fail-closed sob colisão.
-    5. Arquivo persistente: nunca remove o arquivo de lock no release para evitar corridas de inodo/handle.
-    6. Idempotência estrita: liberação dupla é tratada de forma segura sem exceção.
-    7. Caminho canônico: resolve caminhos relativos e links simbólicos para o mesmo arquivo físico.
-    8. Retenção defensiva: capacidade de reter o lock mesmo após retorno de main() se writers continuarem ativos.
+    2. Exclusividade autoritativa via kernel: o lock físico do SO é a única prova de exclusividade real.
+    3. Sinalização de estado persistente: registra RUNNING, CLEAN, DIRTY, UNKNOWN com flush e fsync.
+    4. Fail-closed: falhas de escrita ou corrupção de estado abortam imediatamente a operação.
+    5. Preservação de arquivo e inodo: nunca remove o arquivo de lock nem usa os.replace para manter
+       a identidade exata do descritor aberto no SO.
+    6. Detecção de crash: se o estado no disco for RUNNING mas o kernel não tiver trava física ativa,
+       classifica rigorosamente como UNKNOWN (crash/falha abrupta anterior).
+    7. Retenção defensiva anti-GC: retém o lock no SO e persiste estado DIRTY se houver writers vivos.
     """
 
     def __init__(
@@ -77,15 +88,83 @@ class OperationalRuntimeLock:
         with self._thread_lock:
             return self._is_retained
 
+    @property
+    def persisted_state(self) -> RuntimeState:
+        """Retorna o estado atual persistido no arquivo de lock."""
+        res = self.read_persisted_state(self.lock_path)
+        return res["status"]
+
+    def _persist_state(self, state: Union[RuntimeState, str], reason: str = "") -> None:
+        """
+        Grava atômica e confiavelmente o estado e metadados no arquivo sob trava exclusiva.
+
+        Aplica flush() e os.fsync().
+        Falha de escrita (ex: ENOSPC, erro de disco) levanta RuntimeLockError (fail-closed).
+        """
+        if not self._is_locked or self._file_obj is None:
+            raise RuntimeLockError(
+                "Operação proibida: tentativa de persistir estado operacional sem deter o lock exclusivo."
+            )
+
+        state_val = state.value if isinstance(state, RuntimeState) else str(state)
+        metadata = {
+            "status": state_val,
+            "holder": self.holder_name,
+            "pid": os.getpid(),
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "host": platform.node(),
+        }
+        if reason:
+            metadata["reason"] = str(reason)
+
+        f = self._file_obj
+        try:
+            raw_bytes = json.dumps(metadata, indent=2).encode("utf-8")
+            # Prefixo b'#' no byte 0: no Windows, byte 0 é travado pelo msvcrt,
+            # permitindo que outros processos leiam os metadados a partir do byte 1
+            payload = b"#" + raw_bytes
+            f.seek(0)
+            f.write(payload)
+            f.truncate()
+            f.flush()
+            os.fsync(f.fileno())
+        except (OSError, IOError) as write_err:
+            logger.critical(
+                "Falha crítica de E/S ao persistir estado %s no lock %s: %s",
+                state_val,
+                self.lock_path,
+                write_err,
+            )
+            # Invalida o payload de dados preservando o byte 0 (lock do SO) para que
+            # leitores não interpretem um estado não garantido por fsync como válido
+            try:
+                f.seek(0)
+                f.write(b"#")
+                f.truncate(1)
+                f.flush()
+            except Exception:
+                pass
+            raise RuntimeLockError(
+                f"Falha ao persistir estado '{state_val}' no arquivo de lock: {write_err}"
+            ) from write_err
+
+    def update_state(self, state: Union[RuntimeState, str], reason: str = "") -> None:
+        """
+        Permite ao detentor do lock atualizar explicitamente o estado durante o ciclo de vida.
+        Requer exclusividade ativa (falha se não detiver o lock).
+        """
+        with self._thread_lock:
+            self._persist_state(state, reason=reason)
+
     def acquire(self, timeout: float = 0.0) -> None:
         """
-        Adquire o lock exclusivo no arquivo.
+        Adquire o lock exclusivo no arquivo e registra estado RUNNING com fsync.
 
         Args:
             timeout: Tempo máximo em segundos para tentar adquirir. Se 0.0, é puramente não-bloqueante.
 
         Raises:
-            RuntimeLockError: Se o lock já estiver detido por outro processo ou não puder ser adquirido.
+            RuntimeLockError: Se o lock já estiver detido por outro processo ou falhar ao persistir RUNNING.
         """
         with self._thread_lock:
             if self._is_locked:
@@ -99,9 +178,18 @@ class OperationalRuntimeLock:
                     f"Falha ao criar diretório para lock em {self.lock_path}: {e}"
                 ) from e
 
-            # Abre o arquivo em modo leitura/escrita binária (cria se não existir sem truncar)
+            # Garante que o arquivo existe antes de abrir em r+b
+            if not self.lock_path.exists():
+                try:
+                    open(self.lock_path, "a+b").close()
+                except Exception as e:
+                    raise RuntimeLockError(
+                        f"Não foi possível criar arquivo de lock em {self.lock_path}: {e}"
+                    ) from e
+
+            # Abre em modo r+b para permitir seek(0) e truncate() confiáveis sem append forçado
             try:
-                f = open(self.lock_path, "a+b")
+                f = open(self.lock_path, "r+b")
             except Exception as e:
                 raise RuntimeLockError(
                     f"Não foi possível abrir o arquivo de lock em {self.lock_path}: {e}"
@@ -151,31 +239,44 @@ class OperationalRuntimeLock:
                 logger.warning(msg)
                 raise RuntimeLockError(msg)
 
-            # Grava metadados informativos no arquivo sem invalidar o lock
-            try:
-                metadata = {
-                    "holder": self.holder_name,
-                    "pid": os.getpid(),
-                    "acquired_at_utc": datetime.now(timezone.utc).isoformat(),
-                    "host": platform.node(),
-                }
-                raw_bytes = json.dumps(metadata, indent=2).encode("utf-8")
-                f.seek(0)
-                f.truncate(0)
-                f.write(raw_bytes)
-                f.flush()
-            except Exception as meta_err:
-                logger.debug(f"Aviso ao registrar metadados no arquivo de lock: {meta_err}")
-
             self._file_obj = f
             self._is_locked = True
+
+            # Registra estado RUNNING de forma atômica e com fsync (fail-closed)
+            try:
+                self._persist_state(RuntimeState.RUNNING)
+            except Exception as persist_err:
+                # Rollback imediato se falhar ao persistir estado (ex: ENOSPC)
+                try:
+                    if self._system == "Windows":
+                        import msvcrt
+                        f.seek(0)
+                        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                try:
+                    f.close()
+                except Exception:
+                    pass
+                self._file_obj = None
+                self._is_locked = False
+                if isinstance(persist_err, RuntimeLockError):
+                    raise persist_err
+                raise RuntimeLockError(
+                    f"Falha ao persistir estado RUNNING no lock: {persist_err}"
+                ) from persist_err
+
             logger.info(
-                f"Lock exclusivo de runtime adquirido com sucesso: {self.lock_path} (holder={self.holder_name})"
+                f"Lock exclusivo de runtime adquirido com sucesso: {self.lock_path} "
+                f"(holder={self.holder_name}, status=RUNNING)"
             )
 
     def retain(self, reason: str = "") -> None:
         """
-        Retém explicitamente o lock no kernel do SO durante shutdown incompleto.
+        Retém explicitamente o lock no kernel do SO durante shutdown incompleto e grava estado DIRTY.
 
         Registra o objeto e seu descritor de arquivo em âncoras globais de módulo,
         impedindo a coleta de lixo pelo Garbage Collector e marcando o lock
@@ -191,8 +292,14 @@ class OperationalRuntimeLock:
             if self._file_obj not in _RETAINED_FILE_HANDLES:
                 _RETAINED_FILE_HANDLES.append(self._file_obj)
 
+            # Persiste estado DIRTY no arquivo de lock
+            try:
+                self._persist_state(RuntimeState.DIRTY, reason=reason or "writers operacionais ativos")
+            except Exception as e_dirty:
+                logger.critical("Falha ao gravar estado DIRTY no lock: %s", e_dirty)
+
             logger.critical(
-                "Lock operacional RETIDO no SO por motivo de segurança (shutdown incompleto): "
+                "Lock operacional RETIDO no SO por motivo de segurança (shutdown incompleto/DIRTY): "
                 "%s (motivo: %s)",
                 self.lock_path,
                 reason or "writers operacionais ativos",
@@ -200,16 +307,16 @@ class OperationalRuntimeLock:
 
     def release(self) -> None:
         """
-        Libera explicitamente o lock e fecha o descritor de arquivo.
+        Libera explicitamente o lock, gravando estado CLEAN antes de destravar o descritor de arquivo.
         Operação estritamente idempotente e segura contra chamadas repetidas.
         O arquivo no disco é preservado para evitar condições de corrida de handle/inodo.
-        Recusa liberação caso o lock tenha sido marcado como retido.
+        Recusa liberação caso o lock tenha sido marcado como retido (DIRTY).
         """
         with self._thread_lock:
             if getattr(self, "_is_retained", False):
                 logger.warning(
                     "Tentativa de release ignorada: lock %s está explicitamente "
-                    "retido devido a shutdown incompleto com writers operacionais.",
+                    "retido devido a shutdown incompleto com writers operacionais (DIRTY).",
                     self.lock_path,
                 )
                 return
@@ -218,6 +325,13 @@ class OperationalRuntimeLock:
                 return
 
             f = self._file_obj
+
+            # Persiste estado CLEAN antes de destravar no SO
+            try:
+                self._persist_state(RuntimeState.CLEAN)
+            except Exception as clean_err:
+                logger.error("Erro ao persistir estado CLEAN durante release: %s", clean_err)
+
             try:
                 if self._system == "Windows":
                     import msvcrt
@@ -240,15 +354,146 @@ class OperationalRuntimeLock:
                 self._file_obj = None
                 self._is_locked = False
 
-            logger.info(f"Lock exclusivo de runtime liberado com sucesso: {self.lock_path}")
+            logger.info(f"Lock exclusivo de runtime liberado com sucesso: {self.lock_path} (status=CLEAN)")
+
+    @classmethod
+    def read_persisted_state(cls, lock_path: Union[Path, str]) -> Dict[str, Any]:
+        """
+        Inspeciona o estado persistido do lock de forma defensiva e não-destrutiva.
+
+        Classificações:
+        - CLEAN: Arquivo gravado com CLEAN e destravado.
+        - DIRTY: Arquivo gravado com DIRTY (shutdown incompleto).
+        - RUNNING: Arquivo gravado com RUNNING E trava física ativamente detida no kernel.
+        - UNKNOWN: Arquivo ausente, vazio, JSON truncado/inválido ou status RUNNING sem trava física (crash anterior).
+        """
+        path = Path(lock_path).expanduser().resolve()
+        if not path.exists() or path.stat().st_size == 0:
+            return {
+                "status": RuntimeState.UNKNOWN,
+                "raw_status": None,
+                "reason": "missing_or_empty_lock_file",
+                "lock_path": str(path),
+            }
+
+        try:
+            with open(path, "rb") as f:
+                f.seek(1)
+                content = f.read()
+                try:
+                    data = json.loads(content.decode("utf-8", errors="strict"))
+                except Exception:
+                    # Fallback para formato legado sem prefixo de byte 0
+                    f.seek(0)
+                    content = f.read()
+                    data = json.loads(content.decode("utf-8", errors="strict"))
+            if not isinstance(data, dict):
+                raise ValueError("Payload do lock não é um objeto JSON válido")
+        except Exception as json_err:
+            return {
+                "status": RuntimeState.UNKNOWN,
+                "raw_status": None,
+                "reason": f"invalid_or_truncated_json: {json_err}",
+                "lock_path": str(path),
+            }
+
+        raw_status = data.get("status")
+        if raw_status == RuntimeState.CLEAN.value:
+            return {
+                "status": RuntimeState.CLEAN,
+                "raw_status": raw_status,
+                "metadata": data,
+                "lock_path": str(path),
+            }
+        elif raw_status == RuntimeState.DIRTY.value:
+            return {
+                "status": RuntimeState.DIRTY,
+                "raw_status": raw_status,
+                "reason": data.get("reason", "dirty_shutdown"),
+                "metadata": data,
+                "lock_path": str(path),
+            }
+        elif raw_status == RuntimeState.RUNNING.value:
+            # Verifica se a trava física do SO está realmente ativa
+            system = platform.system()
+            is_physically_locked = False
+            try:
+                test_f = open(path, "r+b")
+                try:
+                    if system == "Windows":
+                        import msvcrt
+                        test_f.seek(0)
+                        try:
+                            msvcrt.locking(test_f.fileno(), msvcrt.LK_NBLCK, 1)
+                            # Conseguiu a trava -> significa que estava destravado (crash anterior!)
+                            msvcrt.locking(test_f.fileno(), msvcrt.LK_UNLCK, 1)
+                            is_physically_locked = False
+                        except OSError:
+                            is_physically_locked = True
+                    else:
+                        import fcntl
+                        try:
+                            fcntl.flock(test_f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            fcntl.flock(test_f.fileno(), fcntl.LOCK_UN)
+                            is_physically_locked = False
+                        except OSError:
+                            is_physically_locked = True
+                finally:
+                    test_f.close()
+            except Exception:
+                is_physically_locked = True
+
+            if is_physically_locked:
+                return {
+                    "status": RuntimeState.RUNNING,
+                    "raw_status": raw_status,
+                    "metadata": data,
+                    "lock_path": str(path),
+                }
+            else:
+                # O status dizia RUNNING, mas ninguém detém a trava no kernel => Crash detectado!
+                return {
+                    "status": RuntimeState.UNKNOWN,
+                    "raw_status": raw_status,
+                    "reason": "crash_detected_running_status_without_kernel_lock",
+                    "metadata": data,
+                    "lock_path": str(path),
+                }
+        else:
+            return {
+                "status": RuntimeState.UNKNOWN,
+                "raw_status": raw_status,
+                "reason": f"unrecognized_status: {raw_status}",
+                "metadata": data,
+                "lock_path": str(path),
+            }
 
     def _read_existing_metadata_safe(self, f) -> Optional[Dict[str, Any]]:
-        """Lê metadados existentes no arquivo aberto para enriquecer mensagens de erro."""
+        """
+        Lê metadados existentes no arquivo aberto para enriquecer mensagens de erro.
+        Inicia a leitura a partir do byte 1 para evitar conflito com a trava do byte 0 no Windows.
+        Mantém fallback para o byte 0 para compatibilidade com formato legado.
+        Não efetua escrita e trata exceções defensivamente.
+        """
         try:
-            f.seek(0)
-            content = f.read(1024)
+            # Tenta a partir do byte 1 (padrão G4-D B3-A: byte 0 reservado para o lock do SO)
+            f.seek(1)
+            content = f.read(4096)
             if content:
-                return json.loads(content.decode("utf-8", errors="ignore"))
+                try:
+                    data = json.loads(content.decode("utf-8", errors="strict"))
+                    if isinstance(data, dict):
+                        return data
+                except Exception:
+                    pass
+
+            # Fallback para offset 0 (formato legado sem byte 0 reservado)
+            f.seek(0)
+            content = f.read(4096)
+            if content:
+                data = json.loads(content.decode("utf-8", errors="strict"))
+                if isinstance(data, dict):
+                    return data
         except Exception:
             pass
         return None
