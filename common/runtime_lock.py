@@ -23,7 +23,8 @@ import time
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Dict, Any, Union, List
+from typing import Optional, Dict, Any, Union, List, Tuple
+import uuid
 
 logger = logging.getLogger("common.runtime_lock")
 
@@ -190,6 +191,15 @@ class OperationalRuntimeLock:
 
             # Garante que o arquivo existe antes de abrir em r+b
             if not self.lock_path.exists():
+                if require_previous_state is not None:
+                    expected_val = (
+                        require_previous_state.value
+                        if isinstance(require_previous_state, RuntimeState)
+                        else str(require_previous_state)
+                    )
+                    raise RuntimeLockError(
+                        f"Transição proibida: Arquivo de lock não existe em {self.lock_path} (exigia estritamente estado '{expected_val}')."
+                    )
                 try:
                     open(self.lock_path, "a+b").close()
                 except Exception as e:
@@ -581,3 +591,345 @@ class OperationalRuntimeLock:
             self.release()
         except Exception:
             pass
+
+
+MANIFEST_FILENAME = ".runtime_initialized.manifest"
+
+
+def write_runtime_manifest(
+    manifest_path: Union[Path, str],
+    env_uuid: Optional[str] = None,
+    holder_name: str = "bootstrap_runtime_lock",
+) -> Dict[str, Any]:
+    """
+    Grava o manifesto permanente de inicialização do ambiente (Gate G4-D B3-B2-A).
+    Aplica flush() e os.fsync().
+    Não armazena segredos, tokens ou credenciais.
+    """
+    p = Path(manifest_path).expanduser().resolve()
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    uid = str(env_uuid or uuid.uuid4())
+    payload = {
+        "manifest_version": "1.0",
+        "environment_uuid": uid,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "host": platform.node(),
+        "holder": holder_name,
+        "data_dir_name": p.parent.name,
+    }
+
+    raw = json.dumps(payload, indent=2).encode("utf-8")
+    with open(p, "wb") as f:
+        f.write(raw)
+        f.flush()
+        os.fsync(f.fileno())
+
+    return payload
+
+
+def read_runtime_manifest(manifest_path: Union[Path, str]) -> Optional[Dict[str, Any]]:
+    """
+    Lê defensivamente o manifesto de inicialização.
+    Retorna None se inexistente, vazio ou corrompido.
+    """
+    p = Path(manifest_path).expanduser().resolve()
+    if not p.exists() or p.stat().st_size == 0:
+        return None
+    try:
+        with open(p, "rb") as f:
+            data = json.loads(f.read().decode("utf-8", errors="strict"))
+        if isinstance(data, dict) and data.get("environment_uuid"):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def verify_environment_anti_bypass(
+    data_dir: Union[Path, str],
+    lock_path: Optional[Union[Path, str]] = None,
+) -> Tuple[bool, str]:
+    """
+    Valida a identificação do ambiente contra bypass de estados anômalos (Gate G4-D B3-B2-A).
+
+    Regras:
+    1. Lock ausente com dados existentes => Bloqueado.
+    2. Manifesto ausente em ambiente com dados ou com lock => Bloqueado.
+    3. Manifesto ausente e dados ausentes e lock ausente => Instalação nova não-inicializada => Bloqueado (exige bootstrap).
+    4. Manifesto existente com lock ausente => Bloqueado.
+    5. Manifesto corrompido ou sem UUID => Bloqueado.
+    """
+    d_dir = Path(data_dir).expanduser().resolve()
+    l_path = Path(lock_path).expanduser().resolve() if lock_path else (d_dir / ".operational_runtime.lock")
+    m_path = d_dir / MANIFEST_FILENAME
+    sqlite_file = d_dir / "trading_bot.db"
+    jsonl_file = d_dir / "eventos_fluxo.jsonl"
+
+    has_sqlite_data = sqlite_file.exists() and sqlite_file.stat().st_size > 0
+    has_jsonl_data = jsonl_file.exists() and jsonl_file.stat().st_size > 0
+    has_operational_data = has_sqlite_data or has_jsonl_data
+
+    has_manifest_file = m_path.exists() and m_path.stat().st_size > 0
+    has_lock_file = l_path.exists() and l_path.stat().st_size > 0
+
+    # Caso 1: Lock ausente com dados existentes
+    if not has_lock_file and has_operational_data:
+        return (
+            False,
+            f"Anti-Bypass: Lock operacional ausente ({l_path.name}) em ambiente com dados operacionais existentes. "
+            "Possível tentativa de contornar estado DIRTY/UNKNOWN/RUNNING via deleção do arquivo de lock.",
+        )
+
+    # Caso 2: Manifesto ausente em ambiente com dados existentes
+    if not has_manifest_file and has_operational_data:
+        return (
+            False,
+            f"Anti-Bypass: Manifesto de inicialização ausente ({MANIFEST_FILENAME}) em ambiente com dados operacionais. "
+            "Exige execução prévia de bootstrap controlado (scripts/maintenance/bootstrap_runtime_lock.py --confirm-bootstrap).",
+        )
+
+    # Caso 3: Manifesto presente mas lock ausente
+    if has_manifest_file and not has_lock_file:
+        return (
+            False,
+            f"Anti-Bypass: Lock operacional ausente ({l_path.name}) em ambiente previamente inicializado "
+            f"(manifesto {MANIFEST_FILENAME} presente).",
+        )
+
+    # Caso 4: Lock presente mas manifesto ausente
+    if has_lock_file and not has_manifest_file:
+        return (
+            False,
+            f"Anti-Bypass: Manifesto de inicialização ausente ({MANIFEST_FILENAME}) em ambiente com lock existente. "
+            "Possível exclusão acidental ou adulteração do manifesto.",
+        )
+
+    # Caso 5: Instalação totalmente nova (nada existe)
+    if not has_lock_file and not has_manifest_file and not has_operational_data:
+        return (
+            False,
+            "Ambiente não inicializado (instalação nova). "
+            "Exige execução prévia de bootstrap controlado (scripts/maintenance/bootstrap_runtime_lock.py --confirm-bootstrap).",
+        )
+
+    # Caso 6: Ambos manifesto e lock existem -> validar integridade do manifesto
+    manifest_data = read_runtime_manifest(m_path)
+    if not manifest_data:
+        return (
+            False,
+            f"Anti-Bypass: Manifesto de inicialização ({MANIFEST_FILENAME}) corrompido, vazio ou sem UUID válido.",
+        )
+
+    return True, "Anti-Bypass validado com sucesso (manifesto e lock presentes e íntegros)."
+
+
+def verify_startup_preflight(
+    data_dir: Union[Path, str],
+    lock_path: Optional[Union[Path, str]] = None,
+    sqlite_path: Optional[Union[Path, str]] = None,
+    jsonl_path: Optional[Union[Path, str]] = None,
+    archive_dir: Optional[Union[Path, str]] = None,
+) -> Tuple[bool, str]:
+    """
+    Executa a cadeia completa de preflight de segurança e integridade para o startup normal (Gate G4-D B3-B2-A).
+
+    Ordem de Verificação:
+    1. Anti-Bypass de ambiente e manifesto.
+    2. Inspeção read-only do estado do lock: exige estritamente CLEAN.
+       Bloqueia DIRTY, UNKNOWN, RUNNING residual, lock vazio ou corrompido.
+    3. Integridade estrutural e referencial do SQLite (verify_sqlite_integrity).
+    4. Integridade da terminação e última linha do JSONL ativo (verify_jsonl_integrity).
+    5. Integridade do diretório de archive e ausência de .tmp (verify_archive_integrity).
+
+    Retorna: (is_ok, reason_message)
+    """
+    d_dir = Path(data_dir).expanduser().resolve()
+    l_path = Path(lock_path).expanduser().resolve() if lock_path else (d_dir / ".operational_runtime.lock")
+    s_path = Path(sqlite_path).expanduser().resolve() if sqlite_path else (d_dir / "trading_bot.db")
+    j_path = Path(jsonl_path).expanduser().resolve() if jsonl_path else (d_dir / "eventos_fluxo.jsonl")
+    a_dir = Path(archive_dir).expanduser().resolve() if archive_dir else (d_dir / "archive")
+
+    # 1. Anti-Bypass
+    ab_ok, ab_msg = verify_environment_anti_bypass(d_dir, l_path)
+    if not ab_ok:
+        return False, ab_msg
+
+    # 2. Inspeção read-only do estado do lock
+    state_info = OperationalRuntimeLock.read_persisted_state(l_path)
+    current_status = state_info.get("status")
+
+    if current_status != RuntimeState.CLEAN:
+        raw = state_info.get("raw_status")
+        reason = state_info.get("reason", "status_invalido")
+        return (
+            False,
+            f"Startup bloqueado: estado operacional anterior é '{current_status}' "
+            f"(raw={raw}, motivo={reason}). O startup normal exige estritamente estado anterior CLEAN. "
+            "Evidências no disco preservadas intactas sem modificação.",
+        )
+
+    # 3. Integridade read-only SQLite, JSONL e Archive
+    try:
+        from events.fallback_reconciler import (
+            verify_sqlite_integrity,
+            verify_jsonl_integrity,
+            verify_archive_integrity,
+        )
+    except ImportError as ie:
+        return False, f"Falha ao importar verificadores de integridade: {ie}"
+
+    sq_ok, sq_msg = verify_sqlite_integrity(s_path)
+    if not sq_ok:
+        return False, f"Falha de integridade SQLite: {sq_msg}"
+
+    jl_ok, jl_msg = verify_jsonl_integrity(j_path)
+    if not jl_ok:
+        return False, f"Falha de integridade JSONL: {jl_msg}"
+
+    arch_ok, arch_msg = verify_archive_integrity(a_dir)
+    if not arch_ok:
+        return False, f"Falha de integridade Archive: {arch_msg}"
+
+    return True, "Preflight de startup 100% aprovado (estado anterior CLEAN e dados íntegros)."
+
+
+def bootstrap_runtime_environment(
+    data_dir: Union[Path, str],
+    lock_path: Optional[Union[Path, str]] = None,
+    sqlite_path: Optional[Union[Path, str]] = None,
+    jsonl_path: Optional[Union[Path, str]] = None,
+    archive_dir: Optional[Union[Path, str]] = None,
+    holder_name: str = "bootstrap_runtime_lock",
+) -> Dict[str, Any]:
+    """
+    Executa o procedimento controlado e único de bootstrap do ambiente operacional (Gate G4-D B3-B2-A).
+
+    Contrato de Segurança:
+    1. Operação estritamente offline: exige obtenção de lock físico exclusivo do SO.
+    2. Execução única: bloqueia se o manifesto já existir e o lock estiver inicializado.
+    3. Integridade read-only: dados SQLite, JSONL e Archive existentes devem estar 100% íntegros.
+    4. Nenhuma escrita em SQLite, JSONL ou fallback_events.
+    5. Grava .runtime_initialized.manifest com UUID, timestamp UTC e sem segredos/credenciais (com fsync).
+    6. Persiste lock operacional com status CLEAN (com prefixo b'#' e fsync).
+    """
+    d_dir = Path(data_dir).expanduser().resolve()
+    l_path = Path(lock_path).expanduser().resolve() if lock_path else (d_dir / ".operational_runtime.lock")
+    m_path = d_dir / MANIFEST_FILENAME
+    s_path = Path(sqlite_path).expanduser().resolve() if sqlite_path else (d_dir / "trading_bot.db")
+    j_path = Path(jsonl_path).expanduser().resolve() if jsonl_path else (d_dir / "eventos_fluxo.jsonl")
+    a_dir = Path(archive_dir).expanduser().resolve() if archive_dir else (d_dir / "archive")
+
+    # 1. Anti-repetição: verificar se o ambiente já foi inicializado
+    if m_path.exists() and m_path.stat().st_size > 0:
+        manifest_data = read_runtime_manifest(m_path)
+        if manifest_data:
+            if l_path.exists() and l_path.stat().st_size > 0:
+                lock_state = OperationalRuntimeLock.read_persisted_state(l_path)
+                if lock_state.get("status") in (RuntimeState.CLEAN, RuntimeState.RUNNING, RuntimeState.DIRTY):
+                    raise RuntimeLockError(
+                        "Bootstrap repetido bloqueado: o ambiente já foi previamente inicializado com sucesso "
+                        f"(UUID={manifest_data.get('environment_uuid')}, status={lock_state.get('status')})."
+                    )
+
+    # 2. Verificação de integridade read-only de dados existentes
+    from events.fallback_reconciler import (
+        verify_sqlite_integrity,
+        verify_jsonl_integrity,
+        verify_archive_integrity,
+    )
+
+    sq_ok, sq_msg = verify_sqlite_integrity(s_path)
+    if not sq_ok:
+        raise RuntimeLockError(f"Bootstrap abortado: integridade SQLite comprometida: {sq_msg}")
+
+    jl_ok, jl_msg = verify_jsonl_integrity(j_path)
+    if not jl_ok:
+        raise RuntimeLockError(f"Bootstrap abortado: integridade JSONL comprometida: {jl_msg}")
+
+    arch_ok, arch_msg = verify_archive_integrity(a_dir)
+    if not arch_ok:
+        raise RuntimeLockError(f"Bootstrap abortado: integridade Archive comprometida: {arch_msg}")
+
+    # 3. Exclusividade offline via kernel lock
+    d_dir.mkdir(parents=True, exist_ok=True)
+    if not l_path.exists():
+        open(l_path, "a+b").close()
+
+    try:
+        f = open(l_path, "r+b")
+    except Exception as open_err:
+        raise RuntimeLockError(f"Não foi possível abrir arquivo de lock em {l_path}: {open_err}") from open_err
+
+    system = platform.system()
+    acquired = False
+    try:
+        if system == "Windows":
+            import msvcrt
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            acquired = True
+        else:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+    except (BlockingIOError, OSError) as lock_exc:
+        try:
+            f.close()
+        except Exception:
+            pass
+        raise RuntimeLockError(
+            f"Bootstrap bloqueado por processo concorrente: não foi possível adquirir exclusividade em {l_path} ({lock_exc})."
+        ) from lock_exc
+
+    try:
+        # 4. Grava o manifesto permanente com fsync
+        manifest_meta = write_runtime_manifest(m_path, holder_name=holder_name)
+
+        # 5. Persiste estado CLEAN no lock operacional com fsync
+        lock_meta = {
+            "status": RuntimeState.CLEAN.value,
+            "holder": holder_name,
+            "pid": os.getpid(),
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "host": platform.node(),
+            "reason": "bootstrap_initialization",
+            "environment_uuid": manifest_meta["environment_uuid"],
+        }
+        raw_lock_bytes = json.dumps(lock_meta, indent=2).encode("utf-8")
+        payload = b"#" + raw_lock_bytes
+        f.seek(0)
+        f.write(payload)
+        f.truncate()
+        f.flush()
+        os.fsync(f.fileno())
+
+    finally:
+        # 6. Libera o lock no SO e fecha o descritor
+        try:
+            if system == "Windows":
+                import msvcrt
+                f.seek(0)
+                try:
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                except Exception:
+                    pass
+            else:
+                import fcntl
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+        finally:
+            try:
+                f.close()
+            except Exception:
+                pass
+
+    return {
+        "success": True,
+        "environment_uuid": manifest_meta["environment_uuid"],
+        "lock_path": str(l_path),
+        "manifest_path": str(m_path),
+        "status": RuntimeState.CLEAN.value,
+    }

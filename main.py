@@ -15,6 +15,8 @@ import sys
 import os
 import io
 import time
+from pathlib import Path
+from typing import Optional
 
 # [THROTTLE] Fonte única de verdade: main.py inicializa o singleton ANTES
 # de qualquer import de ai_runner/analyzer_qwen (que apenas consomem).
@@ -257,12 +259,12 @@ def check_operational_writers_alive(bot: Any) -> tuple[bool, list[str]]:
     return len(active_writers) > 0, active_writers
 
 
-async def main() -> int:
+async def main(data_dir: Optional[Path] = None, lock_path: Optional[Path] = None) -> int:
     """
     Entry point principal com cleanup garantido.
 
     Returns:
-        0 para sucesso, 1 para erro
+        0 para sucesso, 1 para erro, 2 para bloqueio fail-closed de runtime/integridade
     """
     # Usa LOG_LEVEL definido no config, se existir
     log_level_name = getattr(config, "LOG_LEVEL", "INFO").upper()
@@ -366,16 +368,39 @@ async def main() -> int:
 
     bot = None  # ✅ Inicializa fora do try
 
-    # Gate G4-D B2/B3-A: Exclusividade cooperativa e sinalização de estado do runtime operacional
-    from common.runtime_lock import OperationalRuntimeLock, RuntimeLockError, RuntimeState
+    # Gate G4-D B2/B3-A / Gate G4-D B3-B2-A: Startup Fail-Closed, Anti-Bypass e Integridade Prévia
+    from common.runtime_lock import (
+        OperationalRuntimeLock,
+        RuntimeLockError,
+        RuntimeState,
+        verify_startup_preflight,
+    )
+
+    data_dir_to_use = Path(data_dir) if data_dir is not None else Path("dados")
+    lock_path_to_use = Path(lock_path) if lock_path is not None else (data_dir_to_use / ".operational_runtime.lock")
+
+    preflight_ok, preflight_reason = verify_startup_preflight(
+        data_dir=data_dir_to_use,
+        lock_path=lock_path_to_use,
+    )
+    if not preflight_ok:
+        logger.critical(
+            "❌ Startup bloqueado fail-closed por verificação de segurança/integridade: %s",
+            preflight_reason,
+        )
+        return 2
+
     runtime_lock = OperationalRuntimeLock(
-        lock_path=Path("dados/.operational_runtime.lock"),
+        lock_path=lock_path_to_use,
         holder_name="market_bot",
     )
     try:
-        runtime_lock.acquire(timeout=0.0)
+        runtime_lock.acquire(timeout=0.0, require_previous_state=RuntimeState.CLEAN)
     except RuntimeLockError as e_lock:
-        logger.critical("❌ Falha de exclusividade de runtime: %s", e_lock)
+        logger.critical(
+            "❌ Falha de exclusividade ou validação de estado anterior de runtime: %s",
+            e_lock,
+        )
         return 2
 
     try:
