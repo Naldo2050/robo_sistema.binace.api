@@ -54,6 +54,12 @@ from monitoring.time_manager import TimeManager
 # 🔹 DELTA VALIDATOR (FIX #3)
 from data_processing.delta_validator import DeltaValidator
 
+# 🔹 IDENTITY CONTRACT (H1-B3-D)
+from common.identity_contract import (
+    IDENTITY_VERSION_EXHAUSTION,
+    exhaustion_v2_event_id,
+)
+
 # 🔹 VOLUME PROFILE DINÂMICO
 from market_analysis.dynamic_volume_profile import DynamicVolumeProfile
 
@@ -1535,6 +1541,23 @@ def create_exhaustion_event(
         window_duration_ms = int(max(0, window_close_ms - window_open_ms))
         window_id = str(window_close_ms)
 
+        # H1-B3-D: delta efetivo (fonte única para payload e identidade v2)
+        delta_btc = float(buy_btc - sell_btc)
+        if not math.isfinite(delta_btc):
+            logging.error(
+                f"Exaustão: delta não finito — evento rejeitado sem identidade | "
+                f"symbol={symbol} window=[{window_open_ms},{window_close_ms}] "
+                f"buy_btc={buy_btc} sell_btc={sell_btc} delta={delta_btc}"
+            )
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "is_signal": False,
+                "tipo_evento": "Erro",
+                "resultado_da_batalha": "Erro",
+                "descricao": "Delta não finito (rejeitado antes de compor identidade)",
+                "ativo": symbol,
+            }
+
         # VPD Dinâmico (com fallback)
         vp_fields: Dict[str, Any] = {}
         try:
@@ -1625,6 +1648,9 @@ def create_exhaustion_event(
             "volume_compra": buy_btc,
             "volume_venda": sell_btc,
 
+            # H1-B3-D: delta efetivo (mesmo valor usado na identidade v2)
+            "delta": delta_btc,
+
             # OHLC
             "preco_abertura": ohlc["Open"],
             "preco_maxima": ohlc["High"],
@@ -1678,13 +1704,13 @@ def create_exhaustion_event(
         # Timestamps coerentes
         _attach_time_index(event, tm, event_ms)
 
-        # event_id (novo formato)
-        event["event_id"] = _mk_event_id(
-            symbol,
-            "Exaustão",
+        # event_id v2 (H1-B3-D: delta efetivo + prefixo de versão)
+        event["event_id"] = exhaustion_v2_event_id(
             window_open_ms,
-            0.0,
+            symbol,
+            delta_btc,
         )
+        event["identity_version"] = IDENTITY_VERSION_EXHAUSTION
 
         # Contagens
         event["trades_count"] = int(prices.size)
