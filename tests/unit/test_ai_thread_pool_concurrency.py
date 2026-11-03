@@ -37,6 +37,29 @@ def always_allow_throttler(monkeypatch):
     )
 
 
+
+
+@pytest.fixture(autouse=True)
+def isolate_export_signals(monkeypatch, tmp_path):
+    r"""
+    Garante que nenhum worker de IA gerado durante os testes de concorrência
+    possa alcançar o arquivo operacional C:\mt5_signals\signals.csv.
+
+    Aplica mock em:
+    - market_orchestrator.ai.ai_runner.export_signal_to_csv (namespace usado pelo worker)
+    - trading.export_signals.export_signal_to_csv
+
+    Redireciona variáveis de ambiente de destino como salvaguarda adicional.
+    """
+    mock_export = MagicMock(name="mock_export_signal_to_csv")
+    monkeypatch.setattr("market_orchestrator.ai.ai_runner.export_signal_to_csv", mock_export)
+    monkeypatch.setattr("trading.export_signals.export_signal_to_csv", mock_export)
+    sandbox_csv = tmp_path / "sandbox_ai_signals.csv"
+    monkeypatch.setenv("MT5_SIGNALS_CSV_PATH", str(sandbox_csv))
+    monkeypatch.delenv("MT5_SIGNALS_DIR", raising=False)
+    yield mock_export
+
+
 class DummyRateLimiter:
     def acquire(self):
         pass
@@ -78,10 +101,10 @@ class FakeBot:
 
 
 @pytest.fixture
-def fake_bot():
+def fake_bot(isolate_export_signals):
     bot = FakeBot(max_ai_threads=3)
     yield bot
-    bot._wait_for_ai_threads(timeout_per_thread=0.5)
+    bot._wait_for_ai_threads(timeout_per_thread=2.0)
 
 
 @pytest.fixture
@@ -481,3 +504,16 @@ def test_event_bus_not_blocked_on_ai_saturation(fake_bot, fake_event_data):
     ai_release.set()
     fake_bot._wait_for_ai_threads(timeout_per_thread=1.0)
     bus._stop = True
+
+def test_export_signals_intercepted_without_disk_write(fake_bot, fake_event_data, isolate_export_signals):
+    r"""
+    Comprova que a execução de run_ai_analysis_threaded invoca o mock de exportação
+    sem efetuar qualquer escrita física em C:\mt5_signals\signals.csv.
+    """
+    run_ai_analysis_threaded(fake_bot, fake_event_data)
+    fake_bot._wait_for_ai_threads(timeout_per_thread=1.0)
+    assert isolate_export_signals.call_count >= 1
+    call_args = isolate_export_signals.call_args[0]
+    assert len(call_args) >= 1
+    assert getattr(call_args[0], "symbol", None) == "Bitcoin"
+    assert getattr(call_args[0], "event_type", None) == "ABSORCAO"

@@ -22,11 +22,41 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import config
+from events import event_saver
 from flow_analyzer.effort_response_transport import (
     EffortResponseSnapshotDTO,
     ShadowAsyncTransport,
 )
 from market_orchestrator import EnhancedMarketBot
+
+
+@pytest.fixture(autouse=True)
+def isolate_bot_side_effects(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(EnhancedMarketBot, "_initialize_ai_async", lambda self: None)
+    monkeypatch.setattr(EnhancedMarketBot, "_init_shadow_runtime", lambda self: None)
+    monkeypatch.setattr("market_orchestrator.market_orchestrator.HealthMonitor", MagicMock)
+    monkeypatch.setattr("market_orchestrator.market_orchestrator.FeatureStore", MagicMock)
+    monkeypatch.setattr(event_saver, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(event_saver, "HAS_CLOCK_SYNC", False)
+    monkeypatch.setattr(
+        event_saver.config,
+        "EVENT_SAVER_JSONL_ARCHIVE_DIR",
+        str(tmp_path / "archive"),
+        raising=False,
+    )
+
+    mock_store = MagicMock()
+    mock_store.save_batch.return_value = event_saver.BatchSaveResult(
+        total_received=1, persisted=1, rejected_pre_commit=0, commit_status="COMMITTED"
+    )
+    monkeypatch.setattr(event_saver, "EventStore", lambda: mock_store)
+    try:
+        import database.event_store
+        monkeypatch.setattr(database.event_store, "EventStore", lambda *args, **kwargs: mock_store)
+    except Exception:
+        pass
+    yield
 
 
 @pytest.fixture(autouse=True)

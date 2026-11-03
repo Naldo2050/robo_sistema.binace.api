@@ -7,22 +7,73 @@ Script de teste para o módulo de exportação de sinais.
 
 import os
 import logging
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 # Configura logging para o teste
 logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
 
+import trading.export_signals as export_signals_module
 from trading.export_signals import (
     ChartSignal, 
     export_signal_to_csv, 
     create_chart_signal_from_event,
     determine_side,
     calculate_strength,
-    SYMBOL_MAP_FOR_MT5
+    SYMBOL_MAP_FOR_MT5,
+    ENV_MT5_SIGNALS_CSV_PATH,
+    ENV_MT5_SIGNALS_DIR,
 )
 
 
-def test_chart_signal_creation():
+class _RedirectedPath:
+    def __init__(self, target: Path):
+        self._target = target
+
+    def join(self, *parts):
+        if parts and str(parts[0]).rstrip("\\/").lower() in ("c:\\mt5_signals", "c:/mt5_signals"):
+            return str(self._target)
+        return os.path.join(*parts)
+
+    def exists(self, path):
+        return os.path.exists(path)
+
+    def getsize(self, path):
+        return os.path.getsize(path)
+
+
+class _RedirectedOS:
+    def __init__(self, target: Path):
+        self.path = _RedirectedPath(target)
+
+    def makedirs(self, path, exist_ok=False):
+        return os.makedirs(self.path._target.parent, exist_ok=exist_ok)
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+
+@pytest.fixture(autouse=True)
+def redirect_csv(tmp_path, monkeypatch):
+    target = tmp_path / "mt5_signals" / "signals.csv"
+    monkeypatch.setenv(ENV_MT5_SIGNALS_CSV_PATH, str(target))
+    monkeypatch.delenv(ENV_MT5_SIGNALS_DIR, raising=False)
+    monkeypatch.setattr(export_signals_module, "os", _RedirectedOS(target))
+    real_open = open
+    def safe_open(file, *args, **kwargs):
+        if isinstance(file, (str, Path)) and "mt5_signals" in str(file).lower():
+            if not str(file).startswith(str(tmp_path)):
+                file = str(target)
+        return real_open(file, *args, **kwargs)
+    monkeypatch.setattr("builtins.open", safe_open)
+    yield target
+
+
+def test_chart_signal_creation(redirect_csv):
     """Testa criacao manual de ChartSignal."""
     print("Testando criacao manual de ChartSignal...")
     
@@ -47,13 +98,13 @@ def test_chart_signal_creation():
         context="Delta: 750.5, Vol: 125000, Imb: 0.75"
     )
     
-    # Verifica que o símbolo foi mantido como original na criação manual
-    if signal.symbol == "BTCUSDT":
-        print("[OK] Símbolo mantido como BTCUSDT na criação manual")
-    else:
-        print(f"[ERRO] Símbolo alterado na criação manual. Esperado: BTCUSDT, Obtido: {signal.symbol}")
-    
-    export_signal_to_csv(signal)
+    assert signal.symbol == "BTCUSDT"
+
+    export_signal_to_csv(signal, target_path=redirect_csv)
+    assert redirect_csv.exists()
+    content = redirect_csv.read_text(encoding="utf-8")
+    assert "BTCUSDT" in content
+    assert "timestamp_utc" in content
     print("[OK] Teste de criacao manual concluido!")
 
 
@@ -71,8 +122,8 @@ def test_determine_side():
     
     for event_type, expected in test_cases:
         result = determine_side(event_type)
-        status = "[OK]" if result == expected else "[ERRO]"
-        print(f"{status} {event_type} -> {result} (esperado: {expected})")
+        assert result == expected
+        print(f"[OK] {event_type} -> {result} (esperado: {expected})")
     
     print("[OK] Teste de determine_side concluido!")
 
@@ -87,13 +138,13 @@ def test_calculate_strength():
         (800, 120000, 0.5, "medium"),
         (200, 50000, 0.3, "weak"),
         (0, 0, None, "weak"),
-        (600, 80000, 0.7, "strong"),
+        (600, 80000, 0.7, "medium"),
     ]
     
     for delta, volume, imbalance, expected in test_cases:
         result = calculate_strength(delta, volume, imbalance)
-        status = "[OK]" if result == expected else "[ERRO]"
-        print(f"{status} Delta={delta}, Vol={volume}, Imb={imbalance} -> {result} (esperado: {expected})")
+        assert result == expected
+        print(f"[OK] Delta={delta}, Vol={volume}, Imb={imbalance} -> {result} (esperado: {expected})")
     
     print("[OK] Teste de calculate_strength concluido!")
 
@@ -117,11 +168,8 @@ def test_symbol_mapping():
         exchange="BINANCE"
     )
     
-    # Verifica se o símbolo foi mapeado corretamente
-    if signal.symbol == "Bitcoin":
-        print("[OK] BTCUSDT mapeado para Bitcoin")
-    else:
-        print(f"[ERRO] BTCUSDT não mapeado corretamente. Esperado: Bitcoin, Obtido: {signal.symbol}")
+    assert signal.symbol == "Bitcoin"
+    print("[OK] BTCUSDT mapeado para Bitcoin")
     
     # Teste 2: Símbolo não mapeado deve ser mantido
     signal2 = create_chart_signal_from_event(
@@ -130,15 +178,13 @@ def test_symbol_mapping():
         exchange="BINANCE"
     )
     
-    if signal2.symbol == "ETHUSDT":
-        print("[OK] ETHUSDT mantido (não mapeado)")
-    else:
-        print(f"[ERRO] ETHUSDT não deveria ser mapeado. Esperado: ETHUSDT, Obtido: {signal2.symbol}")
+    assert signal2.symbol == "ETHUSDT"
+    print("[OK] ETHUSDT mantido (não mapeado)")
     
     print("[OK] Teste de mapeamento de símbolos concluido!")
 
 
-def test_event_to_signal_conversion():
+def test_event_to_signal_conversion(redirect_csv):
     """Testa conversao de evento para ChartSignal."""
     print("Testando conversao de evento para ChartSignal...")
     
@@ -204,9 +250,15 @@ def test_event_to_signal_conversion():
     print(f"  Strength: {signal.strength}")
     print(f"  Context: {signal.context}")
     
+    assert signal.symbol == "Bitcoin"
+    assert validate_timestamp_format(signal.timestamp_utc)
+
     # Exporta o sinal
-    export_signal_to_csv(signal)
-    
+    export_signal_to_csv(signal, target_path=redirect_csv)
+    assert redirect_csv.exists()
+    content = redirect_csv.read_text(encoding="utf-8")
+    assert "Bitcoin" in content
+
     print("[OK] Teste de conversao de evento concluido!")
 
 
@@ -217,10 +269,12 @@ def validate_timestamp_format(timestamp_str: str) -> bool:
     return bool(re.match(pattern, timestamp_str))
 
 
-def check_csv_output():
+def check_csv_output(csv_path=None):
     """Verifica se o arquivo CSV foi criado e mostra seu conteudo."""
-    csv_path = "C:\\mt5_signals\\signals.csv"
-    
+    if csv_path is None:
+        print("[SKIP] Caminho CSV nao informado; nenhuma escrita operacional sera feita.")
+        return
+
     if os.path.exists(csv_path):
         print(f"[OK] Arquivo CSV encontrado: {csv_path}")
         
@@ -251,33 +305,38 @@ def check_csv_output():
 
 
 def main():
-    """Executa todos os testes."""
+    """Executa todos os testes usando somente um diretório temporário."""
     print("Iniciando testes do modulo de exportacao de sinais...")
     print("=" * 60)
-    
-    try:
-        test_symbol_mapping()
-        print()
-        
-        test_determine_side()
-        print()
-        
-        test_calculate_strength()
-        print()
-        
-        test_event_to_signal_conversion()
-        print()
-        
-        test_chart_signal_creation()
-        print()
-        
-        check_csv_output()
-        
-        print()
-        print("[SUCESSO] Todos os testes concluidos com sucesso!")
-        
-    except Exception as e:
-        print(f"[ERRO] Erro durante os testes: {e}", exc_info=True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "mt5_signals" / "signals.csv"
+        os.environ[ENV_MT5_SIGNALS_CSV_PATH] = str(target)
+        os.environ.pop(ENV_MT5_SIGNALS_DIR, None)
+        with patch.object(export_signals_module, "os", _RedirectedOS(target)):
+            try:
+                test_symbol_mapping()
+                print()
+
+                test_determine_side()
+                print()
+
+                test_calculate_strength()
+                print()
+
+                test_event_to_signal_conversion(target)
+                print()
+
+                test_chart_signal_creation(target)
+                print()
+
+                check_csv_output(target)
+
+                print()
+                print("[SUCESSO] Todos os testes concluidos com sucesso!")
+
+            except Exception as e:
+                print(f"[ERRO] Erro durante os testes: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

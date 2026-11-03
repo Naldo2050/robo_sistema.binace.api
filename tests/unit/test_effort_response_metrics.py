@@ -286,7 +286,9 @@ def test_taxonomy_effort_fields():
     comp = tx.FIELDS["effort.response"]
     assert comp.is_composite is True
     assert comp.calibration.value == "not_applicable"
-    assert len(tx.FIELDS) == 103 + 19
+    unknown_count = sum(1 for f in tx.FIELDS.values() if f.family is EvidenceFamily.UNKNOWN)
+    assert unknown_count == 16
+    assert len(tx.FIELDS) == 103 + 19 + 16  # 103 base + 19 derivatives + 16 unknown = 138
 
 
 def test_effort_shares_ancestry_with_executed_flow():

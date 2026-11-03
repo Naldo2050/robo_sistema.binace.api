@@ -321,7 +321,9 @@ def test_event_saver_jsonl_non_analysis_trigger_also_sanitized(tmp_path):
     assert data["zero"] == 0.0
 
 
-def test_event_saver_fallback_json_sanitized(tmp_path, non_finite_event):
+def test_event_saver_fallback_json_sanitized(tmp_path, monkeypatch, non_finite_event):
+    monkeypatch.chdir(tmp_path)
+
     from events.event_saver import EventSaver
 
     saver = EventSaver.__new__(EventSaver)
@@ -329,14 +331,14 @@ def test_event_saver_fallback_json_sanitized(tmp_path, non_finite_event):
 
     saver._save_fallback(non_finite_event, "json")
 
-    stamp = datetime.now().strftime("%Y%m%d")
-    fallback_file = Path("fallback_events") / f"eventos_{stamp}.json"
-    try:
-        data = _strict_json_loads(fallback_file.read_text(encoding="utf-8"))
-        assert data["ml_features"]["cross_asset"]["us2y_yield"] is None
-        assert data["nested"]["neg_inf"] is None
-    finally:
-        fallback_file.unlink(missing_ok=True)
+    fallback_files = list((tmp_path / "fallback_events").glob("eventos_*.json"))
+    assert len(fallback_files) == 1
+    fallback_file = fallback_files[0]
+    assert fallback_file.resolve().is_relative_to(tmp_path.resolve())
+
+    data = _strict_json_loads(fallback_file.read_text(encoding="utf-8"))
+    assert data["ml_features"]["cross_asset"]["us2y_yield"] is None
+    assert data["nested"]["neg_inf"] is None
 
 
 # ============================================================

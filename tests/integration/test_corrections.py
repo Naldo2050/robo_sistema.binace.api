@@ -12,6 +12,8 @@ import threading
 import tempfile
 import pathlib
 import logging
+import hashlib
+import shutil
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -322,53 +324,73 @@ def test_asyncio_get_running_loop_behavior():
 
 
 # ===========================================================================
-# TESTE 6: Verificar banco de dados de produção (se existir)
+# TESTE 6: Inspeção read-only do banco de produção (se existir)
 # ===========================================================================
-def test_production_db_has_signal_outcomes():
-    """Verifica se o banco de dados de produção já tem (ou pode criar) a tabela."""
+def _inspect_production_db_snapshot(snapshot_dir):
+    """
+    Inspeciona uma cópia verificada do banco de produção.
+
+    O banco operacional não é aberto via sqlite3. A cópia é feita apenas
+    quando não há sidecars WAL/SHM/journal, e seu hash é conferido antes
+    e depois da leitura. A criação de schema continua coberta pelos testes
+    1 e 2, que usam SQLite temporário.
+    """
     print("\n[TESTE 6] Banco de produção (dados/trading_bot.db)...")
-    prod_db = PROJECT_ROOT / "dados" / "trading_bot.db"
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    prod_db = repo_root / "dados" / "trading_bot.db"
 
     if not prod_db.exists():
         print(f"  Banco de produção não encontrado em {prod_db}. Pulando.")
         results.append((PASS, "Banco de produção: não encontrado (OK para ambiente limpo)"))
         return True
 
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = prod_db.with_name(prod_db.name + suffix)
+        assert not sidecar.exists(), (
+            f"Sidecar SQLite presente em {sidecar}; inspeção recusada "
+            "para evitar cópia inconsistente."
+        )
+
+    source_hash_before = hashlib.sha256(prod_db.read_bytes()).hexdigest()
+    snapshot = pathlib.Path(snapshot_dir) / "trading_bot_snapshot.db"
+    shutil.copy2(prod_db, snapshot)
+    snapshot_hash = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    assert snapshot_hash == source_hash_before, "Cópia temporária divergiu do banco de origem"
+    source_hash_after = hashlib.sha256(prod_db.read_bytes()).hexdigest()
+    assert source_hash_after == source_hash_before, "Banco de produção mudou durante a inspeção"
+
+    conn = sqlite3.connect(snapshot.resolve().as_uri() + "?mode=ro", uri=True)
     try:
-        conn = sqlite3.connect(str(prod_db))
-
-        # Verificar tabelas antes
-        tables_before = {r[0] for r in conn.execute(
+        tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
-        conn.close()
-
-        had_table = "signal_outcomes" in tables_before
-        print(f"  Tabelas existentes: {sorted(tables_before)}")
-        print(f"  signal_outcomes já existia: {'SIM' if had_table else 'NÃO — será criada ao iniciar EventStore'}")
-
-        # Inicializar EventStore para garantir tabela
-        from database.event_store import EventStore
-        store = EventStore(db_path=str(prod_db))
-
-        conn = sqlite3.connect(str(prod_db))
-        tables_after = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()}
+        print(f"  Tabelas existentes: {sorted(tables)}")
+        assert "signal_outcomes" in tables, (
+            "signal_outcomes ausente no snapshot de produção; a criação de schema "
+            "é verificada separadamente nos testes 1 e 2 com SQLite temporário."
+        )
         count = conn.execute("SELECT COUNT(*) FROM signal_outcomes").fetchone()[0]
+    finally:
         conn.close()
 
-        assert "signal_outcomes" in tables_after
-        print(f"  ✅ signal_outcomes presente. Registros existentes: {count}")
-        results.append((PASS, f"Banco de produção: signal_outcomes OK ({count} registros)"))
-        return True
+    assert hashlib.sha256(prod_db.read_bytes()).hexdigest() == source_hash_before
+    print(f"  ✅ signal_outcomes presente. Registros existentes: {count}")
+    results.append((PASS, f"Banco de produção: signal_outcomes OK ({count} registros)"))
+    return True
 
-    except Exception as e:
-        import traceback
-        print(f"  ERRO: {e}")
-        traceback.print_exc()
-        results.append((FAIL, f"Banco de produção: {e}"))
-        return False
+
+def test_production_db_has_signal_outcomes(tmp_path):
+    """Verifica o schema de produção via cópia temporária verificada, sem mutação."""
+    _inspect_production_db_snapshot(tmp_path)
+
+
+def _run_production_db_test_from_script():
+    with tempfile.TemporaryDirectory(prefix="test_corrections_") as td:
+        try:
+            return _inspect_production_db_snapshot(pathlib.Path(td))
+        except AssertionError as e:
+            results.append((FAIL, f"Banco de produção: {e}"))
+            return False
 
 
 # ===========================================================================
@@ -385,7 +407,7 @@ if __name__ == "__main__":
         test_outcome_tracker_with_event_store_db,
         test_onchain_metrics_in_background_thread,
         test_asyncio_get_running_loop_behavior,
-        test_production_db_has_signal_outcomes,
+        _run_production_db_test_from_script,
     ]
 
     passed = 0

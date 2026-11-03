@@ -60,6 +60,14 @@ from common.format_utils import (
     format_scientific,
 )
 
+from common.identity_contract import (
+    IDENTITY_VERSION_ZONE,
+    IdentityContractError,
+    is_deterministic_event_id,
+    resolve_zone_window_key,
+    zone_v2_event_id,
+)
+
 # ====== Módulos internos originais ======
 from data_processing.data_handler import (
     NY_TZ,
@@ -2193,6 +2201,31 @@ class EnhancedMarketBot:
                             ),
                         }
                     )
+
+                    # H1-B3-D / zone-v2: identidade própria da Zona
+                    try:
+                        zone_id = zone_v2_event_id(
+                            zone_event.get("ativo") or zone_event.get("symbol"),
+                            resolve_zone_window_key(zone_event),
+                            z.kind,
+                            z.timeframe,
+                            z.anchor_price,
+                            z.low,
+                            z.high,
+                            z.last_touched,
+                        )
+                    except IdentityContractError as ident_err:
+                        logging.error(
+                            f"Zona {z.kind}/{z.timeframe}: identidade rejeitada — "
+                            f"evento não emitido: {ident_err}"
+                        )
+                        continue
+
+                    base_event_id = zone_event.get("event_id")
+                    if is_deterministic_event_id(base_event_id):
+                        zone_event["base_event_id"] = base_event_id
+                    zone_event["event_id"] = zone_id
+                    zone_event["identity_version"] = IDENTITY_VERSION_ZONE
 
                     zone_event["janela_numero"] = self.window_count
 
