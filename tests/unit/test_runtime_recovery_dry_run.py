@@ -362,7 +362,6 @@ def test_14_cli_rejection_of_mutation_flags():
     script_path = PROJECT_ROOT / "scripts" / "maintenance" / "recover_runtime_state.py"
 
     forbidden_to_test = [
-        "--confirm-recovery",
         "--clear-dirty-state",
         "--force",
         "--repair",
@@ -380,7 +379,16 @@ def test_14_cli_rejection_of_mutation_flags():
         assert res.returncode == 2
         assert res.stderr is not None
         assert "PROIBIDO" in res.stderr
-        assert "READ-ONLY" in res.stderr
+
+    # --confirm-recovery sem --reason deve ser sumariamente rejeitado com código 2
+    res_confirm = subprocess.run(
+        [sys.executable, str(script_path), "--confirm-recovery"],
+        capture_output=True,
+        text=True,
+        errors="replace",
+    )
+    assert res_confirm.returncode == 2
+    assert "OBRIGATORIO quando '--confirm-recovery' e utilizado" in res_confirm.stderr
 
 
 def test_15_cli_json_output_schema(tmp_path: Path):
