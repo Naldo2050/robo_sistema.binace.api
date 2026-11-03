@@ -68,24 +68,38 @@ def sync_env_to_config(monkeypatch):
     )
 
 
-@pytest.fixture
-def hermetic_saver_g4a(tmp_path, monkeypatch):
-    """Fixture hermética isolando o ambiente de disco e dependências do EventSaver."""
+def _make_isolated_saver(monkeypatch, tmp_path):
     monkeypatch.setattr(event_saver, "HAS_CLOCK_SYNC", False)
     monkeypatch.setattr(event_saver, "DATA_DIR", tmp_path)
+    if hasattr(event_saver, "config") and event_saver.config is not None:
+        monkeypatch.setattr(
+            event_saver.config,
+            "EVENT_SAVER_JSONL_ARCHIVE_DIR",
+            str(tmp_path / "archive"),
+            raising=False,
+        )
 
     mock_store = MagicMock()
     mock_store.save_batch.return_value = event_saver.BatchSaveResult(
         total_received=1, persisted=1, rejected_pre_commit=0, commit_status="COMMITTED"
     )
     monkeypatch.setattr(event_saver, "EventStore", lambda: mock_store)
+    monkeypatch.chdir(tmp_path)
 
-    sync_env_to_config(monkeypatch)
     saver = EventSaver(sound_alert=False)
     saver.db = mock_store
     saver.history_file = tmp_path / "events.jsonl"
     saver.snapshot_file = tmp_path / "events.json"
     saver.visual_log_file = tmp_path / "eventos_visuais.log"
+    saver.archive_dir = tmp_path / "archive"
+    return saver
+
+
+@pytest.fixture
+def hermetic_saver_g4a(tmp_path, monkeypatch):
+    """Fixture hermética isolando o ambiente de disco e dependências do EventSaver."""
+    sync_env_to_config(monkeypatch)
+    saver = _make_isolated_saver(monkeypatch, tmp_path)
 
     yield saver
 
@@ -106,7 +120,7 @@ def test_env_1_defaults_sem_variaveis(monkeypatch, tmp_path):
     monkeypatch.delenv("EVENT_SAVER_VISUAL_LOG_BACKUPS", raising=False)
 
     sync_env_to_config(monkeypatch)
-    saver = EventSaver(sound_alert=False)
+    saver = _make_isolated_saver(monkeypatch, tmp_path)
     try:
         assert saver.write_visual_log is True
         assert saver.max_visual_log_bytes == 10 * 1024 * 1024
@@ -120,7 +134,7 @@ def test_env_2_write_visual_log_zero(monkeypatch, tmp_path):
     monkeypatch.setenv("EVENT_SAVER_WRITE_VISUAL_LOG", "0")
     sync_env_to_config(monkeypatch)
 
-    saver = EventSaver(sound_alert=False)
+    saver = _make_isolated_saver(monkeypatch, tmp_path)
     try:
         assert saver.write_visual_log is False
     finally:
@@ -132,7 +146,7 @@ def test_env_3_write_visual_log_false(monkeypatch, tmp_path):
     monkeypatch.setenv("EVENT_SAVER_WRITE_VISUAL_LOG", "false")
     sync_env_to_config(monkeypatch)
 
-    saver = EventSaver(sound_alert=False)
+    saver = _make_isolated_saver(monkeypatch, tmp_path)
     try:
         assert saver.write_visual_log is False
     finally:
@@ -144,7 +158,7 @@ def test_env_4_write_visual_log_um(monkeypatch, tmp_path):
     monkeypatch.setenv("EVENT_SAVER_WRITE_VISUAL_LOG", "1")
     sync_env_to_config(monkeypatch)
 
-    saver = EventSaver(sound_alert=False)
+    saver = _make_isolated_saver(monkeypatch, tmp_path)
     try:
         assert saver.write_visual_log is True
     finally:
@@ -156,7 +170,7 @@ def test_env_5_max_mb_valido(monkeypatch, tmp_path):
     monkeypatch.setenv("EVENT_SAVER_MAX_VISUAL_LOG_MB", "25")
     sync_env_to_config(monkeypatch)
 
-    saver = EventSaver(sound_alert=False)
+    saver = _make_isolated_saver(monkeypatch, tmp_path)
     try:
         assert saver.max_visual_log_bytes == 25 * 1024 * 1024
     finally:
@@ -168,7 +182,7 @@ def test_env_6_max_mb_invalido_fallback(monkeypatch, tmp_path):
     monkeypatch.setenv("EVENT_SAVER_MAX_VISUAL_LOG_MB", "texto_invalido")
     sync_env_to_config(monkeypatch)
 
-    saver = EventSaver(sound_alert=False)
+    saver = _make_isolated_saver(monkeypatch, tmp_path)
     try:
         assert saver.max_visual_log_bytes == 10 * 1024 * 1024
     finally:
@@ -180,7 +194,7 @@ def test_env_7_max_mb_negativo_zero_fallback(monkeypatch, tmp_path):
     for val in ["-5", "0", "-0.1"]:
         monkeypatch.setenv("EVENT_SAVER_MAX_VISUAL_LOG_MB", val)
         sync_env_to_config(monkeypatch)
-        saver = EventSaver(sound_alert=False)
+        saver = _make_isolated_saver(monkeypatch, tmp_path)
         try:
             assert saver.max_visual_log_bytes == 10 * 1024 * 1024
         finally:
@@ -192,7 +206,7 @@ def test_env_8_max_mb_excessivo_clamping(monkeypatch, tmp_path):
     monkeypatch.setenv("EVENT_SAVER_MAX_VISUAL_LOG_MB", "5000")
     sync_env_to_config(monkeypatch)
 
-    saver = EventSaver(sound_alert=False)
+    saver = _make_isolated_saver(monkeypatch, tmp_path)
     try:
         assert saver.max_visual_log_bytes == 1024 * 1024 * 1024
     finally:
@@ -204,7 +218,7 @@ def test_env_9_backups_valido(monkeypatch, tmp_path):
     monkeypatch.setenv("EVENT_SAVER_VISUAL_LOG_BACKUPS", "4")
     sync_env_to_config(monkeypatch)
 
-    saver = EventSaver(sound_alert=False)
+    saver = _make_isolated_saver(monkeypatch, tmp_path)
     try:
         assert saver.visual_log_backups == 4
     finally:
@@ -216,7 +230,7 @@ def test_env_10_backups_invalido_fallback(monkeypatch, tmp_path):
     for val in ["invalido", "0", "-1"]:
         monkeypatch.setenv("EVENT_SAVER_VISUAL_LOG_BACKUPS", val)
         sync_env_to_config(monkeypatch)
-        saver = EventSaver(sound_alert=False)
+        saver = _make_isolated_saver(monkeypatch, tmp_path)
         try:
             assert saver.visual_log_backups == 2
         finally:
@@ -228,7 +242,7 @@ def test_env_11_backups_excessivo_clamping(monkeypatch, tmp_path):
     monkeypatch.setenv("EVENT_SAVER_VISUAL_LOG_BACKUPS", "50")
     sync_env_to_config(monkeypatch)
 
-    saver = EventSaver(sound_alert=False)
+    saver = _make_isolated_saver(monkeypatch, tmp_path)
     try:
         assert saver.visual_log_backups == 10
     finally:
@@ -237,11 +251,10 @@ def test_env_11_backups_excessivo_clamping(monkeypatch, tmp_path):
 
 def test_env_12_flag_desabilitada_sem_arquivo_lock(tmp_path, monkeypatch):
     """12. Flag desabilitada: nenhum arquivo .lock criado nem aberto."""
-    monkeypatch.setattr(event_saver, "DATA_DIR", tmp_path)
     monkeypatch.setenv("EVENT_SAVER_WRITE_VISUAL_LOG", "0")
     sync_env_to_config(monkeypatch)
 
-    saver = EventSaver(sound_alert=False)
+    saver = _make_isolated_saver(monkeypatch, tmp_path)
     saver.visual_log_file = tmp_path / "eventos_visuais.log"
 
     try:

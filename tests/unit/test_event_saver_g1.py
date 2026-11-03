@@ -37,15 +37,24 @@ def hermetic_saver(tmp_path, monkeypatch):
     """Fixture para inicializar EventSaver de forma hermética."""
     monkeypatch.setattr(event_saver, "HAS_CLOCK_SYNC", False)
     monkeypatch.setattr(event_saver, "DATA_DIR", tmp_path)
+    if hasattr(event_saver, "config") and event_saver.config is not None:
+        monkeypatch.setattr(
+            event_saver.config,
+            "EVENT_SAVER_JSONL_ARCHIVE_DIR",
+            str(tmp_path / "archive"),
+            raising=False,
+        )
 
     mock_store = MagicMock()
     monkeypatch.setattr(event_saver, "EventStore", lambda: mock_store)
+    monkeypatch.chdir(tmp_path)
 
     saver = EventSaver(sound_alert=False)
     saver.db = mock_store
     saver.history_file = tmp_path / "events.jsonl"
     saver.snapshot_file = tmp_path / "events.json"
     saver.visual_log_file = tmp_path / "eventos_visuais.log"
+    saver.archive_dir = tmp_path / "archive"
 
     yield saver
 

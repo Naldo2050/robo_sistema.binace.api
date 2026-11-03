@@ -44,9 +44,13 @@ def hermetic_saver_g4c(tmp_path, monkeypatch):
         total_received=1, persisted=1, rejected_pre_commit=0, commit_status="COMMITTED"
     )
     monkeypatch.setattr(event_saver, "EventStore", lambda *args, **kwargs: mock_store)
+    monkeypatch.chdir(tmp_path)
 
     saver = EventSaver(sound_alert=False)
+    saver.db = mock_store
     saver.history_file = tmp_path / "eventos_fluxo.jsonl"
+    saver.snapshot_file = tmp_path / "eventos_fluxo.json"
+    saver.visual_log_file = tmp_path / "eventos_visuais.log"
     saver.archive_dir = tmp_path / "archive"
     # Limiar configurável baixo para permitir testes rápidos (1 KB)
     saver.max_jsonl_file_bytes = 1024

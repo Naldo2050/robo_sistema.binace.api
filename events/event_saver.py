@@ -27,6 +27,44 @@ import atexit
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Union, Tuple
 import re
+import copy
+import math
+
+# ===== VALIDADOR FINANCEIRO E QUARENTENA FORENSE (Gate H1-B2-Q3) =====
+try:
+    from common.financial_validator import (
+        validate_financial_event_semantics,
+        FinancialValidationResult,
+    )
+    HAS_FINANCIAL_VALIDATOR = True
+except ImportError:
+    HAS_FINANCIAL_VALIDATOR = False
+    validate_financial_event_semantics = None
+    FinancialValidationResult = None
+
+try:
+    from common.identity_contract import (
+        canonicalize_structure,
+        normalize_last_touched,
+    )
+    HAS_IDENTITY_CONTRACT = True
+except ImportError:
+    HAS_IDENTITY_CONTRACT = False
+    canonicalize_structure = lambda x: x
+    normalize_last_touched = lambda x: x
+
+try:
+    from common.financial_quarantine import FinancialQuarantine
+    HAS_FINANCIAL_QUARANTINE = True
+except ImportError:
+    HAS_FINANCIAL_QUARANTINE = False
+    FinancialQuarantine = None
+
+try:
+    from database.event_store import IntegrityCollisionError
+except ImportError:
+    class IntegrityCollisionError(Exception):
+        pass
 
 # ===== LINUX ATOMIC RENAMEAT2 SUPPORT (Gate G4-C Hardened) =====
 _linux_renameat2_func = None
@@ -350,7 +388,6 @@ except ImportError:
 
 # ===== DIRETÓRIO DE DADOS =====
 DATA_DIR = Path("dados")
-DATA_DIR.mkdir(exist_ok=True)
 
 
 # ===== FUNÇÕES HELPER DE FILE LOCKING (Mantidas para log visual) =====
@@ -434,7 +471,18 @@ class EventSaver:
             "1", "true", "yes", "on",
         )
 
-    def __init__(self, sound_alert: Optional[bool] = None, health_monitor=None):
+    def __init__(
+        self,
+        sound_alert: Optional[bool] = None,
+        health_monitor=None,
+        quarantine: Optional[Any] = None,
+        quarantine_dir: Optional[Union[str, Path]] = None,
+        enforce_financial_validation: bool = True,
+    ):
+        self._quarantine = quarantine
+        self._quarantine_dir = Path(quarantine_dir) if quarantine_dir else None
+        self.enforce_financial_validation = enforce_financial_validation
+        DATA_DIR.mkdir(exist_ok=True)
         self.sound_alert = self._resolve_sound_alert(sound_alert)
         # Worker único de áudio (lazy): nunca bloqueia o hot path.
         self._sound_queue: "queue.Queue[bool]" = queue.Queue(
@@ -640,6 +688,7 @@ class EventSaver:
         self._fallback_events_written = 0
         self._fallback_events_failed = 0
         self._fallback_events_unknown = 0
+        self._enospc_errors = 0
 
         # Gate G2: Rate-limited warning do worker
         self._rejection_warn_interval = 60.0
@@ -1244,6 +1293,9 @@ class EventSaver:
                 self._inc_stat("_jsonl_events_written", 1)
                 return "WRITTEN"
             except Exception as e:
+                if isinstance(e, OSError) and (getattr(e, "errno", None) == errno.ENOSPC or "no space left on device" in str(e).lower()):
+                    self._enospc_errors += 1
+                    self.logger.critical("Falha crítica de armazenamento em disco cheio (ENOSPC) no JSONL: %s", e)
                 self.logger.error(
                     "Erro ao salvar JSONL (tentativa %d): %s",
                     attempt + 1,
@@ -1259,11 +1311,34 @@ class EventSaver:
         return "UNKNOWN"
 
     def _save_fallback(self, event: Dict, format_type: str) -> str:
-        """Salva evento em fallback_events quando JSON falha (Gate G2)."""
+        """Salva evento em fallback_events quando JSON falha (Gate G2 / H1-B2-Q3)."""
+        # Validação defensiva: se for financeiramente inválido, quarentena e NUNCA salva em fallback
+        if getattr(self, "enforce_financial_validation", True):
+            val_res = self._validate_financial_payload(event)
+            if val_res is not None and not val_res.is_valid:
+                self.logger.warning(
+                    f"Evento rejeitado no fallback pelo validador financeiro: {val_res.rejection_reason}"
+                )
+                if self.quarantine is not None:
+                    try:
+                        self.quarantine.quarantine_event(
+                            copy.deepcopy(event),
+                            val_res,
+                            source_caller="EventSaver._save_fallback",
+                        )
+                    except Exception as q_err:
+                        self.logger.error(f"Falha ao registrar quarentena no fallback: {q_err}")
+                return "FAILED"
+
+        try:
+            event = canonicalize_structure(event)
+        except Exception:
+            pass
+
         self._inc_stat("_fallback_events_attempted", 1)
 
         try:
-            fallback_dir = Path("fallback_events")
+            fallback_dir = (self.history_file.parent / "fallback_events") if hasattr(self, "history_file") and self.history_file else (DATA_DIR / "fallback_events")
             fallback_dir.mkdir(exist_ok=True)
 
             stamp = datetime.now().strftime("%Y%m%d")
@@ -1332,6 +1407,9 @@ class EventSaver:
             self._inc_stat("_fallback_events_written", 1)
             return "WRITTEN"
         except Exception as e:
+            if isinstance(e, OSError) and (getattr(e, "errno", None) == errno.ENOSPC or "no space left on device" in str(e).lower()):
+                self._enospc_errors += 1
+                self.logger.critical(f"Falha crítica de armazenamento em disco cheio (ENOSPC) ao salvar fallback: {e}")
             self.logger.error(f"Falha ao salvar fallback: {e}")
             self._inc_stat("_fallback_events_failed", 1)
             return "FAILED"
@@ -1448,34 +1526,107 @@ class EventSaver:
         return True
 
     def _flush_buffer(self, events: List[Dict]):
-        """Escreve eventos em lote no banco de dados e log visual (Gate G2)."""
+        """Escreve eventos em lote no banco de dados e log visual (Gate G2 / H1-B2-Q3)."""
+
+        valid_events = []
+        quarantined_ids = set()
+        collision_ids = set()
+
+        for event in events:
+            raw_copy = copy.deepcopy(event)
+            if getattr(self, "enforce_financial_validation", True):
+                val_res = self._validate_financial_payload(event)
+                if val_res is not None and not val_res.is_valid:
+                    self.logger.warning(
+                        f"Evento rejeitado pré-persistência no flush do EventSaver: {val_res.rejection_reason} "
+                        f"(campo: {val_res.rejected_field})"
+                    )
+                    ev_id = str(event.get("event_id") or "")
+                    if ev_id:
+                        quarantined_ids.add(ev_id)
+                    if self.quarantine is not None:
+                        try:
+                            self.quarantine.quarantine_event(
+                                raw_copy,
+                                val_res,
+                                source_caller="EventSaver._flush_buffer",
+                            )
+                        except Exception as q_err:
+                            self.logger.error(f"Falha ao quarentenar no flush: {q_err}")
+                    continue
+            try:
+                valid_events.append(canonicalize_structure(event))
+            except Exception:
+                valid_events.append(event)
 
         # 1. Escrita no SQLite (Principal)
-        if self.db:
+        if self.db and valid_events:
             try:
-                batch_res = self.db.save_batch(events)
-                if _is_valid_batch_save_result(batch_res, len(events)):
-                    self._inc_stat("_sqlite_events_attempted", batch_res.total_received)
-                    self._inc_stat("_sqlite_events_rejected_pre_commit", batch_res.rejected_pre_commit)
-                    if batch_res.commit_status == "COMMITTED":
-                        self._inc_stat("_sqlite_events_persisted", batch_res.persisted)
-                        self._inc_stat("_sqlite_events_failed", batch_res.rejected_pre_commit)
-                    elif batch_res.commit_status == "FAILED":
-                        self._inc_stat("_sqlite_events_failed", batch_res.total_received)
-                    elif batch_res.commit_status == "UNKNOWN":
-                        self._inc_stat("_sqlite_events_persisted", batch_res.persisted)
-                        self._inc_stat("_sqlite_events_unknown", batch_res.total_received - batch_res.persisted)
+                batch_res = self.db.save_batch(valid_events)
+                if _is_valid_batch_save_result(batch_res, len(valid_events)):
+                    if getattr(batch_res, "error_type", None) == "IntegrityCollisionError" or "Colisão divergente" in str(getattr(batch_res, "error_message", "")):
+                        self.logger.error(f"IntegrityCollision detectado no retorno do save_batch: {batch_res.error_message}")
+                        m = re.search(r"ID '([^']+)'", str(batch_res.error_message))
+                        if m:
+                            collision_ids.add(m.group(1))
+                        else:
+                            for ve in valid_events:
+                                cid = str(ve.get("event_id") or "")
+                                if cid:
+                                    collision_ids.add(cid)
+                        self._inc_stat("_sqlite_events_attempted", len(valid_events))
+                        self._inc_stat("_sqlite_events_failed", len(valid_events))
+                    else:
+                        self._inc_stat("_sqlite_events_attempted", batch_res.total_received)
+                        self._inc_stat("_sqlite_events_rejected_pre_commit", batch_res.rejected_pre_commit)
+                        if batch_res.commit_status == "COMMITTED":
+                            self._inc_stat("_sqlite_events_persisted", batch_res.persisted)
+                            self._inc_stat("_sqlite_events_failed", batch_res.rejected_pre_commit)
+                        elif batch_res.commit_status == "FAILED":
+                            self._inc_stat("_sqlite_events_failed", batch_res.total_received)
+                        elif batch_res.commit_status == "UNKNOWN":
+                            self._inc_stat("_sqlite_events_persisted", batch_res.persisted)
+                            self._inc_stat("_sqlite_events_unknown", batch_res.total_received - batch_res.persisted)
                 else:
-                    # Retorno None, MagicMock não tipado, dict ou inconsistente
-                    self._inc_stat("_sqlite_events_attempted", len(events))
-                    self._inc_stat("_sqlite_events_unknown", len(events))
+                    self._inc_stat("_sqlite_events_attempted", len(valid_events))
+                    self._inc_stat("_sqlite_events_unknown", len(valid_events))
+            except IntegrityCollisionError as coll_err:
+                self.logger.error(f"IntegrityCollisionError detectado no flush do EventSaver: {coll_err}")
+                cid = getattr(coll_err, "identity_id", None)
+                if cid:
+                    collision_ids.add(str(cid))
+                if self.quarantine is not None:
+                    try:
+                        col_raw = getattr(coll_err, "incoming_payload", None) or getattr(coll_err, "raw_payload", None)
+                        if col_raw is not None and isinstance(col_raw, dict):
+                            col_res = FinancialValidationResult(
+                                is_valid=False, status="INVALID", category="COLLISION",
+                                rejected_field="event_id", rejected_value_repr=str(cid),
+                                rejection_reason="INTEGRITY_COLLISION_DIVERGENT_PAYLOAD",
+                            )
+                            self.quarantine.quarantine_event(
+                                col_raw, col_res, source_caller="EventSaver._flush_buffer", category="COLLISION"
+                            )
+                    except Exception as q_err:
+                        self.logger.error(f"Erro ao registrar colisão na quarentena: {q_err}")
+                self._inc_stat("_sqlite_events_attempted", len(valid_events))
+                self._inc_stat("_sqlite_events_failed", len(valid_events))
             except Exception as e:
                 self.logger.error(f"Erro ao salvar batch no SQLite: {e}")
-                self._inc_stat("_sqlite_events_attempted", len(events))
-                self._inc_stat("_sqlite_events_failed", len(events))
+                self._inc_stat("_sqlite_events_attempted", len(valid_events))
+                self._inc_stat("_sqlite_events_failed", len(valid_events))
+                # Fallback operacional acionado apenas para eventos válidos sob falha do SQLite
+                for ve in valid_events:
+                    try:
+                        self._save_fallback(ve, "jsonl")
+                    except Exception as fb_err:
+                        self.logger.error(f"Erro ao salvar fallback por falha SQLite: {fb_err}")
 
-        # 2. Escrita no Log Visual (Debug) + JSONs (snapshot/historico)
-        for event in events:
+        # 2. Escrita no Log Visual (Debug) + JSONs (apenas eventos válidos e não colidentes)
+        for event in valid_events:
+            ev_id = str(event.get("event_id") or "")
+            if ev_id in quarantined_ids or ev_id in collision_ids:
+                continue
             try:
                 # Adiciona separador ANTES de processar evento, se necessario
                 if event.get("_needs_separator"):
@@ -1498,10 +1649,277 @@ class EventSaver:
             except Exception as e:
                 self.logger.error(f"Erro ao processar evento no flush visual: {e}")
 
+
+    @property
+    def quarantine(self):
+        """Retorna instância de FinancialQuarantine instanciada sob demanda (lazy)."""
+        if self._quarantine is None:
+            if not HAS_FINANCIAL_QUARANTINE or FinancialQuarantine is None:
+                return None
+            target_dir = self._quarantine_dir
+            if target_dir is None:
+                base_dir = self.history_file.parent if hasattr(self, "history_file") and self.history_file else DATA_DIR
+                target_dir = base_dir / "quarantine"
+            self._quarantine = FinancialQuarantine(quarantine_dir=target_dir)
+        return self._quarantine
+
+    def _validate_financial_payload(self, event: Dict[str, Any]) -> Any:
+        """
+        Valida semanticamente o payload financeiro antes de qualquer escrita física (Gate H1-B2-Q3).
+        Aplica regras puras de validação, limites de microestrutura (bottom <= top, val <= poc <= vah),
+        proibição de booleanos em campos numéricos, rejeição de NaN/±Inf e preços <= 0.
+        """
+        if not HAS_FINANCIAL_VALIDATOR or validate_financial_event_semantics is None:
+            return None
+
+        val_res = validate_financial_event_semantics(event)
+
+        def _check_microstructure(e: Dict[str, Any], cat: str):
+            for bound_key in ("top", "bottom"):
+                if bound_key in e:
+                    v = e[bound_key]
+                    if isinstance(v, bool):
+                        return FinancialValidationResult(
+                            is_valid=False, status="INVALID", category=cat,
+                            rejected_field=bound_key, rejected_value_repr=str(v),
+                            rejection_reason="BOOLEAN_NOT_ALLOWED_IN_ZONE_BOUNDS",
+                        )
+                    if isinstance(v, (int, float)):
+                        if math.isnan(v):
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category=cat,
+                                rejected_field=bound_key, rejected_value_repr="nan",
+                                rejection_reason="NAN_IN_ZONE_BOUNDS",
+                            )
+                        if math.isinf(v):
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category=cat,
+                                rejected_field=bound_key, rejected_value_repr=str(v),
+                                rejection_reason="INFINITY_IN_ZONE_BOUNDS",
+                            )
+                        if v <= 0:
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category=cat,
+                                rejected_field=bound_key, rejected_value_repr=str(v),
+                                rejection_reason="ZONE_BOUNDS_MUST_BE_POSITIVE",
+                            )
+            if "top" in e and "bottom" in e:
+                try:
+                    top_v = float(e["top"])
+                    bot_v = float(e["bottom"])
+                    if not (math.isnan(top_v) or math.isnan(bot_v) or math.isinf(top_v) or math.isinf(bot_v)):
+                        if bot_v > top_v:
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category=cat,
+                                rejected_field="bottom", rejected_value_repr=f"bottom={bot_v} > top={top_v}",
+                                rejection_reason="INVALID_MICROSTRUCTURE_BOUNDS: bottom > top",
+                            )
+                except (ValueError, TypeError):
+                    pass
+            if "poc" in e and "vah" in e:
+                try:
+                    poc_v = float(e["poc"])
+                    vah_v = float(e["vah"])
+                    if not (math.isnan(poc_v) or math.isnan(vah_v) or math.isinf(poc_v) or math.isinf(vah_v)):
+                        if poc_v > vah_v:
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category=cat,
+                                rejected_field="poc", rejected_value_repr=f"poc={poc_v} > vah={vah_v}",
+                                rejection_reason="INVALID_MICROSTRUCTURE_BOUNDS: poc > vah",
+                            )
+                except (ValueError, TypeError):
+                    pass
+            if "val" in e and "poc" in e:
+                try:
+                    val_v = float(e["val"])
+                    poc_v = float(e["poc"])
+                    if not (math.isnan(val_v) or math.isnan(poc_v) or math.isinf(val_v) or math.isinf(poc_v)):
+                        if val_v > poc_v:
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category=cat,
+                                rejected_field="val", rejected_value_repr=f"val={val_v} > poc={poc_v}",
+                                rejection_reason="INVALID_MICROSTRUCTURE_BOUNDS: val > poc",
+                            )
+                except (ValueError, TypeError):
+                    pass
+            return None
+
+        if val_res.status == "VALID":
+            micro_err = _check_microstructure(event, val_res.category)
+            if micro_err:
+                return micro_err
+            if "last_touched" in event:
+                try:
+                    normalize_last_touched(event["last_touched"])
+                except Exception as lt_err:
+                    return FinancialValidationResult(
+                        is_valid=False,
+                        status="INVALID",
+                        category=val_res.category,
+                        rejected_field="last_touched",
+                        rejected_value_repr=str(event.get("last_touched")),
+                        rejection_reason=f"INVALID_LAST_TOUCHED: {lt_err}",
+                    )
+            return val_res
+        elif val_res.status == "INVALID":
+            if val_res.rejection_reason == "MANDATORY_FIELD_MISSING":
+                micro_err = _check_microstructure(event, val_res.category)
+                if micro_err:
+                    return micro_err
+                for price_key in ("price", "preco", "preco_fechamento", "entry_price", "anchor_price", "level", "poc", "val", "vah", "top", "bottom"):
+                    if price_key in event:
+                        v = event[price_key]
+                        if isinstance(v, bool):
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category=val_res.category,
+                                rejected_field=price_key, rejected_value_repr=str(v),
+                                rejection_reason="BOOLEAN_NOT_ALLOWED_IN_PRICE",
+                            )
+                        if isinstance(v, (int, float)):
+                            if math.isnan(v):
+                                return FinancialValidationResult(
+                                    is_valid=False, status="INVALID", category=val_res.category,
+                                    rejected_field=price_key, rejected_value_repr="nan",
+                                    rejection_reason="NAN_IN_PRICE_FIELD",
+                                )
+                            if math.isinf(v):
+                                return FinancialValidationResult(
+                                    is_valid=False, status="INVALID", category=val_res.category,
+                                    rejected_field=price_key, rejected_value_repr=str(v),
+                                    rejection_reason="INFINITY_IN_PRICE_FIELD",
+                                )
+                            if v <= 0:
+                                return FinancialValidationResult(
+                                    is_valid=False, status="INVALID", category=val_res.category,
+                                    rejected_field=price_key, rejected_value_repr=str(v),
+                                    rejection_reason="PRICE_MUST_BE_POSITIVE",
+                                )
+                for num_key in ("delta", "volume", "volume_total", "quantity", "quantidade"):
+                    if num_key in event:
+                        v = event[num_key]
+                        if isinstance(v, bool):
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category=val_res.category,
+                                rejected_field=num_key, rejected_value_repr=str(v),
+                                rejection_reason="BOOLEAN_NOT_ALLOWED_IN_NUMERIC_FIELD",
+                            )
+                        if isinstance(v, (int, float)):
+                            if math.isnan(v):
+                                return FinancialValidationResult(
+                                    is_valid=False, status="INVALID", category=val_res.category,
+                                    rejected_field=num_key, rejected_value_repr="nan",
+                                    rejection_reason="NAN_IN_NUMERIC_FIELD",
+                                )
+                            if math.isinf(v):
+                                return FinancialValidationResult(
+                                    is_valid=False, status="INVALID", category=val_res.category,
+                                    rejected_field=num_key, rejected_value_repr=str(v),
+                                    rejection_reason="INFINITY_IN_NUMERIC_FIELD",
+                                )
+                return FinancialValidationResult(
+                    is_valid=True,
+                    status="VALID",
+                    category=val_res.category,
+                )
+            return val_res
+        else:
+            micro_err = _check_microstructure(event, "UNCLASSIFIED_FINANCIAL")
+            if micro_err:
+                return micro_err
+            for price_key in ("price", "preco", "preco_fechamento", "entry_price", "anchor_price", "level", "poc", "val", "vah"):
+                if price_key in event:
+                    v = event[price_key]
+                    if isinstance(v, bool):
+                        return FinancialValidationResult(
+                            is_valid=False, status="INVALID", category="UNCLASSIFIED_FINANCIAL",
+                            rejected_field=price_key, rejected_value_repr=str(v),
+                            rejection_reason="BOOLEAN_NOT_ALLOWED_IN_PRICE",
+                        )
+                    if isinstance(v, (int, float)):
+                        if math.isnan(v):
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category="UNCLASSIFIED_FINANCIAL",
+                                rejected_field=price_key, rejected_value_repr="nan",
+                                rejection_reason="NAN_IN_PRICE_FIELD",
+                            )
+                        if math.isinf(v):
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category="UNCLASSIFIED_FINANCIAL",
+                                rejected_field=price_key, rejected_value_repr=str(v),
+                                rejection_reason="INFINITY_IN_PRICE_FIELD",
+                            )
+                        if v <= 0:
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category="UNCLASSIFIED_FINANCIAL",
+                                rejected_field=price_key, rejected_value_repr=str(v),
+                                rejection_reason="PRICE_MUST_BE_POSITIVE",
+                            )
+            for num_key in ("delta", "volume", "volume_total", "quantity", "quantidade"):
+                if num_key in event:
+                    v = event[num_key]
+                    if isinstance(v, bool):
+                        return FinancialValidationResult(
+                            is_valid=False, status="INVALID", category="UNCLASSIFIED_FINANCIAL",
+                            rejected_field=num_key, rejected_value_repr=str(v),
+                            rejection_reason="BOOLEAN_NOT_ALLOWED_IN_NUMERIC_FIELD",
+                        )
+                    if isinstance(v, (int, float)):
+                        if math.isnan(v):
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category="UNCLASSIFIED_FINANCIAL",
+                                rejected_field=num_key, rejected_value_repr="nan",
+                                rejection_reason="NAN_IN_NUMERIC_FIELD",
+                            )
+                        if math.isinf(v):
+                            return FinancialValidationResult(
+                                is_valid=False, status="INVALID", category="UNCLASSIFIED_FINANCIAL",
+                                rejected_field=num_key, rejected_value_repr=str(v),
+                                rejection_reason="INFINITY_IN_NUMERIC_FIELD",
+                            )
+            return FinancialValidationResult(is_valid=True, status="VALID", category="UNCLASSIFIED_PERMITTED")
+
+    def save_events(self, events: List[Dict]):
+        """API de conveniência para salvar múltiplos eventos em lote."""
+        if not isinstance(events, (list, tuple)):
+            return
+        for e in events:
+            self.save_event(e)
+
     def save_event(self, event: Dict):
         """
         API pública para salvar um evento.
         """
+        if not isinstance(event, dict):
+            self.logger.error("Evento inválido: não é um dicionário")
+            return
+
+        # Captura cópia profunda bruta antes de qualquer mutação ou sanitização (Gate H1-B2-Q3)
+        raw_payload_copy = copy.deepcopy(event)
+
+        # Validação financeira semântica na entrada (Gate H1-B2-Q3)
+        if getattr(self, "enforce_financial_validation", True):
+            val_res = self._validate_financial_payload(event)
+            if val_res is not None and not val_res.is_valid:
+                self.logger.warning(
+                    f"Evento rejeitado pelo validador financeiro no EventSaver: {val_res.rejection_reason} "
+                    f"(campo: {val_res.rejected_field}, valor: {val_res.rejected_value_repr})"
+                )
+                if self.quarantine is not None:
+                    try:
+                        self.quarantine.quarantine_event(
+                            raw_payload_copy,
+                            val_res,
+                            source_caller="EventSaver.save_event",
+                        )
+                    except Exception as q_err:
+                        self.logger.error(f"Falha ao registrar quarentena no EventSaver: {q_err}")
+                return None
+
+        # Canonicalização determinística de -0.0 -> +0.0 (Gate H1-B3-D / H1-B2-Q3)
+        try:
+            event = canonicalize_structure(event)
+        except Exception:
+            pass
 
         # ✅ OTIMIZAÇÃO AUTOMÁTICA
         if event.get("tipo_evento") == "ANALYSIS_TRIGGER":
@@ -1575,18 +1993,20 @@ class EventSaver:
                     event["epoch_ms"] = epoch_ms
 
             # 🆕 DEDUPLICAÇÃO DE TIMESTAMPS
-            # Detecta e avisa quando eventos com timestamps duplicados são salvos
+            # Detecta e avisa quando eventos com timestamps duplicados são salvos.
+            # Preserva integralmente o payload original (sem mutação artificial de epoch_ms)
+            # quando o evento possui event_id explícito ou validação financeira está ativa.
             if epoch_ms is not None:
                 try:
                     epoch_ms_int_candidate = int(epoch_ms)
-                    if self._last_event_timestamp_ms is not None and epoch_ms_int_candidate == self._last_event_timestamp_ms:
+                    if (not getattr(self, "enforce_financial_validation", True)) and ("event_id" not in event) and (self._last_event_timestamp_ms is not None and epoch_ms_int_candidate == self._last_event_timestamp_ms):
                         self._duplicate_event_count += 1
                         self.logger.warning(
                             f"⚠️ Timestamp DUPLICADO detectado: {epoch_ms_int_candidate}ms "
                             f"(ocorrência #{self._duplicate_event_count} nesta sequência) "
                             f"| evento: {event.get('tipo_evento', 'unknown')}"
                         )
-                        # Ajustar timestamp para evitar colisão
+                        # Ajustar timestamp para evitar colisão apenas em modo não financeiro sem ID
                         epoch_ms_int = epoch_ms_int_candidate + self._duplicate_event_count
                         event["epoch_ms"] = epoch_ms_int
                         event["_dedup_adjusted"] = True
@@ -2546,6 +2966,7 @@ class EventSaver:
                 "fallback_events_written": self._fallback_events_written,
                 "fallback_events_failed": self._fallback_events_failed,
                 "fallback_events_unknown": self._fallback_events_unknown,
+                "enospc_error_count": self._enospc_errors,
             }
 
         if HAS_CLOCK_SYNC and _clock_sync_instance:
@@ -2566,6 +2987,26 @@ class EventSaver:
             stats["sqlite"] = self.db.get_stats()
 
         return stats
+
+
+    def get_financial_integrity_metrics(self) -> Dict[str, Any]:
+        """Retorna telemetria e métricas consolidadas de integridade financeira (Gate G5)."""
+        q_inv = 0
+        q_col = 0
+        q_enospc = 0
+        if self.quarantine is not None and hasattr(self.quarantine, "get_quarantine_metrics"):
+            qm = self.quarantine.get_quarantine_metrics()
+            q_inv = qm.get("quarantined_invalid_count", 0)
+            q_col = qm.get("quarantined_collision_count", 0)
+            q_enospc = qm.get("enospc_error_count", 0)
+        return {
+            "fallback_events_attempted": self._fallback_events_attempted,
+            "fallback_events_written": self._fallback_events_written,
+            "fallback_events_failed": self._fallback_events_failed,
+            "enospc_error_count": self._enospc_errors + q_enospc,
+            "quarantined_invalid_count": q_inv,
+            "quarantined_collision_count": q_col,
+        }
 
 
 # ===== INSTÂNCIA GLOBAL =====

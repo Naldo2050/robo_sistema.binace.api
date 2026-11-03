@@ -7,8 +7,10 @@ reais dos sinais passados (não mais hardcoded).
 """
 
 from collections import deque
+from pathlib import Path
 from typing import Any, List, Dict, Optional
 import logging
+import threading
 
 from common.signal_direction import infer_signal_side
 
@@ -20,12 +22,53 @@ _event_memory: deque = deque(maxlen=1000)  # Mantém os últimos 1000 eventos
 # Outcome tracker para probabilidades reais
 try:
     from trading.outcome_tracker import OutcomeTracker
-    _outcome_tracker: Optional[Any] = OutcomeTracker()
-    _TRACKER_OK = True
-except ImportError as e:
-    _outcome_tracker = None
+    _TRACKER_IMPORT_ERROR: Optional[BaseException] = None
     _TRACKER_OK = False
-    logger.warning(f"OutcomeTracker indisponível, usando probabilidades base | erro={type(e).__name__}: {e}")
+except ImportError as e:
+    OutcomeTracker = None
+    _TRACKER_IMPORT_ERROR = e
+    _TRACKER_OK = False
+    logger.warning(
+        "OutcomeTracker indisponível, usando probabilidades base | "
+        f"erro={type(e).__name__}: {e}"
+    )
+
+_outcome_tracker: Optional[Any] = None
+_TRACKER_INITIALIZED = _TRACKER_IMPORT_ERROR is not None
+_TRACKER_ERROR: Optional[BaseException] = _TRACKER_IMPORT_ERROR
+_TRACKER_LOCK = threading.Lock()
+
+
+def _get_outcome_tracker() -> Optional[Any]:
+    """
+    Retorna o OutcomeTracker, inicializando-o na primeira necessidade.
+
+    A inicialização é serializada para evitar duas instâncias concorrentes.
+    Falhas de importação são convertidas em indisponibilidade explícita;
+    falhas inesperadas de construção não são capturadas e propagam para o
+    chamador, evitando mascarar erro de persistência.
+    """
+    global _outcome_tracker, _TRACKER_OK, _TRACKER_INITIALIZED, _TRACKER_ERROR
+
+    if _TRACKER_INITIALIZED:
+        return _outcome_tracker
+
+    with _TRACKER_LOCK:
+        if _TRACKER_INITIALIZED:
+            return _outcome_tracker
+
+        if OutcomeTracker is None:
+            _TRACKER_OK = False
+            _TRACKER_ERROR = _TRACKER_IMPORT_ERROR
+            _TRACKER_INITIALIZED = True
+            return None
+
+        Path("dados").mkdir(exist_ok=True)
+        _outcome_tracker = OutcomeTracker()
+        _TRACKER_OK = True
+        _TRACKER_ERROR = None
+        _TRACKER_INITIALIZED = True
+        return _outcome_tracker
 
 
 def obter_memoria_eventos(n: int = 5) -> List[Dict]:
@@ -44,10 +87,11 @@ def adicionar_memoria_evento(evento: Dict):
         _event_memory.append(evento)
 
         # Registrar sinal para tracking de outcome
-        if _TRACKER_OK and _outcome_tracker:
-            tipo = evento.get("tipo_evento", "")
-            if tipo in ("Absorção", "Exaustão", "AbsorÃ§Ã£o"):
-                _outcome_tracker.register_signal(evento)
+        tipo = evento.get("tipo_evento", "")
+        if tipo in ("Absorção", "Exaustão", "AbsorÃ§Ã£o"):
+            tracker = _get_outcome_tracker()
+            if tracker is not None:
+                tracker.register_signal(evento)
     else:
         logger.warning("Tentativa de adicionar evento inválido à memória.")
 
@@ -57,8 +101,9 @@ def avaliar_outcomes_pendentes(preco_atual: float, epoch_ms: int):
     Avalia outcomes pendentes com o preço atual.
     Chamado a cada janela de 5 minutos.
     """
-    if _TRACKER_OK and _outcome_tracker:
-        _outcome_tracker.evaluate_pending_outcomes(preco_atual, epoch_ms)
+    tracker = _get_outcome_tracker()
+    if tracker is not None:
+        tracker.evaluate_pending_outcomes(preco_atual, epoch_ms)
 
 
 def calcular_probabilidade_historica(evento: Dict) -> Dict:
@@ -72,8 +117,9 @@ def calcular_probabilidade_historica(evento: Dict) -> Dict:
     signal_side = infer_signal_side(event_type=tipo, battle_result=resultado, explicit_side=side)
 
     # Tentar probabilidade real do OutcomeTracker
-    if _TRACKER_OK and _outcome_tracker:
-        confidence = _outcome_tracker.get_confidence_for_event(evento)
+    tracker = _get_outcome_tracker()
+    if tracker is not None:
+        confidence = tracker.get_confidence_for_event(evento)
         if confidence.get("has_data"):
             # Usar janela de 15m como referência principal
             w15 = confidence.get("windows", {}).get("15m", {})
