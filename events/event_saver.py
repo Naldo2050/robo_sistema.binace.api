@@ -1339,7 +1339,7 @@ class EventSaver:
 
         try:
             fallback_dir = (self.history_file.parent / "fallback_events") if hasattr(self, "history_file") and self.history_file else (DATA_DIR / "fallback_events")
-            fallback_dir.mkdir(exist_ok=True)
+            fallback_dir.mkdir(parents=True, exist_ok=True)
 
             stamp = datetime.now().strftime("%Y%m%d")
             suffix = "jsonl" if format_type == "jsonl" else "json"

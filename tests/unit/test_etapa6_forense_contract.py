@@ -328,6 +328,7 @@ def test_event_saver_fallback_json_sanitized(tmp_path, monkeypatch, non_finite_e
 
     saver = EventSaver.__new__(EventSaver)
     saver.logger = logging.getLogger("tests.etapa6.fallback")
+    saver.history_file = tmp_path / "events.jsonl"
 
     saver._save_fallback(non_finite_event, "json")
 
