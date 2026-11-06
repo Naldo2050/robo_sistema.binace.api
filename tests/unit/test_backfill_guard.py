@@ -56,3 +56,43 @@ def test_main_py_token_variants_match():
     assert is_live_bot_running(["python main.py --dump-raw-trades x.jsonl"]) is True
     assert is_live_bot_running(["python C:\\repo\\main.py"]) is True
     assert is_live_bot_running(["python -u main.py --duration-seconds 7200"]) is True
+
+
+def test_path_portability_posix_isolated_subprocess():
+    """Valida identificação de caminhos Windows sob posixpath em subprocesso isolado."""
+    import subprocess
+    import sys
+
+    code = """
+import os, sys, posixpath
+import importlib.util
+
+os.path = posixpath
+spec = importlib.util.spec_from_file_location('common.backfill_guard', 'common/backfill_guard.py')
+bg = importlib.util.module_from_spec(spec)
+sys.modules['common.backfill_guard'] = bg
+spec.loader.exec_module(bg)
+
+# Casos positivos
+positives = [
+    'python C:\\\\repo\\\\main.py',
+    'python C:\\\\repo\\\\subdir\\\\main.py',
+    'python /opt/bot/main.py',
+    'python ./main.py',
+    'python -u C:\\\\repo\\\\main.py',
+]
+for cmd in positives:
+    assert bg.is_live_bot_running([cmd]) is True, f'Deveria identificar: {cmd}'
+
+# Casos negativos
+negatives = [
+    'python C:\\\\repo\\\\not_main.py',
+    'python /opt/repo/main_orchestrator.py',
+    'python -m main.py',
+    'code C:\\\\repo\\\\main.py',
+]
+for neg in negatives:
+    assert bg.is_live_bot_running([neg]) is False, f'Não deveria identificar: {neg}'
+"""
+    res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert res.returncode == 0, f"Subprocesso falhou:\n{res.stderr}"
