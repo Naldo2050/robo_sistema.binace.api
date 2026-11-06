@@ -25,3 +25,5 @@ diagnostics/
 reports/
 arquivos para diagnostico/
 Regras/
+scratch/
+setup_arena.sh
