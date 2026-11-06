@@ -48,9 +48,9 @@ jobs:
       - name: Run integration tests
         run: python -m pytest tests/integration/ -v --tb=short --timeout=60 -k "not comprehensive"
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
-          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+          GROQ_API_KEY: "${{ github.event_name == 'push' && secrets.GROQ_API_KEY || '' }}"
+          BINANCE_API_KEY: "${{ github.event_name == 'push' && secrets.BINANCE_API_KEY || '' }}"
+          BINANCE_API_SECRET: "${{ github.event_name == 'push' && secrets.BINANCE_API_SECRET || '' }}"
 
   test-all-with-coverage:
     # Full suite with coverage — push only (secrets required for network tests).
@@ -87,9 +87,9 @@ jobs:
             --cov-fail-under=10 \
             --timeout=60
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
-          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+          GROQ_API_KEY: "${{ github.event_name == 'push' && secrets.GROQ_API_KEY || '' }}"
+          BINANCE_API_KEY: "${{ github.event_name == 'push' && secrets.BINANCE_API_KEY || '' }}"
+          BINANCE_API_SECRET: "${{ github.event_name == 'push' && secrets.BINANCE_API_SECRET || '' }}"
 
       - name: Upload coverage report
         if: always()
