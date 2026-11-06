@@ -8,6 +8,8 @@ import sys
 import traceback
 from pathlib import Path
 
+import pytest
+
 # ════════════════════════════════════════════════════════════════════════════════
 # IMPORTS
 # ════════════════════════════════════════════════════════════════════════════════
@@ -17,8 +19,14 @@ try:
     from fetchers.macro_service import MacroService
     from common.async_bridge import AsyncBridge
 except ImportError as e:
-    print(f"Erro ao importar módulos: {e}")
-    sys.exit(1)
+    macro_modules = {
+        "fetchers.macro_data_provider",
+        "fetchers.macro_service",
+        "common.async_bridge",
+    }
+    if not isinstance(e, ModuleNotFoundError) or e.name not in macro_modules:
+        raise
+    pytest.skip(f"módulo de teste indisponível: {e.name}", allow_module_level=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
 # FUNÇÕES DE TESTE

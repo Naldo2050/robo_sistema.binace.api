@@ -56,7 +56,7 @@ def _tokens_match(tokens) -> bool:
     toks = [t.strip("\"'") for t in tokens]
     if not toks:
         return False
-    exe = os.path.basename(toks[0]).lower()
+    exe = os.path.basename(toks[0].replace("\\", "/")).lower()
     if not (exe.startswith("python") or exe == "py"):
         return False
     i = 1
@@ -69,7 +69,7 @@ def _tokens_match(tokens) -> bool:
         if t.startswith("-"):
             i += 1
             continue
-        return os.path.basename(t).lower() == LIVE_BOT_MARKER
+        return os.path.basename(t.replace("\\", "/")).lower() == LIVE_BOT_MARKER
     return False
 
 

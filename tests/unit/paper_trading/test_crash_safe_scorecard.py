@@ -487,6 +487,10 @@ def test_13_fixture_integrity_gap_pipeline_e2e() -> None:
 
 
 # 14. Preserved Real DB D0-C Forensic Replay (Section 1, 6, 13)
+@pytest.mark.skipif(
+    not os.path.exists("dados/paper_live_d0c_20260920T233712Z.db"),
+    reason="preserved D0-C DB not available in this checkout",
+)
 def test_14_d0c_real_preserved_db_replay() -> None:
     real_db_path = "dados/paper_live_d0c_20260920T233712Z.db"
     assert os.path.exists(real_db_path), f"Preserved DB file {real_db_path} not found"

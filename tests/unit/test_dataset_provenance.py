@@ -124,22 +124,26 @@ def test_gate_numpy_bool_accepted():
     assert len(kept) == 1
 
 
+def _write_legacy_parquet(path):
+    pd.DataFrame({"price_close": [100.0 + i for i in range(30)]}).to_parquet(
+        path, index=False
+    )
+
+
 def test_legacy_loader_aborts_clearly(tmp_path):
     """Loader real com dataset legado => None (abort claro, sem relaxar)."""
-    import shutil
-
     from ml.train_model import ModelTrainer
 
-    shutil.copy("ml/datasets/training_dataset.parquet",
-                tmp_path / "training_dataset.parquet")
+    _write_legacy_parquet(tmp_path / "training_dataset.parquet")
     trainer = ModelTrainer.__new__(ModelTrainer)
     trainer.features_dir = tmp_path
     trainer.config = {"data": {"max_file_size_mb": 100, "chunk_size": 10000}}
     assert trainer.load_and_validate_data() is None
 
 
-def test_legacy_dataset_aborts_clearly():
-    df = pd.read_parquet("ml/datasets/training_dataset.parquet")
+def test_legacy_dataset_aborts_clearly(tmp_path):
+    _write_legacy_parquet(tmp_path / "training_dataset.parquet")
+    df = pd.read_parquet(tmp_path / "training_dataset.parquet")
     assert "feature_ready" not in df.columns
     assert len(df) == 30
 

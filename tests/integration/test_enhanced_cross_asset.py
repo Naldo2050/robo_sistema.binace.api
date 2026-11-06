@@ -64,8 +64,28 @@ class TestEnhancedCrossAsset:
     
     def test_enhanced_correlations_structure(self):
         """Testa estrutura básica das enhanced correlations."""
-        # Mock dos dados macro
-        with patch('market_analysis.cross_asset_correlations._MACRO_DATA_OK', False):
+        mock_crypto = {
+            'status': 'ok',
+            'btc_eth_corr_7d': 0.85,
+            'btc_eth_corr_30d': 0.80,
+            'correlation_method': 'shared_session_returns_v2',
+            'correlation_contract_version': 2,
+            'btc_eth_instrument': 'BINANCE:BTCUSDT/ETHUSDT_1h',
+        }
+        mock_macro = {
+            'status': 'ok',
+            'btc_dxy_corr_30d': -0.45,
+            'btc_dxy_corr_90d': -0.40,
+            'btc_ndx_corr_30d': 0.65,
+            'dxy_return_5d': 0.005,
+            'dxy_return_20d': 0.010,
+            'correlation_method': 'shared_session_returns_v2',
+            'correlation_contract_version': 2,
+        }
+        # Mock dos dados macro e correlações tradicionais (evita rede externa em testes)
+        with patch('market_analysis.cross_asset_correlations._MACRO_DATA_OK', False), \
+             patch('market_analysis.cross_asset_correlations.get_btc_eth_correlations', return_value=mock_crypto), \
+             patch('market_analysis.cross_asset_correlations.get_btc_macro_correlations', return_value=mock_macro):
             result = get_enhanced_cross_asset_correlations()
             
             # Deve ter status
@@ -281,8 +301,12 @@ class TestEnhancedCrossAsset:
     
     def test_error_handling(self):
         """Testa tratamento de erros."""
-        # Testa quando macro_data_fetcher não está disponível
-        with patch('market_analysis.cross_asset_correlations._MACRO_DATA_OK', False):
+        mock_crypto = {'status': 'ok'}
+        mock_macro = {'status': 'ok'}
+        # Testa quando macro_data_fetcher não está disponível (evitando rede externa)
+        with patch('market_analysis.cross_asset_correlations._MACRO_DATA_OK', False), \
+             patch('market_analysis.cross_asset_correlations.get_btc_eth_correlations', return_value=mock_crypto), \
+             patch('market_analysis.cross_asset_correlations.get_btc_macro_correlations', return_value=mock_macro):
             result = get_enhanced_cross_asset_correlations()
             assert 'enhanced_status' in result
             assert result['enhanced_status'] == 'unavailable'

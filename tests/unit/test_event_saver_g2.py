@@ -43,6 +43,46 @@ from events import event_saver
 from events.event_saver import EventSaver
 
 
+def _patch_mainthread_sleep(monkeypatch):
+    """Bypass sleep apenas na MainThread para testes sem travar threads de background."""
+    real_sleep = time.sleep
+    monkeypatch.setattr(
+        time,
+        "sleep",
+        lambda s: None if threading.current_thread() is threading.main_thread() else real_sleep(s),
+    )
+
+
+def test_sleep_isolation_secondary_threads_preserve_sleep(monkeypatch):
+    """
+    Regressão: valida que o mock de sleep afeta apenas a MainThread e
+    conserva o sleep real em threads secundárias, mesmo com coverage.
+    """
+    _patch_mainthread_sleep(monkeypatch)
+
+    # 1. MainThread tem sleep ignorado (instantâneo)
+    t0 = time.perf_counter()
+    time.sleep(1.0)
+    main_elapsed = time.perf_counter() - t0
+    assert main_elapsed < 0.1, f"MainThread deveria ignorar sleep, demorou {main_elapsed:.4f}s"
+
+    # 2. Thread secundária preserva sleep real
+    secondary_elapsed = []
+    def worker():
+        w_t0 = time.perf_counter()
+        time.sleep(0.05)
+        secondary_elapsed.append(time.perf_counter() - w_t0)
+
+    th = threading.Thread(target=worker)
+    th.start()
+    th.join(timeout=2.0)
+
+    assert len(secondary_elapsed) == 1
+    assert secondary_elapsed[0] >= 0.04, (
+        f"Thread secundária deveria executar sleep real (>= 0.04s), obteve {secondary_elapsed[0]:.4f}s"
+    )
+
+
 @pytest.fixture
 def hermetic_saver_g2(tmp_path, monkeypatch):
     """Fixture para inicializar EventSaver hermético com banco SQLite real isolado."""
@@ -277,7 +317,7 @@ def test_jsonl_sucesso(hermetic_saver_g2):
 # 12. JSONL falha com retries esgotados
 def test_jsonl_falha_com_retries_esgotados(hermetic_saver_g2, monkeypatch):
     saver = hermetic_saver_g2
-    monkeypatch.setattr(time, "sleep", lambda s: None)
+    _patch_mainthread_sleep(monkeypatch)
 
     real_open = open
     def mock_open(path, mode="r", *args, **kwargs):
@@ -300,7 +340,7 @@ def test_jsonl_falha_com_retries_esgotados(hermetic_saver_g2, monkeypatch):
 # 13. JSONL sucesso após retry
 def test_jsonl_sucesso_apos_retry(hermetic_saver_g2, monkeypatch):
     saver = hermetic_saver_g2
-    monkeypatch.setattr(time, "sleep", lambda s: None)
+    _patch_mainthread_sleep(monkeypatch)
 
     real_open = open
     attempts = [0]
@@ -404,7 +444,7 @@ def test_scenario_sqlite_fail_jsonl_ok(hermetic_saver_g2):
 # 19. SQLite OK / JSONL FAIL
 def test_scenario_sqlite_ok_jsonl_fail(hermetic_saver_g2, monkeypatch):
     saver = hermetic_saver_g2
-    monkeypatch.setattr(time, "sleep", lambda s: None)
+    _patch_mainthread_sleep(monkeypatch)
 
     real_open = open
     def mock_open(path, mode="r", *args, **kwargs):
@@ -426,7 +466,7 @@ def test_scenario_sqlite_ok_jsonl_fail(hermetic_saver_g2, monkeypatch):
 # 20. SQLite FAIL / JSONL FAIL
 def test_scenario_sqlite_fail_jsonl_fail(hermetic_saver_g2, monkeypatch):
     saver = hermetic_saver_g2
-    monkeypatch.setattr(time, "sleep", lambda s: None)
+    _patch_mainthread_sleep(monkeypatch)
 
     mock_store = MagicMock()
     mock_store.save_batch.return_value = BatchSaveResult(
@@ -580,7 +620,7 @@ def test_mocks_legados_retornando_none(hermetic_saver_g2):
 # 29. JSONL falha durante close() / __exit__ -> FAILED, não WRITTEN, fallback acionado (ETAPA 4)
 def test_jsonl_falha_no_fechamento_close(hermetic_saver_g2, monkeypatch):
     saver = hermetic_saver_g2
-    monkeypatch.setattr(time, "sleep", lambda s: None)
+    _patch_mainthread_sleep(monkeypatch)
 
     real_open = open
 

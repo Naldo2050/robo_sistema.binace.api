@@ -214,4 +214,4 @@ dados/audit/aggtrades_sample.json
 query
 logs/run.log.*
 dados/paper_trading.db*
-
+setup_arena.sh
