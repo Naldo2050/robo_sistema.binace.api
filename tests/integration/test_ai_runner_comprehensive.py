@@ -2361,10 +2361,11 @@ class TestAIRunnerComprehensive:
         assert key1 != key6
     
     @pytest.mark.asyncio
-    async def test_error_handling_and_logging(self, ai_runner, sample_market_data, mocker):
+    async def test_error_handling_and_logging(self, ai_runner, sample_market_data, monkeypatch):
         """Testa tratamento de erros e logging"""
         # Configura logger spy
-        error_spy = mocker.spy(ai_runner.logger, 'error')
+        error_spy = MagicMock(wraps=ai_runner.logger.error)
+        monkeypatch.setattr(ai_runner.logger, 'error', error_spy)
         
         # Configura erro
         ai_runner.client.chat.completions.create.side_effect = Exception("Test error")
