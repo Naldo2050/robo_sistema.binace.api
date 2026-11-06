@@ -8,6 +8,7 @@ Valida a separa??o entre:
 """
 
 import time
+import threading
 from unittest.mock import MagicMock
 import pytest
 
@@ -30,8 +31,13 @@ def clean_throttler_singleton():
 
 @pytest.fixture
 def no_sleep(monkeypatch):
-    """Evita delays reais nos loops de retry."""
-    monkeypatch.setattr(time, "sleep", lambda s: None)
+    """Evita delays reais nos loops de retry mantendo threads secundárias saudáveis."""
+    real_sleep = time.sleep
+    monkeypatch.setattr(
+        time,
+        "sleep",
+        lambda s: None if threading.current_thread() is threading.main_thread() else real_sleep(s),
+    )
 
 
 def _make_mock_response(content: str = '{"action": "neutral", "confidence": 0.5}', total_tokens: int = 150):
