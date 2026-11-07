@@ -56,6 +56,8 @@ OPERATIONAL_DIRS = [
     "infrastructure",
     "config",
     "scripts",
+    "trading",
+    "events",
 ]
 
 # Exclusão explícita justificada por caminho relativo exato:
