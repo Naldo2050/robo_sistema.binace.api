@@ -33,12 +33,6 @@ def _sample(metric_name: str, labels: dict) -> float:
     return value if value is not None else 0.0
 
 
-def _wait_processed(bus: EventBus, timeout: float = 2.0) -> None:
-    """Polling ate a fila esvaziar (sem sleep fixo)."""
-    deadline = time.monotonic() + timeout
-    while bus._queue and time.monotonic() < deadline:
-        time.sleep(0.01)
-
 
 def test_metric_names_created_at_module_level():
     """As metricas existem e foram registradas no registry default."""
@@ -75,7 +69,7 @@ def test_publish_with_handler_increments_delivered():
         before = _sample(DELIVERED_TOTAL, {"event_type": "metrics_delivered"}) or 0
 
         bus.publish("metrics_delivered", {"seq": 1, "timestamp": time.time()})
-        _wait_processed(bus)
+        assert bus.wait_idle(timeout=2.0)
 
         assert len(received) == 1
         assert _sample(DELIVERED_TOTAL, {"event_type": "metrics_delivered"}) == before + 1
@@ -90,13 +84,13 @@ def test_publish_without_handler_increments_counter_and_warns(caplog):
     try:
         with caplog.at_level("WARNING", logger="EventBus"):
             bus.publish("metrics_void", {"msg": "hello", "timestamp": time.time()})
-            _wait_processed(bus)
+            assert bus.wait_idle(timeout=2.0)
 
         assert _sample(WITHOUT_HANDLER_TOTAL, {"event_type": "metrics_void"}) == 1
         assert any("Nenhum handler" in r.message for r in caplog.records)
 
         bus.publish("metrics_void", {"msg": "hello2", "timestamp": time.time() + 1})
-        _wait_processed(bus)
+        assert bus.wait_idle(timeout=2.0)
         assert _sample(WITHOUT_HANDLER_TOTAL, {"event_type": "metrics_void"}) == 2
     finally:
         bus.shutdown()
@@ -114,7 +108,7 @@ def test_handler_error_increments_errors_not_delivered():
         before_del = _sample(DELIVERED_TOTAL, {"event_type": "metrics_broken"}) or 0
 
         bus.publish("metrics_broken", {"seq": 1, "timestamp": time.time()})
-        _wait_processed(bus)
+        assert bus.wait_idle(timeout=2.0)
 
         assert _sample(HANDLER_ERRORS_TOTAL, {"event_type": "metrics_broken"}) == before_err + 1
         assert _sample(DELIVERED_TOTAL, {"event_type": "metrics_broken"}) == before_del
