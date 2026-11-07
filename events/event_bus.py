@@ -103,6 +103,8 @@ class EventBus:
         self._handlers = {}
         self._queue = deque(maxlen=max_queue_size)
         self._lock = threading.Lock()
+        self._in_flight = 0
+        self._idle_cond = threading.Condition(self._lock)
         self._processing = False
         self._thread = None
         self._stop = False
@@ -577,12 +579,21 @@ class EventBus:
         """Thread de processamento de eventos."""
         while not self._stop:
             try:
-                if self._queue:
-                    with self._lock:
+                has_event = False
+                with self._lock:
+                    if self._queue:
                         event_type, event_data = self._queue.popleft()
-                    
-                    # Processar evento
-                    self._dispatch(event_type, event_data)
+                        self._in_flight += 1
+                        has_event = True
+
+                if has_event:
+                    try:
+                        self._dispatch(event_type, event_data)
+                    finally:
+                        with self._lock:
+                            self._in_flight -= 1
+                            if not self._queue and self._in_flight == 0:
+                                self._idle_cond.notify_all()
                 else:
                     time.sleep(0.01)  # Pequena pausa para reduzir uso de CPU
             except Exception as e:
@@ -594,6 +605,20 @@ class EventBus:
                     )
                 except Exception:
                     pass
+
+    def wait_idle(self, timeout: float = 2.0) -> bool:
+        """
+        Aguarda a fila esvaziar e todos os eventos em voo terminarem o processamento.
+        Retorna True se ficou ocioso antes do timeout, False caso contrário.
+        Sem sleep para sincronização.
+        """
+        with self._lock:
+            if not self._queue and self._in_flight == 0:
+                return True
+            return self._idle_cond.wait_for(
+                lambda: not self._queue and self._in_flight == 0,
+                timeout=timeout,
+            )
 
     def _dispatch(self, event_type: str, event_data: Dict):
         """Envia evento para todos os handlers registrados"""
@@ -634,6 +659,8 @@ class EventBus:
             return
         self._shutdown = True
         self._stop = True
+        with self._lock:
+            self._idle_cond.notify_all()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
         self._logger.info("🔄 EventBus desligado")
