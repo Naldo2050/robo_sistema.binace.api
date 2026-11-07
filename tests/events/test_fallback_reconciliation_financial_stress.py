@@ -471,53 +471,94 @@ def test_fin_04_wal_concurrent_reads_during_hermetic_reconciliation(tmp_path: Pa
 
     env = _setup_sandbox(tmp_path / "fin04_sandbox", initial_events=events_batch, wal_mode=True)
 
-    reader_started_barrier = threading.Event()
-    stop_reader_event = threading.Event()
+    reader_first_read_barrier = threading.Event()
+    writer_committed_event = threading.Event()
+    do_final_read_event = threading.Event()
     read_results_queue: queue.Queue = queue.Queue()
 
     def analytical_reader_thread():
-        """Leitor concorrente operando estritamente em conexão read-only."""
+        """Leitor concorrente operando estritamente em conexão read-only padrão."""
         conn_uri = f"file:{env['sqlite_path'].resolve().as_posix()}?mode=ro"
         try:
             conn = sqlite3.connect(conn_uri, uri=True, timeout=5.0)
-            reader_started_barrier.set()
-            iterations = 0
-            count = 0
-            while not stop_reader_event.is_set() and iterations < 100:
+            during_counts = []
+
+            # 1. Primeira leitura obrigatória antes da gravação
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM events")
+            c = cur.fetchone()[0]
+            cur.close()
+            during_counts.append(c)
+            reader_first_read_barrier.set()
+
+            # 2. Leituras contínuas durante a gravação (sem sleep)
+            while not writer_committed_event.is_set():
                 cur = conn.cursor()
                 cur.execute("SELECT COUNT(*) FROM events")
-                count = cur.fetchone()[0]
-                iterations += 1
-                time.sleep(0.01)
-            conn.close()
-            read_results_queue.put(("SUCCESS", iterations, count))
-        except Exception as e:
-            read_results_queue.put(("ERROR", str(e), 0))
+                c = cur.fetchone()[0]
+                cur.close()
+                during_counts.append(c)
 
-    reader_t = threading.Thread(target=analytical_reader_thread, daemon=True)
+            # 3. Aguarda sinal emitido estritamente após o join() do escritor
+            assert do_final_read_event.wait(timeout=5.0), "Timeout aguardando sinal para leitura pós-join"
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM events")
+            final_count = cur.fetchone()[0]
+            cur.close()
+            conn.close()
+            read_results_queue.put(("SUCCESS", len(during_counts), during_counts, final_count))
+        except Exception as e:
+            read_results_queue.put(("ERROR", str(e), [], 0))
+
+    reader_t = threading.Thread(target=analytical_reader_thread, daemon=True, name="fin04_reader")
     reader_t.start()
 
-    # Aguarda o leitor iniciar suas leituras ativas
-    assert reader_started_barrier.wait(timeout=5.0), "Leitor concorrente não iniciou a tempo"
+    # Aguarda o leitor realizar com sucesso a primeira leitura
+    assert reader_first_read_barrier.wait(timeout=5.0), "Leitor concorrente não realizou primeira leitura a tempo"
 
-    # Executa a reconciliação com escritas concorrentes no SQLite WAL
-    exit_code, res = execute_apply_integration_hermetic(
-        fallback_file=env["fallback_file"],
-        sqlite_path=env["sqlite_path"],
-        jsonl_path=env["jsonl_path"],
-        archive_dir=env["archive_dir"],
-        backup_dir=env["backup_base"],
-        lock_path=env["lock_path"],
-        manifest_path=env["manifest_path"],
-        ledger_path=env["ledger_path"],
-        sandbox_root=env["sandbox_root"],
-    )
+    writer_result = {}
+    writer_exception = None
 
-    # Interrompe o leitor e junta a thread
-    stop_reader_event.set()
+    def writer_target():
+        """Executa a reconciliação hermética em thread dedicada."""
+        nonlocal writer_exception
+        try:
+            exit_code, res = execute_apply_integration_hermetic(
+                fallback_file=env["fallback_file"],
+                sqlite_path=env["sqlite_path"],
+                jsonl_path=env["jsonl_path"],
+                archive_dir=env["archive_dir"],
+                backup_dir=env["backup_base"],
+                lock_path=env["lock_path"],
+                manifest_path=env["manifest_path"],
+                ledger_path=env["ledger_path"],
+                sandbox_root=env["sandbox_root"],
+            )
+            writer_result["exit_code"] = exit_code
+            writer_result["res"] = res
+        except Exception as exc:
+            writer_exception = exc
+        finally:
+            writer_committed_event.set()
+
+    writer_t = threading.Thread(target=writer_target, daemon=True, name="fin04_writer")
+    writer_t.start()
+
+    try:
+        writer_t.join(timeout=10.0)
+        assert not writer_t.is_alive(), "Escritor concorrente não finalizou a tempo"
+    finally:
+        do_final_read_event.set()
+
+    assert not writer_t.is_alive(), "Escritor concorrente não finalizou a tempo"
+    assert writer_exception is None, f"Escritor sofreu excecao nao tratada: {writer_exception}"
+
     reader_t.join(timeout=5.0)
+    assert not reader_t.is_alive(), "Leitor concorrente não finalizou a tempo"
 
     # Asserções da transação
+    exit_code = writer_result.get("exit_code")
+    res = writer_result.get("res", {})
     assert exit_code == 0
     assert res["status"] == ReconciliationTransactionStatus.SUCCESS.value
     assert res["sqlite_inserted"] == 5
@@ -525,10 +566,81 @@ def test_fin_04_wal_concurrent_reads_during_hermetic_reconciliation(tmp_path: Pa
 
     # Asserções do leitor concorrente
     assert not read_results_queue.empty()
-    status, iters, final_count = read_results_queue.get()
+    status, iters, during_counts, final_count = read_results_queue.get()
     assert status == "SUCCESS", f"Leitor concorrente sofreu exceção: {iters}"
-    assert iters > 0, "Leitor deve ter executado ao menos uma iteração durante a concorrência"
+    assert iters >= 1, "Leitor deve ter executado ao menos a leitura inicial antes/durante a gravação"
+
+    # (i) Verificação de leituras durante a gravação: não podem exceder o total final
+    assert all(0 <= c <= 5 for c in during_counts), (
+        f"Leituras durante a gravação violaram o intervalo [0, 5]: {during_counts}"
+    )
+
+    # (ii) Leitura final após o join() do escritor: deve ser exatamente 5
     assert final_count == 5, f"Leitor deve enxergar exatamente 5 registros gravados após commit, obteve: {final_count}"
+
+
+def test_fin_04_writer_exception_does_not_hang_reader(monkeypatch, tmp_path: Path):
+    """
+    Comprova que uma exceção inesperada no escritor não trava o leitor em deadlock.
+    Valida a presença de try/finally no writer_target e no ciclo de vida das threads.
+    """
+    env = _setup_sandbox(tmp_path / "fin04_exc_sandbox", initial_events=[], wal_mode=True)
+
+    reader_first_read_barrier = threading.Event()
+    writer_committed_event = threading.Event()
+    do_final_read_event = threading.Event()
+
+    def analytical_reader_thread():
+        conn_uri = f"file:{env['sqlite_path'].resolve().as_posix()}?mode=ro"
+        conn = sqlite3.connect(conn_uri, uri=True, timeout=5.0)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM events")
+        cur.close()
+        reader_first_read_barrier.set()
+
+        while not writer_committed_event.is_set():
+            time.sleep(0.005)
+
+        do_final_read_event.wait(timeout=2.0)
+        conn.close()
+
+    reader_t = threading.Thread(target=analytical_reader_thread, daemon=True, name="fin04_exc_reader")
+    reader_t.start()
+    assert reader_first_read_barrier.wait(timeout=5.0)
+
+    # Injeta falha no escritor
+    def crashing_hermetic(*args, **kwargs):
+        raise RuntimeError("Falha simulada no escritor antes do commit")
+
+    monkeypatch.setattr(
+        "tests.events.test_fallback_reconciliation_financial_stress.execute_apply_integration_hermetic",
+        crashing_hermetic
+    )
+
+    def writer_target():
+        try:
+            execute_apply_integration_hermetic(
+                fallback_file=env["fallback_file"],
+                sqlite_path=env["sqlite_path"],
+                jsonl_path=env["jsonl_path"],
+                archive_dir=env["archive_dir"],
+                backup_dir=env["backup_base"],
+                lock_path=env["lock_path"],
+                manifest_path=env["manifest_path"],
+                ledger_path=env["ledger_path"],
+                sandbox_root=env["sandbox_root"],
+            )
+        finally:
+            writer_committed_event.set()
+
+    writer_t = threading.Thread(target=writer_target, daemon=True, name="fin04_exc_writer")
+    writer_t.start()
+
+    writer_t.join(timeout=2.0)
+    do_final_read_event.set()
+    reader_t.join(timeout=1.0)
+
+    assert not reader_t.is_alive(), "Leitor travou após exceção no escritor (writer_committed_event não setado)"
 
 
 # =============================================================================
