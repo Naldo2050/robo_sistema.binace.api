@@ -1,19 +1,43 @@
 name: Deploy to OCI
 
 on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository }}
 
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout repo
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-    # Exemplo simples: Deploy via SSH direto (Git Pull + Docker Compose Up)
-    # Para produção Enterprise, recomendaria Buildar Imagem -> Registry -> Pull
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Validate Deploy Gate
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+        HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+        EVENT_NAME: ${{ github.event_name }}
+        RUN_ID: ${{ github.event.workflow_run.id }}
+      run: |
+        set -euo pipefail
+        python scripts/ci/validate_deploy_gate.py \
+          --event-name "$EVENT_NAME" \
+          --head-sha "$TARGET_SHA" \
+          --head-repo "$HEAD_REPO" \
+          --run-id "$RUN_ID" \
+          --required-jobs "lint,test-unit,test-integration,test-all-with-coverage"
+
     - name: Deploy via SSH
       uses: appleboy/ssh-action@v1.0.0
       with:
@@ -21,15 +45,11 @@ jobs:
         username: opc
         key: ${{ secrets.OCI_SSH_KEY }}
         script: |
+          set -euo pipefail
           cd /opt/market-bot
           git pull origin main
-          
-          # Atualiza .env se houver secrets novos (opcional, requer lógica adicional)
-          
           echo "🐳 Rebuilding containers..."
           docker compose build
-          
           echo "🚀 Restarting service..."
           docker compose up -d
-          
           echo "✅ Deploy Complete"
