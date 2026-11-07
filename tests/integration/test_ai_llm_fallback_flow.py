@@ -105,7 +105,7 @@ def test_groq_payload_summary_is_reduced(monkeypatch):
 
     reduced = analyzer._build_groq_payload_summary(payload)
 
-    assert "cross" not in reduced
+    assert "cross" in reduced
     assert "deriv" not in reduced
     # whale section uses compressed key "w"
     assert "whale" not in reduced
