@@ -39,6 +39,7 @@ jobs:
       - name: Run ALL tests with coverage (1390+ tests)
         run: |
           python -m pytest tests/ \
+            --ignore=tests/benchmark \
             -v \
             --tb=short \
             --cov=. \
@@ -51,6 +52,9 @@ jobs:
           GROQ_API_KEY: "${{ github.event_name == 'push' && secrets.GROQ_API_KEY || '' }}"
           BINANCE_API_KEY: "${{ github.event_name == 'push' && secrets.BINANCE_API_KEY || '' }}"
           BINANCE_API_SECRET: "${{ github.event_name == 'push' && secrets.BINANCE_API_SECRET || '' }}"
+
+      - name: Run benchmark
+        run: pytest tests/benchmark/ --no-cov --timeout=60
 
       - name: Upload coverage report
         if: always()

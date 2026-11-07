@@ -33,6 +33,19 @@ jobs:
       - name: Run unit tests (hermetic, no secrets)
         run: python -m pytest tests/unit/ -v --tb=short -x --timeout=30 -m "not network"
 
+  benchmark:
+    runs-on: ubuntu-latest
+    needs: test-unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run benchmark
+        run: pytest tests/benchmark/ --no-cov --timeout=60
+
   test-integration:
     # Integration tests may call external APIs — run only on push (never on PR).
     if: github.event_name == 'push'
@@ -78,6 +91,7 @@ jobs:
       - name: Run ALL tests with coverage (1390+ tests)
         run: |
           python -m pytest tests/ \
+            --ignore=tests/benchmark \
             -v \
             --tb=short \
             --cov=. \
