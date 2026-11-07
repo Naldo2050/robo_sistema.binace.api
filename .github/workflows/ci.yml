@@ -11,13 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
       - run: pip install ruff mypy
       - name: Ruff lint
-        run: ruff check . --select E,F,W --ignore E501
+        run: python scripts/ci/check_diff_ruff.py --base origin/main --select E,F,W --ignore E501
       - name: Ruff format check
         run: ruff format --check . || true
 

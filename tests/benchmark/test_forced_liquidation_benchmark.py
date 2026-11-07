@@ -8,7 +8,6 @@ dispatch + parse + dedup + aggregate (p50, p95, p99).
 import json
 import time
 import numpy as np
-import pytest
 
 from fetchers.binance_liquidation_stream import BinanceLiquidationListener
 
@@ -52,7 +51,7 @@ def test_benchmark_dispatch_parse_aggregate_percentiles():
     p95 = float(np.percentile(arr, 95))
     p99 = float(np.percentile(arr, 99))
 
-    print(f"\n[BENCHMARK END-TO-END] 2000 events dispatch+parse+aggregate:")
+    print("\n[BENCHMARK END-TO-END] 2000 events dispatch+parse+aggregate:")
     print(f"  p50: {p50:.2f} µs")
     print(f"  p95: {p95:.2f} µs")
     print(f"  p99: {p99:.2f} µs")
