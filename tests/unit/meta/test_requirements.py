@@ -10,6 +10,16 @@ def test_dev_requirements_declares_pytest_asyncio() -> None:
     assert "pytest-asyncio==1.4.1.post1" in lines
 
 
+def test_dev_requirements_pins_dependencies() -> None:
+    lines = {
+        line.strip()
+        for line in Path("requirements-dev.txt").read_text(encoding="utf-8").splitlines()
+    }
+    assert "PyYAML==6.0.3" in lines
+    assert "pytest>=8.4" in lines
+    assert "ruff==0.17.4" in lines
+
+
 def test_runtime_declares_psutil() -> None:
     lines = {
         line.strip()
