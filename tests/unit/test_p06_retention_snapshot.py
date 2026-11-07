@@ -17,6 +17,7 @@ PREFIX_OFFSETS = [316, 509, 851, 964, 1246]
 
 def _analyzer(wall):
     fa = FlowAnalyzer()
+    fa.liquidity_heatmap = None
     fa._get_synced_timestamp_ms = lambda: wall[0]  # type: ignore[method-assign]
     fa.last_reset_ms = T0 - 3600000
     return fa
