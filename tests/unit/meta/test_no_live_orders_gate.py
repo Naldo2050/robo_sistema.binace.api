@@ -274,3 +274,69 @@ def test_scanner_exclusion_requires_relative_path_not_basename(tmp_path):
 
     ep_v, _ = _scan_for_forbidden_patterns(fake_orch, repo_root=tmp_path)
     assert len(ep_v) == 1, "Arquivo verify_safe_mode.py fora de scripts/diagnostics foi ignorado indevidamente por basename!"
+
+
+def test_scanner_detects_post_order_in_trading_dir(tmp_path):
+    """trading/ com POST para /fapi/v1/order deve ser acusado pelo scanner."""
+    trading_dir = tmp_path / "trading"
+    trading_dir.mkdir()
+    (trading_dir / "executor.py").write_text(
+        'import requests\n'
+        'def send():\n'
+        '    return requests.post("https://fapi.binance.com/fapi/v1/order", json={})\n',
+        encoding="utf-8",
+    )
+
+    ep_v, imp_v = _scan_for_forbidden_patterns(trading_dir, repo_root=tmp_path)
+    assert len(ep_v) == 1, f"Deveria detectar 1 violação em trading/, obteve: {ep_v}"
+    assert ep_v[0][2] == "/fapi/v1/order"
+    assert len(imp_v) == 0
+
+
+def test_scanner_detects_post_order_in_events_dir(tmp_path):
+    """events/ com POST para /fapi/v1/order deve ser acusado pelo scanner."""
+    events_dir = tmp_path / "events"
+    events_dir.mkdir()
+    (events_dir / "dispatcher.py").write_text(
+        'import requests\n'
+        'def send():\n'
+        '    return requests.post("https://fapi.binance.com/fapi/v1/order", json={})\n',
+        encoding="utf-8",
+    )
+
+    ep_v, imp_v = _scan_for_forbidden_patterns(events_dir, repo_root=tmp_path)
+    assert len(ep_v) == 1, f"Deveria detectar 1 violação em events/, obteve: {ep_v}"
+    assert ep_v[0][2] == "/fapi/v1/order"
+    assert len(imp_v) == 0
+
+
+def test_scanner_allows_premium_index_get_in_trading_dir(tmp_path):
+    """trading/ com GET para /fapi/v1/premiumIndex não é ordem real e não deve ser acusado."""
+    trading_dir = tmp_path / "trading"
+    trading_dir.mkdir()
+    (trading_dir / "reader.py").write_text(
+        'import requests\n'
+        'def read():\n'
+        '    return requests.get("https://fapi.binance.com/fapi/v1/premiumIndex", params={})\n',
+        encoding="utf-8",
+    )
+
+    ep_v, imp_v = _scan_for_forbidden_patterns(trading_dir, repo_root=tmp_path)
+    assert ep_v == [], f"GET premiumIndex em trading/ não deveria gerar violação: {ep_v}"
+    assert imp_v == []
+
+
+def test_scanner_allows_premium_index_get_in_events_dir(tmp_path):
+    """events/ com GET para /fapi/v1/premiumIndex não é ordem real e não deve ser acusado."""
+    events_dir = tmp_path / "events"
+    events_dir.mkdir()
+    (events_dir / "reader.py").write_text(
+        'import requests\n'
+        'def read():\n'
+        '    return requests.get("https://fapi.binance.com/fapi/v1/premiumIndex", params={})\n',
+        encoding="utf-8",
+    )
+
+    ep_v, imp_v = _scan_for_forbidden_patterns(events_dir, repo_root=tmp_path)
+    assert ep_v == [], f"GET premiumIndex em events/ não deveria gerar violação: {ep_v}"
+    assert imp_v == []
