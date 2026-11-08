@@ -1,6 +1,5 @@
 import re
 from pathlib import Path
-import pytest
 
 
 def find_unprotected_secrets_in_workflow(workflow_path: Path):
@@ -29,7 +28,7 @@ def test_tests_workflow_all_secrets_guarded():
     unprotected = find_unprotected_secrets_in_workflow(wf)
     assert not unprotected, (
         f"Foram encontradas referências a secrets desprotegidas em {wf}:\n"
-        + "\n".join(f"  Linha {l}: {expr} ({reason})" for l, expr, reason in unprotected)
+        + "\n".join(f"  Linha {line}: {expr} ({reason})" for line, expr, reason in unprotected)
     )
 
 
@@ -38,7 +37,7 @@ def test_ci_workflow_all_secrets_guarded():
     unprotected = find_unprotected_secrets_in_workflow(wf)
     assert not unprotected, (
         f"Foram encontradas referências a secrets desprotegidas em {wf}:\n"
-        + "\n".join(f"  Linha {l}: {expr} ({reason})" for l, expr, reason in unprotected)
+        + "\n".join(f"  Linha {line}: {expr} ({reason})" for line, expr, reason in unprotected)
     )
 
 

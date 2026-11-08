@@ -15,7 +15,7 @@ import sys
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import fetchers.macro_update_service
+import fetchers.macro_update_service  # noqa: F401  # efeito colateral: registra o módulo para o patch
 from events import event_saver
 from market_orchestrator import EnhancedMarketBot
 
