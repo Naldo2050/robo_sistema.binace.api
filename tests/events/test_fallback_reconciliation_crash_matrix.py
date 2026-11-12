@@ -295,14 +295,42 @@ def _run_worker_barrier_and_kill(
 
         # Confirma que o processo foi liquidado
         assert proc.poll() is not None, f"Worker para {scenario} permaneceu vivo após proc.kill!"
+
+        # Higiene de IPC e sincronização de handles com o subprocesso encerrado
+        if proc.stdout:
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+        if proc.stderr:
+            try:
+                proc.stderr.close()
+            except Exception:
+                pass
+        if reader_thread.is_alive():
+            reader_thread.join(timeout=1.0)
+        assert not reader_thread.is_alive(), (
+            f"reader_thread permaneceu ativa após join para o cenário {scenario}"
+        )
+
         return proc, reached_marker
 
     finally:
-        # Higiene rigorosa contra processos zumbis
+        # Higiene rigorosa contra processos zumbis e fechamento de descritores de IPC
         if proc.poll() is None:
             try:
                 proc.kill()
                 proc.wait(timeout=2.0)
+            except Exception:
+                pass
+        if proc.stdout:
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+        if proc.stderr:
+            try:
+                proc.stderr.close()
             except Exception:
                 pass
 
