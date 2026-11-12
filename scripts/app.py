@@ -4,12 +4,13 @@ Roda separado do bot de trading.
 Porta 8001 (Prometheus usa 8000).
 """
 
-from fastapi import FastAPI
+import hmac
 import json
-from pathlib import Path
 from datetime import datetime
-
+from pathlib import Path
 from typing import Optional
+
+from fastapi import FastAPI, Header, HTTPException
 
 app = FastAPI(
     title="Robo Binance API - Monitor",
@@ -141,10 +142,29 @@ def autofixer_report():
 
 
 @app.post("/auto-fixer/run")
-def autofixer_run(phase: int = 0):
+def autofixer_run(
+    phase: int = 0,
+    x_auto_fixer_token: Optional[str] = Header(
+        default=None,
+        alias="X-Auto-Fixer-Token",
+    ),
+):
     """Dispara execução do auto-fixer."""
+    import os
     import subprocess
-    
+
+    if os.getenv("AUTO_FIXER_ENABLED") != "true":
+        raise HTTPException(status_code=403, detail="Auto-fixer disabled")
+    expected_token = os.getenv("AUTO_FIXER_TOKEN")
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="Auto-fixer token not configured")
+    provided_token = x_auto_fixer_token or ""
+    if not provided_token or not hmac.compare_digest(
+        provided_token.encode("utf-8"),
+        expected_token.encode("utf-8"),
+    ):
+        raise HTTPException(status_code=401, detail="Invalid auto-fixer token")
+
     cmd = ["python", "-m", "auto_fixer.runner", "--phase", str(phase)]
     
     try:
