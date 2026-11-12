@@ -194,3 +194,7 @@ def test_deploy_workflow_yaml_requires_push_official_repo_and_success():
     assert structured_conditions.get("github.event.workflow_run.head_repository.full_name") == "github.repository", (
         f"Condição estrutural de repositório oficial não satisfeita. Encontrado: {structured_conditions}"
     )
+
+    assert structured_conditions.get("vars.OCI_DEPLOY_ENABLED") == "true", (
+        f"Condição estrutural de opt-in 'vars.OCI_DEPLOY_ENABLED == true' não satisfeita. Encontrado: {structured_conditions}"
+    )
