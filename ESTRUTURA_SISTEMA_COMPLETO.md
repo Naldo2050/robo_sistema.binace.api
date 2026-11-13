@@ -1342,8 +1342,8 @@ accept_futures_migration, audit_capabilities_deep, audit_data_attrition, audit_d
 
 ## Atualizacoes Posteriores (2026-09-15 ate 2026-11-08) — Series H1/G5, P0, Paper Trading e Gates de Seguranca (HEAD `115d9aa`)
 
-> **Data base anterior:** 2026-09-15 12:00:00 (commit `4c8335c`)  
-> **HEAD atual:** `115d9aa` (2026-11-08 `fix(lint): clear 4 ruff violations introduced by P0 series`)  
+> **Data base anterior:** 2026-09-15 12:00:00 (commit `4c8335c`)
+> **HEAD atual:** `115d9aa` (2026-11-08 `fix(lint): clear 4 ruff violations introduced by P0 series`)
 > **Escopo:** Consolidacao dos pacotes `paper_trading/`, `infrastructure/`, `database/`, pipeline financeiro E2E (H1-B2-Q2..Q5, G5), reconciliador transacional, verificacao estatica de padroes de ordem (`tests/unit/meta/test_no_live_orders_gate.py`), step Validate Deploy Gate (`scripts/ci/validate_deploy_gate.py`) e sincronizacao da branch `main`.
 
 ---
@@ -1434,11 +1434,10 @@ Implementacao de blindagem contra corrupcao de dados, poison pills e falhas de i
 ---
 
 ### EVOLUCAO DA SUITE DE TESTES
-* **Total de Arquivos de Teste:** **354 arquivos** `test_*.py` rastreados em `tests/` (`git ls-files -- tests`, ou 355 incluindo `tests/unit/test_app_auto_fixer_guard.py` sem commit; 383 arquivos `.py` rastreados ao todo em `tests/`).
+* **Total de Arquivos de Teste:** **355 arquivos** `test_*.py` rastreados em `tests/` (`git ls-files -- tests`, sendo 2 arquivos diretamente na raiz de `tests/` e 353 em subpastas; 384 arquivos `.py` rastreados ao todo em `tests/`).
 * **Isolamento nos Testes Unitarios:** O job `test-unit` em `.github/workflows/ci.yml` executa `tests/unit/` com `-m "not network"` e sem segredos; os jobs `test-integration` e `test-all-with-coverage` executam apenas em `push` e recebem segredos do repositorio quando configurados.
 * **EventBus Sincrono / Sem Flakes:** Metodo `EventBus.wait_idle()` implementado com rastreamento assincrono in-flight, eliminando loops de polling e condicoes de corrida.
 
 ---
 
-*Ultima atualizacao documental: 2026-11-12 (copia revisada R32) | Base de referencia: HEAD `115d9aa` (CI remoto: NAO VERIFICADO nesta rodada)*
-
+*Ultima atualizacao documental: 2026-11-12 (reconciliacao R38) | Base de referencia: HEAD `46cf134` (CI remoto: branch 43234499401 sucesso, main 43247491086 [CI] e 43247490812 [Tests] sucesso, Deploy 43251577136 pulado com steps vazios [causa do pulo nao discriminada no log]; ambiente de CI: Linux, nao ha CI em Windows; Crash Matrix validada localmente no Windows)*
