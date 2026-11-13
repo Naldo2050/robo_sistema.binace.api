@@ -92,11 +92,12 @@ Arquivos que agora são apenas proxies com `DeprecationWarning`, apontando para 
 ```
 events/
 ├── __init__.py
-├── event_bus.py          # Barramento de eventos
-├── event_saver.py        # Persistencia de eventos (JSONL/JSON)
+├── event_bus.py          # Barramento de eventos (com wait_idle e rastreamento in-flight de tasks)
+├── event_saver.py        # Persistencia de eventos (JSONL/JSON, poison pill isolation e contingência)
 ├── event_memory.py       # Memoria de eventos com OutcomeTracker
 ├── event_similarity.py   # Similaridade entre eventos
-└── event_stats_model.py  # Modelo estatistico de eventos
+├── event_stats_model.py  # Modelo estatistico de eventos
+└── fallback_reconciler.py # Reconciliador transacional de 2 fases sob falha de SQLite/ENOSPC
 ```
 
 ---
@@ -192,7 +193,19 @@ common/
 ├── ml_features.py             # Features de ML (cross-asset)
 ├── async_helpers.py           # Utilitarios async
 ├── exceptions.py              # Hierarquia unificada de excecoes (BotBaseError)
-└── logging_config.py         # Logging centralizado (JSON/texto, rotativo)
+├── logging_config.py         # Logging centralizado (JSON/texto, rotativo)
+├── financial_validator.py     # Validador financeiro estrito (anti-NaN/Inf, validacao de campos de negocio)
+├── financial_quarantine.py    # Quarentena forense de eventos malformados e colisoes
+├── identity_contract.py       # Contrato deterministico de identidade de produtor (v2) e canonicalizacao
+├── runtime_lock.py            # Trava operacional de runtime e prevencao de concorrencia destrutiva
+├── backfill_guard.py          # Protecao e guardrail contra backfill descontrolado
+├── signal_direction.py        # Inferidor canonico de direcao (LONG/SHORT/NEUTRAL/UNKNOWN)
+├── twap_validator.py          # Validador de TWAP
+├── yfinance_cache.py          # Cache de ativos yfinance
+├── ai_payload_types.py        # Tipos tipados de payload
+├── ai_protocols.py            # Protocolos de IA
+├── json_safe.py               # Sanitizacao canonica JSON RFC 8259
+└── async_bridge.py            # Bridge async
 ```
 
 ---
@@ -430,7 +443,77 @@ risk_management/
 ```
 config/
 ├── __init__.py
-└── model_config.yaml     # Config LLM payload e XGBoost
+├── env_policy.py             # Politica de ambiente e isolamento de credenciais (DOTENV centralizado)
+├── model_config.yaml         # Config LLM payload e XGBoost
+├── settings.py               # Parametros de configuracao global do sistema
+├── volume_baseline_fut.json  # Calibracao de baseline para volumes Futures
+├── o1_cohort_manifest.json   # Manifesto de coorte O1
+├── r1_cohort_manifest.json   # Manifesto de coorte R1
+└── cftc_r4_manifest.json     # Manifesto CFTC CoT R4
+```
+
+---
+
+### `database/` - Persistencia SQLite
+```
+database/
+├── __init__.py
+└── event_store.py             # Persistencia SQLite com validacao financeira estrita, sanitizacao RFC 8259 e IntegrityCollisionError
+```
+
+---
+
+### `core/` - Nucleo e Gerenciamento de Estado
+```
+core/
+├── __init__.py
+├── state_manager.py           # Gerenciador de estado central do bot
+└── window_state.py            # Estado e metadados das janelas temporais de analise
+```
+
+---
+
+### `paper_trading/` - Simulacao e Shadow Trading (NOVO - 09/2026 a 11/2026)
+```
+paper_trading/
+├── __init__.py
+├── config.py                  # Configuracao do shadow paper trading (rejeicao estrita de credenciais de live)
+├── contracts.py               # Tipos e dataclasses de contratos simulados
+├── cost_model.py              # Modelo de custos (taxas maker/taker, slippage dinamico)
+├── decision_providers.py      # Provedores de decisao simulada
+├── execution_sink.py          # Sink de despacho de execucao virtual
+├── executor.py                # Executor de paper trading
+├── factory.py                 # Factory hermetica (create_shadow_runtime) com zero network I/O
+├── ledger.py                  # Livro-razao contabil de balancos e posicoes
+├── positions.py               # Gestor de posicoes abertas/fechadas
+├── prediction.py              # Modelos de predicao
+├── prediction_tracker.py      # Rastreador de acuracia de predicoes
+├── replay.py                  # Mecanismo de replay offline de mercado
+├── scorecard.py               # Scorecard estatistico e metricas de assertividade
+├── shadow_runtime.py          # Runtime Shadow desacoplado (ShadowPaperRuntime)
+├── tape.py                    # Gravador de fita de operacoes
+└── adapters/
+    ├── __init__.py
+    ├── risk_adapter.py        # Adaptador de risco para ambiente shadow
+    └── signal_adapter.py      # Adaptador de sinais de trading
+```
+
+---
+
+### `infrastructure/` - Infraestrutura, Cloud OCI e Servicos (NOVO)
+```
+infrastructure/
+├── __init__.py
+├── market-bot.service         # Unidade systemd de inicializacao do bot
+├── oci/
+│   ├── __init__.py
+│   ├── monitoring.py          # Coleta e telemetria de metricas OCI
+│   ├── security_config.md     # Politicas de seguranca da infraestrutura cloud
+│   └── vault_helper.py        # Utilitario de integracao com OCI Vault
+├── systemd/
+│   └── research-collectors/   # Unidades e timers systemd para coletores de dados em segundo plano
+└── terraform/
+    └── main.tf                # Provisionamento de infraestrutura como codigo
 ```
 
 ---
@@ -1253,4 +1336,109 @@ accept_futures_migration, audit_capabilities_deep, audit_data_attrition, audit_d
 ### Pendentes em working tree (SEM commit em 2026-09-15)
 `docs/audit/FASE1_DEPRECATION_MECHANISM_FAILURE_2026-09.md`, `ORDERBOOK_LAG_EMPIRICAL_RECONCILIATION_2026-09.md`, `SIGNOFF_AUDITORIA_FUTURES_2026-09.md`, `query`, ~30 scripts `scripts/diagnostics/` (analyze_orderbook_sync_session, audit_c1_contamination, audit_latency_spikes, audit_val2, benchmark_dump_raw_trades_overhead, check_r4_citations, check_validations_data, decompose_london_ny_trades, detailed_volume_spike_audit, find_recent_files, generate_r4b_markdown, inspect_121201_log, inspect_all_dbs, inspect_latency_context, inspect_run_log, inspect_schema_real, inspect_snapshot_moment_trades, inspect_window97, investigate_asia_event, multi_day_stratified_audit, run_3_validation_scripts, run_all_validations, run_r4b_full, stratified_trade_sampling, test_store_init, val0_integrity, val2_check, validate_memory_and_latency_health, validate_ml_stale_neutralization, validate_signals_orderbook_schema, validate_volume_spike_dual_gate, validate_whale_threshold), `tests/unit/test_dump_raw_trades.py` + 6 modificados (klines_accept_futures.json, TEST_DEBT.md, orderbook_wrapper.py, collect_2h.ps1, test_ml_stale_real_event_pipeline.py, test_orderbook_sync_snapshot.py)
 
-*Ultima atualizacao: 2026-09-15 (HEAD `4c8335c`; 85 commits desde 2026-08-16; novos pacotes: audit_live/, tests/golden/, scripts/analytics/, analysis/results/; novos modulos: capabilities, signal_direction, env_policy, session_vwap, market_structure, binance_positioning_fetcher, onchain_updater, cross_asset_updater; migracao Futures cc249d7)*
+*Ultima atualizacao anterior: 2026-09-15 (HEAD `4c8335c`)*
+
+---
+
+## Atualizacoes Posteriores (2026-09-15 ate 2026-11-08) — Series H1/G5, P0, Paper Trading e Gates de Seguranca (HEAD `115d9aa`)
+
+> **Data base anterior:** 2026-09-15 12:00:00 (commit `4c8335c`)  
+> **HEAD atual:** `115d9aa` (2026-11-08 `fix(lint): clear 4 ruff violations introduced by P0 series`)  
+> **Escopo:** Consolidacao dos pacotes `paper_trading/`, `infrastructure/`, `database/`, pipeline financeiro E2E (H1-B2-Q2..Q5, G5), reconciliador transacional, verificacao estatica de padroes de ordem (`tests/unit/meta/test_no_live_orders_gate.py`), step Validate Deploy Gate (`scripts/ci/validate_deploy_gate.py`) e sincronizacao da branch `main`.
+
+---
+
+### NOVO PACOTE `paper_trading/` — Sistema de Simulacao e Runtime Sombra (Shadow Paper Trading)
+Sistema completo de execucao simulada sem risco, desacoplado de contas de producao e com isolamento hermetico de rede:
+```
+paper_trading/
+├── __init__.py
+├── config.py                  # Parser e validacao de configuracao (rejeita estritamente credenciais reais)
+├── contracts.py               # Tipos de dados, enums e contratos de negociacao simulada
+├── cost_model.py              # Modelo de custos com taxas maker/taker e slippage dinamico
+├── decision_providers.py      # Provedores de decisao para execucao simulada
+├── execution_sink.py          # Receptor e despachante de ordens virtuais
+├── executor.py                # Executor de paper trading
+├── factory.py                 # Factory hermetica (create_shadow_runtime) com zero network I/O
+├── ledger.py                  # Livro-razao contabil de balancos, margem e PnL simulado
+├── positions.py               # Rastreamento de posicoes abertas, fechadas e liquidacoes virtuais
+├── prediction.py              # Modelos de predicao direcional
+├── prediction_tracker.py      # Rastreador de acuracia de predicoes vs precos de mercado
+├── replay.py                  # Mecanismo de replay offline de mercado a partir de snapshots
+├── scorecard.py               # Scorecard estatistico e metricas de performance/assertividade
+├── shadow_runtime.py          # Runtime Shadow principal (ShadowPaperRuntime) acoplavel via hooks
+├── tape.py                    # Gravador de fita de eventos e operacoes simuladas
+└── adapters/
+    ├── __init__.py
+    ├── risk_adapter.py        # Adaptador de regras de gestao de risco
+    └── signal_adapter.py      # Adaptador de sinais do orquestrador para ordens shadow
+```
+
+---
+
+### NOVO PACOTE `infrastructure/` — Cloud OCI, Systemd e Provisionamento
+Centralizacao dos artefatos de infraestrutura de producao e servicos daemon:
+```
+infrastructure/
+├── __init__.py
+├── market-bot.service         # Unidade systemd oficial para execucao do bot de mercado
+├── oci/
+│   ├── __init__.py
+│   ├── monitoring.py          # Telemetria e monitoramento de metricas da instancia OCI
+│   ├── security_config.md     # Politicas de seguranca da infraestrutura cloud
+│   └── vault_helper.py        # Integracao com OCI Vault para recuperacao segura de segredos
+├── systemd/
+│   └── research-collectors/   # Unidades .service e .timer para coletores de dados em segundo plano
+└── terraform/
+    └── main.tf                # Declaracao de infraestrutura como codigo (IaC)
+```
+
+---
+
+### NOVO SUBSISTEMA: Pipeline Financeiro com Quarentena e Reconciliacao Transacional (H1/G5)
+Implementacao de blindagem contra corrupcao de dados, poison pills e falhas de infraestrutura (SQLite bloqueado / ENOSPC):
+
+| Modulo | Pacote | Papel no Sistema |
+| :--- | :--- | :--- |
+| `financial_validator.py` | `common/` | Validador financeiro estrito: rejeita fail-closed valores `NaN`, `±Inf`, precos `<= 0` e anomalias de schema. |
+| `financial_quarantine.py` | `common/` | Quarentena forense de eventos malformados ou divergentes, com isolamento de disco e log estruturado. |
+| `identity_contract.py` | `common/` | Contrato deterministico de identidade de produtor (v2) e canonicalizacao estrutural para garantia de idempotencia. |
+| `runtime_lock.py` | `common/` | Trava operacional de runtime (`OperationalRuntimeLock`) e prevencao de concorrencia destrutiva entre instancias. |
+| `event_store.py` | `database/` | Persistencia SQLite com validacao financeira em camada, sanitizacao RFC 8259 e deteccao de `IntegrityCollisionError`. |
+| `event_saver.py` | `events/` | Desvio automatico para arquivos de contingencia JSONL sob falha do banco e telemetria de metricas G5. |
+| `fallback_reconciler.py` | `events/` | Reconciliador transacional de 2 fases: reprocessa eventos gravados em contingencia assim que o SQLite normaliza. |
+| `test_financial_pipeline_e2e_q5_g5.py` | `tests/integration/` | Suite E2E completa cobrindo 15 cenarios (E01 a E15) de estresse, ENOSPC, fallback e quarentena. |
+
+---
+
+### GOVERNANCA, CI/CD E GATES DE SEGURANCA (NOVO)
+
+#### 1. Verificacao Estatica de Padroes de Ordem (`test_no_live_orders_gate.py`)
+* **Localizacao:** `tests/unit/meta/test_no_live_orders_gate.py` (executado no job `test-unit` de `.github/workflows/ci.yml`)
+* **Funcionamento:** Scanner estatico de padroes de endpoint de ordem e imports de SDK de trading (varredura de strings e regex sobre `main.py`, `requirements.txt`, `requirements-dev.txt` e 10 diretorios operacionais definidos em `OPERATIONAL_DIRS`, com exclusao explicita de `scripts/diagnostics/verify_safe_mode.py`). Nao cobre chamadas dinamicas ofuscadas (ex.: `getattr` concatenado ou `eval`/`exec`).
+* **Comportamento no CI:** O teste falha no job `test-unit` caso encontre algum dos literais de `FORBIDDEN_ORDER_ENDPOINTS` ou padroes de `FORBIDDEN_IMPORT_PATTERNS` nos arquivos auditados.
+
+#### 2. step Validate Deploy Gate (`scripts/ci/validate_deploy_gate.py`)
+* **Localizacao:** `.github/workflows/deploy_oci.yml` (step `Validate Deploy Gate`, linhas 25-39)
+* **Funcionamento:** O gate valida que os 4 jobs requeridos (`lint`, `test-unit`, `test-integration`, `test-all-with-coverage`) concluiram com sucesso antes do deploy, alem de rejeitar `workflow_dispatch` e verificar alinhamento de `head_repository` e `head_sha` com `origin/main`.
+* **Comportamento no workflow:** O workflow `deploy_oci.yml` so avanca para `Deploy via SSH` se a condicao `if:` do job `deploy` (incluindo `vars.OCI_DEPLOY_ENABLED == 'true'`) e `scripts/ci/validate_deploy_gate.py` retornarem sucesso (exit 0).
+
+#### 3. Gate de Linter Ruff Incremental
+* **Localizacao:** `.github/workflows/ci.yml` (job `lint`, `scripts/ci/check_diff_ruff.py`)
+* **Funcionamento:** Executa `python scripts/ci/check_diff_ruff.py --base origin/main --select E,F,W --ignore E501` sobre as linhas adicionadas/modificadas no diff contra `origin/main`; o step seguinte `ruff format --check . || true` nao bloqueia falha de formatacao.
+
+#### 4. Isolamento Estrito de Segredos e Ambiente (`config/env_policy.py`)
+* **Localizacao:** `config/env_policy.py` e `.github/workflows/`
+* **Funcionamento:** Segredos de producao (`BINANCE_API_KEY`, `BINANCE_API_SECRET`, `GROQ_API_KEY`) sao injetados no CI estritamente sob eventos de `push` autorizados. Em `pull_request`, as credenciais sao forcadas a strings vazias. Em testes locais, o uso de chaves dummy/ficticias e auditado por tripwires.
+
+---
+
+### EVOLUCAO DA SUITE DE TESTES
+* **Total de Arquivos de Teste:** **354 arquivos** `test_*.py` rastreados em `tests/` (`git ls-files -- tests`, ou 355 incluindo `tests/unit/test_app_auto_fixer_guard.py` sem commit; 383 arquivos `.py` rastreados ao todo em `tests/`).
+* **Isolamento nos Testes Unitarios:** O job `test-unit` em `.github/workflows/ci.yml` executa `tests/unit/` com `-m "not network"` e sem segredos; os jobs `test-integration` e `test-all-with-coverage` executam apenas em `push` e recebem segredos do repositorio quando configurados.
+* **EventBus Sincrono / Sem Flakes:** Metodo `EventBus.wait_idle()` implementado com rastreamento assincrono in-flight, eliminando loops de polling e condicoes de corrida.
+
+---
+
+*Ultima atualizacao documental: 2026-11-12 (copia revisada R32) | Base de referencia: HEAD `115d9aa` (CI remoto: NAO VERIFICADO nesta rodada)*
+
