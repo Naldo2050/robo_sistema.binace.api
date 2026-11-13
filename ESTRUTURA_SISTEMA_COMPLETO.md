@@ -1402,7 +1402,7 @@ Implementacao de blindagem contra corrupcao de dados, poison pills e falhas de i
 | :--- | :--- | :--- |
 | `financial_validator.py` | `common/` | Validador financeiro estrito: rejeita fail-closed valores `NaN`, `±Inf`, precos `<= 0` e anomalias de schema. |
 | `financial_quarantine.py` | `common/` | Quarentena forense de eventos malformados ou divergentes, com isolamento de disco e log estruturado. |
-| `identity_contract.py` | `common/` | Contrato deterministico de identidade de produtor (v2) e canonicalizacao estrutural para garantia de idempotencia. |
+| `identity_contract.py` | `common/` | Contrato de identidade de produtor (v2) e canonicalizacao estrutural para preservacao de idempotencia. |
 | `runtime_lock.py` | `common/` | Trava operacional de runtime (`OperationalRuntimeLock`) e prevencao de concorrencia destrutiva entre instancias. |
 | `event_store.py` | `database/` | Persistencia SQLite com validacao financeira em camada, sanitizacao RFC 8259 e deteccao de `IntegrityCollisionError`. |
 | `event_saver.py` | `events/` | Desvio automatico para arquivos de contingencia JSONL sob falha do banco e telemetria de metricas G5. |
@@ -1440,4 +1440,4 @@ Implementacao de blindagem contra corrupcao de dados, poison pills e falhas de i
 
 ---
 
-*Ultima atualizacao documental: 2026-11-12 (reconciliacao R38) | Base de referencia: HEAD `46cf134` (CI remoto: branch 43234499401 sucesso, main 43247491086 [CI] e 43247490812 [Tests] sucesso, Deploy 43251577136 pulado com steps vazios [causa do pulo nao discriminada no log]; ambiente de CI: Linux, nao ha CI em Windows; Crash Matrix validada localmente no Windows)*
+*Ultima atualizacao documental: 2026-11-12 (reconciliacao R39) | Base de referencia: HEAD `46cf134` (CI remoto: branch 43234499401 sucesso, main 43247491086 [CI] e 43247490812 [Tests] sucesso, Deploy 43251577136 [skipped, steps vazios; causa do pulo nao discriminada no log]; ambiente de CI: Linux, nao ha CI em Windows; Crash Matrix validada localmente no Windows)*
