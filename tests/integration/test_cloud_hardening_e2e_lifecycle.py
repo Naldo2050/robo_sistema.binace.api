@@ -35,6 +35,12 @@ def isolate_bot_side_effects(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(EnhancedMarketBot, "_initialize_ai_async", lambda self: None)
     monkeypatch.setattr(EnhancedMarketBot, "_init_shadow_runtime", lambda self: None)
+    # Hermeticidade: eliminar GET real de CrossAssetCorrelations na camada de transporte
+    mock_get_resp = MagicMock()
+    mock_get_resp.status_code = 200
+    mock_get_resp.raise_for_status = MagicMock()
+    mock_get_resp.json = MagicMock(return_value=[])
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: mock_get_resp)
     monkeypatch.setattr("market_orchestrator.market_orchestrator.HealthMonitor", MagicMock)
     monkeypatch.setattr("market_orchestrator.market_orchestrator.FeatureStore", MagicMock)
     monkeypatch.setattr(event_saver, "DATA_DIR", tmp_path)
